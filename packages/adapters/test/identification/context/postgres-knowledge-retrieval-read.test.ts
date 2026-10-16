@@ -555,7 +555,7 @@ describe("C32 PostgreSQL knowledge retrieval read adapter", () => {
     });
   }, 90_000);
 
-  it("引用不存在、类型不符、授权摘要漂移与越权同形失败", async () => {
+  it("引用不存在、类型不符与越权同形失败（授权摘要漂移不再拒绝）", async () => {
     const authorization = retrievalAuthorization({ policyVersion: "v-failure" });
     const { access, register } = accessDouble();
     register(authorization);
@@ -574,14 +574,14 @@ describe("C32 PostgreSQL knowledge retrieval read adapter", () => {
     );
     expect(hybridRefRead.kind).toBe("failed");
 
-    // 授权摘要漂移：同一上下文身份换了策略版本，与登记摘要不符。
+    // design D-05：账号完整授权摘要不再作为读取的全等条件；同一工程与主体的另一策略版本
+    // 上下文按当前权限读取原结果，不因授权集合变化拒绝。
     const drifted = retrievalAuthorization({ policyVersion: "v-drifted" });
     register(drifted);
     const drift = await adapter.read(
       queryFor("c32-read-drift", relationshipResultRef(sha("c32-relationship-request")), drifted),
     );
-    expect(drift.kind).toBe("failed");
-    if (drift.kind === "failed") expect(drift.error.code).toBe("AUTHORIZATION_DENIED");
+    expect(drift.kind).toBe("succeeded");
 
     // 未持检索能力：契约层即拒绝，适配器按授权失败收口。
     const noCapability = retrievalAuthorization({

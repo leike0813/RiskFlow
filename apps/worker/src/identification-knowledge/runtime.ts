@@ -194,12 +194,12 @@ export const withKnowledgeAuthoringModelStep = (
       if (inner === undefined) throw unsupportedTaskType(task, "worker.model-step.render");
       return inner(task, definition, context);
     },
-    interpretModelStep: (response, task, definition) => {
+    interpretModelStep: (response, task, definition, context) => {
       if (task.envelope.agentTaskRef.taskType === KNOWLEDGE_AUTHORING_TASK_TYPE)
         return interpretKnowledgeAuthoringModelStep(step, response, task);
       const inner = options.inner?.interpretModelStep;
       if (inner === undefined) throw unsupportedTaskType(task, "worker.model-step.interpret");
-      return inner(response, task, definition);
+      return inner(response, task, definition, context);
     },
   };
 };

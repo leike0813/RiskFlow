@@ -2,6 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 import { sql, type Kysely, type Transaction } from "kysely";
 import { z } from "zod";
+import type { AgentTaskSnapshotV1 } from "@riskflow/core/agent-runtime";
 
 import {
   ACCESS_POLICY_REF_V1,
@@ -14,6 +15,7 @@ import {
   AuthorizationRequestV1Schema,
   AuthorizationVerificationRequestV1Schema,
   branchCapability,
+  branchesForRoles,
   ChangePasswordCommandV1Schema,
   CanonicalLoginNameV1Schema,
   IdentityAdministrationCommandV1Schema,
@@ -40,7 +42,7 @@ import {
   type AccessErrorCodeV1,
   type AuthorizationDecisionV1,
   type AuthorizationRequestV1,
-  type AuthorizationVerificationRequestV1,
+  type BusinessActionAuthorizationInputV1,
   type ChangePasswordCommandV1,
   type IdentityAdministrationCommandV1,
   type LoginCommandV1,
@@ -69,6 +71,7 @@ import {
   AuthorizationContextV1Schema,
   ModuleCapabilityV1Schema,
   type AuthorizationContextV1,
+  type AgentTaskRefV1,
   type AuthorizationContextRefV1,
   type ContractReferenceV1,
   type ModuleBranchV1,
@@ -133,6 +136,9 @@ const LOGIN_FAILURE_LIMIT = 5;
 type AccessTransaction = Transaction<AccessPostgresDatabase>;
 
 export interface LocalIdentityAccessConfig extends PostgresConnectionConfig {
+  readonly registeredTaskReader?: (
+    taskRef: AgentTaskRefV1,
+  ) => Promise<AgentTaskSnapshotV1 | undefined>;
   readonly hmacKey: Uint8Array;
   readonly keyVersion: string;
   readonly now?: () => Date;
@@ -180,6 +186,9 @@ const deploymentProjectAccessCommandSchema = z.discriminatedUnion("kind", [
  * 它不改变 LocalIdentityAccessV1 的任何方法语义，上层 mock 也无需实现它。
  */
 export interface PostgresLocalIdentityAccess extends LocalIdentityAccessV1 {
+  authorizeBusinessAction(
+    input: BusinessActionAuthorizationInputV1,
+  ): Promise<AuthorizationDecisionV1>;
   close(): Promise<void>;
   executeDeploymentProjectAccess(input: {
     readonly sessionToken: string;
@@ -1017,7 +1026,14 @@ export const bootstrapInitialSystemAdministrator = async (
 export const createPostgresLocalIdentityAccess = (
   config: LocalIdentityAccessConfig,
 ): PostgresLocalIdentityAccess => {
-  const { hmacKey, keyVersion, now: configuredClock, randomBytes, ...connection } = config;
+  const {
+    hmacKey,
+    keyVersion,
+    now: configuredClock,
+    randomBytes,
+    registeredTaskReader,
+    ...connection
+  } = config;
   if (
     !(hmacKey instanceof Uint8Array) ||
     hmacKey.byteLength < 32 ||
@@ -2350,7 +2366,8 @@ export const createPostgresLocalIdentityAccess = (
   ): Promise<Date> => {
     const root = await loadStoredContext(database, cause.authorizationContextRef);
     if (
-      branch !== "knowledge-modeling.identification-basis" ||
+      (branch !== "knowledge-modeling.identification-basis" &&
+        branch !== "knowledge-modeling.hybrid-evidence") ||
       root?.context?.invocation.kind !== "human" ||
       root.row.context_kind !== "c02" ||
       root.row.branch !== "knowledge-modeling.publish-approved-release" ||
@@ -3132,156 +3149,271 @@ export const createPostgresLocalIdentityAccess = (
     }
   };
 
-  const verify = async (
-    request: AuthorizationVerificationRequestV1,
+  const authorizeBusinessAction = async (
+    input: BusinessActionAuthorizationInputV1,
   ): Promise<AuthorizationDecisionV1> => {
-    const parsed = AuthorizationVerificationRequestV1Schema.safeParse(request);
-    if (!parsed.success) throw makeAccessError("ACCESS_CONTRACT_INVALID", "verify.command", clock);
-    const valid = parsed.data;
+    const stage = "authorize.business-action";
     try {
       return await db.transaction().execute(async (transaction) => {
         const tx = transaction as unknown as AccessDb;
-        const stored = await loadStoredContext(tx, valid.authorizationContextRef);
-        if (stored?.context === undefined || stored.row.context_kind !== "c02") {
-          throw authorizationDenied("verify.context", valid.branch);
-        }
-        const context = stored.context;
-        if ("causalCommandRef" in context) {
-          const parentRows = await tx
-            .selectFrom("business.authorization_contexts")
-            .selectAll()
-            .where("context_id", "=", stored.row.parent_context_id ?? "")
-            .limit(2)
-            .execute();
-          if (parentRows.length !== 1)
-            throw authorizationDenied("verify.command-parent", valid.branch);
-          const parent = await loadStoredContext(
-            tx,
-            contextRef(parentRows[0]!.context_id, parentRows[0]!.version_id),
+        const membership = await queryMembership(tx, input.projectId, input.actorId);
+        const branch =
+          input.branch ??
+          branchesForRoles(membership?.roles ?? []).find(
+            (candidate) => branchCapability(candidate) === input.capability,
           );
-          if (parent?.context === undefined)
-            throw authorizationDenied("verify.command-parent", valid.branch);
-          await loadParentContext(tx, parent.context, valid.projectId, "verify.command-parent");
-          await assertCommandCause(
-            tx,
-            context.causalCommandRef,
-            parent.context,
-            valid.projectId,
-            valid.branch,
-          );
-          const snapshot = stored.row.revision_snapshot;
+        if (branch === undefined || branchCapability(branch) !== input.capability)
+          throw authorizationDenied(stage, branch);
+        const scopeGraph = await scopeNodes(tx, input.projectId);
+        const currentScopes = (refs: readonly SpatialScopeRefV1[]): SpatialScopeRefV1[] =>
+          refs.map((ref) => {
+            const node = scopeGraph.find((scope) => scope.scopeId === ref.reference.entityId);
+            if (node === undefined || node.status !== "active")
+              throw authorizationDenied(stage, branch);
+            return scopeRef(node.scopeId, node.revisionId);
+          });
+        const existing =
+          input.authorizationContextRef === undefined
+            ? undefined
+            : await loadStoredContext(tx, input.authorizationContextRef);
+        const taskRef =
+          input.taskRef ??
+          (existing?.context?.invocation.kind === "agent-task"
+            ? existing.context.invocation.agentTaskRef
+            : undefined);
+        let requestedScopes = currentScopes(input.requestedSpatialScopeRefs);
+        if (taskRef !== undefined) {
+          const task = (await registeredTaskReader?.(taskRef))?.envelope;
+          if (task === undefined) throw authorizationDenied(stage, branch);
+          if (task.actorId !== input.actorId || task.projectId !== input.projectId)
+            throw authorizationDenied(stage, branch);
+          const frozenScopes = currentScopes(task.frozenAuthorization.spatialScopeRefs);
+          if (requestedScopes.length === 0) requestedScopes = frozenScopes;
+          if (!allSpatialScopesCovered(frozenScopes, requestedScopes, scopeGraph))
+            throw authorizationDenied(stage, branch);
+          const frozen = await loadStoredContext(tx, task.authorization.authorizationContextRef);
+          const snapshot = frozen?.row.revision_snapshot;
+          const sources =
+            typeof snapshot === "object" &&
+            snapshot !== null &&
+            !Array.isArray(snapshot) &&
+            "sourceVersionRefs" in snapshot &&
+            Array.isArray(snapshot.sourceVersionRefs)
+              ? snapshot.sourceVersionRefs
+              : [];
           if (
-            stored.row.causal_run_ref !== null ||
-            typeof snapshot !== "object" ||
-            snapshot === null ||
-            Array.isArray(snapshot) ||
-            !("causalCommandRef" in snapshot) ||
-            sha256CanonicalJson(snapshot.causalCommandRef) !==
-              sha256CanonicalJson(context.causalCommandRef)
+            !input.requestedSourceVersionRefs.every((source) =>
+              sources.some(
+                (allowed) => sha256CanonicalJson(source) === sha256CanonicalJson(allowed),
+              ),
+            )
           )
-            throw authorizationDenied("verify.command-cause", valid.branch);
+            throw authorizationDenied(stage, branch);
         }
-        if (
-          stored.row.invocation_id !== valid.invocationId ||
-          stored.row.project_id !== valid.projectId ||
-          stored.row.branch !== valid.branch ||
-          context.projectId !== valid.projectId ||
-          context.authorizationContextRef.reference.entityId !==
-            valid.authorizationContextRef.reference.entityId ||
-          context.authorizationContextRef.reference.versionId !==
-            valid.authorizationContextRef.reference.versionId
-        )
-          throw authorizationDenied("verify.binding", valid.branch);
-        if (
-          context.grantedCapabilities.length !== 1 ||
-          !context.grantedCapabilities.includes(branchCapability(valid.branch)) ||
-          context.authorizationPolicyRef.entityId !== ACCESS_POLICY_REF_V1.entityId ||
-          context.authorizationPolicyRef.versionId !== ACCESS_POLICY_REF_V1.versionId
-        )
-          throw authorizationDenied("verify.binding", valid.branch);
-        if (asDate(stored.row.expires_at).getTime() <= nowDate(clock).getTime()) {
-          throw makeAccessError("SESSION_EXPIRED", "verify.context", clock);
-        }
-        const requestedScopes =
-          valid.requestedSpatialScopeRefs.length === 0
-            ? context.spatialScopeRefs
-            : valid.requestedSpatialScopeRefs;
-        const snapshot = stored.row.revision_snapshot;
-        const snapshotSources =
-          typeof snapshot === "object" &&
-          snapshot !== null &&
-          !Array.isArray(snapshot) &&
-          "sourceVersionRefs" in snapshot &&
-          Array.isArray(snapshot.sourceVersionRefs)
-            ? snapshot.sourceVersionRefs.flatMap((value) => {
-                const parsedSource = SourceVersionRefV1Schema.safeParse(value);
-                return parsedSource.success ? [parsedSource.data] : [];
-              })
-            : [];
-        const requestedSources =
-          valid.requestedSourceVersionRefs.length === 0
-            ? snapshotSources
-            : valid.requestedSourceVersionRefs;
         const current = await evaluateCurrentAccess(
           tx,
-          context.actorId,
-          valid.projectId,
-          valid.branch,
+          input.actorId,
+          input.projectId,
+          branch,
           requestedScopes,
-          requestedSources,
-          "verify.current",
+          input.requestedSourceVersionRefs,
+          stage,
         );
+        const decidedAt = nowDate(clock);
         if (
-          context.authorizationPolicyRef.entityId !== ACCESS_POLICY_REF_V1.entityId ||
-          context.authorizationPolicyRef.versionId !== ACCESS_POLICY_REF_V1.versionId
-        ) {
-          throw authorizationDenied("verify.policy", valid.branch);
-        }
-        if (
-          typeof snapshot === "object" &&
-          snapshot !== null &&
-          !Array.isArray(snapshot) &&
-          "accountSecurityVersion" in snapshot &&
-          snapshot.accountSecurityVersion !== current.account.security_version
-        ) {
-          throw makeAccessError("SESSION_REVOKED", "verify.current", clock);
-        }
-        const narrowed = AuthorizationContextV1Schema.parse({
-          ...context,
+          input.authorizationContextRef !== undefined &&
+          (existing?.context === undefined ||
+            existing.context.actorId !== input.actorId ||
+            existing.context.projectId !== input.projectId ||
+            !existing.context.grantedCapabilities.includes(input.capability))
+        )
+          throw authorizationDenied(stage, branch);
+        const context = AuthorizationContextV1Schema.parse({
+          schemaVersion: "1",
+          authorizationContextRef:
+            existing?.context?.authorizationContextRef ??
+            contextRef(randomId("authorization-context"), "1"),
+          actorId: input.actorId,
+          projectId: input.projectId,
+          grantedCapabilities: [input.capability],
           spatialScopeRefs: current.spatialScopeRefs,
           sourceAccessGrantRefs: current.sourceAccessGrantRefs,
-          grantedCapabilities: [branchCapability(valid.branch)],
+          authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+          decidedAt: existing?.context?.decidedAt ?? iso(decidedAt),
+          invocation:
+            existing?.context?.invocation ??
+            (taskRef === undefined
+              ? { kind: "human" }
+              : { kind: "agent-task", agentTaskRef: taskRef }),
+          ...((existing?.context?.causalRunRef ?? input.causalRunRef) === undefined
+            ? {}
+            : { causalRunRef: existing?.context?.causalRunRef ?? input.causalRunRef }),
+          ...(existing?.context !== undefined && "causalCommandRef" in existing.context
+            ? { causalCommandRef: existing.context.causalCommandRef }
+            : {}),
         });
-        if (!isAuthorizationSubset(context, narrowed, { scopeNodes: current.scopeNodes })) {
-          throw authorizationDenied("verify.narrowing", valid.branch);
-        }
+        if (existing === undefined)
+          await persistAuthorizationContext(
+            tx,
+            context,
+            input.actorId,
+            randomId("business-action"),
+            branch,
+            { sourceVersionRefs: jsonValue(input.requestedSourceVersionRefs) },
+            null,
+            input.causalRunRef === undefined ? null : jsonValue(input.causalRunRef),
+            new Date(decidedAt.getTime() + CONTEXT_TTL_MS),
+            decidedAt,
+          );
         await appendSecurityAudit(
           tx,
-          securityAudit("verify", "success", "AUTHORIZED", nowDate(clock), {
-            subject_ref: context.actorId,
-            project_ref: valid.projectId,
-            request_ref: valid.invocationId,
-            context_ref: jsonValue(valid.authorizationContextRef),
+          securityAudit("authorize", "success", "AUTHORIZED", decidedAt, {
+            subject_ref: input.actorId,
+            project_ref: input.projectId,
+            request_ref: input.invocationId,
+            context_ref: jsonValue(context.authorizationContextRef),
             policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
           }),
         );
         return AuthorizationDecisionV1Schema.parse({
-          context: narrowed,
-          contextRef: valid.authorizationContextRef,
+          context,
+          contextRef: context.authorizationContextRef,
           redacted: current.redacted,
         });
       });
     } catch (error) {
-      const mapped = asAccessError(error, "verify", clock);
-      await appendSecurityOutcomeOrThrow("verify", "rejected", mapped.details.code, {
-        project_ref: valid.projectId,
-        request_ref: valid.invocationId,
-        context_ref: jsonValue(valid.authorizationContextRef),
-        policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
-        diagnostic_ref: jsonValue(mapped.details.diagnosticRef),
+      const mapped = asAccessError(error, stage, clock);
+      await appendSecurityOutcomeOrThrow("authorize", "rejected", mapped.details.code, {
+        subject_ref: input.actorId,
+        project_ref: input.projectId,
+        request_ref: input.invocationId,
       });
       throw mapped;
     }
+  };
+
+  const filterVisibleSources: NonNullable<LocalIdentityAccessV1["filterVisibleSources"]> = async (
+    input,
+  ) => {
+    const stage = "authorize.visible-sources";
+    return db.transaction().execute(async (transaction) => {
+      const tx = transaction as unknown as AccessDb;
+      const authorization = input.authorization;
+      const recorded = await loadStoredContext(tx, authorization.authorizationContextRef);
+      if (
+        recorded?.context === undefined ||
+        recorded.context.actorId !== authorization.actorId ||
+        recorded.context.projectId !== authorization.projectId ||
+        !recorded.context.grantedCapabilities.includes("knowledge-modeling.retrieve")
+      )
+        throw authorizationDenied(stage, "knowledge-modeling.hybrid-evidence");
+      const current = await evaluateCurrentAccess(
+        tx,
+        authorization.actorId,
+        authorization.projectId,
+        "knowledge-modeling.hybrid-evidence",
+        [],
+        [],
+        stage,
+      );
+      let sources = input.sourceVersionRefs;
+      if (recorded.context.invocation.kind === "agent-task") {
+        const task = (await registeredTaskReader?.(recorded.context.invocation.agentTaskRef))
+          ?.envelope;
+        if (
+          task === undefined ||
+          task.actorId !== authorization.actorId ||
+          task.projectId !== authorization.projectId
+        )
+          throw authorizationDenied(stage, "knowledge-modeling.hybrid-evidence");
+        const stored = await loadStoredContext(tx, task.authorization.authorizationContextRef);
+        const snapshot = stored?.row.revision_snapshot as
+          { sourceVersionRefs?: unknown[] } | undefined;
+        const frozenSources = snapshot?.sourceVersionRefs ?? [];
+        sources = sources.filter((source) =>
+          frozenSources.some(
+            (frozen) => sha256CanonicalJson(frozen) === sha256CanonicalJson(source),
+          ),
+        );
+      }
+      const revisions = await queryCurrentScopeRevisions(tx, authorization.projectId);
+      const root = current.scopeNodes.find(
+        (node) => node.scopeId === current.project.root_scope_id,
+      )!;
+      const visible: SourceVersionRefV1[] = [];
+      for (const source of sources) {
+        const policy = await querySourcePolicy(
+          tx,
+          authorization.projectId,
+          source,
+          scopeRef(root.scopeId, root.revisionId),
+          revisions,
+        );
+        if (policy === undefined) continue;
+        const access = evaluateSourceAccess({
+          accountId: authorization.actorId,
+          projectId: authorization.projectId,
+          roles: current.membership.roles,
+          branch: "knowledge-modeling.hybrid-evidence",
+          membershipActive: true,
+          grantedScopeRefs: current.spatialScopeRefs,
+          policy,
+          scopeNodes: current.scopeNodes,
+          requireBody: true,
+        });
+        const frozenScopes = recorded.context.spatialScopeRefs.flatMap((ref) => {
+          const node = current.scopeNodes.find(
+            (node) => node.scopeId === ref.reference.entityId && node.status === "active",
+          );
+          return node === undefined ? [] : [scopeRef(node.scopeId, node.revisionId)];
+        });
+        if (
+          access.bodyAllowed &&
+          allSpatialScopesCovered(frozenScopes, policy.spatialScopeRefs, current.scopeNodes)
+        )
+          visible.push(source);
+      }
+      await appendSecurityAudit(
+        tx,
+        securityAudit("authorize", "success", "AUTHORIZED", nowDate(clock), {
+          subject_ref: authorization.actorId,
+          project_ref: authorization.projectId,
+          context_ref: jsonValue(authorization.authorizationContextRef),
+          policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
+        }),
+      );
+      return visible;
+    });
+  };
+
+  const verify: PostgresLocalIdentityAccess["verify"] = async (request) => {
+    const valid = AuthorizationVerificationRequestV1Schema.parse(request);
+    const stored = await loadStoredContext(db, valid.authorizationContextRef);
+    if (stored?.context === undefined || stored.context.projectId !== valid.projectId)
+      throw authorizationDenied("verify.context", valid.branch);
+    const snapshot = stored.row.revision_snapshot;
+    const sources =
+      typeof snapshot === "object" &&
+      snapshot !== null &&
+      !Array.isArray(snapshot) &&
+      "sourceVersionRefs" in snapshot &&
+      Array.isArray(snapshot.sourceVersionRefs)
+        ? snapshot.sourceVersionRefs.map((source) => SourceVersionRefV1Schema.parse(source))
+        : [];
+    return authorizeBusinessAction({
+      actorId: stored.context.actorId,
+      projectId: valid.projectId,
+      branch: valid.branch,
+      capability: branchCapability(valid.branch),
+      invocationId: valid.invocationId,
+      authorizationContextRef: valid.authorizationContextRef,
+      requestedSpatialScopeRefs:
+        valid.requestedSpatialScopeRefs.length === 0
+          ? stored.context.spatialScopeRefs
+          : valid.requestedSpatialScopeRefs,
+      requestedSourceVersionRefs:
+        valid.requestedSourceVersionRefs.length === 0 ? sources : valid.requestedSourceVersionRefs,
+    });
   };
 
   const readIssuedContext: PostgresLocalIdentityAccess["readIssuedContext"] = async (input) => {
@@ -3941,6 +4073,8 @@ export const createPostgresLocalIdentityAccess = (
     logout,
     readSession,
     authorize,
+    authorizeBusinessAction,
+    filterVisibleSources,
     verify,
     readIssuedContext,
     readDeploymentAuthorizationSource,

@@ -21,9 +21,11 @@ import {
 } from "react";
 
 import {
+  agentReadFailureOf,
   readAgentTaskDetail,
   readAgentLaunchContext,
   readAgentTaskList,
+  type AgentReadFailureView,
   type AgentLaunchContextView,
   type AgentTaskDetailView,
   type AgentTaskListView,
@@ -48,18 +50,27 @@ export interface AgentTaskSnapshot {
   readonly detail?: AgentTaskDetailView;
   readonly launchContext?: AgentLaunchContextView;
   readonly loading: boolean;
+  /** 既有外壳契约：失败时是错误码字符串，没有失败是空串。 */
   readonly error?: string;
+  /** 同一失败的真实技术映射：码、可重试性与诊断引用。 */
+  readonly failure?: AgentReadFailureView | undefined;
   readonly lastUpdatedAt?: string;
 }
 
 export interface AgentTaskContextValue extends AgentTaskSnapshot {
   setFilters: (next: AgentTaskFilters) => void;
-  openTask: (taskRef: AgentTaskRefView) => void;
+  openTask: (taskRef: Pick<AgentTaskRefView, "kind" | "reference">) => void;
   closeTask: () => void;
   refreshNow: () => void;
 }
 
 const EMPTY_SNAPSHOT: AgentTaskSnapshot = { generation: 0, loading: false };
+
+/** 单次窄读的收口结果：要么是值，要么是一次带真实技术映射的失败。 */
+interface AgentReadOutcome<T> {
+  readonly value?: T;
+  readonly failure?: AgentReadFailureView;
+}
 
 const AgentTaskContext = createContext<AgentTaskContextValue | null>(null);
 
@@ -69,13 +80,23 @@ export function useAgentTask(): AgentTaskContextValue {
   return value;
 }
 
+/**
+ * 外壳 chrome 用的可空读取：生产外壳挂在 Provider 内；脱离 Provider 的宿主
+ * （如 SSR 结构测试）渲染「Agent 不可用」而不是崩掉。页面仍用会抛错的 `useAgentTask`，
+ * 免得缺 Provider 被静默当成没有任务。
+ */
+export const useAgentTaskOptional = (): AgentTaskContextValue | null =>
+  useContext(AgentTaskContext);
+
 export function AgentTaskProvider(props: {
   readonly projectId?: string;
   readonly children: ReactNode;
 }): ReactElement {
   const [snapshot, setSnapshot] = useState<AgentTaskSnapshot>(EMPTY_SNAPSHOT);
   const [filters, setFiltersState] = useState<AgentTaskFilters>({});
-  const [taskRef, setTaskRef] = useState<AgentTaskRefView | undefined>(undefined);
+  const [taskRef, setTaskRef] = useState<Pick<AgentTaskRefView, "kind" | "reference"> | undefined>(
+    undefined,
+  );
 
   // 代际、计时器与在途请求都放在 ref：切工程/注销时先自增代际并中止，
   // 任何在途响应回来时对不上代际就直接丢弃。
@@ -94,10 +115,10 @@ export function AgentTaskProvider(props: {
     }
   }, []);
 
-  // 工程切换或注销：先清内容，再取消在途与计时。
+  // 清空快照须同步当前代际，后续真实响应才能回写。
   useEffect(() => {
     clearPending();
-    setSnapshot(EMPTY_SNAPSHOT);
+    setSnapshot({ generation: generationRef.current, loading: false });
     setTaskRef(undefined);
     setFiltersState({});
   }, [props.projectId, clearPending]);
@@ -114,51 +135,73 @@ export function AgentTaskProvider(props: {
       setSnapshot((current) =>
         current.generation === generation ? { ...current, loading: true } : current,
       );
+      // 每次窄读独立收口：目录读失败不再跳过目标任务的详情读取，
+      // 失败按真实错误码与诊断引用呈现，不折成权限拒绝。
+      const read = async <T,>(run: () => Promise<T>): Promise<AgentReadOutcome<T>> => {
+        try {
+          return { value: await run() };
+        } catch (error) {
+          if (controller.signal.aborted) return {};
+          return { failure: agentReadFailureOf(error) };
+        }
+      };
       try {
-        const list = await readAgentTaskList(
-          projectId,
-          {
-            ...(filters.taskType === undefined ? {} : { taskType: filters.taskType }),
-            ...(filters.status === undefined ? {} : { status: filters.status }),
-            ...(filters.parentRunRef === undefined ? {} : { parentRunRef: filters.parentRunRef }),
-          },
-          controller.signal,
+        const listed = await read(() =>
+          readAgentTaskList(
+            projectId,
+            {
+              ...(filters.taskType === undefined ? {} : { taskType: filters.taskType }),
+              ...(filters.status === undefined ? {} : { status: filters.status }),
+              ...(filters.parentRunRef === undefined ? {} : { parentRunRef: filters.parentRunRef }),
+            },
+            controller.signal,
+          ),
         );
         const selected = taskRef;
-        const detail =
+        const detailed: AgentReadOutcome<AgentTaskDetailView> =
           selected === undefined
-            ? undefined
-            : await readAgentTaskDetail(projectId, selected, controller.signal);
-        const launchContext =
-          selected === undefined
-            ? undefined
-            : await readAgentLaunchContext(projectId, selected, controller.signal);
-        // 代际不匹配说明工程已切换或会话已注销：迟到响应一律丢弃。
-        if (generation !== generationRef.current) return;
+            ? {}
+            : await read(() => readAgentTaskDetail(projectId, selected, controller.signal));
+        const selectedRef = detailed.value?.summary.agentTaskRef;
+        const launched: AgentReadOutcome<AgentLaunchContextView> =
+          selectedRef === undefined
+            ? {}
+            : await read(() => readAgentLaunchContext(projectId, selectedRef, controller.signal));
+        // 代际不匹配说明工程已切换或会话已注销；中止的读同样不写回。
+        if (generation !== generationRef.current || controller.signal.aborted) return;
+        const failure = listed.failure ?? detailed.failure ?? launched.failure;
+        const lastUpdatedAt = new Date().toISOString();
+        if (failure !== undefined) {
+          // 失败如实结束加载并保留已读到的事实；下一轮节拍或重试再读。
+          setSnapshot((current) =>
+            current.generation === generation
+              ? {
+                  ...current,
+                  generation,
+                  ...(listed.value === undefined ? {} : { list: listed.value }),
+                  ...(detailed.value === undefined ? {} : { detail: detailed.value }),
+                  ...(launched.value === undefined ? {} : { launchContext: launched.value }),
+                  loading: false,
+                  error: failure.code,
+                  failure,
+                  lastUpdatedAt,
+                }
+              : current,
+          );
+          return;
+        }
         setSnapshot((current) =>
           current.generation === generation
             ? {
                 generation,
-                ...(taskRef === undefined ? {} : { taskRef }),
-                list,
-                ...(detail === undefined ? {} : { detail }),
-                ...(launchContext === undefined ? {} : { launchContext }),
+                ...(selectedRef === undefined ? {} : { taskRef: selectedRef }),
+                ...(listed.value === undefined ? {} : { list: listed.value }),
+                ...(detailed.value === undefined ? {} : { detail: detailed.value }),
+                ...(launched.value === undefined ? {} : { launchContext: launched.value }),
                 loading: false,
                 error: "",
-                lastUpdatedAt: new Date().toISOString(),
-              }
-            : current,
-        );
-      } catch (error) {
-        if (generation !== generationRef.current) return;
-        setSnapshot((current) =>
-          current.generation === generation
-            ? {
-                ...current,
-                generation,
-                loading: false,
-                error: error instanceof Error ? error.message : "read-failed",
-                lastUpdatedAt: new Date().toISOString(),
+                failure: undefined,
+                lastUpdatedAt,
               }
             : current,
         );

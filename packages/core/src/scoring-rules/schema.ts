@@ -8,6 +8,7 @@ import {
   type VersionReference,
 } from "@riskflow/contracts/common";
 import {
+  ApplicableRuleSetAssemblyPayloadV1Schema,
   AgentTaskRefV1Schema,
   ApplicabilityMetadataSnapshotRefV1Schema,
   AssessmentPreparationSnapshotRefV1Schema,
@@ -33,6 +34,7 @@ import {
 import { AgentTaskBudgetPolicyV1Schema } from "../agent-runtime/index.js";
 import {
   ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1,
+  ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE,
   AssessmentConfigurationDefinitionTypeV1Schema,
 } from "../assessment-config/index.js";
 import { sha256CanonicalJson } from "../persistence/canonical-json.js";
@@ -870,6 +872,7 @@ export type PrepareScoringRuleAuthoringResultV1 = z.infer<
 
 export const AssembleApplicableRuleSetV1Schema = z
   .strictObject({
+    ...ApplicableRuleSetAssemblyPayloadV1Schema.shape,
     requestId: IdentifierSchema,
     idempotencyKey: IdentifierSchema,
     projectId: IdentifierSchema,
@@ -877,15 +880,9 @@ export const AssembleApplicableRuleSetV1Schema = z
     requestedAt: IsoDateTimeSchema,
     authorization: AuthorizationContextV1Schema,
     projectRevisionRef: ProjectRevisionRefV1Schema,
-    preparationSnapshotRef: AssessmentPreparationSnapshotRefV1Schema,
     applicabilitySnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
     applicability: ApplicabilityMetadataSchema,
-    requiredAt: IsoDateTimeSchema,
     asOfRecordedAt: IsoDateTimeSchema,
-    scoringPolicyRef: VersionReferenceSchema,
-    assemblyPolicyRef: VersionReferenceSchema,
-    compatibilityRef: VersionReferenceSchema,
-    configurationSetRef: VersionReferenceSchema,
   })
   .superRefine((request, context) => {
     if (request.projectId !== request.authorization.projectId) {
@@ -917,6 +914,7 @@ export const AssembleApplicableRuleSetResultV1Schema = z.discriminatedUnion("kin
     kind: z.literal("succeeded"),
     applicableRuleSetRevisionRef: KnowledgeRevisionRefV1Schema,
     applicableRuleSetArtifactRef: ContentArtifactRefV1Schema,
+    applicableRuleSetReleaseRef: KnowledgeReleaseRefV1Schema,
   }),
   z.strictObject({ kind: z.literal("waiting"), waiting: WaitingRefV1Schema }),
   z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
@@ -965,7 +963,7 @@ export type AssessmentBasisConfigurationMemberV1 = z.infer<
 
 const configurationMembers = z
   .array(AssessmentBasisConfigurationMemberV1Schema)
-  .min(ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1.length)
+  .min(ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE.assessment.length)
   .max(ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1.length)
   .superRefine((members, context) => {
     const keys = members.map((member) => member.definitionType);
@@ -973,14 +971,18 @@ const configurationMembers = z
       context.addIssue({ code: "custom", message: "configuration types must be unique" });
       return;
     }
-    const canonical = [...ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1].sort();
+    const canonical = [
+      ...(members.length === ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1.length
+        ? ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1
+        : ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE.assessment),
+    ].sort();
     if (
       members.length !== canonical.length ||
       members.some((member, index) => member.definitionType !== canonical[index])
     ) {
       context.addIssue({
         code: "custom",
-        message: "the eleven configuration types must be covered in canonical order",
+        message: "assessment configuration types must be covered in canonical order",
       });
     }
   });

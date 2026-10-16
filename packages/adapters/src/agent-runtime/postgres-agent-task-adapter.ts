@@ -27,6 +27,8 @@ import {
   AgentTaskDetailV1Schema,
   AgentTaskListPageV1Schema,
   AgentTaskReadQueryV1Schema,
+  AgentUiReadCursorV1Schema,
+  type AgentUiReadCursorV1,
   AgentTaskSummaryV1Schema,
   AgentValidationCheckEntryV1Schema,
   AgentValidationPageV1Schema,
@@ -46,6 +48,7 @@ import {
   type AgentTaskSummaryV1,
   type AgentValidationPageV1,
   agentTaskRefEquals,
+  assertAgentTaskExecutionBudget,
   buildCompletedAgentTaskResult,
   canResumeAgentTask,
   emptyAgentBudgetUsage,
@@ -66,6 +69,8 @@ import {
   type AgentTaskActionV1,
   type AgentTaskDefinitionV1,
   type AgentTaskEnvelopeV1,
+  type AgentTaskExecutionAuthorityReaderV1,
+  type AgentTaskExecutionAuthorityRequestV1,
   type AgentTaskFailureEvidenceReadRequestV1,
   type AgentTaskFailureEvidenceReadResultV1,
   type AgentTaskCompletedResultReadRequestV1,
@@ -94,6 +99,7 @@ import {
 import {
   sha256CanonicalJson,
   type AtomicCommandV1,
+  type AtomicCommitV1,
   type JsonValue,
   type TransactionContextV1,
   type TransactionUnitV1,
@@ -262,22 +268,7 @@ const UI_READ_STAGE_CODE = "agent-task.ui-read";
  * 时点与精确目标/候选，并附原 C08 授权摘要。下一跳必须原样带上同一个授权摘要；摘要不匹配、
  * 字段未知或被改写一律失败关闭，游标不能被跨工程或跨筛选复用。
  */
-interface UiReadCursorBinding {
-  /** 版本标记：只接受本读面的游标形状。 */
-  readonly v: "1";
-  /**
-   * 请求绑定摘要：工程、actor、原 C08 授权摘要、精确任务身份与筛选条件的联合摘要。
-   * 下一跳必须能在同一请求上复算出同一个摘要；任何漂移或改写都无法通过比对，
-   * 因此游标不能被跨工程、跨筛选或跨任务复用。
-   */
-  readonly binding: string;
-  readonly asOfRecordedAt: string;
-  /** keyset 排序键元组：目录用 `(keyA=createdAt, keyB=taskId)`，其余只用 `keyA`。 */
-  readonly keyA: string;
-  readonly keyB: string;
-}
-
-const UI_READ_CURSOR_FIELDS_V1 = ["v", "binding", "asOfRecordedAt", "keyA", "keyB"] as const;
+type UiReadCursorBinding = AgentUiReadCursorV1;
 
 const encodeUiReadCursor = (binding: UiReadCursorBinding): string =>
   Buffer.from(JSON.stringify(binding), "utf8").toString("base64url");
@@ -293,23 +284,9 @@ const decodeUiReadCursor = (cursor: string): UiReadCursorBinding => {
   } catch {
     throw invalidCursor("ui-read.cursor-decode");
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-    throw invalidCursor("ui-read.cursor-shape");
-  const record = parsed as Record<string, unknown>;
-  if (
-    !Object.keys(record).every((field) =>
-      (UI_READ_CURSOR_FIELDS_V1 as readonly string[]).includes(field),
-    ) ||
-    !UI_READ_CURSOR_FIELDS_V1.every((field) => typeof record[field] === "string")
-  )
-    throw invalidCursor("ui-read.cursor-shape");
-  return {
-    v: "1",
-    binding: record.binding as string,
-    asOfRecordedAt: record.asOfRecordedAt as string,
-    keyA: record.keyA as string,
-    keyB: record.keyB as string,
-  };
+  const decoded = AgentUiReadCursorV1Schema.safeParse(parsed);
+  if (!decoded.success) throw invalidCursor("ui-read.cursor-shape");
+  return decoded.data;
 };
 
 /** 下一跳必须复算出同一个绑定摘要；漂移就关闭而不是继续翻页。 */
@@ -322,37 +299,23 @@ const resultRefEquals = (left: AgentTaskResultRefV1, right: AgentTaskResultRefV1
   refEqual(left.reference, right.reference) &&
   agentTaskRefEquals(left.agentTaskRef, right.agentTaskRef);
 
-const authorizationWithinFrozenBoundary = (
-  frozen: AgentTaskEnvelopeV1["frozenAuthorization"],
-  current: AgentTaskEnvelopeV1["authorization"],
-): boolean =>
-  frozen.projectId === current.projectId &&
-  frozen.actorId === current.actorId &&
-  refEqual(frozen.authorizationPolicyRef, current.authorizationPolicyRef) &&
-  current.grantedCapabilities.every((capability) =>
-    frozen.grantedCapabilities.includes(capability),
-  ) &&
-  current.spatialScopeRefs.every((scope) =>
-    frozen.spatialScopeRefs.some((parent) => refEqual(parent.reference, scope.reference)),
-  ) &&
-  current.sourceAccessGrantRefs.every((grant) =>
-    frozen.sourceAccessGrantRefs.some((parent) => refEqual(parent.reference, grant.reference)),
-  );
-
 const authorizationWithinFrozenScope = (
   frozen: AgentTaskEnvelopeV1["frozenAuthorization"],
   current: AgentTaskEnvelopeV1["authorization"],
 ): boolean =>
   frozen.projectId === current.projectId &&
-  refEqual(frozen.authorizationPolicyRef, current.authorizationPolicyRef) &&
   current.grantedCapabilities.every((capability) =>
     frozen.grantedCapabilities.includes(capability),
   ) &&
   current.spatialScopeRefs.every((scope) =>
-    frozen.spatialScopeRefs.some((parent) => refEqual(parent.reference, scope.reference)),
+    frozen.spatialScopeRefs.some(
+      (parent) => parent.reference.entityId === scope.reference.entityId,
+    ),
   ) &&
   current.sourceAccessGrantRefs.every((grant) =>
-    frozen.sourceAccessGrantRefs.some((parent) => refEqual(parent.reference, grant.reference)),
+    frozen.sourceAccessGrantRefs.some(
+      (parent) => parent.reference.entityId === grant.reference.entityId,
+    ),
   );
 
 const asTransaction = (context: TransactionContextV1): AgentTransaction =>
@@ -463,6 +426,22 @@ const taskStateUpdate = (state: AgentTaskStateV1) => ({
   latest_candidate_version: state.latestCandidateVersion ?? 0,
   updated_at: new Date(state.updatedAt),
 });
+
+const settledActionUsage = (
+  action: AgentTaskActionV1,
+  requested: AgentBudgetUsageV1,
+): AgentBudgetUsageV1 =>
+  normalizeAgentActionUsage(action.actionType, {
+    ...requested,
+    corrections: Math.max(
+      requested.corrections,
+      action.errorCode === "AGENT_VALIDATION_REJECTED" ? 1 : 0,
+    ),
+    transientRetries: Math.max(
+      requested.transientRetries,
+      action.reservation.amount.transientRetries,
+    ),
+  });
 
 export interface AgentTaskClaimV1 {
   readonly task: AgentTaskSnapshotV1;
@@ -593,6 +572,7 @@ export class PostgresAgentTaskAdapter
     AgentTaskExecutionStoreV1,
     AgentTaskFailureEvidenceReaderV1,
     AgentTaskCompletedResultReaderV1,
+    AgentTaskExecutionAuthorityReaderV1,
     AgentTaskReadPortV1
 {
   readonly #db: Kysely<AgentRuntimeDatabase>;
@@ -685,7 +665,7 @@ export class PostgresAgentTaskAdapter
       chunks.push(chunk);
       length += chunk.byteLength;
     }
-    await handle.verified;
+    await handle.completed;
     const body = new Uint8Array(length);
     let offset = 0;
     for (const chunk of chunks) {
@@ -753,15 +733,44 @@ export class PostgresAgentTaskAdapter
       await this.#verifyUiRead(valid);
       return await this.#uiRead(valid);
     } catch (error) {
-      // 读面是全函数：客户端可观测的失败（游标伪造/错配、授权拒绝、目标不可见）
-      // 一律收敛为结构化失败结果，不把异常抛给传输层；其余未知异常折叠为同一种拒绝形状。
+      // 保留业务错误分类，技术故障带诊断引用返回。
       if (error instanceof AgentRuntimeError) {
         return {
           kind: "failed",
           error: mapAgentError(error, { causalRunId: valid.queryId }),
         };
       }
-      return this.#uiReadDenied(valid.queryId);
+      if (
+        error instanceof AccessServiceError &&
+        !["ACCESS_TRANSIENT_FAILURE", "ACCESS_TERMINAL_FAILURE"].includes(error.details.code)
+      )
+        return this.#uiReadDenied(valid.queryId);
+      const failure = mapPostgresError(error, "agent-task.ui-read");
+      const retryable =
+        error instanceof AccessServiceError
+          ? error.details.code === "ACCESS_TRANSIENT_FAILURE"
+          : failure.retryable;
+      return {
+        kind: "failed",
+        error: ModuleErrorV1Schema.parse({
+          code: retryable ? "TRANSIENT_FAILURE" : "TERMINAL_FAILURE",
+          category: "technical",
+          retryable,
+          stageCode: UI_READ_STAGE_CODE,
+          occurredAt: this.#now(),
+          causalRunId: valid.queryId,
+          diagnosticRef: failure.diagnosticRef,
+          ...(retryable
+            ? {
+                attempt: 1,
+                retryPolicyRef: {
+                  entityId: "agent-retry-policy",
+                  versionId: "1",
+                },
+              }
+            : {}),
+        }),
+      };
     }
   }
 
@@ -859,26 +868,16 @@ export class PostgresAgentTaskAdapter
     };
   }
 
-  /**
-   * 请求绑定摘要：工程、actor、原 C08 授权摘要、精确任务身份与筛选条件合并为一个摘要。
-   * 摘要只在同一请求上可复算，游标因此无法被挪用到别的工程、身份、筛选或目标上。
-   */
+  /** 游标只绑定页类型、工程、操作者、目标和业务筛选；每页重新检查当前权限。 */
   #uiCursorBinding(
     query: AgentTaskReadQueryV1,
     agentTaskId: string | null,
     filter: unknown,
   ): string {
-    const authorization = query.authorization;
     return sha256CanonicalJson({
+      kind: query.kind,
       projectId: query.projectId,
       actorId: query.actorId,
-      // 只摘要"授权判定"本身：能力、空间范围、来源授权与策略版本。
-      // 刻意不含 invocation 与 authorizationContextRef——它们按每次调用重新签发，
-      // 纳入摘要会让同一读者在同一轮翻页里必然错配。
-      grantedCapabilities: authorization.grantedCapabilities,
-      spatialScopeRefs: authorization.spatialScopeRefs,
-      sourceAccessGrantRefs: authorization.sourceAccessGrantRefs,
-      authorizationPolicyRef: authorization.authorizationPolicyRef,
       agentTaskId,
       filter,
     });
@@ -887,16 +886,19 @@ export class PostgresAgentTaskAdapter
   /** 只读当前工程内的任务行；跨工程与错配身份在读取前已被授权关卡挡住。 */
   async #selectOwnedTask(
     query: AgentTaskReadQueryV1,
-    taskRef: AgentTaskRefV1,
+    taskRef: { readonly kind: "agent-task"; readonly reference: VersionReference },
   ): Promise<AgentTaskRow> {
     const row = await this.#selectTaskById(taskRef.reference.entityId);
-    if (row === undefined || row.project_id !== query.projectId)
+    if (
+      row === undefined ||
+      row.project_id !== query.projectId ||
+      row.version_id !== taskRef.reference.versionId
+    )
       throw new AgentRuntimeError(
         makeAgentError({
           code: "AGENT_TASK_NOT_FOUND",
           category: "not-found",
           stage: "ui-read.task-scope",
-          taskRef,
         }),
       );
     return row;
@@ -1200,7 +1202,10 @@ export class PostgresAgentTaskAdapter
           incrementArtifactRef: row.increment_artifact_ref,
           ...(row.validation === null
             ? {}
-            : { validationArtifactRef: row.result_ref ?? undefined }),
+            : {
+                validationArtifactRef: AgentValidationResultV1Schema.parse(row.validation)
+                  .validationArtifactRef,
+              }),
           disposition: row.disposition,
           ...(row.rejection_class === null ? {} : { rejectionClass: row.rejection_class }),
           createdAt: asIso(row.created_at),
@@ -1389,6 +1394,29 @@ export class PostgresAgentTaskAdapter
     if (row === undefined) return undefined;
     const snapshot = rowSnapshot(row);
     return agentTaskRefEquals(snapshot.envelope.agentTaskRef, parsed) ? snapshot : undefined;
+  }
+
+  /**
+   * 任务执行授权依据的内部窄读：只认本库真实任务行与当前有效 Worker 租约，
+   * 调用方传入的信封或时钟都不作数。返回的原预算策略与台账供调用方判定剩余预算，
+   * 本读面不改变任何状态、台账、回执、审计或事件。
+   */
+  async readExecutionAuthority(
+    input: AgentTaskExecutionAuthorityRequestV1,
+  ): Promise<AgentTaskSnapshotV1> {
+    const taskRef = AgentTaskRefV1Schema.parse(input.taskRef);
+    const now = IsoDateTimeSchema.parse(this.#now());
+    return this.#db.transaction().execute(async (transaction) => {
+      const lease = await this.#lockLease(
+        transaction as unknown as AgentTransaction,
+        taskRef,
+        input.workerId,
+        input.leaseToken,
+        now,
+      );
+      assertAgentTaskExecutionBudget(lease.task);
+      return lease.task;
+    });
   }
 
   /** 检查点任务身份与父运行证明，不要求任务完成，不返回任务正文。 */
@@ -1715,6 +1743,26 @@ export class PostgresAgentTaskAdapter
     return result;
   }
 
+  async #executeAgentTransaction(
+    command: AtomicCommandV1,
+    operation: (context: TransactionContextV1) => Promise<AtomicCommitV1>,
+  ) {
+    let domainFailure: AgentRuntimeError | undefined;
+    try {
+      return await this.#transactionUnit.execute(command, async (context) => {
+        try {
+          return await operation(context);
+        } catch (error) {
+          if (error instanceof AgentRuntimeError) domainFailure = error;
+          throw error;
+        }
+      });
+    } catch (error) {
+      // C03 保持原事务回滚；C08 对调用方保留已知领域错误的预算/权限分类。
+      throw domainFailure ?? error;
+    }
+  }
+
   async #leaseTransaction(
     command: AtomicCommandV1,
     taskRef: AgentTaskRefV1,
@@ -1727,7 +1775,7 @@ export class PostgresAgentTaskAdapter
     let result: AgentTaskSnapshotV1 | undefined;
     const parsedTaskRef = AgentTaskRefV1Schema.parse(taskRef);
     const now = IsoDateTimeSchema.parse(operationNow ?? this.#now());
-    const receipt = await this.#transactionUnit.execute(command, async (context) => {
+    const receipt = await this.#executeAgentTransaction(command, async (context) => {
       const transaction = asTransaction(context);
       const lease = await this.#lockLease(transaction, parsedTaskRef, workerId, leaseToken, now);
       if (lease.task.envelope.projectId !== command.projectId)
@@ -2240,23 +2288,6 @@ export class PostgresAgentTaskAdapter
         !isAuthorizationSubset(authorization, decision.context)
       )
         return { kind: "failed", error: this.#readFailureDenied(causalRunId) };
-      const payload = jsonValue({
-        requestId,
-        projectId,
-        actorId,
-        requestedAt,
-        taskRef,
-        expectedTaskType,
-        authorizationContextRef: authorization.authorizationContextRef,
-      });
-      const conflict = await this.#withinReadFailureRead(() =>
-        this.#terminalFailureReadConflict({
-          projectId,
-          requestId,
-          payload,
-        }),
-      );
-      if (conflict !== undefined) return { kind: "failed", error: conflict };
       const evidence = await this.#withinReadFailureRead(() =>
         this.#projectTerminalFailure({
           projectId,
@@ -2274,7 +2305,6 @@ export class PostgresAgentTaskAdapter
         taskRef,
         expectedTaskType,
         authorization,
-        payload,
       });
       return { kind: "succeeded", evidence };
     } catch (error) {
@@ -2564,40 +2594,7 @@ export class PostgresAgentTaskAdapter
     };
   }
 
-  /**
-   * 幂等冲突先于目标投影判定：同一 requestId 的既有收据只要工程不同或载荷 digest 不同，
-   * 都算同一请求改读其它目标。C03 收据键包含工程，跨工程情形必须在这里收口。
-   */
-  async #terminalFailureReadConflict(input: {
-    readonly projectId: string;
-    readonly requestId: string;
-    readonly payload: JsonValue;
-  }): Promise<ModuleErrorV1 | undefined> {
-    const digest = sha256CanonicalJson(input.payload);
-    const receipts = await this.#db
-      .selectFrom("business.command_receipts")
-      .select(["project_id", "command_id", "payload_sha256"])
-      .where("command_kind", "=", READ_FAILURE_EVIDENCE_COMMAND_KIND)
-      .where("idempotency_key", "=", input.requestId)
-      .orderBy("project_id", "asc")
-      .limit(2)
-      .execute();
-    const conflict = receipts.find(
-      (receipt) => receipt.project_id !== input.projectId || receipt.payload_sha256 !== digest,
-    );
-    if (conflict === undefined) return undefined;
-    return ModuleErrorV1Schema.parse({
-      stageCode: READ_FAILURE_EVIDENCE_COMMAND_KIND,
-      occurredAt: IsoDateTimeSchema.parse(this.#now()),
-      causalRunId: input.requestId,
-      code: "IDEMPOTENCY_CONFLICT",
-      category: "idempotency",
-      retryable: false,
-      idempotencyKey: input.requestId,
-      priorCommandId: conflict.command_id,
-    });
-  }
-
+  /** 每次查看失败证据独立追加审计，requestId 用于关联调用。 */
   async #closeTerminalFailureRead(input: {
     readonly projectId: string;
     readonly actorId: string;
@@ -2606,27 +2603,28 @@ export class PostgresAgentTaskAdapter
     readonly taskRef: AgentTaskRefV1;
     readonly expectedTaskType: AgentTaskTypeV1;
     readonly authorization: AuthorizationContextV1;
-    readonly payload: JsonValue;
   }): Promise<void> {
-    const command = commandFor({
-      kind: READ_FAILURE_EVIDENCE_COMMAND_KIND,
-      commandId: input.requestId,
-      idempotencyKey: input.requestId,
-      projectId: input.projectId,
-      actorId: input.actorId,
-      authorization: input.authorization,
-      payload: input.payload,
-      issuedAt: input.requestedAt,
-    });
-    await this.#transactionUnit.execute(command, async () =>
-      commit({
-        command,
-        targetRef: input.taskRef,
-        version: input.taskRef.reference,
+    const accessId = randomUUID();
+    await this.#db
+      .insertInto("audit.entries")
+      .values({
+        audit_entry_id: accessId,
+        project_id: input.projectId,
         action: READ_FAILURE_EVIDENCE_COMMAND_KIND,
-        now: input.requestedAt,
-      }),
-    );
+        target_ref: jsonValue(input.taskRef),
+        actor_ref: input.actorId,
+        authorization_context_ref: jsonValue(input.authorization.authorizationContextRef),
+        version_ref: jsonValue(input.taskRef.reference),
+        occurred_at: input.requestedAt,
+        recorded_at: this.#now(),
+        persisted_at: sql`clock_timestamp()`,
+        command_id: input.requestId,
+        idempotency_key: accessId,
+        run_id: null,
+        thread_id: null,
+        reason_ref: null,
+      })
+      .execute();
   }
 
   #moduleError(error: unknown, causalRunId: string) {
@@ -3255,7 +3253,7 @@ export class PostgresAgentTaskAdapter
       issuedAt: now,
     });
     let result: AgentTaskActionReservationV1 | undefined;
-    const receipt = await this.#transactionUnit.execute(command, async (context) => {
+    const receipt = await this.#executeAgentTransaction(command, async (context) => {
       const transaction = asTransaction(context);
       const lease = await this.#lockLease(
         transaction,
@@ -3306,7 +3304,9 @@ export class PostgresAgentTaskAdapter
           reservationId,
           amount: {
             ...input.amount,
-            transientRetries: (input.amount?.transientRetries ?? 0) + 1,
+            ...(action.errorCode === "AGENT_VALIDATION_REJECTED"
+              ? { corrections: 1 }
+              : { transientRetries: (input.amount?.transientRetries ?? 0) + 1 }),
           },
           now,
         });
@@ -3334,7 +3334,6 @@ export class PostgresAgentTaskAdapter
             intent_artifact_ref: jsonValue(intentArtifactRef),
             reservation: jsonValue(budget.reservation),
             usage: jsonValue(emptyAgentBudgetUsage()),
-            error_code: null,
             recorded_at: new Date(now),
             completed_at: null,
           })
@@ -3354,12 +3353,7 @@ export class PostgresAgentTaskAdapter
         actionType: input.actionType,
         actionId,
         reservationId,
-        amount: {
-          ...input.amount,
-          ...(lease.attempt.attempt_number > 1
-            ? { transientRetries: (input.amount?.transientRetries ?? 0) + 1 }
-            : {}),
-        },
+        amount: input.amount ?? {},
         now,
       });
       const updated = await transaction
@@ -3573,7 +3567,7 @@ export class PostgresAgentTaskAdapter
               ? "agent-tool-observation"
               : "agent-action-result",
           );
-        const usage = normalizeAgentActionUsage(actionValue.actionType, requestedUsage);
+        const usage = settledActionUsage(actionValue, requestedUsage);
         const budget = settleAgentBudget(
           current.budgetPolicy,
           current.budgetLedger,
@@ -3761,7 +3755,7 @@ export class PostgresAgentTaskAdapter
         const action = actionFromRow(current.envelope.agentTaskRef, row);
         if (action.status === "completed") return;
         if (action.status === "uncertain") return;
-        const usage = normalizeAgentActionUsage(action.actionType, requestedUsage);
+        const usage = settledActionUsage(action, requestedUsage);
         if (input.resultArtifactRef !== undefined)
           await this.#assertArtifactUsable(
             context,
@@ -3776,7 +3770,10 @@ export class PostgresAgentTaskAdapter
           usage,
           now,
           input.activeWallClockMs ?? 0,
-          { allowWallClockOverrun: error.code === "AGENT_WALL_CLOCK_EXCEEDED" },
+          {
+            allowWallClockOverrun: error.code === "AGENT_WALL_CLOCK_EXCEEDED",
+            allowBudgetOverrun: error.category === "budget" && !error.retryable,
+          },
         );
         const next = transitionAgentTask(
           current.state,
@@ -4074,10 +4071,7 @@ export class PostgresAgentTaskAdapter
         requestedSpatialScopeRefs: task.envelope.frozenAuthorization.spatialScopeRefs,
         requestedSourceVersionRefs: [],
       });
-      if (
-        !authorizationWithinFrozenBoundary(task.envelope.frozenAuthorization, decision.context) ||
-        !isAuthorizationSubset(task.envelope.authorization, decision.context)
-      )
+      if (!isAuthorizationSubset(task.envelope.authorization, decision.context))
         throw new AgentRuntimeError(
           makeAgentError({
             code: "AGENT_AUTHORIZATION_DENIED",

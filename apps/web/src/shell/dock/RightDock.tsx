@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
-import type { ContractReferenceV1 } from "@riskflow/contracts/ports";
-
 import { decodeSafeHttpError, type SafeHttpErrorV1 } from "../../api/errors.js";
 import { dockTabIndexForKey } from "../../shared/focus.js";
 
@@ -27,17 +25,13 @@ export type EvidenceDockContentV1 =
 export type AgentContributionV1 =
   | Readonly<{ kind: "forbidden" }>
   | Readonly<{ kind: "unavailable" }>
-  | Readonly<{
-      kind: "ready";
-      taskRef: ContractReferenceV1;
-      slot: AgentContributionSlotV1;
-    }>;
+  | Readonly<{ kind: "ready"; slot: AgentContributionSlotV1 }>;
 
-export type AgentContributionSlotV1 = (
-  input: Readonly<{
-    taskRef?: ContractReferenceV1 | undefined;
-  }>,
-) => ReactNode;
+/**
+ * Agent 内容槽：Agent 域自己读共享任务事实，外壳只负责把它放进停靠区。
+ * 外壳因此不需要认识任务身份——任务引用只有一份来源，不在外壳里复制。
+ */
+export type AgentContributionSlotV1 = () => ReactNode;
 
 export type RightDockPropsV1 = Readonly<{
   initialPanel?: DockPanelV1 | undefined;
@@ -57,6 +51,17 @@ export const isEvidenceInContext = (
 ): boolean =>
   evidenceContextRevision === contextRevision &&
   (evidenceContextRevision !== undefined || contextRevision === undefined);
+
+/**
+ * 证据确实过期：面板里持有一份证据，而它的上下文修订已与当前上下文对不上。
+ *
+ * 手里的证据为空时不算过期——业务页本来就没有证据可失效，停靠区据此收起会让
+ * 「上下文」面板在每次打开时立刻关闭，连带 Agent 标签也变得难以到达。
+ */
+export const isEvidenceStale = (
+  evidence: EvidenceDockContentV1 | undefined,
+  evidenceInContext: boolean,
+): boolean => evidence !== undefined && !evidenceInContext;
 
 const SafeError = ({ error }: { error: SafeHttpErrorV1 }): ReactNode => {
   const safe = decodeSafeHttpError(error);
@@ -107,13 +112,7 @@ const AgentPanel = ({
   if (contribution === undefined || contribution.kind === "unavailable")
     return <p data-dock-state="unavailable">Agent 功能当前不可用</p>;
   if (contribution.kind === "forbidden") return <p data-dock-state="forbidden">无权使用 Agent</p>;
-  return (
-    <div data-dock-state="ready">
-      <p>Agent 任务摘要</p>
-      <code>{contribution.taskRef.kind}</code>
-      {contribution.slot({ taskRef: contribution.taskRef })}
-    </div>
-  );
+  return <div data-dock-state="ready">{contribution.slot()}</div>;
 };
 
 export const RightDock = ({
@@ -134,6 +133,7 @@ export const RightDock = ({
   const previousPanel = useRef(panel);
   const evidenceInContext = isEvidenceInContext(evidenceContextRevision, contextRevision);
   const visibleEvidence = evidenceInContext ? evidence : undefined;
+  const staleEvidence = isEvidenceStale(evidence, evidenceInContext);
   useEffect(() => {
     if (panel === "closed" && previousPanel.current !== "closed")
       openButtonRef.current?.focus({ preventScroll: true });
@@ -142,11 +142,11 @@ export const RightDock = ({
     previousPanel.current = panel;
   }, [panel]);
   useEffect(() => {
-    if (!evidenceInContext && panel === "context") {
+    if (staleEvidence && panel === "context") {
       setPanel("closed");
       onPanelChange?.("closed");
     }
-  }, [evidenceInContext, onPanelChange, panel]);
+  }, [staleEvidence, onPanelChange, panel]);
   const changePanel = (next: DockPanelV1): void => {
     setPanel(next);
     onPanelChange?.(next);

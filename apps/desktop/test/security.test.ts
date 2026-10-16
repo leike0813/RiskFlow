@@ -100,11 +100,53 @@ describe("导航、窗口与权限边界", () => {
     expect(decideLoginChallengeV1().kind).toBe("deny");
   });
 
-  it("下载只允许业务 origin 且必须由用户选择保存位置", () => {
-    expect(decideDownloadV1(config, "https://riskflow.internal.example/api/v1/report")).toEqual({
-      kind: "ask",
+  it("下载只放行登记原件路径与登记 report 页的 blob 报告", () => {
+    const origin = "https://riskflow.internal.example";
+    const originalPath =
+      "/api/v1/projects/project-1/sources/source-1/versions/source-1-v1/original";
+    const documentPage = `${origin}/projects/documents/source-1?project=project-1`;
+    const reportPage = `${origin}/report/export?project=project-1`;
+
+    // 放行的两类下载都由用户选择保存位置：真实 HTTP 原件与登记 report 页创建的 blob 报告。
+    for (const [label, url, frameUrl] of [
+      ["原件附件", `${origin}${originalPath}?disposition=attachment`, documentPage],
+      ["原件默认处置", `${origin}${originalPath}`, documentPage],
+      ["blob 报告", `blob:${origin}/9b1c-4f`, reportPage],
+    ] as ReadonlyArray<readonly [string, string, string]>) {
+      expect(decideDownloadV1(config, url, frameUrl), label).toEqual({ kind: "ask" });
+    }
+
+    const refused: ReadonlyArray<readonly [string, string, string]> = [
+      ["同源其它路径", `${origin}/api/v1/report`, documentPage],
+      ["原件路径的邻居", `${origin}${originalPath}/extra`, documentPage],
+      [
+        "原件路径缺段",
+        `${origin}/api/v1/projects/project-1/sources/source-1/versions//original`,
+        documentPage,
+      ],
+      ["内联处置不是下载", `${origin}${originalPath}?disposition=inline`, documentPage],
+      ["附加未知参数", `${origin}${originalPath}?disposition=attachment&path=/tmp/x`, documentPage],
+      ["外域", "https://evil.example/x.json", documentPage],
+      ["未批准 origin 的原件", `https://other.internal.example${originalPath}`, documentPage],
+      ["发起文档不在批准 origin", `${origin}${originalPath}`, "https://evil.example/documents"],
+      ["发起文档缺失", `${origin}${originalPath}`, ""],
+      ["伪造 blob 来源", "blob:https://evil.example/uuid", reportPage],
+      ["非 https blob", "blob:file:///tmp/original.pdf", reportPage],
+      ["blob 带 userinfo", `blob:https://user@riskflow.internal.example/uuid`, reportPage],
+      ["非 report 页发起 blob", `blob:${origin}/uuid`, documentPage],
+      ["未批准页发起 blob", `blob:${origin}/uuid`, "https://evil.example/report/export"],
+      ["data url", "data:application/json,{}", reportPage],
+      ["file url", "file:///etc/passwd", reportPage],
+    ];
+    for (const [label, url, frameUrl] of refused) {
+      expect(decideDownloadV1(config, url, frameUrl).kind, label).toBe("deny");
+    }
+    expect(decideDownloadV1(config, "https://evil.example/x.json", documentPage)).toMatchObject({
+      reason: "download-outside-approved-origin",
     });
-    expect(decideDownloadV1(config, "https://evil.example/x.json").kind).toBe("deny");
+    expect(decideDownloadV1(config, `blob:${origin}/uuid`, documentPage)).toMatchObject({
+      reason: "blob-download-outside-registered-report",
+    });
   });
 
   it("渲染进程关闭 Node 集成并开启隔离与沙箱，且不注入 preload", () => {

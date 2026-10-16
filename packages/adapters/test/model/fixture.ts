@@ -185,7 +185,7 @@ export class ArtifactStoreLatch implements ArtifactStoreV1 {
         yield new Uint8Array(stored.bytes);
         if (extraOpenBytes > 0) yield new Uint8Array(extraOpenBytes);
       })(),
-      verified: Promise.resolve().then(() => {
+      completed: Promise.resolve().then(() => {
         this.events.push("verified");
         return verified;
       }),

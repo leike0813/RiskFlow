@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { SourceOriginalReaderV1 } from "../../../src/engineering-data/context-source/source-original-reader.js";
 import { Kysely, PostgresDialect } from "kysely";
 
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
@@ -92,6 +95,7 @@ describe("C11 PostgreSQL context/source registry", () => {
             | "engineering-data.evidence-access"
             | "engineering-data.source-segments"
             | "engineering-data.context-read",
+          // 原件读取仍使用已有工程读能力。
           requestedSpatialScopeRefs?: readonly SpatialScopeRefV1[],
         ): Promise<AuthorizationContextV1>;
       }
@@ -904,6 +908,61 @@ describe("C11 PostgreSQL context/source registry", () => {
     };
   });
 
+  it("reads registered original bytes before conversion and removes verified temporary content", async () => {
+    const state = requireE2eState();
+    const body = "原件\n保留原始字节";
+    const delivery = await createDelivery("original-view", { sourceContent: body });
+    const registration = await fixture.registry.apply(delivery.command);
+    expect(registration.kind).toBe("succeeded");
+    if (registration.kind !== "succeeded") throw new Error("registration failed");
+    const sourceVersionRef = registration.result.sourceVersionRef;
+    const queryId = "read-original-before-conversion";
+    const decision = await fixture.access.authorize({
+      invocation: { kind: "human-session", sessionToken: state.managerSessionToken },
+      invocationId: queryId,
+      projectId: state.projectId,
+      branch: "engineering-data.source-original-read",
+      requestedSpatialScopeRefs: [state.accessRootScopeRef],
+      requestedSourceVersionRefs: [sourceVersionRef],
+    });
+    const temporaryRoot = join(fixture.rootDirectory, "original-temporary");
+    const reader = new SourceOriginalReaderV1({
+      source: fixture.registry,
+      access: fixture.access,
+      artifactStore: fixture.artifactStore,
+      readManifest: fixture.artifactRegistry.readManifest.bind(fixture.artifactRegistry),
+      temporaryRoot,
+      policy: {
+        maxBytes: 104857600,
+        maxConcurrentReads: 2,
+        maxTemporaryBytes: 209715200,
+        timeoutMs: 120000,
+      },
+    });
+    const query = {
+      kind: "source-original" as const,
+      queryId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      authorization: decision.context,
+      requestedAt: CONTEXT_SOURCE_TEST_TIMESTAMP,
+      payload: { sourceVersionRef },
+    };
+    const handle = await reader.open(query, new AbortController().signal);
+    expect(handle.info).toMatchObject({
+      previewKind: "text",
+      registeredBy: state.managerId,
+      deliveryKind: "file-upload",
+    });
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of handle.content) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks)).toEqual(Buffer.from(body));
+    await handle.close();
+    expect(await readdir(temporaryRoot)).toEqual([]);
+    const wrong = { ...query, projectId: "other-project" };
+    await expect(reader.open(wrong, new AbortController().signal)).rejects.toThrow();
+  });
+
   it("registers an immutable external risk event bound to project, source, evidence and spatial scope", async () => {
     const state = requireE2eState();
     const evidence = await externalEvidence(state.projectId, state.sourceVersionRef);
@@ -1463,16 +1522,6 @@ describe("C11 PostgreSQL context/source registry", () => {
         }),
       ],
       [
-        "authorization context is expired",
-        externalRiskEventCommand(state, {
-          suffix: "denied-expired",
-          authorization: expiredAuthorization,
-          eventArtifactRef: expiredArtifact.artifactRef,
-          sourceVersionRef: state.sourceVersionRef,
-          sourceSegmentId: evidence.source_segment_id,
-        }),
-      ],
-      [
         "evidence spatial scope is outside the authorization",
         externalRiskEventCommand(state, {
           suffix: "denied-spatial-scope",
@@ -1504,6 +1553,17 @@ describe("C11 PostgreSQL context/source registry", () => {
       [state.projectId, deniedIds],
     );
     expect(deniedAudit.rows[0]?.count).toBe("0");
+    expect(
+      await fixture.registry.apply(
+        externalRiskEventCommand(state, {
+          suffix: "elapsed-ttl",
+          authorization: expiredAuthorization,
+          eventArtifactRef: expiredArtifact.artifactRef,
+          sourceVersionRef: state.sourceVersionRef,
+          sourceSegmentId: evidence.source_segment_id,
+        }),
+      ),
+    ).toMatchObject({ kind: "succeeded" });
   });
 
   it("reports event artifact integrity failures as technical and rolls back the command", async () => {
@@ -4369,6 +4429,38 @@ describe("C11 PostgreSQL context/source registry", () => {
       "SELECT access_version FROM business.access_projects WHERE project_id = $1",
       [state.projectId],
     );
+    const originalId = "c11-original-revocation";
+    const originalDecision = await fixture.access.authorize({
+      invocation: { kind: "human-session", sessionToken: state.managerSessionToken },
+      invocationId: originalId,
+      projectId: state.projectId,
+      branch: "engineering-data.source-original-read",
+      requestedSpatialScopeRefs: [state.accessRootScopeRef],
+      requestedSourceVersionRefs: [state.sourceVersionRef],
+    });
+    const originalReader = new SourceOriginalReaderV1({
+      source: fixture.registry,
+      access: fixture.access,
+      artifactStore: fixture.artifactStore,
+      readManifest: fixture.artifactRegistry.readManifest.bind(fixture.artifactRegistry),
+      temporaryRoot: join(fixture.rootDirectory, "revoked-original"),
+      policy: {
+        maxBytes: 104857600,
+        maxConcurrentReads: 2,
+        maxTemporaryBytes: 209715200,
+        timeoutMs: 120000,
+      },
+    });
+    const originalQuery = {
+      kind: "source-original" as const,
+      queryId: originalId,
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: CONTEXT_SOURCE_TEST_TIMESTAMP,
+      authorization: originalDecision.context,
+      payload: { sourceVersionRef: state.sourceVersionRef },
+    };
+    expect((await originalReader.read(originalQuery)).kind).toBe("succeeded");
     const suspension = await fixture.access.administerProject({
       kind: "suspend-project",
       projectId: state.projectId,
@@ -4381,6 +4473,9 @@ describe("C11 PostgreSQL context/source registry", () => {
       authorizationContextRef: state.adminContextRef,
     });
     expect(suspension.kind).toBe("project");
+    await expect(
+      originalReader.open(originalQuery, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "ARTIFACT_ACCESS_DENIED" });
 
     expect(
       await fixture.registry.resolveReadQuery({
@@ -4862,8 +4957,7 @@ describe("C11 PostgreSQL context/source registry", () => {
         },
       });
 
-      // 本桩的风险事实引用的是未登记来源资料，读取必须因来源不可验而关闭失败；
-      // 真实登记来源下的读取成功路径由 C25 适配器套件覆盖。
+      // 准备快照沿实际来源检查当前权限。
       const readAuthorization = await authorizeBranch(
         "c25-freeze-read",
         "engineering-data.evidence-access",
@@ -4875,9 +4969,9 @@ describe("C11 PostgreSQL context/source registry", () => {
         authorization: readAuthorization,
         preparationSnapshotRef,
       });
-      expect(read).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      expect(read).toMatchObject({ kind: "succeeded" });
 
-      // 未声明来源的授权同样不能读出含来源证据的准备快照。
+      // 调用方无需重复声明已保存的来源。
       const undeclaredAuthorization = await authorizeBranch(
         "c25-freeze-read-undeclared",
         "engineering-data.evidence-access",
@@ -4889,7 +4983,7 @@ describe("C11 PostgreSQL context/source registry", () => {
         authorization: undeclaredAuthorization,
         preparationSnapshotRef,
       });
-      expect(undeclared).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      expect(undeclared).toMatchObject({ kind: "succeeded" });
 
       const missing = await registry.readAssessmentPreparationContext({
         requestId: "c25-freeze-read-missing",

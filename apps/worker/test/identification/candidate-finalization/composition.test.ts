@@ -15,7 +15,13 @@ const requiredOptions = (): RiskCandidateFinalizationCompositionOptionsV1 =>
     artifactStore: {},
     modelGateway: {},
     review: {},
-    modelContextReader: {},
+    modelContextReader: {
+      readExact: async () => ({
+        kind: "failed",
+        code: "ENTITY_NOT_FOUND",
+        detailCode: "fixture-missing",
+      }),
+    },
     workPlanReader: {},
     policyProvider: {},
     reviewDecisionReader: {},
@@ -36,6 +42,14 @@ const REQUIRED_DEPENDENCIES = [
 ] as const;
 
 describe("C22 risk candidate finalization composition", () => {
+  it("rejects a model context reader without its callable contract", () => {
+    expect(() =>
+      createRiskCandidateFinalizationComposition({
+        ...requiredOptions(),
+        modelContextReader: {},
+      } as never),
+    ).toThrow(TypeError);
+  });
   it.each(REQUIRED_DEPENDENCIES)("fails closed when %s is missing", (dependency) => {
     const options = { ...requiredOptions(), [dependency]: undefined } as never;
     expect(() => createRiskCandidateFinalizationComposition(options)).toThrow(

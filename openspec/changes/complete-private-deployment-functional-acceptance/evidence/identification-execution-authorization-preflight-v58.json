@@ -1,0 +1,25 @@
+{
+  "at": "2026-10-15T12:44:30.930Z",
+  "preflightOnly": true,
+  "parentCallerIdentityVerified": true,
+  "captured": {
+    "commandKind": "identification-graph.start",
+    "commandId": "c30-identification-start:f721543756acc5e7eee3a0539460759b1f3b00d937f5f8d3ad289d125f63da16",
+    "capabilities": [
+      "workflow.resume"
+    ],
+    "sourceBranch": "workflow.resume-run",
+    "sourceInvocationId": "physical-d52-preflight-9a5d645a-79af-4e86-906f-ec9172ccf443",
+    "runId": "identification-run:synthetic-station-tunnel-project:risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9"
+  },
+  "executionCapabilityMissing": true,
+  "adapterAllowedCapabilities": [
+    "knowledge-modeling.retrieve",
+    "risk-identification.run",
+    "risk-identification.finalize"
+  ],
+  "blockedBeforeBusinessCommit": true,
+  "noParentWorkflowRetry": true,
+  "noChildRegistration": true,
+  "noModelOrAgentTaskCreated": true
+}

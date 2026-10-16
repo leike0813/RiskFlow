@@ -85,12 +85,15 @@ export interface IdentificationContextInputReaderV1 {
 export interface IdentificationContextAuthorizationPortV1 {
   /** 为 C17 精确发布读签发 `knowledge-modeling.identification-basis` 上下文。 */
   issueReadContext(input: {
+    readonly authorization: AuthorizationContextV1;
+    readonly branch:
+      | "knowledge-modeling.identification-basis"
+      | "knowledge-modeling.relationship-context"
+      | "knowledge-modeling.hybrid-evidence";
     readonly projectId: string;
     readonly actorId: string;
     readonly invocationId: string;
     readonly requestedAt: string;
-    readonly requestedSpatialScopeRefs: readonly SpatialScopeRefV1[];
-    readonly requestedSourceVersionRefs: readonly SourceVersionRefV1[];
   }): Promise<AuthorizationContextV1>;
   /** 当前授权复验；撤销或范围不符时返回 `undefined`，调用方按同形拒绝收口。 */
   verifyCurrent(input: {
@@ -114,11 +117,21 @@ export interface IdentificationContextResultStoreV1 {
     | { readonly kind: "registered"; readonly replayed: boolean }
     | { readonly kind: "idempotency-conflict" }
   >;
-  readResult(input: {
-    readonly projectId: string;
-    readonly resultKind: IdentificationContextResultRowV1["resultKind"];
-    readonly resultId: string;
-  }): Promise<IdentificationContextResultRowV1 | undefined>;
+  readResult(
+    input: {
+      readonly projectId: string;
+      readonly resultKind: IdentificationContextResultRowV1["resultKind"];
+    } & (
+      | { readonly resultId: string }
+      | { readonly agentTaskRef: AgentTaskRefV1 }
+      | {
+          readonly retrievalArtifactSetRef: {
+            readonly kind: "retrieval-artifact-set";
+            readonly reference: VersionReference;
+          };
+        }
+    ),
+  ): Promise<IdentificationContextResultRowV1 | undefined>;
   readRelationshipResult(input: {
     readonly projectId: string;
     readonly queryId: string;

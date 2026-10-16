@@ -38,6 +38,8 @@ import {
   QualityPage,
   safeHttpErrorOf,
 } from "./quality/QualityPage.js";
+import "./theme/tokens.css";
+import "./theme/global.css";
 import "./shell/AppShell.css";
 
 const client = createC09Client({ operations: [QUALITY_EVALUATION_QUERY_OPERATION_V1] });

@@ -71,6 +71,47 @@ const asKindRef = (value: unknown): KindRef => {
   return { kind: asString(record.kind), reference: asVersionRef(record.reference) };
 };
 
+// ------------------------------------------------------------------ 读取失败
+
+/** 诊断引用的最小形状：只读服务端真实给出的引用，不编造。 */
+interface DiagnosticReferenceShape {
+  readonly kind: string;
+  readonly reference: { readonly entityId: string; readonly versionId: string };
+}
+
+/**
+ * 读失败的真实技术映射（design D-12）：保留既有错误码、可重试性与诊断引用，
+ * 不把技术故障折成权限拒绝或「目标不存在」；未知异常按终止失败收口。
+ */
+export interface AgentReadFailureView {
+  readonly code: string;
+  readonly retryable: boolean;
+  /** 服务端给出的诊断工件引用；没有就不编一个。 */
+  readonly diagnosticRef?: KindRef;
+}
+
+export const agentReadFailureOf = (error: unknown): AgentReadFailureView => {
+  if (!(error instanceof C09HttpError)) return { code: "TERMINAL_FAILURE", retryable: false };
+  const diagnosticRef: DiagnosticReferenceShape | undefined = error.error.references.find(
+    (reference) => reference.kind === "diagnostic-artifact",
+  );
+  return {
+    code: error.error.code,
+    retryable: error.error.retryable,
+    ...(diagnosticRef === undefined
+      ? {}
+      : {
+          diagnosticRef: {
+            kind: diagnosticRef.kind,
+            reference: {
+              entityId: diagnosticRef.reference.entityId,
+              versionId: diagnosticRef.reference.versionId,
+            },
+          },
+        }),
+  };
+};
+
 // ------------------------------------------------------------------ Agent 任务读取
 
 /** 分支名即路径段：三条窄读共用既有 `/projects/:projectId/queries/<branch>`。 */
@@ -344,7 +385,7 @@ export interface AgentTaskDetailView {
 
 export const readAgentTaskDetail = async (
   projectId: string,
-  agentTaskRef: AgentTaskRefView,
+  agentTaskRef: Pick<AgentTaskRefView, "kind" | "reference">,
   signal?: AbortSignal,
 ): Promise<AgentTaskDetailView> => {
   const result = asRecord(
@@ -395,6 +436,9 @@ export interface AgentActionEntryView {
   readonly actionType: string;
   readonly status: string;
   readonly intentArtifactRef: KindRef;
+  readonly resultRef?: KindRef;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
   readonly errorCode?: string;
   readonly recordedAt: string;
 }
@@ -434,6 +478,9 @@ export const readAgentTaskActions = async (
         actionType: asString(record.actionType),
         status: asString(record.status),
         intentArtifactRef: asKindRef(record.intentArtifactRef),
+        ...(record.resultRef === undefined ? {} : { resultRef: asKindRef(record.resultRef) }),
+        inputTokens: asNumber(asRecord(record.usage).inputTokens),
+        outputTokens: asNumber(asRecord(record.usage).outputTokens),
         ...(record.errorCode === undefined ? {} : { errorCode: asString(record.errorCode) }),
         recordedAt: asString(record.recordedAt),
       };

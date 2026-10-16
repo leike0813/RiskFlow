@@ -1,0 +1,146 @@
+{
+  "at": "2026-10-15T10:43:56.938Z",
+  "diagnosticOnly": true,
+  "officialQualityPass": false,
+  "source": "fresh-current-human-authorized-read",
+  "generationRef": {
+    "kind": "retrieval-generation",
+    "reference": {
+      "entityId": "retrieval-generation:synthetic-station-tunnel-project:knowledge-release-b33e7df3-3b60-4035-a083-7be249731961",
+      "versionId": "sha256:c34eb72d481908cf564bac2d971fc749dc1bd71b643c8f7f412be9884dc0d1ec"
+    }
+  },
+  "standards": [
+    {
+      "entryId": "standard-01-risk-management",
+      "standardIdentity": "GB 50652-2011 城市轨道交通地下工程建设风险管理规范",
+      "clauseRefs": [
+        "3.2.4 风险等级标准划分依据",
+        "4.3.1 风险等级四级划分",
+        "表4.3.2 风险接受准则"
+      ],
+      "evidenceCount": 10,
+      "retrievalTextBytes": 2379,
+      "projectedTextBytes": 2594,
+      "contentDigest": "c5b1cd964f0313848c333cd8c80862e62a5dcad38e37e85d67afbd49b7cc6e89",
+      "matchesPublishedCandidate": true
+    },
+    {
+      "entryId": "standard-02-monitoring",
+      "standardIdentity": "GB 50911-2013 城市轨道交通工程监测技术规范",
+      "clauseRefs": [
+        "4.2.2 盾构法隧道管片结构和周围岩土体监测项目",
+        "9.2.2 管片结构竖向位移、净空收敛和地表沉降控制值"
+      ],
+      "evidenceCount": 13,
+      "retrievalTextBytes": 1749,
+      "projectedTextBytes": 1985,
+      "contentDigest": "e39e266a5a2762c0a86568318345650c363e17b27aabd84fe800452107ae55f4",
+      "matchesPublishedCandidate": true
+    },
+    {
+      "entryId": "standard-03-shield-construction",
+      "standardIdentity": "GB 50446-2017 盾构法隧道施工及验收规范",
+      "clauseRefs": [
+        "7.8.6 气压作业前开挖仓内气压须经计算和试验确定（该条自2023-03-01起废止，仅作历史参考）",
+        "15.5.3 达到预警标准或实测变形值大于允许变形的2/3时警情报送"
+      ],
+      "evidenceCount": 9,
+      "retrievalTextBytes": 1859,
+      "projectedTextBytes": 2169,
+      "contentDigest": "0c22453e26cddfbd85e86b0439e82d304012f9e4087c933371f6f33458a06077",
+      "matchesPublishedCandidate": true
+    }
+  ],
+  "checks": [
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "rrfTopKMatchesIndependentRanks": true,
+      "denseRecall": 0.5,
+      "bm25Recall": 1,
+      "rrfRecall": 0.75,
+      "missing": [
+        {
+          "sourceKind": "standard-library",
+          "sourceEntryId": "standard-01-risk-management",
+          "grade": 1
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "rrfTopKMatchesIndependentRanks": true,
+      "denseRecall": 0.5,
+      "bm25Recall": 0.75,
+      "rrfRecall": 0.5,
+      "missing": [
+        {
+          "sourceKind": "standard-library",
+          "sourceEntryId": "standard-02-monitoring",
+          "grade": 2
+        },
+        {
+          "sourceKind": "standard-library",
+          "sourceEntryId": "standard-01-risk-management",
+          "grade": 1
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "rrfTopKMatchesIndependentRanks": true,
+      "denseRecall": 0.6666666666666666,
+      "bm25Recall": 1,
+      "rrfRecall": 0.6666666666666666,
+      "missing": [
+        {
+          "sourceKind": "standard-library",
+          "sourceEntryId": "standard-02-monitoring",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "rrfTopKMatchesIndependentRanks": true,
+      "denseRecall": 0.5,
+      "bm25Recall": 0.75,
+      "rrfRecall": 0.75,
+      "missing": [
+        {
+          "sourceKind": "standard-library",
+          "sourceEntryId": "standard-03-shield-construction",
+          "grade": 1
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "rrfTopKMatchesIndependentRanks": true,
+      "denseRecall": 0.6666666666666666,
+      "bm25Recall": 1,
+      "rrfRecall": 0.6666666666666666,
+      "missing": [
+        {
+          "sourceKind": "standard-library",
+          "sourceEntryId": "standard-03-shield-construction",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "rrfTopKMatchesIndependentRanks": true,
+      "denseRecall": 1,
+      "bm25Recall": 0.6666666666666666,
+      "rrfRecall": 0.6666666666666666,
+      "missing": [
+        {
+          "sourceKind": "standard-library",
+          "sourceEntryId": "standard-02-monitoring",
+          "grade": 2
+        }
+      ]
+    }
+  ]
+}

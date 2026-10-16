@@ -1377,7 +1377,7 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
           chunks.push(chunk);
           length += chunk.byteLength;
         }
-        await handle.verified;
+        await handle.completed;
         const body = new Uint8Array(length);
         let offset = 0;
         for (const chunk of chunks) {

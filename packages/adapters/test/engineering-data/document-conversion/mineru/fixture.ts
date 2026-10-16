@@ -311,7 +311,7 @@ export const makeServiceHarness = (options: {
         content: (async function* () {
           yield new Uint8Array(stored.bytes);
         })(),
-        verified: Promise.resolve(verified),
+        completed: Promise.resolve(verified),
       };
     },
   };

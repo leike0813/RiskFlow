@@ -12,6 +12,8 @@ import {
 } from "@riskflow/core/scoring-rules";
 import {
   AssessmentConfigurationDocumentV1Schema,
+  summarizeAssessmentConfigurationDocument,
+  isAssessmentConfigurationDefinitionTypeV1,
   type AssessmentConfigurationDocumentV1,
 } from "@riskflow/core/assessment-config";
 import {
@@ -22,11 +24,12 @@ import {
 import type {
   AssessmentDownstreamAuthorizationRequestV1,
   AssessmentDownstreamAuthorizerV1,
-  AssessmentRuntimePolicySetProviderV1,
   RiskInputFactsReaderV1,
 } from "@riskflow/core/risk-assessment/engine";
 import {
   ModuleErrorV1Schema,
+  KnowledgeReleaseRefV1Schema,
+  KnowledgeRevisionRefV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type ContentArtifactRefV1,
@@ -70,7 +73,6 @@ import {
   c25ReleaseRef,
   c25RevisionRef,
   c25RuleDocument,
-  c25RuntimePolicySet,
   c25Version,
 } from "../../../core/test/risk-assessment/fixture.js";
 import type { AssessmentConfigurationDocumentsV1 } from "../../../core/test/assessment-config/fixture.js";
@@ -94,6 +96,7 @@ const SCORING_RULE_MEDIA_TYPE = "application/vnd.riskflow.structured-scoring-rul
 export interface RiskAssessmentEngineFixtureV1 {
   readonly postgres: EngineeringContextSourcePostgresFixture;
   readonly engine: PostgresRiskAssessmentEngine;
+  setScoringConfigurationReady(ready: boolean): void;
   readAuthorization(requestId: string): Promise<AuthorizationContextV1>;
   /** C34 风险评估只读分支授权：`risk-assessment.read` 与入口候选 seam 用例使用。 */
   entryReadAuthorization(
@@ -118,7 +121,6 @@ export interface RiskAssessmentEngineFixtureV1 {
   }[];
   readonly basisRef: { readonly kind: "assessment-basis-release-set"; readonly reference: unknown };
   setFacts(value: unknown | undefined): void;
-  setPolicies(value: unknown | undefined): void;
   /** 篡改 basis 成员摘要，用于产物漂移用例；`restoreBasis` 复原。 */
   driftWeightSetDigest(): void;
   restoreBasis(): void;
@@ -202,7 +204,6 @@ export interface RiskAssessmentEngineFixtureV1 {
   /** 最近一次 basis 读取请求的业务时点与策略提供者的 requiredAt。 */
   lastReadTimes(): {
     readonly basisRequestedAt: string | undefined;
-    readonly policyRequiredAt: string | undefined;
   };
   /** 之前冻结的准备快照引用（A 含 3 个监测快照，B 只含 1 个）。 */
   preparationRef(kind: "a" | "b"): AssessmentPreparationSnapshotRefV1;
@@ -237,13 +238,9 @@ export interface RiskAssessmentEngineFixtureV1 {
   /** 在风险事实读取返回后吊销管理器会话：读取已完成、提交尚未开始。 */
   revokeOnFactsRead(): Promise<void>;
   restoreSession(): Promise<void>;
-  /** 第二次及之后的策略读取返回另一套策略版本，用于提交前策略漂移用例。 */
-  mutatePoliciesAfterFirstRead(): void;
   /** 签发接缝不再转交调用方声明的来源版本：来源复验必须因此关闭失败。 */
   denyDeclaredSources(): void;
   restoreDeclaredSources(): void;
-  /** 复原运行时策略提供者（策略漂移用例之后）。 */
-  restorePolicies(): void;
   /** 追加一份准备快照变体（入口模式/监测引用/前次记录由调用方给定）。 */
   freezePreparation(input: {
     readonly suffix: string;
@@ -367,7 +364,6 @@ export const startRiskAssessmentEngineFixture = async (
   };
   const managerId = manager.resultRef.entityId;
   let sessionToken = managerChanged.sessionToken;
-  let managerPassword = "c25-engine-manager-password-changed";
 
   const authorize = async (input: {
     readonly invocationId: string;
@@ -632,6 +628,8 @@ export const startRiskAssessmentEngineFixture = async (
   for (const definitionType of Object.keys(
     configurationDocuments,
   ) as (keyof typeof configurationDocuments)[]) {
+    if (["measure-library", "forecast-policy", "deviation-policy"].includes(definitionType))
+      continue;
     const document: AssessmentConfigurationDocumentV1 =
       AssessmentConfigurationDocumentV1Schema.parse({
         ...configurationDocuments[definitionType],
@@ -1099,20 +1097,11 @@ export const startRiskAssessmentEngineFixture = async (
 
   const registeredExternalRiskEvents = new Set<string>();
   let facts: unknown | undefined = factsFor();
-  let policySet: unknown | undefined = c25RuntimePolicySet({ projectId: PROJECT_ID });
   let driftAfterFirstBasisRead = false;
   let basisReadCount = 0;
   let revokeOnFacts = false;
-  let mutatePoliciesAfterRead = false;
-  let policyReadCount = 0;
   let denySources = false;
   let lastBasisRequestedAt: string | undefined;
-  let lastPolicyRequiredAt: string | undefined;
-  // 与首读不同的策略版本：用于提交前策略漂移用例。
-  const variantPolicySet = c25RuntimePolicySet({
-    projectId: PROJECT_ID,
-    notificationPolicyRef: c25Version("notification-policy", "2"),
-  });
   const stubRiskInputFacts: RiskInputFactsReaderV1 = {
     readRiskInputFacts: async (input) => {
       // 外部风险事件必须已正式登记，否则事实读取不可用（与 C24 窄读同语义）。
@@ -1132,12 +1121,10 @@ export const startRiskAssessmentEngineFixture = async (
       if (revokeOnFacts) {
         // 读取已返回、提交尚未开始：此刻失效必须在提交前复验被拒绝。
         revokeOnFacts = false;
-        managerPassword = "c25-engine-manager-password-midflight";
-        await access.changePassword({
-          kind: "change-password",
-          sessionToken,
-          newPassword: managerPassword,
-        });
+        await postgres.postgres.adminPool.query(
+          "UPDATE business.local_accounts SET status = 'disabled' WHERE account_id = $1",
+          [managerId],
+        );
       }
       return result;
     },
@@ -1147,16 +1134,6 @@ export const startRiskAssessmentEngineFixture = async (
   let activeFactsReader: RiskInputFactsReaderV1 = stubRiskInputFacts;
   const riskInputFacts: RiskInputFactsReaderV1 = {
     readRiskInputFacts: (input) => activeFactsReader.readRiskInputFacts(input),
-  };
-  const runtimePolicies: AssessmentRuntimePolicySetProviderV1 = {
-    readRuntimePolicySet: async (input) => {
-      lastPolicyRequiredAt = input.requiredAt;
-      policyReadCount += 1;
-      const current = mutatePoliciesAfterRead && policyReadCount > 1 ? variantPolicySet : policySet;
-      return current === undefined
-        ? { kind: "failed", error: precondition("c25-fixture-policies") }
-        : { kind: "succeeded", policySet: current as never };
-    },
   };
 
   // C11 组合：同一 store 之上补齐 C25 事实 reader 与下游授权签发接缝。
@@ -1189,6 +1166,7 @@ export const startRiskAssessmentEngineFixture = async (
   const unusedRecordCatalog: RiskIdentificationReadPortV1 = {
     read: async () => unwiredReadDependency("recordCatalog.read"),
   };
+  let scoringConfigurationReady = true;
   const engine = createPostgresRiskAssessmentEngine({
     db: postgres.runtime.db,
     transactionUnit: postgres.transactionUnit,
@@ -1197,7 +1175,35 @@ export const startRiskAssessmentEngineFixture = async (
     preparationContext: registry,
     riskInputFacts,
     basisReader,
-    runtimePolicies,
+    configuration: {
+      readConfigurationMembers: async () =>
+        scoringConfigurationReady
+          ? {
+              kind: "succeeded",
+              members: configurationMembers.map((member) => {
+                if (!isAssessmentConfigurationDefinitionTypeV1(member.definitionType))
+                  throw new Error("unknown fixture configuration type");
+                return {
+                  ...member,
+                  definitionType: member.definitionType,
+                  releaseRef: KnowledgeReleaseRefV1Schema.parse(member.releaseRef),
+                  revisionRef: KnowledgeRevisionRefV1Schema.parse(member.revisionRef),
+                  projectRevisionRef,
+                  configurationSetRef: CONFIGURATION_SET_REF,
+                  summary: summarizeAssessmentConfigurationDocument(
+                    configurationDocuments[member.definitionType],
+                  ),
+                };
+              }),
+            }
+          : {
+              kind: "failed",
+              error: ModuleErrorV1Schema.parse({
+                ...precondition("configuration-readiness"),
+                blockerKind: "required-release-unavailable",
+              }),
+            },
+    },
     monitoring: postgres.monitoringStore,
     authorizeDownstream,
     entryContext: createAssessmentEntryContextReadPort(registry),
@@ -1530,6 +1536,9 @@ export const startRiskAssessmentEngineFixture = async (
   return {
     postgres,
     engine,
+    setScoringConfigurationReady: (ready) => {
+      scoringConfigurationReady = ready;
+    },
     readAuthorization: (requestId) =>
       authorize({
         invocationId: requestId,
@@ -1554,9 +1563,6 @@ export const startRiskAssessmentEngineFixture = async (
     basisRef,
     setFacts(value) {
       facts = value;
-    },
-    setPolicies(value) {
-      policySet = value;
     },
     resetFacts() {
       facts = factsFor();
@@ -1584,43 +1590,30 @@ export const startRiskAssessmentEngineFixture = async (
     async revokeOnFactsRead() {
       revokeOnFacts = true;
     },
-    mutatePoliciesAfterFirstRead() {
-      mutatePoliciesAfterRead = true;
-      policyReadCount = 0;
-    },
     denyDeclaredSources() {
       denySources = true;
     },
     restoreDeclaredSources() {
       denySources = false;
     },
-    restorePolicies() {
-      mutatePoliciesAfterRead = false;
-      policyReadCount = 0;
-    },
     async revokeAfterFirstRead() {
-      managerPassword = "c25-engine-manager-password-revoked";
-      await access.changePassword({
-        kind: "change-password",
-        sessionToken,
-        newPassword: managerPassword,
-      });
+      await postgres.postgres.adminPool.query(
+        "UPDATE business.local_accounts SET status = 'disabled' WHERE account_id = $1",
+        [managerId],
+      );
     },
-    // 以当前口令重新登录并换回固定口令，随后所有读取都使用新会话。
     async restoreSession() {
+      await postgres.postgres.adminPool.query(
+        "UPDATE business.local_accounts SET status = 'active' WHERE account_id = $1",
+        [managerId],
+      );
       const relogin = await access.login({
         kind: "login",
         loginAttemptId: `c25-engine-manager-restore-${Date.now()}`,
         loginName: "c25-engine-manager",
-        password: managerPassword,
+        password: "c25-engine-manager-password-changed",
       });
-      managerPassword = "c25-engine-manager-password-restored";
-      const changed = await access.changePassword({
-        kind: "change-password",
-        sessionToken: relogin.sessionToken,
-        newPassword: managerPassword,
-      });
-      sessionToken = changed.sessionToken;
+      sessionToken = relogin.sessionToken;
     },
     freezePreparation,
     registerAssessmentRun,
@@ -1908,7 +1901,6 @@ export const startRiskAssessmentEngineFixture = async (
     },
     lastReadTimes: () => ({
       basisRequestedAt: lastBasisRequestedAt,
-      policyRequiredAt: lastPolicyRequiredAt,
     }),
     foreignProjectId: () => "project-c25-engine-foreign",
   };

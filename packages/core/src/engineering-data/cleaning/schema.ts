@@ -206,6 +206,16 @@ export type DataCleaningMonitoringSliceRequestV1 = z.infer<
   typeof DataCleaningMonitoringSliceRequestV1Schema
 >;
 
+/** 分页定位只列冻结资料内的精确段身份，页大小沿用原 maxSegmentsPerRead，不新增预算。 */
+export const DataCleaningPreparationCatalogSliceRequestV1Schema = z.strictObject({
+  kind: z.literal("read-cleaning-preparation-catalog-slice"),
+  sourceVersionRef: SourceVersionRefV1Schema,
+  offset: nonNegativeInteger,
+});
+export type DataCleaningPreparationCatalogSliceRequestV1 = z.infer<
+  typeof DataCleaningPreparationCatalogSliceRequestV1Schema
+>;
+
 export const DataCleaningCandidateSubmissionV1Schema = z.strictObject({
   kind: z.literal("submit-cleaning-candidate"),
   candidate: DataCleaningCandidateV1Schema,
@@ -214,10 +224,11 @@ export type DataCleaningCandidateSubmissionV1 = z.infer<
   typeof DataCleaningCandidateSubmissionV1Schema
 >;
 
-/** C08 动作协议：模型只可能请求有界只读切片或提交清洗候选。 */
+/** C08 动作协议：模型只可能请求有界只读切片、有界定位分页或提交清洗候选。 */
 export const DataCleaningActionV1Schema = z.discriminatedUnion("kind", [
   DataCleaningDocumentSliceRequestV1Schema,
   DataCleaningMonitoringSliceRequestV1Schema,
+  DataCleaningPreparationCatalogSliceRequestV1Schema,
   DataCleaningCandidateSubmissionV1Schema,
 ]);
 export type DataCleaningActionV1 = z.infer<typeof DataCleaningActionV1Schema>;
@@ -226,18 +237,31 @@ export const DataCleaningToolPolicyV1Schema = z
   .strictObject({
     documentSegmentToolRef: VersionReferenceSchema,
     monitoringSnapshotToolRef: VersionReferenceSchema,
+    /** 只有显式登记该引用的策略版本注册分页定位工具，其余版本保持原全定位视图。 */
+    preparationCatalogToolRef: VersionReferenceSchema.optional(),
     maxSegmentsPerRead: positiveInteger,
     maxMonitoringItemsPerRead: positiveInteger,
   })
   .superRefine((policy, context) => {
-    if (
-      policy.documentSegmentToolRef.entityId === policy.monitoringSnapshotToolRef.entityId &&
-      policy.documentSegmentToolRef.versionId === policy.monitoringSnapshotToolRef.versionId
-    ) {
+    const declared = [
+      ["documentSegmentToolRef", policy.documentSegmentToolRef],
+      ["monitoringSnapshotToolRef", policy.monitoringSnapshotToolRef],
+      ...(policy.preparationCatalogToolRef === undefined
+        ? []
+        : [["preparationCatalogToolRef", policy.preparationCatalogToolRef] as const]),
+    ] as const;
+    const declaredByRef = new Map<string, string>();
+    for (const [field, ref] of declared) {
+      const key = `${ref.entityId}:${ref.versionId}`;
+      const first = declaredByRef.get(key);
+      if (first === undefined) {
+        declaredByRef.set(key, field);
+        continue;
+      }
       context.addIssue({
         code: "custom",
-        path: ["monitoringSnapshotToolRef"],
-        message: "document and monitoring tools must be distinct",
+        path: [field],
+        message: `${field} must not reuse the ${first} tool reference`,
       });
     }
   });
@@ -329,6 +353,56 @@ export const DataCleaningPolicyV1Schema = z
   });
 export type DataCleaningPolicyV1 = z.infer<typeof DataCleaningPolicyV1Schema>;
 
+export const DataCleaningPolicyV2Schema = z
+  .strictObject(DataCleaningPolicyV1Schema.shape)
+  .omit({
+    schemaVersion: true,
+    allowedConversionPolicyRefs: true,
+    allowedQualityPolicyRefs: true,
+    allowedConverterDeploymentRefs: true,
+    requiredSegmentKinds: true,
+    minimumRetainedSegmentRatio: true,
+  })
+  .extend({
+    schemaVersion: z.literal("2"),
+    documentRules: z
+      .array(
+        z.strictObject({
+          inputKind: DocumentInputKindV1Schema,
+          requiredSegmentKinds: z.array(SourceSegmentKindV1Schema).min(1),
+        }),
+      )
+      .min(1),
+  })
+  .superRefine((policy, context) => {
+    const kinds = new Set<string>();
+    for (const [index, rule] of policy.documentRules.entries()) {
+      if (kinds.has(rule.inputKind))
+        context.addIssue({
+          code: "custom",
+          path: ["documentRules", index, "inputKind"],
+          message: "input kind must be unique",
+        });
+      kinds.add(rule.inputKind);
+      if (new Set(rule.requiredSegmentKinds).size !== rule.requiredSegmentKinds.length)
+        context.addIssue({
+          code: "custom",
+          path: ["documentRules", index, "requiredSegmentKinds"],
+          message: "required kinds must be unique",
+        });
+    }
+    for (const key of ["allowedExclusionReasonCodes", "protectedSegmentKinds"] as const) {
+      if (new Set(policy[key]).size !== policy[key].length)
+        context.addIssue({ code: "custom", path: [key], message: "values must be unique" });
+    }
+  });
+export type DataCleaningPolicyV2 = z.infer<typeof DataCleaningPolicyV2Schema>;
+export const DataCleaningPolicySchema = z.discriminatedUnion("schemaVersion", [
+  DataCleaningPolicyV1Schema,
+  DataCleaningPolicyV2Schema,
+]);
+export type DataCleaningPolicy = z.infer<typeof DataCleaningPolicySchema>;
+
 export const DataCleaningFrozenSegmentV1Schema = z.strictObject({
   sourceSegmentId: SourceSegmentIdV1Schema,
   kind: SourceSegmentKindV1Schema,
@@ -346,6 +420,7 @@ export const DataCleaningFrozenDocumentV1Schema = z
     sourceSegmentSetRef: SourceSegmentSetRefV1Schema,
     inputKind: DocumentInputKindV1Schema,
     jsonLdFingerprint: hashSchema,
+    unrecognizedTableImageCount: nonNegativeInteger.optional(),
     segments: z.array(DataCleaningFrozenSegmentV1Schema).min(1),
   })
   .superRefine((document, context) => {

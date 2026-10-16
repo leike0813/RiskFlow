@@ -21,6 +21,7 @@ import { AppShell, type AppShellPropsV1 } from "../shell/AppShell.js";
 import { safeErrorFields } from "../shared/page-shells/PageFrame.js";
 import { PageFrame } from "../shared/page-shells/PageFrame.js";
 import type { SessionChangePasswordInputV1, SessionLoginInputV1 } from "../api/http.js";
+import { useAgentDockContribution } from "../agent/AgentDock.js";
 
 export type AppPropsV1 = Readonly<{
   pathname?: string;
@@ -312,6 +313,10 @@ const AppShellBody = ({
   readonly routerNavigate?: (to: string, options?: { replace?: boolean }) => void;
 }): ReactNode => {
   const registry = props.registry ?? WEB_ROUTE_REGISTRY_V1;
+  // 停靠区的 Agent 标签由 Agent 域自己填充：共享任务 Provider 在树内时给内容槽，
+  // 否则（如 SSR 外壳测试）保持「不可用」。宿主仍可用 agentContribution 覆盖。
+  const defaultAgentContribution = useAgentDockContribution();
+  const agentContribution = props.agentContribution ?? defaultAgentContribution;
   // C37 D-17：React Router 6 BrowserRouter 统一拥有 history。
   // 页面内 `navigate()` 走 pushState，不会触发 popstate；因此在 Router 内必须以
   // Router 的 location 为准，否则登录后回跳深链会因本地 pathname 过期而丢失。
@@ -466,7 +471,7 @@ const AppShellBody = ({
       contextSummary={props.contextSummary}
       versionAuditSummary={props.versionAuditSummary}
       relatedObjects={props.relatedObjects}
-      agentContribution={props.agentContribution}
+      agentContribution={agentContribution}
     />
   );
 };

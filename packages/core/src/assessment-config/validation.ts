@@ -8,7 +8,8 @@ import {
 import { sha256CanonicalJson } from "../persistence/index.js";
 import { resolveCanonicalDecimalBandIndex } from "./decimal.js";
 import {
-  ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1,
+  ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE,
+  type AssessmentConfigurationPurpose,
   AssessmentConfigurationDocumentV1Schema,
   MeasureLibraryContentV1Schema,
   type ApplicabilityConditionV1,
@@ -255,6 +256,7 @@ const validateIndicatorReferences = (input: {
   readonly documents: ReadonlyMap<string, AssessmentConfigurationDocumentV1>;
   readonly targetRef: ContractReferenceV1;
 }): void => {
+  if (!input.documents.has("indicator-system")) return;
   const indicatorSystem = requireDocument(input.documents, "indicator-system", input.targetRef);
   const indicators = new Map(
     indicatorSystem.content.indicators.map((indicator) => [indicator.indicatorId, indicator]),
@@ -267,8 +269,9 @@ const validateIndicatorReferences = (input: {
     return indicator;
   };
 
-  const mappings = requireDocument(input.documents, "indicator-field-mapping", input.targetRef)
-    .content.mappings;
+  const mappings = input.documents.has("indicator-field-mapping")
+    ? requireDocument(input.documents, "indicator-field-mapping", input.targetRef).content.mappings
+    : [];
   for (const mapping of mappings) {
     const indicator = requireIndicator(mapping.targetIndicatorId);
     if (indicator.valueKind === "numeric" && mapping.targetUnit !== indicator.canonicalUnit) {
@@ -279,11 +282,16 @@ const validateIndicatorReferences = (input: {
     }
   }
 
-  const weightSet = requireDocument(input.documents, "weight-set", input.targetRef).content;
-  const sides = [
-    ["发生可能性评估指标", weightSet.possibilityWeights],
-    ["后果严重性评估指标", weightSet.consequenceWeights],
-  ] as const;
+  const weightSet = input.documents.has("weight-set")
+    ? requireDocument(input.documents, "weight-set", input.targetRef).content
+    : undefined;
+  const sides =
+    weightSet === undefined
+      ? []
+      : ([
+          ["发生可能性评估指标", weightSet.possibilityWeights],
+          ["后果严重性评估指标", weightSet.consequenceWeights],
+        ] as const);
   for (const [indicatorType, weights] of sides) {
     const expected = indicatorSystem.content.indicators
       .filter((indicator) => indicator.indicatorType === indicatorType)
@@ -299,10 +307,13 @@ const validateIndicatorReferences = (input: {
     }
   }
 
-  const strategy = requireDocument(input.documents, "scoring-strategy", input.targetRef).content;
-  for (const axis of [strategy.possibility, strategy.consequence]) {
+  const strategy = input.documents.has("scoring-strategy")
+    ? requireDocument(input.documents, "scoring-strategy", input.targetRef).content
+    : undefined;
+  for (const axis of strategy === undefined ? [] : [strategy.possibility, strategy.consequence]) {
     if (axis.kind !== "weighted-average") continue;
     if (
+      weightSet === undefined ||
       !sameVersionReference(axis.weightSetRef, {
         entityId: weightSet.weightSetId,
         versionId: weightSet.weightSetVersion,
@@ -312,17 +323,16 @@ const validateIndicatorReferences = (input: {
     }
   }
 
-  const measureLibrary = requireDocument(
-    input.documents,
-    "measure-library",
-    input.targetRef,
-  ).content;
-  for (const measure of measureLibrary.measures) {
+  const measures = input.documents.has("measure-library")
+    ? requireDocument(input.documents, "measure-library", input.targetRef).content.measures
+    : [];
+  for (const measure of measures) {
     for (const indicatorId of measure.targetIndicatorIds) requireIndicator(indicatorId);
   }
 
-  const forecastPolicies = requireDocument(input.documents, "forecast-policy", input.targetRef)
-    .content.policies;
+  const forecastPolicies = input.documents.has("forecast-policy")
+    ? requireDocument(input.documents, "forecast-policy", input.targetRef).content.policies
+    : [];
   for (const policy of forecastPolicies) {
     const target = requireIndicator(policy.targetIndicatorId);
     if (target.valueKind !== "numeric" || policy.unit !== target.canonicalUnit) {
@@ -336,36 +346,40 @@ const validateMatrixReferences = (input: {
   readonly documents: ReadonlyMap<string, AssessmentConfigurationDocumentV1>;
   readonly targetRef: ContractReferenceV1;
 }): void => {
+  const deviationPolicies = input.documents.has("deviation-policy")
+    ? requireDocument(input.documents, "deviation-policy", input.targetRef).content.policies
+    : [];
+  if (
+    !input.documents.has("risk-matrix") &&
+    !deviationPolicies.some((policy) => policy.basis === "risk-level-step")
+  )
+    return;
   const matrix = requireDocument(input.documents, "risk-matrix", input.targetRef).content;
   const levelIds = new Set(matrix.riskLevels.map((level) => level.levelId));
   const matrixRef = { entityId: matrix.matrixId, versionId: matrix.matrixVersion };
 
-  const acceptance = requireDocument(
-    input.documents,
-    "risk-acceptance-threshold",
-    input.targetRef,
-  ).content;
+  const acceptance = input.documents.has("risk-acceptance-threshold")
+    ? requireDocument(input.documents, "risk-acceptance-threshold", input.targetRef).content
+    : undefined;
   if (
-    !sameVersionReference(acceptance.riskMatrixRef, matrixRef) ||
-    acceptance.thresholds.some((threshold) => !levelIds.has(threshold.maximumAcceptedLevelId))
+    acceptance !== undefined &&
+    (!sameVersionReference(acceptance.riskMatrixRef, matrixRef) ||
+      acceptance.thresholds.some((threshold) => !levelIds.has(threshold.maximumAcceptedLevelId)))
   ) {
     failAssessmentConfiguration("assessment-configuration-reference-mismatch", input.targetRef);
   }
 
-  const warning = requireDocument(
-    input.documents,
-    "monitoring-warning-threshold",
-    input.targetRef,
-  ).content;
+  const warning = input.documents.has("monitoring-warning-threshold")
+    ? requireDocument(input.documents, "monitoring-warning-threshold", input.targetRef).content
+    : undefined;
   if (
-    !sameVersionReference(warning.riskMatrixRef, matrixRef) ||
-    warning.thresholds.some((threshold) => !levelIds.has(threshold.warningLevelId))
+    warning !== undefined &&
+    (!sameVersionReference(warning.riskMatrixRef, matrixRef) ||
+      warning.thresholds.some((threshold) => !levelIds.has(threshold.warningLevelId)))
   ) {
     failAssessmentConfiguration("assessment-configuration-reference-mismatch", input.targetRef);
   }
 
-  const deviationPolicies = requireDocument(input.documents, "deviation-policy", input.targetRef)
-    .content.policies;
   for (const policy of deviationPolicies) {
     if (policy.basis !== "risk-level-step") continue;
     if (!sameVersionReference(policy.riskMatrixRef, matrixRef)) {
@@ -416,6 +430,7 @@ const validateThresholdReferences = (input: {
 
 export const validateAssessmentConfigurationSet = (
   documents: readonly AssessmentConfigurationDocumentV1[],
+  purpose: AssessmentConfigurationPurpose = "full",
 ): void => {
   const first = documents[0];
   if (first === undefined) {
@@ -425,7 +440,17 @@ export const validateAssessmentConfigurationSet = (
     );
   }
   const targetRef = documentTargetRef(first as AssessmentConfigurationDocumentV1);
-  if (documents.length !== ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1.length) {
+  const requiredTypes = [...ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE[purpose]];
+  if (
+    purpose === "deviation" &&
+    documents.some(
+      (doc) =>
+        doc.definitionType === "deviation-policy" &&
+        doc.content.policies.some((policy) => policy.basis === "risk-level-step"),
+    )
+  )
+    requiredTypes.push("risk-matrix");
+  if (documents.length !== requiredTypes.length) {
     failAssessmentConfiguration("assessment-configuration-set-incomplete", targetRef);
   }
   for (const document of documents) {
@@ -440,12 +465,13 @@ export const validateAssessmentConfigurationSet = (
     }
   }
   const byType = new Map(documents.map((document) => [document.definitionType, document]));
-  for (const definitionType of ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1) {
+  for (const definitionType of requiredTypes) {
     requireDocument(byType, definitionType, targetRef);
   }
   validateIndicatorReferences({ documents: byType, targetRef });
   validateMatrixReferences({ documents: byType, targetRef });
-  validateThresholdReferences({ documents: byType, targetRef });
+  if (byType.has("monitoring-warning-threshold"))
+    validateThresholdReferences({ documents: byType, targetRef });
 };
 
 /* -------------------------------------------------------------------------- */

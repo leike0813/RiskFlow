@@ -5,7 +5,7 @@
  * C04 工件存储 / C24 登记面，只有 C17/C21/C22/C23 与策略目录用可控公开端口替身注入。
  * 断言稳定引用、终态、错误码与事务结果，不锁定节点内部调用顺序，也不用 LLM 文本作硬期望。
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1 } from "@riskflow/adapters/identification/graph";
 import { createPostgresTransactionUnit } from "@riskflow/adapters/postgres";
@@ -33,6 +33,8 @@ import {
   acceptanceSuffixFor,
   acceptedEventRefFor,
   automaticRouteFor,
+  agentTaskSnapshot,
+  retrievalArtifactSetRefFor,
   reviewDecisionRefFor,
   reviewRouteFor,
   reviewTaskRefFor,
@@ -52,8 +54,10 @@ const REVIEW_GROUP = "group-review";
 /** 另一个人工复核组：用于混合拒绝与全封闭场景。 */
 const SECOND_REVIEW_GROUP = "group-review-second";
 
-const workItemCurrent = workItemRefFor(WORK_PLAN_ENTITY_ID, NODE_CURRENT);
-const workItemNeighbor = workItemRefFor(WORK_PLAN_ENTITY_ID, NODE_NEIGHBOR);
+const workItemCurrentFor = (run: IdentificationGraphRunScopeV1) =>
+  workItemRefFor(WORK_PLAN_ENTITY_ID, NODE_CURRENT, run.runRef);
+const workItemNeighborFor = (run: IdentificationGraphRunScopeV1) =>
+  workItemRefFor(WORK_PLAN_ENTITY_ID, NODE_NEIGHBOR, run.runRef);
 
 /** 读取某阶段全部 stage-result 登记行与其正文（正文只在 C04，登记行只保存引用）。 */
 const stageRowsOf = async (
@@ -122,6 +126,32 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     await harness.close();
   }, 120_000);
 
+  it("同一准备与图版本可用于两个独立父运行而不争抢阶段登记", async () => {
+    const run = harness.scope("independent-parent-batches");
+    harness.world.agentTaskStatus.set(NODE_CURRENT, "running");
+    const outcomes = [];
+    for (const batch of ["a", "b"]) {
+      outcomes.push(
+        await harness.runtime.start(
+          harness.startCommand(run, {
+            commandId: `independent-parent-batch-${batch}`,
+            parentRiskFlowRunRef: {
+              kind: "workflow-run",
+              reference: { entityId: `parent-${batch}`, versionId: "v1" },
+            },
+          }),
+        ),
+      );
+    }
+    expect(outcomes.map((o) => ({ status: o.state.status, error: o.state.lastErrorRef }))).toEqual([
+      { status: "waiting", error: undefined },
+      { status: "waiting", error: undefined },
+    ]);
+    expect(outcomes[0]?.state.runRef).not.toEqual(outcomes[1]?.state.runRef);
+    expect(outcomes[0]?.state.inputSnapshotRef).not.toEqual(outcomes[1]?.state.inputSnapshotRef);
+    expect(outcomes[0]?.state.agentTaskRefs[0]).not.toEqual(outcomes[1]?.state.agentTaskRefs[0]);
+  }, 120_000);
+
   it("I0～I2 从合格准备形成唯一输入快照与完整工作计划，并推进到 I9 完成收口", async () => {
     const { world } = harness;
     const run = harness.scope("happy-path");
@@ -182,7 +212,9 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       expect(item.sourceSegmentSetRefs).toEqual([
         { kind: "source-segment-set", reference: versionRef("source-segment-set-c24") },
       ]);
-      expect(item.workItemRef).toEqual(workItemRefFor(WORK_PLAN_ENTITY_ID, item.nodeId));
+      expect(item.workItemRef).toEqual(
+        workItemRefFor(WORK_PLAN_ENTITY_ID, item.nodeId, run.runRef),
+      );
       expect(item.sourceVersionRefs).toEqual([
         { kind: "source-version", reference: versionRef("source-version-c24") },
       ]);
@@ -322,7 +354,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
             expectedRunVersionId: cursor.runVersionId,
             resumeCause: {
               kind: "agent-task-completed",
-              agentTaskRef: reviewTaskRefFor(workItemCurrent),
+              agentTaskRef: reviewTaskRefFor(workItemCurrentFor(run), run.runRef),
             },
           }),
         ),
@@ -405,6 +437,64 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     }
   });
 
+  it("D-52 父恢复身份启动识别后原身份重放不增加业务事实", async () => {
+    const { world } = harness;
+    const run = harness.scope("parent-resume-authorization");
+    world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
+    const command = harness.startCommand(run, {
+      issuedInvocationId: "actual-parent-resume-command",
+      authorizationBranch: "workflow.resume-run",
+    });
+    const before = world.calls.verifyCurrent.length;
+    const first = await harness.runtime.start(command);
+    expect(world.calls.verifyCurrent[before]).toEqual({
+      invocationId: command.issuedInvocationId,
+      branch: command.authorizationBranch,
+    });
+    const rows = await harness.rows(run);
+    const replay = await harness.runtime.start(command);
+    expect(replay.state.runRef).toEqual(first.state.runRef);
+    expect(await harness.rows(run)).toEqual(rows);
+  });
+
+  it.each(["invocation", "branch", "actor", "project"])(
+    "D-52 %s 与真实签发不符时零子运行效果",
+    async (reason) => {
+      const { access, world } = harness;
+      const run = harness.scope(`start-authorization-${reason}`);
+      const command = {
+        ...harness.startCommand(run, {
+          issuedInvocationId: "issued-parent-resume",
+          authorizationBranch: "workflow.resume-run",
+        }),
+      };
+      const validActor = command.actorId,
+        validProject = command.projectId;
+      const verify = access.authorization.verifyCurrent;
+      access.authorization.verifyCurrent = async (input) =>
+        input.invocationId === "issued-parent-resume" &&
+        input.branch === "workflow.resume-run" &&
+        input.actorId === validActor &&
+        input.projectId === validProject
+          ? verify(input)
+          : undefined;
+      if (reason === "invocation") command.issuedInvocationId = "unissued";
+      if (reason === "branch") command.authorizationBranch = "workflow.start-run";
+      if (reason === "actor") command.actorId = "other-actor";
+      if (reason === "project") command.projectId = "other-project";
+      try {
+        await expect(harness.runtime.start(command)).rejects.toMatchObject({
+          error: { code: "AUTHORIZATION_DENIED", retryable: false },
+        });
+        expect(await harness.rows(run)).toHaveLength(0);
+        expect(world.calls.prepareReview).toHaveLength(0);
+        expect(world.calls.analyze).toHaveLength(0);
+      } finally {
+        access.authorization.verifyCurrent = verify;
+      }
+    },
+  );
+
   it("启动命令相同载荷幂等重放返回原运行引用，异载荷返回不可重试冲突", async () => {
     const { world } = harness;
     const run = harness.scope("start-idempotency");
@@ -468,16 +558,16 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
         "assemble-and-infer",
         "repair-and-validate",
       ]);
-      expect(outcome.state.failedWorkItemRefs).toEqual([workItemNeighbor]);
+      expect(outcome.state.failedWorkItemRefs).toEqual([workItemNeighborFor(run)]);
       expect(outcome.state.acceptedRiskRecordRefs).toEqual([riskRecordRefFor(AUTO_GROUP)]);
       const cursor = await harness.latestRunState(run);
-      expect(cursor.state.failedWorkItemRefs).toEqual([workItemNeighbor]);
-      expect(cursor.state.completedWorkItemRefs).toEqual([workItemCurrent]);
+      expect(cursor.state.failedWorkItemRefs).toEqual([workItemNeighborFor(run)]);
+      expect(cursor.state.completedWorkItemRefs).toEqual([workItemCurrentFor(run)]);
 
       const i3StageResult = await stageResultOf(harness, run, "I3");
       const { runResult } = await runResultOf(harness, run);
       // 失败项不被报告为已识别/已复核；已成立证据保留。
-      expect(runResult.failedWorkItemRefs).toEqual([workItemNeighbor]);
+      expect(runResult.failedWorkItemRefs).toEqual([workItemNeighborFor(run)]);
       expect(i3StageResult.stage).toBe("I3");
     } finally {
       world.agentTaskStatus.delete(NODE_NEIGHBOR);
@@ -496,7 +586,11 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       // 等待引用为 `agent-task` 变体并携带该精确任务引用，与恢复原因成对。
       expect(outcome.state.waitingRef?.kind).toBe("agent-task");
       const taskRef = outcome.state.agentTaskRefs[0];
-      expect(taskRef?.reference).toEqual(reviewTaskRefFor(workItemCurrent).reference);
+      expect(world.calls.prepareReview[0]?.taskRef).toEqual(taskRef);
+      expect(world.calls.startTask[0]?.taskRef).toEqual(taskRef);
+      expect(taskRef?.reference).toEqual(
+        reviewTaskRefFor(workItemCurrentFor(run), run.runRef).reference,
+      );
       expect(
         outcome.state.waitingRef?.kind === "agent-task"
           ? outcome.state.waitingRef.agentTaskRef.reference
@@ -505,7 +599,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       const cursor = await harness.latestRunState(run);
       expect(cursor.state.lastWaitingRef).toMatchObject({
         kind: "retrieval-review-agent",
-        workItemRef: { reference: workItemCurrent.reference },
+        workItemRef: { reference: workItemCurrentFor(run).reference },
       });
       // 尚未完成：不得进入 I4、不得新建替代任务。
       expect(world.calls.analyze).toHaveLength(0);
@@ -513,21 +607,72 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       const firstTaskCommandId = world.calls.startTask[0]?.commandId;
 
       world.agentTaskStatus.set(NODE_CURRENT, "completed");
+      const task = agentTaskSnapshot(taskRef!, {
+        status: "completed",
+        incrementRef: retrievalArtifactSetRefFor(taskRef!).reference,
+        parentRunRef: run.runRef,
+      });
+      const result = task.state.resultRef!;
+      const rowsBefore = await harness.rows(run);
+      const wrongResult = {
+        ...result,
+        reference: { ...result.reference, versionId: "wrong-result" },
+      };
+      for (const [agentTaskRef, agentTaskResultRef] of [
+        [reviewTaskRefFor(workItemNeighborFor(run), run.runRef), result],
+        [taskRef!, wrongResult],
+      ] as const) {
+        await expect(
+          harness.runtime.resume(
+            harness.resumeCommand(run, {
+              expectedRunVersionId: cursor.runVersionId,
+              resumeCause: { kind: "agent-task-completed", agentTaskRef, agentTaskResultRef },
+            }),
+          ),
+        ).rejects.toMatchObject({ error: { code: "AUTHORIZATION_DENIED" } });
+        expect(await harness.rows(run)).toEqual(rowsBefore);
+      }
+      world.agentTaskParents.set(NODE_CURRENT, {
+        ...run.runRef,
+        reference: { ...run.runRef.reference, versionId: "wrong-parent-version" },
+      });
+      await expect(
+        harness.runtime.resume(
+          harness.resumeCommand(run, {
+            expectedRunVersionId: cursor.runVersionId,
+            resumeCause: {
+              kind: "agent-task-completed",
+              agentTaskRef: taskRef!,
+              agentTaskResultRef: result,
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ error: { code: "AUTHORIZATION_DENIED" } });
+      expect(await harness.rows(run)).toEqual(rowsBefore);
+      world.agentTaskParents.set(NODE_CURRENT, run.runRef);
       const resumed = await harness.runtime.resume(
         harness.resumeCommand(run, {
           expectedRunVersionId: cursor.runVersionId,
-          resumeCause: { kind: "agent-task-completed", agentTaskRef: taskRef! },
+          resumeCause: {
+            kind: "agent-task-completed",
+            agentTaskRef: taskRef!,
+            agentTaskResultRef: result,
+          },
         }),
       );
       expect(resumed.disposition).toBe("resumed");
       expect(resumed.state.status).toBe("completed");
-      // 恢复沿用原动作身份与线程：同一启动任务的命令身份被原样重放，不新建替代任务。
+      // 已登记等待的冻结候选和任务原样复用，不能重新冻结或启动。
+      expect(
+        world.calls.prepareReview.filter(
+          (call) => call.taskRef.reference.entityId === taskRef!.reference.entityId,
+        ),
+      ).toHaveLength(1);
       expect(
         world.calls.startTask.filter((call) => call.commandId === firstTaskCommandId),
-      ).toHaveLength(2);
-      expect(world.calls.startTask[1]?.commandId).toBe(firstTaskCommandId);
-      expect(world.calls.startTask[1]?.payload.modelDeploymentRef).toEqual(
-        reviewTaskRefFor(workItemCurrent).modelDeploymentRef,
+      ).toHaveLength(1);
+      expect(world.calls.startTask[0]?.payload.modelDeploymentRef).toEqual(
+        reviewTaskRefFor(workItemCurrentFor(run), run.runRef).modelDeploymentRef,
       );
     } finally {
       world.agentTaskStatus.delete(NODE_CURRENT);
@@ -561,8 +706,8 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       expect(validate.payload.simulationConstraintPolicyRef).toBeUndefined();
       // 动作身份由命令与工作项确定性派生（同轮重放同身份）。
       expect(infer.commandId).toBe(infer.idempotencyKey);
-      expect(infer.commandId).toContain(`I4:${workItemCurrent.reference.entityId}`);
-      expect(validate.commandId).toContain(`I5:${workItemCurrent.reference.entityId}`);
+      expect(infer.commandId).toContain(`I4:${workItemCurrentFor(run).reference.entityId}`);
+      expect(validate.commandId).toContain(`I5:${workItemCurrentFor(run).reference.entityId}`);
       // 原始候选集与已校验候选项引用都在阶段结果里保留。
       const i4StageResult = (await harness.rows(run, "stage-result")).map((row) => row).at(-1);
       expect(i4StageResult?.resultKind).toBe("stage-result");
@@ -583,8 +728,8 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       expect(outcome.state.status).toBe("completed");
       const { runResult } = await runResultOf(harness, run);
       expect(runResult.zeroResults).toEqual([
-        { workItemRef: workItemCurrent, zeroResultRef: zeroResultRefFor(NODE_CURRENT) },
-        { workItemRef: workItemNeighbor, zeroResultRef: zeroResultRefFor(NODE_NEIGHBOR) },
+        { workItemRef: workItemCurrentFor(run), zeroResultRef: zeroResultRefFor(NODE_CURRENT) },
+        { workItemRef: workItemNeighborFor(run), zeroResultRef: zeroResultRefFor(NODE_NEIGHBOR) },
       ]);
       // 零结果不是失败、跳过或已验收，也不产生记录、事件、候选集或验收路线。
       expect(runResult.failedWorkItemRefs).toEqual([]);
@@ -618,11 +763,11 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
         })),
       ).toEqual([
         {
-          workItemEntityId: workItemCurrent.reference.entityId,
+          workItemEntityId: workItemCurrentFor(run).reference.entityId,
           zeroResultEntityId: zeroResultRefFor(NODE_CURRENT).reference.entityId,
         },
         {
-          workItemEntityId: workItemNeighbor.reference.entityId,
+          workItemEntityId: workItemNeighborFor(run).reference.entityId,
           zeroResultEntityId: zeroResultRefFor(NODE_NEIGHBOR).reference.entityId,
         },
       ]);
@@ -642,7 +787,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       expect(outcome.state.status).toBe("completed");
       const { runResult } = await runResultOf(harness, run);
       expect(runResult.zeroResults).toEqual([
-        { workItemRef: workItemNeighbor, zeroResultRef: zeroResultRefFor(NODE_NEIGHBOR) },
+        { workItemRef: workItemNeighborFor(run), zeroResultRef: zeroResultRefFor(NODE_NEIGHBOR) },
       ]);
       expect(runResult.acceptedRiskRecordRefs).toEqual([riskRecordRefFor(AUTO_GROUP)]);
       expect(runResult.failedWorkItemRefs).toEqual([]);
@@ -724,7 +869,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     try {
       const outcome = await harness.runtime.start(harness.startCommand(run));
       expect(outcome.state.status).toBe("completed");
-      expect(outcome.state.failedWorkItemRefs).toEqual([workItemCurrent]);
+      expect(outcome.state.failedWorkItemRefs).toEqual([workItemCurrentFor(run)]);
       // 技术/确定性失败不得转换为人工通过路线：没有复核任务、没有等待。
       expect(outcome.state.reviewTaskRefs).toEqual([]);
       expect(outcome.state.waitingRef).toBeUndefined();
@@ -734,7 +879,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       ).at(-1);
       expect(i5StageResult).toBeDefined();
       const { runResult } = await runResultOf(harness, run);
-      expect(runResult.failedWorkItemRefs).toEqual([workItemCurrent]);
+      expect(runResult.failedWorkItemRefs).toEqual([workItemCurrentFor(run)]);
     } finally {
       world.validationOverride.delete(NODE_CURRENT);
     }
@@ -799,7 +944,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       expectedRunVersionId: waitingCursor.runVersionId,
       resumeCause: {
         kind: "agent-task-completed",
-        agentTaskRef: reviewTaskRefFor(workItemCurrent),
+        agentTaskRef: reviewTaskRefFor(workItemCurrentFor(run), run.runRef),
       },
     });
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -930,10 +1075,10 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       expect(runResult.rejectedGroupRefs.map((ref) => ref.reference.entityId)).toEqual([
         rejectedRoute.groupRef.reference.entityId,
       ]);
-      expect(runResult.failedWorkItemRefs).toEqual([workItemNeighbor]);
+      expect(runResult.failedWorkItemRefs).toEqual([workItemNeighborFor(run)]);
       expect(runResult.skippedWorkItemRefs).toEqual([]);
       expect(runResult.pendingReviewTaskRefs).toEqual([]);
-      expect(outcome.state.failedWorkItemRefs).toEqual([workItemNeighbor]);
+      expect(outcome.state.failedWorkItemRefs).toEqual([workItemNeighborFor(run)]);
       expect(outcome.state.rejectedGroupRefs.map((ref) => ref.reference.entityId)).toEqual([
         rejectedRoute.groupRef.reference.entityId,
       ]);
@@ -1066,7 +1211,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
         harness.resumeCommand(run, {
           resumeCause: {
             kind: "agent-task-completed",
-            agentTaskRef: reviewTaskRefFor(workItemCurrent),
+            agentTaskRef: reviewTaskRefFor(workItemCurrentFor(run), run.runRef),
           },
         }),
       );
@@ -1087,56 +1232,95 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     }
   });
 
-  it("恢复与取消竞争同一运行版本时至多一个推进到终态", async () => {
-    const { world } = harness;
-    const run = harness.scope("resume-cancel-race");
-    world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
-    world.agentTaskStatus.set(NODE_CURRENT, "running");
-    try {
-      const started = await harness.runtime.start(harness.startCommand(run));
-      expect(started.state.status).toBe("waiting");
-      const current = await harness.latestRunState(run);
-      const taskRef = started.state.agentTaskRefs[0]!;
-      world.agentTaskStatus.set(NODE_CURRENT, "completed");
+  it.each(["concurrent", "cancel-before-next-effect"] as const)(
+    "恢复与取消竞争同一运行版本时至多一个推进到终态（%s）",
+    async (schedule) => {
+      const { world } = harness;
+      const run = harness.scope(`resume-cancel-race-${schedule}`);
+      world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
+      world.agentTaskStatus.set(NODE_CURRENT, "running");
+      let releaseResume: (() => void) | undefined;
+      let resumeSpy: ReturnType<typeof vi.spyOn<typeof harness.graph, "resume">> | undefined;
+      try {
+        const started = await harness.runtime.start(harness.startCommand(run));
+        expect(started.state.status).toBe("waiting");
+        const current = await harness.latestRunState(run);
+        const taskRef = started.state.agentTaskRefs[0]!;
+        world.agentTaskStatus.set(NODE_CURRENT, "completed");
 
-      const outcomes = await Promise.allSettled([
-        harness.runtime.resume(
-          harness.resumeCommand(run, {
-            expectedRunVersionId: current.runVersionId,
-            resumeCause: { kind: "agent-task-completed", agentTaskRef: taskRef },
-          }),
-        ),
-        harness.runtime.cancel(
-          harness.cancelCommand(run, { expectedRunVersionId: current.runVersionId }),
-        ),
-      ]);
-      const advanced = outcomes.filter(
-        (outcome) =>
-          outcome.status === "fulfilled" &&
-          (outcome.value.disposition === "resumed" ||
-            outcome.value.disposition === "cancellation-recorded"),
-      );
-      expect(
-        advanced,
-        JSON.stringify(
-          outcomes.map((outcome) =>
-            outcome.status === "fulfilled"
-              ? { disposition: outcome.value.disposition, status: outcome.value.state.status }
-              : { rejected: String(outcome.reason) },
+        let resumeEntered: Promise<void> | undefined;
+        if (schedule === "cancel-before-next-effect") {
+          let enter!: () => void;
+          resumeEntered = new Promise<void>((resolve) => {
+            enter = resolve;
+          });
+          const released = new Promise<void>((resolve) => {
+            releaseResume = resolve;
+          });
+          const originalResume = harness.graph.resume.bind(harness.graph);
+          resumeSpy = vi.spyOn(harness.graph, "resume").mockImplementation(async (...args) => {
+            enter();
+            await released;
+            return await originalResume(...args);
+          });
+        }
+
+        const outcomes = await Promise.allSettled([
+          harness.runtime.resume(
+            harness.resumeCommand(run, {
+              expectedRunVersionId: current.runVersionId,
+              resumeCause: { kind: "agent-task-completed", agentTaskRef: taskRef },
+            }),
           ),
-        ),
-      ).toHaveLength(1);
-      const latest = await harness.latestRunState(run);
-      expect(["completed", "cancelled"]).toContain(latest.state.status);
-      if (latest.state.status === "cancelled") {
-        expect(await harness.rows(run, "run-result")).toHaveLength(0);
-      } else {
-        expect(await harness.rows(run, "cancellation")).toHaveLength(0);
+          (async () => {
+            if (resumeEntered !== undefined) await resumeEntered;
+            try {
+              return await harness.runtime.cancel(
+                harness.cancelCommand(run, { expectedRunVersionId: current.runVersionId }),
+              );
+            } finally {
+              releaseResume?.();
+            }
+          })(),
+        ]);
+        const advanced = outcomes.filter(
+          (outcome) =>
+            outcome.status === "fulfilled" &&
+            (outcome.value.disposition === "resumed" ||
+              outcome.value.disposition === "cancellation-recorded"),
+        );
+        expect(
+          advanced,
+          JSON.stringify(
+            outcomes.map((outcome) =>
+              outcome.status === "fulfilled"
+                ? { disposition: outcome.value.disposition, status: outcome.value.state.status }
+                : { rejected: String(outcome.reason) },
+            ),
+          ),
+        ).toHaveLength(1);
+        const latest = await harness.latestRunState(run);
+        expect(["completed", "cancelled"]).toContain(latest.state.status);
+        if (latest.state.status === "cancelled") {
+          expect(await harness.rows(run, "run-result")).toHaveLength(0);
+          if (schedule === "cancel-before-next-effect") {
+            expect(world.calls.analyze).toHaveLength(0);
+            expect(outcomes[0]).toMatchObject({
+              status: "rejected",
+              reason: { error: { code: "VERSION_CONFLICT", retryable: false } },
+            });
+          }
+        } else {
+          expect(await harness.rows(run, "cancellation")).toHaveLength(0);
+        }
+      } finally {
+        releaseResume?.();
+        resumeSpy?.mockRestore();
+        world.agentTaskStatus.delete(NODE_CURRENT);
       }
-    } finally {
-      world.agentTaskStatus.delete(NODE_CURRENT);
-    }
-  }, 120_000);
+    },
+    120_000,
+  );
 
   it("检查点引用无法由业务回读证明时按 CHECKPOINT_INCONSISTENT 零补写封闭", async () => {
     const { world } = harness;
@@ -1163,7 +1347,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
             expectedRunVersionId: cursor.runVersionId,
             resumeCause: {
               kind: "agent-task-completed",
-              agentTaskRef: reviewTaskRefFor(workItemCurrent),
+              agentTaskRef: reviewTaskRefFor(workItemCurrentFor(run), run.runRef),
             },
           }),
         ),
@@ -1181,6 +1365,43 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       world.agentTaskStatus.delete(NODE_CURRENT);
     }
   });
+});
+
+describe("C24 识别子图运行时（正文预写后事务回滚）", () => {
+  let harness: IdentificationGraphHarnessV1;
+
+  beforeAll(async () => {
+    harness = await startIdentificationGraphHarness({
+      failStageCommitOnce: "identification-graph.i0",
+    });
+  }, 300_000);
+
+  afterAll(async () => {
+    await harness.close();
+  }, 120_000);
+
+  it("阶段正文已存而登记回滚后跨时刻恢复，不重复业务事实", async () => {
+    const run = harness.scope("body-before-rollback");
+    const command = harness.startCommand(run);
+    const first = await harness.runtime.start(command);
+    expect(first.state.status).toBe("retryable-failure");
+    expect(await stageRowsOf(harness, run, "I0")).toHaveLength(0);
+
+    harness.clock.advance(1_000);
+    harness.world.agentTaskStatus.set(NODE_CURRENT, "running");
+    const resumed = await harness.runtime.resume(
+      harness.resumeCommand(run, {
+        expectedRunVersionId: first.runVersionId,
+        resumeCause: { kind: "transient-recovered" },
+      }),
+    );
+    expect(resumed.state.status).toBe("waiting");
+    expect(resumed.state.waitingRef?.kind).toBe("agent-task");
+    expect(await stageRowsOf(harness, run, "I0")).toHaveLength(1);
+    const rows = await harness.rows(run);
+    expect((await harness.runtime.start(command)).state.status).toBe("waiting");
+    expect(await harness.rows(run)).toEqual(rows);
+  }, 120_000);
 });
 
 describe("C24 识别子图运行时（检查点写入失败注入）", () => {
@@ -1229,42 +1450,123 @@ describe("C24 识别子图运行时（检查点写入失败注入）", () => {
   });
 });
 
-describe("C24 识别子图运行时（中途检查点写入失败）", () => {
+describe.each([
+  { stage: "I5", failCheckpointPutAt: 8 },
+  { stage: "I6", failCheckpointAfterCommit: "identification-graph.i6" },
+] as const)("C24 识别子图运行时（$stage检查点写入失败）", (scenario) => {
+  const { stage } = scenario;
   let harness: IdentificationGraphHarnessV1;
 
   beforeAll(async () => {
-    harness = await startIdentificationGraphHarness({ failCheckpointPutAt: 8 });
+    harness = await startIdentificationGraphHarness(scenario);
   }, 300_000);
 
   afterAll(async () => {
     await harness.close();
   }, 120_000);
 
-  it("I5 业务提交后按首次登记恢复并继续到终态", async () => {
+  it("业务提交后按首次登记恢复并继续到终态", async () => {
     const { world } = harness;
-    const run = harness.scope("checkpoint-write-failure-i5");
-    world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
+    const run = harness.scope(`checkpoint-write-failure-${stage}`);
+    world.routes = [
+      stage === "I6"
+        ? reviewRouteFor(WORK_PLAN_ENTITY_ID, REVIEW_GROUP, run.runRef)
+        : automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP),
+    ];
     const command = harness.startCommand(run);
     await expect(harness.runtime.start(command)).rejects.toMatchObject({
       error: { code: "RETRYABLE_INFRASTRUCTURE_FAILURE", retryable: true },
     });
-    const i5Before = await stageRowsOf(harness, run, "I5");
-    expect(i5Before).toHaveLength(1);
+    const committedBefore = await stageRowsOf(harness, run, stage);
+    expect(committedBefore).toHaveLength(1);
     const committedAnalyze = world.calls.analyze
       .filter((call) => call.kind === "repair-and-validate")
       .at(-1);
     expect(committedAnalyze).toBeDefined();
     const rowsBefore = await harness.rows(run);
+    const mergeCallsBefore = world.calls.finalize.filter(
+      (call) => call.kind === "merge-run-candidates",
+    );
 
     const recovered = await harness.runtime.start(command);
-    expect(recovered.state.status).toBe("completed");
+    expect(recovered.state.status).toBe(stage === "I6" ? "waiting" : "completed");
     expect(recovered.state.candidateSetRef).toBeDefined();
-    expect(await stageRowsOf(harness, run, "I5")).toEqual(expect.arrayContaining(i5Before));
+    expect(recovered.state.mergePlanRef).toBeDefined();
+    expect(await stageRowsOf(harness, run, stage)).toEqual(expect.arrayContaining(committedBefore));
+    if (stage === "I6") {
+      expect(world.calls.finalize.filter((call) => call.kind === "merge-run-candidates")).toEqual(
+        mergeCallsBefore,
+      );
+    }
     expect(
       world.calls.analyze.filter((call) => call.commandId === committedAnalyze!.commandId),
     ).toHaveLength(1);
     expect(await harness.rows(run)).toEqual(expect.arrayContaining(rowsBefore));
+    const recover = vi.spyOn(harness.graph, "recover");
+    try {
+      expect((await harness.runtime.start(command)).state.status).toBe(recovered.state.status);
+      expect(recover).not.toHaveBeenCalled();
+    } finally {
+      recover.mockRestore();
+    }
   });
+
+  if (stage === "I6") {
+    it.each(["missing", "ambiguous", "foreign-run", "wrong-body"] as const)(
+      "恢复无法证明的阶段结果（%s）时零领域补写",
+      async (fault) => {
+        const { world } = harness;
+        const run = harness.scope(`committed-stage-${fault}`);
+        world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
+        const command = harness.startCommand(run);
+        await expect(harness.runtime.start(command)).rejects.toMatchObject({
+          error: { code: "RETRYABLE_INFRASTRUCTURE_FAILURE" },
+        });
+        const cursor = await harness.latestRunState(run);
+        const rowsBefore = await harness.rows(run);
+        const finalizeBefore = [...world.calls.finalize];
+        const listRows = harness.adapter.registrationStore.listRunRows.bind(
+          harness.adapter.registrationStore,
+        );
+        const readStage = harness.adapter.readStageResultBody.bind(harness.adapter);
+        const rowsSpy = vi
+          .spyOn(harness.adapter.registrationStore, "listRunRows")
+          .mockImplementation(async (input) => {
+            const rows = await listRows(input);
+            const committed = rows.find(
+              (row) =>
+                row.resultKind === "stage-result" && row.runVersionId === cursor.runVersionId,
+            );
+            if (committed === undefined) throw new TypeError("committed stage fixture missing");
+            if (fault === "missing") return rows.filter((row) => row !== committed);
+            if (fault === "ambiguous") return [...rows, committed];
+            if (fault === "foreign-run")
+              return rows.map((row) =>
+                row === committed ? { ...row, runId: "another-identification-run" } : row,
+              );
+            return rows;
+          });
+        const bodySpy = vi
+          .spyOn(harness.adapter, "readStageResultBody")
+          .mockImplementation(async (input) => {
+            const body = await readStage(input);
+            return fault === "wrong-body" && body?.stage === "I6"
+              ? { ...body, runRef: { ...body.runRef, reference: versionRef("another-run") } }
+              : body;
+          });
+        try {
+          await expect(harness.runtime.start(command)).rejects.toMatchObject({
+            error: { code: "CHECKPOINT_INCONSISTENT", retryable: false },
+          });
+        } finally {
+          rowsSpy.mockRestore();
+          bodySpy.mockRestore();
+        }
+        expect(await harness.rows(run)).toEqual(rowsBefore);
+        expect(world.calls.finalize).toEqual(finalizeBefore);
+      },
+    );
+  }
 });
 
 describe("C24 识别子图运行时（等待检查点写入失败）", () => {

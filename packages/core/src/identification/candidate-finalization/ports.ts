@@ -307,6 +307,11 @@ export interface RiskCandidateRepairFeedbackV1 {
     readonly checkId: string;
     readonly reasonCode: string;
   }[];
+  /**
+   * D-10：上一次响应整体不满足冻结输出 Schema 时的稳定原因码。响应级格式错误没有
+   * 可归属候选，连同父候选失败集合一起反馈，由同一修正循环生成下一候选。
+   */
+  readonly outputError?: { readonly reasonCode: string };
   readonly previousRawResponseRefs: readonly ArtifactRefV1[];
 }
 
@@ -338,6 +343,17 @@ export type RiskCandidateModelOutcomeV1 =
   | {
       readonly kind: "succeeded";
       readonly outputs: readonly ModelOutputResult[];
+      readonly invocationId: string;
+      readonly rawResponseRef: ArtifactRefV1;
+      readonly usage: RiskCandidateModelUsageV1;
+      readonly elapsedMs: number;
+    }
+  | {
+      /**
+       * D-10 可修正输出错误：网关已耐久保存原响应并给出可修正结构错误；本次真实 token、
+       * 输出字节与墙钟原样带回，由既有修正循环结算，不伪造候选也不漏记已发生用量。
+       */
+      readonly kind: "output-schema-invalid";
       readonly invocationId: string;
       readonly rawResponseRef: ArtifactRefV1;
       readonly usage: RiskCandidateModelUsageV1;

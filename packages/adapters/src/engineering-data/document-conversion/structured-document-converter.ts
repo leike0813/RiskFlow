@@ -976,7 +976,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         );
       chunks.push(chunk);
     }
-    await handle.verified;
+    await handle.completed;
     if (referenceKey(handle.manifest.artifactRef) !== referenceKey(source.sourceArtifactRef)) {
       throw new DocumentParserError(
         "ARTIFACT_REFERENCE_INVALID",
@@ -1085,7 +1085,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       }
       chunks.push(chunk);
     }
-    await handle.verified;
+    await handle.completed;
     if (size !== envelopeByteLength) {
       throw new RangeError("raw response envelope byte length changed after persistence");
     }
@@ -1187,7 +1187,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
         throw new RangeError("diagnostic exceeds its persisted byte length");
       }
     }
-    await handle.verified;
+    await handle.completed;
     if (size !== byteLength) {
       throw new RangeError("diagnostic byte length changed after persistence");
     }

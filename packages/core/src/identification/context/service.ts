@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import type { EvidenceReference, VersionReference } from "@riskflow/contracts/common";
-import type { SpatialScopeRefV1, SourceVersionRefV1 } from "@riskflow/contracts/ports";
 import {
+  ContentArtifactRefV1Schema,
   KnowledgeRetrievalQueryV1Schema,
   ModuleErrorV1Schema,
   type AgentTaskRefV1,
@@ -27,7 +27,13 @@ import {
   type AgentTaskSnapshotV1,
   type AgentValidationResultV1,
 } from "../../agent-runtime/index.js";
-import { ArtifactPutCommandV1Schema, type ArtifactRefV1 } from "../../artifacts/index.js";
+import {
+  ArtifactPutCommandV1Schema,
+  ArtifactStoreError,
+  type ArtifactRefV1,
+} from "../../artifacts/index.js";
+import { AccessServiceError } from "../../access/index.js";
+import type { ModelContextReaderV1 } from "../candidate-finalization/ports.js";
 import type { IdentificationKnowledgeExactReadV1 } from "../../identification-knowledge/index.js";
 import { sha256CanonicalJson } from "../../persistence/index.js";
 import type { TransactionContextV1 } from "../../persistence/transaction.js";
@@ -57,6 +63,7 @@ import {
   RelationshipContextPayloadV1Schema,
   RetrievalReviewActionV1Schema,
   RetrievalReviewCandidateSetV1Schema,
+  RetrievalReviewModelObservationV1Schema,
   RetrievalReviewIncrementV1Schema,
   RetrievalReviewPolicyV1Schema,
   RetrievalResupplementIntentV1Schema,
@@ -87,6 +94,9 @@ const RESUPPLEMENT_INTENT_PURPOSE_CODE_V1 = "retrieval-resupplement-intent";
 const REVIEWED_SET_PURPOSE_CODE_V1 = "retrieval-artifact-set";
 const MODEL_CONTEXT_PURPOSE_CODE_V1 = "identification-model-context";
 const OBSERVATION_PURPOSE_CODE_V1 = "identification-context-observation";
+const VALIDATION_PURPOSE_CODE_V1 = "agent-validation";
+const validationArtifactIdFor = (taskRef: AgentTaskRefV1): string =>
+  `retrieval-review-validation-${taskRef.reference.entityId}`;
 
 export const IDENTIFICATION_CONTEXT_PURPOSE_CODES_V1 = Object.freeze({
   relationship: RELATIONSHIP_PURPOSE_CODE_V1,
@@ -98,10 +108,18 @@ export const IDENTIFICATION_CONTEXT_PURPOSE_CODES_V1 = Object.freeze({
 });
 
 /** 基线查询按工作项节点派生稳定身份：重放不重复调用 C20 检索。 */
-export const baselineQueryIdFor = (nodeId: string): string => `${nodeId}:retrieval-baseline`;
+export const baselineQueryIdFor = (
+  nodeId: string,
+  workItemRef?: { readonly reference: VersionReference },
+): string =>
+  `${workItemRef === undefined ? nodeId : `${nodeId}:${workItemRef.reference.entityId}:${workItemRef.reference.versionId}`}:retrieval-baseline`;
 
 /** 关系查询按工作项节点派生稳定身份：同一工作项只对应一个正式关系结果。 */
-export const relationshipQueryIdFor = (nodeId: string): string => `${nodeId}:relationship-context`;
+export const relationshipQueryIdFor = (
+  nodeId: string,
+  workItemRef?: { readonly reference: VersionReference },
+): string =>
+  `${workItemRef === undefined ? nodeId : `${nodeId}:${workItemRef.reference.entityId}:${workItemRef.reference.versionId}`}:relationship-context`;
 
 /** 关系查询的规范化请求摘要：冻结输入、精确发布与授权范围共同构成身份。 */
 export const relationshipRequestDigest = (input: {
@@ -230,22 +248,22 @@ const asReleaseRef = (reference: VersionReference): KnowledgeReleaseRefV1 => ({
   reference,
 });
 
+const entryOf = (
+  read: IdentificationKnowledgeExactReadV1,
+  sourceKind: string,
+  sourceEntryId: string,
+) =>
+  read.package.definitionType === "risk-mechanism" && sourceKind === "risk-mechanism"
+    ? read.package.mechanisms.find((entry) => entry.mechanismId === sourceEntryId)
+    : read.package.definitionType === sourceKind && "entries" in read.package
+      ? read.package.entries.find((entry) => entry.entryId === sourceEntryId)
+      : undefined;
+
 const entryEvidenceOf = (
   read: IdentificationKnowledgeExactReadV1,
   sourceKind: string,
   sourceEntryId: string,
-): readonly EvidenceReference[] | undefined => {
-  const entries =
-    read.package.definitionType === "risk-mechanism"
-      ? read.package.mechanisms.map((entry) => ({
-          id: entry.mechanismId,
-          evidence: entry.evidence,
-        }))
-      : read.package.definitionType === sourceKind && "entries" in read.package
-        ? read.package.entries.map((entry) => ({ id: entry.entryId, evidence: entry.evidence }))
-        : [];
-  return entries.find((entry) => entry.id === sourceEntryId)?.evidence;
-};
+): readonly EvidenceReference[] | undefined => entryOf(read, sourceKind, sourceEntryId)?.evidence;
 
 const applicabilityCovers = (
   node: {
@@ -264,8 +282,8 @@ const applicabilityCovers = (
   },
 ): boolean =>
   (["constructionMethod", "stratumCondition", "engineeringStage"] as const).every((dimension) =>
-    mechanism.applicability[dimension].every((value) =>
-      node.applicability[dimension].includes(value),
+    node.applicability[dimension].every((value) =>
+      mechanism.applicability[dimension].includes(value),
     ),
   );
 
@@ -285,6 +303,120 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
 
   get reviewPolicy(): RetrievalReviewPolicyV1 {
     return this.#policy;
+  }
+
+  get modelContextReader(): ModelContextReaderV1 {
+    return { readExact: (input) => this.#readModelContext(input) };
+  }
+
+  async #readModelContext(
+    input: Parameters<ModelContextReaderV1["readExact"]>[0],
+  ): ReturnType<ModelContextReaderV1["readExact"]> {
+    const denied = {
+      kind: "failed",
+      code: "AUTHORIZATION_DENIED",
+      detailCode: "model-context-access-denied",
+    } as const;
+    const drift = {
+      kind: "failed",
+      code: "SOURCE_FACT_DRIFT",
+      detailCode: "model-context-reference-mismatch",
+    } as const;
+    if (
+      input.projectId !== input.authorization.projectId ||
+      input.actorId !== input.authorization.actorId
+    )
+      return denied;
+    const options = this.#options;
+    const invocationId = `${input.retrievalArtifactSetRef.reference.entityId}:model-context-read`;
+    let authorization: AuthorizationContextV1;
+    try {
+      authorization = await options.authorization.issueReadContext({
+        ...input,
+        invocationId,
+        branch: "knowledge-modeling.relationship-context",
+      });
+    } catch (error) {
+      if (
+        error instanceof AccessServiceError &&
+        ["AUTHORIZATION_DENIED", "SESSION_EXPIRED"].includes(error.details.code)
+      )
+        return denied;
+      throw error;
+    }
+    const current = await options.authorization.verifyCurrent({
+      authorization,
+      invocationId,
+      branch: "knowledge-modeling.relationship-context",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    if (current === undefined) return denied;
+    const row = await options.resultStore.readResult({
+      projectId: input.projectId,
+      resultKind: "model-context",
+      retrievalArtifactSetRef: {
+        kind: "retrieval-artifact-set",
+        reference: input.retrievalArtifactSetRef.reference,
+      },
+    });
+    if (row === undefined)
+      return { kind: "failed", code: "ENTITY_NOT_FOUND", detailCode: "model-context-missing" };
+    if (
+      row.resultKind !== "model-context" ||
+      row.actorRef !== input.actorId ||
+      !sameRef(row.workItemRef.reference, input.workItemRef.reference) ||
+      !sameRef(row.retrievalArtifactSetRef.reference, input.retrievalArtifactSetRef.reference)
+    )
+      return drift;
+    let value: unknown;
+    try {
+      value = await this.#readArtifactJson({
+        artifactRef: row.artifactRef,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        authorization: current,
+        purposeCode: MODEL_CONTEXT_PURPOSE_CODE_V1,
+      });
+    } catch (error) {
+      if (error instanceof ArtifactStoreError && error.code === "ARTIFACT_ACCESS_DENIED")
+        return denied;
+      if (
+        (error instanceof ArtifactStoreError && !error.retryable) ||
+        error instanceof SyntaxError ||
+        error instanceof RangeError
+      )
+        return drift;
+      throw error;
+    }
+    const parsed = ModelContextPayloadV1Schema.safeParse(value);
+    if (!parsed.success) return drift;
+    const payload = parsed.data;
+    if (
+      payload.projectId !== input.projectId ||
+      !sameRef(payload.workItemRef.reference, input.workItemRef.reference) ||
+      !sameRef(payload.inputSnapshotRef.reference, row.inputSnapshotRef.reference) ||
+      !sameRef(
+        payload.retrievalArtifactSetRef.reference,
+        input.retrievalArtifactSetRef.reference,
+      ) ||
+      !sameRef(
+        payload.relationshipQueryResultRef.reference,
+        row.relationshipQueryResultRef.reference,
+      )
+    )
+      return drift;
+    return {
+      kind: "succeeded",
+      read: {
+        payload,
+        payloadDigest: sha256CanonicalJson(payload),
+        modelContextArtifactSetRef: row.modelContextArtifactSetRef,
+        authorizationScopeDigest: authorizationScopeDigest(current),
+        authorizationContextRef: current.authorizationContextRef,
+      },
+    };
   }
 
   /** C20 冻结查询输入窄读：基线用工作项文本，补搜用同一动作的稳定意图记录。 */
@@ -402,6 +534,17 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     if (!this.#hasRetrieveCapability(query.authorization, query.projectId, query.actorId)) {
       return { kind: "failure", failure: { kind: "authorization" } };
     }
+    query = {
+      ...query,
+      authorization: await options.authorization.issueReadContext({
+        authorization: query.authorization,
+        projectId: query.projectId,
+        actorId: query.actorId,
+        invocationId: query.queryId,
+        requestedAt: query.requestedAt,
+        branch: "knowledge-modeling.relationship-context",
+      }),
+    };
     const exact = await options.inputReader.readExact({
       projectId: query.projectId,
       actorId: query.actorId,
@@ -479,8 +622,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       queryId: query.queryId,
       requestedAt: query.requestedAt,
       nodeId: workItem.nodeId,
-      spatialScopeRefs: [...workItem.spatialScopeRefs],
-      sourceVersionRefs: [...workItem.sourceVersionRefs],
+      authorization: verified,
       snapshot,
     });
     if (facts.kind === "failure") return { kind: "failure", failure: facts.failure };
@@ -593,8 +735,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     readonly queryId: string;
     readonly requestedAt: string;
     readonly nodeId: string;
-    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
-    readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+    readonly authorization: AuthorizationContextV1;
     readonly snapshot: import("@riskflow/contracts/workflows").IdentificationInputSnapshotV1;
   }): Promise<
     | {
@@ -609,14 +750,6 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     | { readonly kind: "failure"; readonly failure: RelationshipFailure }
   > {
     const options = this.#options;
-    const readContext = await options.authorization.issueReadContext({
-      projectId: input.projectId,
-      actorId: input.actorId,
-      invocationId: `c21-identification-basis:${input.queryId}`,
-      requestedAt: input.requestedAt,
-      requestedSpatialScopeRefs: [...input.spatialScopeRefs],
-      requestedSourceVersionRefs: [...input.sourceVersionRefs],
-    });
     const releases = [
       { ref: input.snapshot.processModelReleaseRef.reference, expected: "process-model" },
       { ref: input.snapshot.riskMechanismReleaseRef.reference, expected: "risk-mechanism" },
@@ -628,15 +761,24 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     const reads: IdentificationKnowledgeExactReadV1[] = [];
     for (const item of releases) {
       const releaseRef = asReleaseRef(item.ref);
+      const invocationId = identificationBasisReadInvocationIdFor({
+        queryId: input.queryId,
+        releaseRef,
+      });
+      const readContext = await options.authorization.issueReadContext({
+        authorization: input.authorization,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        branch: "knowledge-modeling.identification-basis",
+        invocationId,
+        requestedAt: input.requestedAt,
+      });
       const read = await options.knowledgeReader.readExact({
         projectId: input.projectId,
         releaseRef,
         actorId: input.actorId,
         requestedAt: input.requestedAt,
-        invocationId: identificationBasisReadInvocationIdFor({
-          queryId: input.queryId,
-          releaseRef,
-        }),
+        invocationId,
         authorization: readContext,
       });
       if (read.kind === "failed") {
@@ -847,7 +989,11 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     readonly resultRef: ContractReferenceV1;
     readonly commandKind: string;
   }): Promise<
-    | { readonly kind: "succeeded"; readonly artifactRef: ArtifactRefV1 }
+    | {
+        readonly kind: "succeeded";
+        readonly artifactRef: ArtifactRefV1;
+        readonly resultRef: ContractReferenceV1;
+      }
     | { readonly kind: "idempotency-conflict"; readonly priorCommandId: string }
     | { readonly kind: "failed"; readonly error: unknown }
   > {
@@ -879,7 +1025,6 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       idempotencyKey: commandId,
       payload: {
         resultKind: row.resultKind,
-        resultId: row.resultId,
         resultVersionId: row.resultVersionId,
         requestDigest: row.requestDigest,
       },
@@ -888,39 +1033,44 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       issuedAt: input.occurredAt,
     };
     let aborted = false;
+    let resultRef: ContractReferenceV1;
     try {
-      await options.transactionUnit.execute(command, async (context: TransactionContextV1) => {
-        const registration = await options.resultStore.registerResult(
-          { row, occurredAt: input.occurredAt },
-          context,
-        );
-        if (registration.kind === "idempotency-conflict") {
-          aborted = true;
-          throw new ContextTransactionAbort();
-        }
-        return {
-          resultRef: input.resultRef,
-          audit: {
-            auditEntryId: `${commandId}:audit`,
-            projectId: row.projectId,
-            action: input.commandKind,
-            targetRef: input.resultRef,
-            actorRef: row.actorRef,
-            authorizationContextRef: row.authorizationContextRef,
-            occurredAt: input.occurredAt,
-            recordedAt: this.#now().toISOString(),
-            version: { entityId: input.artifactId, versionId: row.resultVersionId },
-            commandId,
-            idempotencyKey: commandId,
-          },
-          events: [],
-        };
-      });
+      const receipt = await options.transactionUnit.execute(
+        command,
+        async (context: TransactionContextV1) => {
+          const registration = await options.resultStore.registerResult(
+            { row, occurredAt: input.occurredAt },
+            context,
+          );
+          if (registration.kind === "idempotency-conflict") {
+            aborted = true;
+            throw new ContextTransactionAbort();
+          }
+          return {
+            resultRef: input.resultRef,
+            audit: {
+              auditEntryId: `${commandId}:audit`,
+              projectId: row.projectId,
+              action: input.commandKind,
+              targetRef: input.resultRef,
+              actorRef: row.actorRef,
+              authorizationContextRef: row.authorizationContextRef,
+              occurredAt: input.occurredAt,
+              recordedAt: this.#now().toISOString(),
+              version: { entityId: input.artifactId, versionId: row.resultVersionId },
+              commandId,
+              idempotencyKey: commandId,
+            },
+            events: [],
+          };
+        },
+      );
+      resultRef = receipt.resultRef;
     } catch (error: unknown) {
       if (aborted) return { kind: "idempotency-conflict", priorCommandId: commandId };
       return { kind: "failed", error };
     }
-    return { kind: "succeeded", artifactRef };
+    return { kind: "succeeded", artifactRef, resultRef };
   }
 
   async #putArtifact(input: {
@@ -1007,7 +1157,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       if (size > MAX_ARTIFACT_BYTES_V1) throw new RangeError("artifact exceeds the bounded read");
       chunks.push(chunk);
     }
-    await handle.verified;
+    await handle.completed;
     const buffer = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) {
@@ -1024,13 +1174,21 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     input: PrepareRetrievalReviewInputV1,
   ): Promise<PrepareRetrievalReviewResultV1> {
     const options = this.#options;
+    const readAuthorization = await options.authorization.issueReadContext({
+      authorization: input.authorization,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: input.taskRef.reference.entityId,
+      requestedAt: input.requestedAt,
+      branch: "knowledge-modeling.relationship-context",
+    });
     const exact = await options.inputReader.readExact({
       projectId: input.projectId,
       actorId: input.actorId,
       queryId: input.taskRef.reference.entityId,
       inputSnapshotRef: input.inputSnapshotRef,
       workItemRef: input.workItemRef,
-      authorization: input.authorization,
+      authorization: readAuthorization,
     });
     if (exact.kind === "failed") {
       throw new IdentificationContextError(
@@ -1070,7 +1228,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       );
     }
     const current = await options.authorization.verifyCurrent({
-      authorization: input.authorization,
+      authorization: readAuthorization,
       invocationId: input.taskRef.reference.entityId,
       branch: "knowledge-modeling.relationship-context",
       requestedSpatialScopeRefs: [...workItem.spatialScopeRefs],
@@ -1087,11 +1245,11 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     }
     const nodeId = exact.read.workItem.nodeId;
     const relationship = await this.retrieve({
-      queryId: relationshipQueryIdFor(nodeId),
+      queryId: relationshipQueryIdFor(nodeId, input.workItemRef),
       projectId: input.projectId,
       actorId: input.actorId,
       requestedAt: input.requestedAt,
-      authorization: input.authorization,
+      authorization: readAuthorization,
       kind: "relationship-context",
       payload: { inputSnapshotRef: input.inputSnapshotRef, workItemRef: input.workItemRef },
     });
@@ -1122,7 +1280,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       projectId: input.projectId,
       actorId: input.actorId,
       requestedAt: input.requestedAt,
-      queryId: baselineQueryIdFor(nodeId),
+      queryId: baselineQueryIdFor(nodeId, input.workItemRef),
       expectedQueryResultRef: baselineQueryResultRef,
       authorization: input.authorization,
     });
@@ -1180,13 +1338,20 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     readonly retrievalPolicyRef: VersionReference;
     readonly nodeId: string;
   }): Promise<KnowledgeQueryResultRefV1> {
-    const queryId = baselineQueryIdFor(input.nodeId);
+    const queryId = baselineQueryIdFor(input.nodeId, input.workItemRef);
     const result = await this.#options.retrievalService.retrieve({
       queryId,
       projectId: input.projectId,
       actorId: input.actorId,
       requestedAt: input.requestedAt,
-      authorization: input.authorization,
+      authorization: await this.#options.authorization.issueReadContext({
+        authorization: input.authorization,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        branch: "knowledge-modeling.hybrid-evidence",
+        invocationId: queryId,
+        requestedAt: input.requestedAt,
+      }),
       kind: "hybrid-evidence",
       payload: {
         inputSnapshotRef: input.inputSnapshotRef,
@@ -1219,12 +1384,20 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     readonly authorization: AuthorizationContextV1;
   }): Promise<OfficialHybridResultV1> {
     const options = this.#options;
+    const authorization = await options.authorization.issueReadContext({
+      authorization: input.authorization,
+      projectId: input.projectId,
+      actorId: input.actorId,
+      invocationId: input.queryId,
+      requestedAt: input.requestedAt,
+      branch: "knowledge-modeling.hybrid-evidence",
+    });
     const official = await options.officialHybrid.readOfficial({
       projectId: input.projectId,
       queryId: input.queryId,
       actorId: input.actorId,
       requestedAt: input.requestedAt,
-      authorization: input.authorization,
+      authorization,
     });
     if (official.kind === "failed") {
       throw new IdentificationContextError(
@@ -1250,8 +1423,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       !sameRef(
         payload.knowledgeQueryResultRef.reference,
         official.result.knowledgeQueryResultRef.reference,
-      ) ||
-      payload.authorizationScopeDigest !== authorizationScopeDigest(input.authorization)
+      )
     ) {
       throw new IdentificationContextError(
         blocked({
@@ -1299,7 +1471,14 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       queryId: input.payload.queryId,
       inputSnapshotRef: input.payload.refs.inputSnapshotRef,
       workItemRef: input.payload.refs.workItemRef,
-      authorization: input.authorization,
+      authorization: await options.authorization.issueReadContext({
+        authorization: input.authorization,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        invocationId: input.payload.queryId,
+        requestedAt: input.requestedAt,
+        branch: "knowledge-modeling.relationship-context",
+      }),
     });
     if (
       exact.kind === "failed" ||
@@ -1314,14 +1493,6 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
         }),
       );
     }
-    const readContext = await options.authorization.issueReadContext({
-      projectId: input.projectId,
-      actorId: input.actorId,
-      invocationId: `c21-fact-read:${input.originQueryResultRef.reference.entityId}`,
-      requestedAt: input.requestedAt,
-      requestedSpatialScopeRefs: [...exact.read.workItem.spatialScopeRefs],
-      requestedSourceVersionRefs: [...exact.read.workItem.sourceVersionRefs],
-    });
     const cache = new Map<string, IdentificationKnowledgeExactReadV1>();
     const members: RetrievalReviewCandidateV1[] = [...(input.existing ?? [])];
     const known = new Set(members.map((member) => member.memberRef.reference.entityId));
@@ -1331,15 +1502,24 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       const releaseKey = `${hit.sourceReleaseRef.reference.entityId}:${hit.sourceReleaseRef.reference.versionId}`;
       let read = cache.get(releaseKey);
       if (read === undefined) {
+        const invocationId = identificationBasisReadInvocationIdFor({
+          queryId: input.originQueryResultRef.reference.entityId,
+          releaseRef: hit.sourceReleaseRef,
+        });
+        const readContext = await options.authorization.issueReadContext({
+          authorization: input.authorization,
+          projectId: input.projectId,
+          actorId: input.actorId,
+          branch: "knowledge-modeling.identification-basis",
+          invocationId,
+          requestedAt: input.requestedAt,
+        });
         const result = await options.knowledgeReader.readExact({
           projectId: input.projectId,
           releaseRef: hit.sourceReleaseRef,
           actorId: input.actorId,
           requestedAt: input.requestedAt,
-          invocationId: identificationBasisReadInvocationIdFor({
-            queryId: input.originQueryResultRef.reference.entityId,
-            releaseRef: hit.sourceReleaseRef,
-          }),
+          invocationId,
           authorization: readContext,
         });
         if (result.kind === "failed") {
@@ -1417,25 +1597,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
         allowedToolRefs: [policy.readFrozenResultToolRef, policy.resupplementToolRef],
         resultFamilies: ["retrieval-artifact-set"],
       }),
-      budgetPolicy: {
-        schemaVersion: "1",
-        policyRef: policy.budgetPolicyRef,
-        modelDeploymentRef: policy.modelDeploymentRef,
-        promptTemplateRef: policy.promptTemplateRef,
-        toolPolicyRef: policy.toolPolicyRef,
-        maxModelInvocations: 4,
-        maxToolInvocations: 8,
-        maxContextTokens: 16_384,
-        maxInputBytes: 512_000,
-        maxOutputBytes: 128_000,
-        maxCandidates: 4,
-        maxObjects: policy.maxCandidateMembers,
-        maxSupplementarySearches: policy.maxResupplements,
-        maxCorrections: 2,
-        maxTransientRetries: 2,
-        maxConcurrentActions: 1,
-        maxWallClockMs: 600_000,
-      },
+      budgetPolicy: policy.budgetPolicy,
       actionSchema: RetrievalReviewActionV1Schema,
       incrementSchema: RetrievalReviewIncrementV1Schema,
       candidateSchema: RetrievalReviewIncrementV1Schema,
@@ -1490,14 +1652,16 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       issuedAt: this.#now().toISOString(),
       purposeCode: OBSERVATION_PURPOSE_CODE_V1,
       authorization: task.envelope.authorization,
-      value: {
+      value: RetrievalReviewModelObservationV1Schema.parse({
+        kind: "retrieval-result",
         schemaVersion: IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1,
+        taskRef: task.envelope.agentTaskRef,
         candidateSetRef: action.candidateSetRef,
         candidateVersion: candidateSet.candidateVersion,
         queryResultRef: action.queryResultRef,
         members,
         resupplements: candidateSet.resupplements,
-      },
+      }),
       commandId: `${resupplementArtifactIdFor(
         task.envelope.agentTaskRef.reference.entityId,
         context.actionId,
@@ -1590,7 +1754,14 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
         projectId: task.envelope.projectId,
         actorId: task.envelope.actorId,
         requestedAt,
-        authorization: task.envelope.authorization,
+        authorization: await options.authorization.issueReadContext({
+          authorization: task.envelope.authorization,
+          projectId: task.envelope.projectId,
+          actorId: task.envelope.actorId,
+          branch: "knowledge-modeling.hybrid-evidence",
+          invocationId: queryId,
+          requestedAt,
+        }),
         kind: "hybrid-evidence",
         payload: {
           inputSnapshotRef: candidateSet.inputSnapshotRef,
@@ -1656,11 +1827,146 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       value: nextCandidateSet,
       commandId: `${artifactId}:candidate-set:v${nextCandidateSet.candidateVersion}`,
     });
+    const observationArtifactRef = await this.#putArtifact({
+      artifactId: `${artifactId}:observation`,
+      projectId: task.envelope.projectId,
+      actorId: task.envelope.actorId,
+      issuedAt: this.#now().toISOString(),
+      purposeCode: OBSERVATION_PURPOSE_CODE_V1,
+      authorization: task.envelope.authorization,
+      value: RetrievalReviewModelObservationV1Schema.parse({
+        kind: "retrieval-result",
+        schemaVersion: IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1,
+        taskRef: task.envelope.agentTaskRef,
+        candidateSetRef: nextArtifactRef,
+        candidateVersion: nextCandidateSet.candidateVersion,
+        queryResultRef: official.knowledgeQueryResultRef,
+        members: nextCandidateSet.members,
+        resupplements: nextCandidateSet.resupplements,
+      }),
+      commandId: `${artifactId}:observation`,
+    });
     return {
-      observationArtifactRef: nextArtifactRef,
+      observationArtifactRef,
       resultRef: { kind: "content-artifact", reference: nextArtifactRef.reference },
       effect: "committed",
       usage: { supplementarySearches: 1, objects: 1 },
+    };
+  }
+
+  /** 只投影本任务冻结候选及精确发布条目；模型不能自行指定任意工件。 */
+  async readReviewModelInput(task: AgentTaskSnapshotV1, observationArtifactRef?: ArtifactRefV1) {
+    const originalRef = ContentArtifactRefV1Schema.parse(task.envelope.frozenInputRef);
+    const original = await this.#readCandidateSet(task, originalRef);
+    const observation =
+      observationArtifactRef === undefined
+        ? undefined
+        : RetrievalReviewModelObservationV1Schema.parse(
+            await this.#readArtifactJson({
+              artifactRef: observationArtifactRef,
+              projectId: task.envelope.projectId,
+              actorId: task.envelope.actorId,
+              requestedAt: this.#now().toISOString(),
+              purposeCode:
+                observationArtifactRef.reference.entityId ===
+                validationArtifactIdFor(task.envelope.agentTaskRef)
+                  ? VALIDATION_PURPOSE_CODE_V1
+                  : OBSERVATION_PURPOSE_CODE_V1,
+              authorization: task.envelope.authorization,
+            }),
+          );
+    const invalid = (): never => {
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_INPUT_INVALID",
+          category: "input",
+          retryable: false,
+          stage: "worker.retrieval-review.model-input-binding",
+          taskRef: task.envelope.agentTaskRef,
+        }),
+      );
+    };
+    if (
+      observation !== undefined &&
+      !sameRef(observation.taskRef.reference, task.envelope.agentTaskRef.reference)
+    )
+      invalid();
+    const candidateSetRef = observation?.candidateSetRef ?? originalRef;
+    const candidateSet = sameRef(candidateSetRef.reference, originalRef.reference)
+      ? original
+      : await this.#readCandidateSet(task, candidateSetRef);
+    let ancestor = candidateSet;
+    let reachedOriginal = sameRef(candidateSetRef.reference, originalRef.reference);
+    for (let depth = 0; !reachedOriginal && depth < this.#policy.maxResupplements; depth += 1) {
+      const parentRef = ancestor.parentCandidateSetRef ?? invalid();
+      const parent = await this.#readCandidateSet(task, parentRef);
+      if (parent.candidateVersion + 1 !== ancestor.candidateVersion) invalid();
+      reachedOriginal = sameRef(parentRef.reference, originalRef.reference);
+      ancestor = parent;
+    }
+    if (
+      !reachedOriginal ||
+      candidateSet.members.length > this.#policy.maxCandidateMembers ||
+      !sameRef(candidateSet.inputSnapshotRef.reference, original.inputSnapshotRef.reference) ||
+      !sameRef(candidateSet.workItemRef.reference, original.workItemRef.reference)
+    )
+      invalid();
+    if (
+      observation?.kind === "retrieval-result" &&
+      (observation.candidateVersion !== candidateSet.candidateVersion ||
+        ![
+          candidateSet.baselineQueryResultRef,
+          ...candidateSet.resupplements.map((item) => item.queryResultRef),
+        ].some((ref) => sameRef(ref.reference, observation.queryResultRef.reference)) ||
+        observation.members.some(
+          (member) =>
+            !candidateSet.members.some(
+              (frozen) => sha256CanonicalJson(member) === sha256CanonicalJson(frozen),
+            ),
+        ))
+    )
+      invalid();
+    await this.#assertCurrentCandidateAuthorization(task, candidateSet);
+    const releases = new Map<string, IdentificationKnowledgeExactReadV1>();
+    const members = [];
+    for (const member of candidateSet.members) {
+      const key = JSON.stringify(member.sourceReleaseRef);
+      let read = releases.get(key);
+      if (read === undefined) {
+        const invocationId = identificationBasisReadInvocationIdFor({
+          queryId: task.envelope.agentTaskRef.reference.entityId,
+          releaseRef: member.sourceReleaseRef,
+        });
+        const authorization = await this.#options.authorization.issueReadContext({
+          authorization: task.envelope.authorization,
+          projectId: task.envelope.projectId,
+          actorId: task.envelope.actorId,
+          invocationId,
+          requestedAt: this.#now().toISOString(),
+          branch: "knowledge-modeling.identification-basis",
+        });
+        const result = await this.#options.knowledgeReader.readExact({
+          projectId: task.envelope.projectId,
+          actorId: task.envelope.actorId,
+          invocationId,
+          releaseRef: member.sourceReleaseRef,
+          requestedAt: this.#now().toISOString(),
+          authorization,
+        });
+        if (result.kind !== "succeeded") return invalid();
+        read = result.read;
+        if (!sameRef(read.releaseBinding.releaseRef.reference, member.sourceReleaseRef.reference))
+          invalid();
+        releases.set(key, read);
+      }
+      const entry = entryOf(read, member.sourceKind, member.sourceEntryId);
+      if (entry === undefined) return invalid();
+      members.push({ ...member, entry });
+    }
+    return {
+      candidateSetRef,
+      candidateSet: { ...candidateSet, members },
+      ...(observation === undefined ? {} : { previousObservation: observation }),
     };
   }
 
@@ -1706,19 +2012,28 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     task: AgentTaskSnapshotV1,
     candidateSet: RetrievalReviewCandidateSetV1,
   ): Promise<boolean> {
+    const invocationId = `${task.envelope.agentTaskRef.reference.entityId}:validate`;
+    const authorization = await this.#options.authorization.issueReadContext({
+      authorization: task.envelope.authorization,
+      projectId: task.envelope.projectId,
+      actorId: task.envelope.actorId,
+      invocationId,
+      requestedAt: this.#now().toISOString(),
+      branch: "knowledge-modeling.relationship-context",
+    });
     const exact = await this.#options.inputReader.readExact({
       projectId: task.envelope.projectId,
       actorId: task.envelope.actorId,
-      queryId: task.envelope.agentTaskRef.reference.entityId,
+      queryId: invocationId,
       inputSnapshotRef: candidateSet.inputSnapshotRef,
       workItemRef: candidateSet.workItemRef,
-      authorization: task.envelope.authorization,
+      authorization,
     });
     if (exact.kind !== "succeeded") return false;
     return (
       (await this.#options.authorization.verifyCurrent({
-        authorization: task.envelope.authorization,
-        invocationId: `${task.envelope.agentTaskRef.reference.entityId}:validate`,
+        authorization,
+        invocationId,
         branch: "knowledge-modeling.relationship-context",
         requestedSpatialScopeRefs: [...exact.read.workItem.spatialScopeRefs],
         requestedSourceVersionRefs: [...exact.read.workItem.sourceVersionRefs],
@@ -1855,13 +2170,19 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       });
     }
     const rejected = items.filter((item) => item.disposition === "rejected");
-    if (rejected.length === 0) return await this.#validationOutcome(task, items, undefined);
+    if (rejected.length === 0)
+      return await this.#validationOutcome(task, items, undefined, increment.candidateSetRef);
     const rejectionClass: "repairable" | "terminal" = rejected.some(
       (item) => item.rejectionClass === "terminal",
     )
       ? "terminal"
       : "repairable";
-    return await this.#validationOutcome(task, items, rejectionClass);
+    return await this.#validationOutcome(
+      task,
+      items,
+      rejectionClass,
+      candidateSet === undefined ? undefined : increment.candidateSetRef,
+    );
   }
 
   async #validateCandidateForTask(
@@ -1895,20 +2216,23 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       readonly evidenceReferences: readonly EvidenceReference[];
     }[],
     rejectionClass: "repairable" | "terminal" | undefined,
+    candidateSetRef?: ArtifactRefV1,
   ): Promise<RetrievalReviewValidationOutcomeV1> {
-    const artifactId = `retrieval-review-validation-${task.envelope.agentTaskRef.reference.entityId}`;
+    const artifactId = validationArtifactIdFor(task.envelope.agentTaskRef);
     const validationArtifactRef = await this.#putArtifact({
       artifactId,
       projectId: task.envelope.projectId,
       actorId: task.envelope.actorId,
       issuedAt: this.#now().toISOString(),
-      purposeCode: OBSERVATION_PURPOSE_CODE_V1,
+      purposeCode: VALIDATION_PURPOSE_CODE_V1,
       authorization: task.envelope.authorization,
-      value: {
+      value: RetrievalReviewModelObservationV1Schema.parse({
+        kind: "validation",
         schemaVersion: IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1,
         taskRef: task.envelope.agentTaskRef,
+        ...(candidateSetRef === undefined ? {} : { candidateSetRef }),
         items,
-      },
+      }),
       commandId: `${artifactId}:${rejectionClass ?? "accepted"}`,
     });
     return {
@@ -1981,10 +2305,15 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       candidateSetRef: increment.candidateSetRef,
       operations: increment.operations,
     });
-    const retrievalArtifactSetRef = retrievalArtifactSetRefFor({
-      taskRef: task.envelope.agentTaskRef,
-      requestDigest,
+    const existing = await this.#options.resultStore.readResult({
+      projectId: task.envelope.projectId,
+      resultKind: "reviewed-retrieval",
+      agentTaskRef: task.envelope.agentTaskRef,
     });
+    const retrievalArtifactSetRef =
+      existing?.resultKind === "reviewed-retrieval"
+        ? existing.retrievalArtifactSetRef
+        : retrievalArtifactSetRefFor({ entityId: randomUUID(), requestDigest });
     const validationRef = {
       kind: "validation-snapshot" as const,
       reference: {
@@ -1992,6 +2321,24 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
         versionId: requestDigest,
       },
     };
+    if (existing !== undefined) {
+      if (existing.resultKind !== "reviewed-retrieval" || existing.requestDigest !== requestDigest)
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_VALIDATION_REJECTED",
+            category: "validation",
+            retryable: false,
+            stage: "worker.retrieval-review.finalize.conflict",
+            taskRef: task.envelope.agentTaskRef,
+          }),
+        );
+      return buildCompletedAgentTaskResult(
+        task.envelope.agentTaskRef,
+        existing.retrievalArtifactSetRef,
+        validationRef,
+        ["retrieval-artifact-set"],
+      );
+    }
     const reviewedSet: ReviewedRetrievalSetV1 = ReviewedRetrievalSetV1Schema.parse({
       schemaVersion: IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1,
       projectId: task.envelope.projectId,
@@ -2051,7 +2398,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     }
     return buildCompletedAgentTaskResult(
       task.envelope.agentTaskRef,
-      retrievalArtifactSetRef,
+      persisted.resultRef,
       validationRef,
       ["retrieval-artifact-set"],
     );
@@ -2061,6 +2408,17 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
 
   async assembleContext(input: AssembleModelContextInputV1): Promise<AssembleModelContextResultV1> {
     const options = this.#options;
+    input = {
+      ...input,
+      authorization: await options.authorization.issueReadContext({
+        authorization: input.authorization,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        invocationId: input.reviewTaskRef.reference.entityId,
+        requestedAt: this.#now().toISOString(),
+        branch: "knowledge-modeling.relationship-context",
+      }),
+    };
     const exact = await options.inputReader.readExact({
       projectId: input.projectId,
       actorId: input.actorId,
@@ -2083,7 +2441,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     const nodeId = exact.read.workItem.nodeId;
     const relationshipRow = await options.resultStore.readRelationshipResult({
       projectId: input.projectId,
-      queryId: relationshipQueryIdFor(nodeId),
+      queryId: relationshipQueryIdFor(nodeId, input.workItemRef),
     });
     if (relationshipRow === undefined) {
       throw new IdentificationContextError(
@@ -2098,7 +2456,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     const reviewedRow = await options.resultStore.readResult({
       projectId: input.projectId,
       resultKind: "reviewed-retrieval",
-      resultId: `retrieval-review:${input.reviewTaskRef.reference.entityId}`,
+      agentTaskRef: input.reviewTaskRef,
     });
     if (reviewedRow === undefined || reviewedRow.resultKind !== "reviewed-retrieval") {
       throw new IdentificationContextError(
@@ -2146,7 +2504,6 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
         }),
       );
     }
-    const scopeDigest = authorizationScopeDigest(current);
     if (
       task.envelope.projectId !== input.projectId ||
       task.envelope.actorId !== input.actorId ||
@@ -2157,9 +2514,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       !sameRef(reviewedRow.workItemRef.reference, input.workItemRef.reference) ||
       !sameRef(reviewedRow.agentTaskRef.reference, input.reviewTaskRef.reference) ||
       relationshipRow.actorRef !== input.actorId ||
-      reviewedRow.actorRef !== input.actorId ||
-      relationshipRow.authorizationScopeDigest !== scopeDigest ||
-      reviewedRow.authorizationScopeDigest !== scopeDigest
+      reviewedRow.actorRef !== input.actorId
     ) {
       throw new IdentificationContextError(
         blocked({
@@ -2222,9 +2577,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       !sameRef(
         reviewedSet.baselineQueryResultRef.reference,
         reviewedRow.baselineQueryResultRef.reference,
-      ) ||
-      relationshipPayload.authorizationScopeDigest !== scopeDigest ||
-      reviewedSet.authorizationScopeDigest !== scopeDigest
+      )
     ) {
       throw new IdentificationContextError(
         blocked({
@@ -2239,7 +2592,7 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       projectId: input.projectId,
       actorId: input.actorId,
       requestedAt,
-      queryId: baselineQueryIdFor(nodeId),
+      queryId: baselineQueryIdFor(nodeId, input.workItemRef),
       expectedQueryResultRef: reviewedSet.baselineQueryResultRef,
       authorization: current,
     });
@@ -2312,30 +2665,17 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
       retrievalArtifactSetRef: reviewedRow.retrievalArtifactSetRef,
       reviewTaskRef: input.reviewTaskRef,
     });
-    const modelContextArtifactSetRef = modelContextArtifactSetRefFor({
-      projectId: input.projectId,
-      workItemEntityId: input.workItemRef.reference.entityId,
-      taskEntityId: input.reviewTaskRef.reference.entityId,
-      requestDigest,
-    });
     const existing = await options.resultStore.readResult({
       projectId: input.projectId,
       resultKind: "model-context",
-      resultId: modelContextArtifactSetRef.reference.entityId,
+      retrievalArtifactSetRef: reviewedRow.retrievalArtifactSetRef,
     });
     if (existing !== undefined) {
-      if (
-        existing.resultKind !== "model-context" ||
-        existing.requestDigest !== requestDigest ||
-        !sameRef(
-          existing.modelContextArtifactSetRef.reference,
-          modelContextArtifactSetRef.reference,
-        )
-      ) {
-        throw incomplete("model-context-identity-conflict", modelContextArtifactSetRef);
+      if (existing.resultKind !== "model-context" || existing.requestDigest !== requestDigest) {
+        throw incomplete("model-context-identity-conflict", reviewedRow.retrievalArtifactSetRef);
       }
       return {
-        modelContextArtifactSetRef,
+        modelContextArtifactSetRef: existing.modelContextArtifactSetRef,
         payload: ModelContextPayloadV1Schema.parse(
           await this.#readArtifactJson({
             artifactRef: existing.artifactRef,
@@ -2348,6 +2688,10 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
         ),
       };
     }
+    const modelContextArtifactSetRef = modelContextArtifactSetRefFor({
+      entityId: randomUUID(),
+      requestDigest,
+    });
     const payload: ModelContextPayloadV1 = ModelContextPayloadV1Schema.parse({
       schemaVersion: IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1,
       projectId: input.projectId,
@@ -2424,7 +2768,15 @@ export class IdentificationContextService implements RetrievalReviewTaskPortV1 {
     if (persisted.kind !== "succeeded") {
       throw incomplete("model-context-persistence", modelContextArtifactSetRef);
     }
-    return { modelContextArtifactSetRef, payload };
+    if (persisted.resultRef.kind !== "model-context-artifact-set")
+      throw incomplete("model-context-persistence", modelContextArtifactSetRef);
+    return {
+      modelContextArtifactSetRef: {
+        kind: "model-context-artifact-set",
+        reference: persisted.resultRef.reference,
+      },
+      payload,
+    };
   }
 }
 

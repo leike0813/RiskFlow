@@ -1,8 +1,4 @@
-import {
-  ArtifactReadRequestV1Schema,
-  ArtifactStoreError,
-  type ArtifactStoreV1,
-} from "@riskflow/core/artifacts";
+import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import type {
   ConversationRequestV1,
   EmbeddingRequestV1,
@@ -17,9 +13,7 @@ const nonNegativeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
 export type ModelGatewayRequestV1 =
-  | StructuredCompletionRequestV1
-  | EmbeddingRequestV1
-  | ConversationRequestV1;
+  StructuredCompletionRequestV1 | EmbeddingRequestV1 | ConversationRequestV1;
 
 export interface ParentArtifactPreflightRequestV1 {
   readonly projectId: ModelInvocationBaseV1["projectId"];
@@ -29,7 +23,9 @@ export interface ParentArtifactPreflightRequestV1 {
   readonly purposeCode: "model-raw-response";
 }
 
-export type ParentArtifactPreflightV1 = (request: ParentArtifactPreflightRequestV1) => Promise<void>;
+export type ParentArtifactPreflightV1 = (
+  request: ParentArtifactPreflightRequestV1,
+) => Promise<void>;
 
 export class ResponseBodyLimitError extends Error {
   constructor(readonly partial: Uint8Array) {
@@ -57,7 +53,10 @@ export class OneSlotQueue<T> implements AsyncIterable<T> {
   #hasValue = false;
   #closed = false;
   #closeError: unknown;
-  readonly #consumers: Array<{ resolve: (result: IteratorResult<T>) => void; reject: (error: unknown) => void }> = [];
+  readonly #consumers: Array<{
+    resolve: (result: IteratorResult<T>) => void;
+    reject: (error: unknown) => void;
+  }> = [];
   readonly #producers: Array<() => void> = [];
 
   constructor(readonly onConsumerStop?: () => void) {}
@@ -66,7 +65,8 @@ export class OneSlotQueue<T> implements AsyncIterable<T> {
     if (this.#closed) throw this.#closeError ?? new Error("queue closed");
     const consumer = this.#consumers.shift();
     if (consumer !== undefined) return consumer.resolve({ done: false, value });
-    while (this.#hasValue && !this.#closed) await new Promise<void>((resolve) => this.#producers.push(resolve));
+    while (this.#hasValue && !this.#closed)
+      await new Promise<void>((resolve) => this.#producers.push(resolve));
     if (this.#closed) throw this.#closeError ?? new Error("queue closed");
     this.#value = value;
     this.#hasValue = true;
@@ -91,18 +91,29 @@ export class OneSlotQueue<T> implements AsyncIterable<T> {
       this.#producers.shift()?.();
       return Promise.resolve({ done: false, value });
     }
-    if (this.#closed) return this.#closeError === undefined
-      ? Promise.resolve({ done: true, value: undefined })
-      : Promise.reject(this.#closeError);
+    if (this.#closed)
+      return this.#closeError === undefined
+        ? Promise.resolve({ done: true, value: undefined })
+        : Promise.reject(this.#closeError);
     return new Promise((resolve, reject) => this.#consumers.push({ resolve, reject }));
   }
 
   [Symbol.asyncIterator](): AsyncIterableIterator<T> {
     return {
       next: () => this.next(),
-      return: async () => { this.onConsumerStop?.(); this.close(new ConsumerStoppedError()); return { done: true, value: undefined }; },
-      throw: async (error?: unknown) => { this.onConsumerStop?.(); this.close(error ?? new ConsumerStoppedError()); throw error; },
-      [Symbol.asyncIterator]() { return this; },
+      return: async () => {
+        this.onConsumerStop?.();
+        this.close(new ConsumerStoppedError());
+        return { done: true, value: undefined };
+      },
+      throw: async (error?: unknown) => {
+        this.onConsumerStop?.();
+        this.close(error ?? new ConsumerStoppedError());
+        throw error;
+      },
+      [Symbol.asyncIterator]() {
+        return this;
+      },
     };
   }
 }
@@ -117,7 +128,10 @@ const concatBytes = (parts: readonly Uint8Array[], total: number): Uint8Array =>
   return result;
 };
 
-export const readBoundedBytes = async (response: Response, maxBytes: number): Promise<Uint8Array> => {
+export const readBoundedBytes = async (
+  response: Response,
+  maxBytes: number,
+): Promise<Uint8Array> => {
   if (response.body === null) return new Uint8Array();
   const reader = response.body.getReader();
   const parts: Uint8Array[] = [];
@@ -126,7 +140,10 @@ export const readBoundedBytes = async (response: Response, maxBytes: number): Pr
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) { completed = true; return concatBytes(parts, total); }
+      if (done) {
+        completed = true;
+        return concatBytes(parts, total);
+      }
       if (value === undefined) continue;
       const nextTotal = total + value.byteLength;
       if (!Number.isSafeInteger(nextTotal) || nextTotal > maxBytes) {
@@ -148,7 +165,8 @@ export const decodeJson = (bytes: Uint8Array): unknown =>
   JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 
 export const usageFromWire = (value: unknown): ModelUsageV1 => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return { available: false };
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return { available: false };
   const usage = value as Record<string, unknown>;
   const inputTokens = usage.prompt_tokens;
   const outputTokens = usage.completion_tokens;
@@ -158,7 +176,8 @@ export const usageFromWire = (value: unknown): ModelUsageV1 => {
     (outputTokens !== undefined && !nonNegativeInteger(outputTokens)) ||
     (totalTokens !== undefined && !nonNegativeInteger(totalTokens)) ||
     (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined)
-  ) return { available: false };
+  )
+    return { available: false };
   return {
     available: true,
     ...(inputTokens === undefined ? {} : { inputTokens }),
@@ -169,6 +188,47 @@ export const usageFromWire = (value: unknown): ModelUsageV1 => {
 
 export const inputBytesForMessages = (messages: readonly { readonly content: string }[]): number =>
   messages.reduce((total, message) => total + encoder.encode(message.content).byteLength, 0);
+
+/** Action quotas may only narrow the frozen deployment window; the smaller value wins. */
+export const structuredTokenLimits = (
+  request: StructuredCompletionRequestV1,
+  deploymentContextWindowTokens: number,
+): { readonly maxInputTokens: number | undefined; readonly maxContextTokens: number } => ({
+  maxInputTokens:
+    request.maxInputTokens === undefined
+      ? undefined
+      : Math.min(request.maxInputTokens, deploymentContextWindowTokens),
+  maxContextTokens:
+    request.maxContextTokens === undefined
+      ? deploymentContextWindowTokens
+      : Math.min(request.maxContextTokens, deploymentContextWindowTokens),
+});
+
+export interface ModelUsageCounts {
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+}
+
+/** Counters of an already converted usage; never carries response text or thinking content. */
+export const usageCounts = (usage: ModelUsageV1): ModelUsageCounts =>
+  usage.available
+    ? {
+        ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
+        ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
+      }
+    : {};
+
+/** Best-effort counters from persisted raw bytes when later parsing fails. */
+export const rawUsageCounts = (bytes: Uint8Array): ModelUsageCounts => {
+  let value: unknown;
+  try {
+    value = decodeJson(bytes);
+  } catch {
+    return {};
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  return usageCounts(usageFromWire((value as Record<string, unknown>).usage));
+};
 
 export const inputBytesForTexts = (texts: readonly string[]): number =>
   texts.reduce((total, text) => total + encoder.encode(text).byteLength, 0);
@@ -196,17 +256,28 @@ export const assertModelGatewayRequestBudget = <T extends ModelGatewayRequestV1>
     readonly contextWindowTokens: number;
   },
   inputBytes: number,
-  fail: (code: "MODEL_REQUEST_TIMEOUT" | "MODEL_CONTEXT_EXCEEDED" | "MODEL_INPUT_INVALID", stage: string, counts?: { inputBytes?: number; batchItems?: number }) => never,
+  fail: (
+    code: "MODEL_REQUEST_TIMEOUT" | "MODEL_CONTEXT_EXCEEDED" | "MODEL_INPUT_INVALID",
+    stage: string,
+    counts?: { inputBytes?: number; batchItems?: number },
+  ) => never,
   now: () => Date,
 ): void => {
-  if (Date.parse(request.deadlineAt) <= now().getTime()) fail("MODEL_REQUEST_TIMEOUT", "request.deadline");
-  if (inputBytes > config.maxInputBytes) fail("MODEL_CONTEXT_EXCEEDED", "request.input-bytes", { inputBytes });
+  if (Date.parse(request.deadlineAt) <= now().getTime())
+    fail("MODEL_REQUEST_TIMEOUT", "request.deadline");
+  if (inputBytes > config.maxInputBytes)
+    fail("MODEL_CONTEXT_EXCEEDED", "request.input-bytes", { inputBytes });
   if ("maxOutputTokens" in request) {
-    if (request.maxOutputTokens > config.maxOutputTokens) fail("MODEL_INPUT_INVALID", "request.output-budget");
-    if (request.maxOutputTokens > config.contextWindowTokens) fail("MODEL_CONTEXT_EXCEEDED", "request.context");
+    if (request.maxOutputTokens > config.maxOutputTokens)
+      fail("MODEL_INPUT_INVALID", "request.output-budget");
+    if (request.maxOutputTokens > config.contextWindowTokens)
+      fail("MODEL_CONTEXT_EXCEEDED", "request.context");
   }
   if ("maxInputBytes" in request) {
-    if (request.maxInputBytes > config.maxInputBytes || request.maxBatchItems > config.maxBatchItems)
+    if (
+      request.maxInputBytes > config.maxInputBytes ||
+      request.maxBatchItems > config.maxBatchItems
+    )
       fail("MODEL_INPUT_INVALID", "request.input-budget");
     if (request.texts.length > request.maxBatchItems)
       fail("MODEL_CONTEXT_EXCEEDED", "request.batch", { batchItems: request.texts.length });
@@ -237,9 +308,9 @@ export const preflightParentArtifacts = async (
 };
 
 export const persistRawModelResponse = async (
-  request: ModelGatewayRequestV1,
+  _request: ModelGatewayRequestV1,
   bytes: Uint8Array,
-  operation: string,
+  _operation: string,
   maxResponseBytes: number,
   options: {
     readonly artifactStore: ArtifactStoreV1;
@@ -248,32 +319,6 @@ export const persistRawModelResponse = async (
   },
 ): Promise<{ readonly ref: DiagnosticArtifactRefV1; readonly bytes: Uint8Array }> => {
   const ref = await options.putRaw(bytes);
-  try {
-    const handle = await options.artifactStore.open(ArtifactReadRequestV1Schema.parse({
-      schemaVersion: "1",
-      requestId: `model-read-${request.invocationId}-${operation}`,
-      idempotencyKey: `${request.idempotencyKey}:raw-read:${operation}`,
-      artifactRef: ref,
-      projectId: request.projectId,
-      actorId: request.actorId,
-      requestedAt: options.now().toISOString(),
-      purposeCode: "model-raw-response",
-      requiredCapability: request.requiredCapability,
-      authorization: request.authorization,
-    }));
-    const parts: Uint8Array[] = [];
-    let total = 0;
-    for await (const part of handle.content) {
-      const nextTotal = total + part.byteLength;
-      if (!Number.isSafeInteger(nextTotal) || nextTotal > maxResponseBytes)
-        throw new PersistedResponseLimitError(ref);
-      total = nextTotal;
-      parts.push(new Uint8Array(part));
-    }
-    await handle.verified;
-    return { ref, bytes: concatBytes(parts, total) };
-  } catch (error) {
-    if (error instanceof ArtifactStoreError) throw error;
-    throw error;
-  }
+  if (bytes.byteLength > maxResponseBytes) throw new PersistedResponseLimitError(ref);
+  return { ref, bytes };
 };

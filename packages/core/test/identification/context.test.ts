@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { VersionReference } from "@riskflow/contracts/common";
 import {
   ModuleErrorV1Schema,
+  MODULE_BRANCH_CAPABILITY_V1,
   type AgentTaskRefV1,
   type AuthorizationContextV1,
   type KnowledgeRetrievalQueryV1,
@@ -29,6 +30,8 @@ import {
   relationshipQueryIdFor,
   resupplementQueryIdFor,
   type IdentificationContextResultStoreV1,
+  type IdentificationContextResultRowV1,
+  type IdentificationContextAuthorizationPortV1,
 } from "../../src/identification/context/index.js";
 import {
   HybridRetrievalPolicyV1Schema,
@@ -361,7 +364,7 @@ const memberRef = (sourceEntryId: string, release: VersionReference) => ({
 
 const hybridPayload = (overrides: Record<string, unknown> = {}) => ({
   schemaVersion: "1",
-  queryId: baselineQueryIdFor(NODE_ID),
+  queryId: baselineQueryIdFor(NODE_ID, workItemRef),
   projectId: PROJECT,
   actorId: ACTOR,
   requestedAt: TIMESTAMP,
@@ -415,7 +418,7 @@ const hybridPayload = (overrides: Record<string, unknown> = {}) => ({
   knowledgeQueryResultRef: {
     kind: "knowledge-query-result",
     reference: {
-      entityId: `retrieval-query-result:${PROJECT}:${baselineQueryIdFor(NODE_ID)}`,
+      entityId: `retrieval-query-result:${PROJECT}:${baselineQueryIdFor(NODE_ID, workItemRef)}`,
       versionId: digestOf("baseline"),
     },
   },
@@ -498,6 +501,7 @@ const reviewPolicy = () =>
     modelDeploymentRef: versionRef("model-deployment"),
     promptTemplateRef: versionRef("prompt-template"),
     maxCandidateMembers: 8,
+    budgetPolicy: taskSnapshot().budgetPolicy,
     maxResupplements: 2,
     allowedSupplementIntentCodes: ["settlement", "support"],
     modelMaxOutputTokens: 1024,
@@ -587,11 +591,7 @@ interface HarnessOverrides {
     readonly kind: "source-version";
     readonly reference: VersionReference;
   }[];
-  readonly issueReadContext?: (input: {
-    readonly invocationId: string;
-    readonly requestedSpatialScopeRefs: readonly { readonly reference: VersionReference }[];
-    readonly requestedSourceVersionRefs: readonly { readonly reference: VersionReference }[];
-  }) => Promise<AuthorizationContextV1>;
+  readonly issueReadContext?: IdentificationContextAuthorizationPortV1["issueReadContext"];
   readonly verifyCurrent?: (input: {
     readonly requestedSourceVersionRefs: readonly { readonly reference: VersionReference }[];
   }) => Promise<AuthorizationContextV1 | undefined>;
@@ -604,6 +604,7 @@ interface HarnessOverrides {
 
 const makeHarness = (overrides: HarnessOverrides = {}) => {
   const artifacts = new Map<string, Uint8Array>();
+  const artifactPurposes = new Map<string, string>();
   const rows = new Map<string, Record<string, unknown>>();
   const auditRows: string[] = [];
   const events: unknown[] = [];
@@ -618,7 +619,10 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
   });
 
   const artifactStore = {
-    async put(command: { artifactId: string }, content: AsyncIterable<Uint8Array>) {
+    async put(
+      command: { artifactId: string; purposeCode: string },
+      content: AsyncIterable<Uint8Array>,
+    ) {
       const chunks: Uint8Array[] = [];
       let size = 0;
       for await (const chunk of content) {
@@ -633,6 +637,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
       }
       const artifactRef = artifactRefOf(command.artifactId, bytes);
       artifacts.set(artifactRef.reference.versionId, bytes);
+      artifactPurposes.set(artifactRef.reference.versionId, command.purposeCode);
       return {
         artifactRef,
         manifest: {},
@@ -650,7 +655,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
         content: (async function* () {
           yield bytes;
         })(),
-        verified: Promise.resolve({}),
+        completed: Promise.resolve({}),
       };
     },
   };
@@ -683,16 +688,20 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
         ? { kind: "registered", replayed: true }
         : { kind: "idempotency-conflict" };
     },
-    async readResult({ projectId, resultKind, resultId }) {
-      for (const row of rows.values()) {
-        const typed = row as { projectId: string; resultKind: string; resultId: string };
-        if (
-          typed.projectId === projectId &&
-          typed.resultKind === resultKind &&
-          typed.resultId === resultId
-        ) {
-          return row as never;
-        }
+    async readResult(input) {
+      for (const value of rows.values()) {
+        const row = value as unknown as IdentificationContextResultRowV1;
+        if (row.projectId !== input.projectId || row.resultKind !== input.resultKind) continue;
+        const matched =
+          "resultId" in input
+            ? row.resultId === input.resultId
+            : "agentTaskRef" in input
+              ? row.resultKind === "reviewed-retrieval" &&
+                JSON.stringify(row.agentTaskRef) === JSON.stringify(input.agentTaskRef)
+              : row.resultKind !== "relationship" &&
+                JSON.stringify(row.retrievalArtifactSetRef) ===
+                  JSON.stringify(input.retrievalArtifactSetRef);
+        if (matched) return row;
       }
       return undefined;
     },
@@ -732,13 +741,13 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
   };
 
   const authorizationPort = {
-    async issueReadContext(input: {
-      readonly invocationId: string;
-      readonly requestedSpatialScopeRefs: readonly { readonly reference: VersionReference }[];
-      readonly requestedSourceVersionRefs: readonly { readonly reference: VersionReference }[];
-    }) {
+    async issueReadContext(
+      input: Parameters<IdentificationContextAuthorizationPortV1["issueReadContext"]>[0],
+    ) {
       return await (overrides.issueReadContext?.(input) ??
-        Promise.resolve(authorization({ grantedCapabilities: ["knowledge-modeling.read"] })));
+        Promise.resolve(
+          authorization({ grantedCapabilities: [MODULE_BRANCH_CAPABILITY_V1[input.branch]] }),
+        ));
     },
     async verifyCurrent(input: {
       readonly requestedSourceVersionRefs: readonly { readonly reference: VersionReference }[];
@@ -862,6 +871,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
     rows,
     auditRows,
     artifacts,
+    artifactPurposes,
     packageReads,
     events,
     payload,
@@ -872,7 +882,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
 
 const relationshipQuery = (overrides: Record<string, unknown> = {}) =>
   ({
-    queryId: relationshipQueryIdFor(NODE_ID),
+    queryId: relationshipQueryIdFor(NODE_ID, workItemRef),
     projectId: PROJECT,
     actorId: ACTOR,
     requestedAt: TIMESTAMP,
@@ -883,40 +893,82 @@ const relationshipQuery = (overrides: Record<string, unknown> = {}) =>
   }) as unknown as KnowledgeRetrievalQueryV1;
 
 describe("C21 relationship-context and retrieval review", () => {
-  it("reads the exact releases and returns one-hop relations with a formal result reference", async () => {
+  it("uses the explicit task budget and rejects mismatched or insufficient policy bindings", () => {
     const harness = makeHarness();
-    const result = await harness.service.retrieve(relationshipQuery());
-    expect(result.kind).toBe("succeeded");
-    if (result.kind !== "succeeded") throw new Error("relationship query must succeed");
-    expect(result.result.knowledgeQueryResultRef.reference.entityId).toBe(
-      `relationship-query-result:${PROJECT}:${relationshipQueryIdFor(NODE_ID)}`,
+    expect(harness.service.createTaskDefinition().budgetPolicy).toEqual(
+      reviewPolicy().budgetPolicy,
     );
-    expect(harness.packageReads).toEqual([
-      "release-process-model",
-      "release-risk-mechanism",
-      "release-evidence-base",
-    ]);
-    const row = [...harness.rows.values()].find((entry) => entry["resultKind"] === "relationship");
-    expect(row).toBeDefined();
-    const stored = [...harness.artifacts.values()][0];
-    const payload = RelationshipContextPayloadV1Schema.parse(
-      JSON.parse(new TextDecoder().decode(stored)),
-    );
-    expect(payload.nodeId).toBe(NODE_ID);
-    expect(payload.dependencyEdges.map((edge) => edge.relationType)).toEqual([
-      "时间先后关系",
-      "受力依赖关系",
-    ]);
-    expect(payload.neighborNodes.map((neighbor) => neighbor.upstream)).toEqual([true, true]);
-    expect(payload.mechanisms.map((mechanism) => mechanism.mechanismId)).toEqual([
-      "mechanism-applicable",
-    ]);
-    expect(payload.excludedMechanisms).toEqual([
-      { mechanismId: "mechanism-inapplicable", reasonCode: "mechanism-applicability-mismatch" },
-    ]);
-    expect(payload.releaseBinding.compositeMemberReleaseRefs).toHaveLength(3);
-    expect(harness.auditRows).toHaveLength(1);
+    const policy = reviewPolicy();
+    for (const budgetPolicy of [
+      undefined,
+      { ...policy.budgetPolicy, policyRef: versionRef("another-budget") },
+      { ...policy.budgetPolicy, modelDeploymentRef: versionRef("another-model") },
+      { ...policy.budgetPolicy, maxObjects: policy.maxCandidateMembers - 1 },
+      { ...policy.budgetPolicy, maxSupplementarySearches: policy.maxResupplements - 1 },
+    ])
+      expect(RetrievalReviewPolicyV1Schema.safeParse({ ...policy, budgetPolicy }).success).toBe(
+        false,
+      );
   });
+
+  it.each(["equal", "broader", "partial"])(
+    "reads exact one-hop relations with %s mechanism applicability",
+    async (coverage) => {
+      const process = processModelPackage();
+      const mechanisms = riskMechanismPackageValue();
+      if (coverage === "broader") {
+        for (const dimension of [
+          "constructionMethod",
+          "stratumCondition",
+          "engineeringStage",
+        ] as const)
+          mechanisms.mechanisms[0]!.applicability[dimension].push("additional-value");
+      } else if (coverage === "partial") {
+        process.nodes[0]!.applicability.engineeringStage.push("additional-stage");
+      }
+      const harness = makeHarness({
+        packages: {
+          "release-process-model": process,
+          "release-risk-mechanism": mechanisms,
+        },
+      });
+      const result = await harness.service.retrieve(relationshipQuery());
+      expect(result.kind).toBe("succeeded");
+      if (result.kind !== "succeeded") throw new Error("relationship query must succeed");
+      expect(result.result.knowledgeQueryResultRef.reference.entityId).toBe(
+        `relationship-query-result:${PROJECT}:${relationshipQueryIdFor(NODE_ID, workItemRef)}`,
+      );
+      expect(harness.packageReads).toEqual([
+        "release-process-model",
+        "release-risk-mechanism",
+        "release-evidence-base",
+      ]);
+      const row = [...harness.rows.values()].find(
+        (entry) => entry["resultKind"] === "relationship",
+      );
+      expect(row).toBeDefined();
+      const stored = [...harness.artifacts.values()][0];
+      const payload = RelationshipContextPayloadV1Schema.parse(
+        JSON.parse(new TextDecoder().decode(stored)),
+      );
+      expect(payload.nodeId).toBe(NODE_ID);
+      expect(payload.dependencyEdges.map((edge) => edge.relationType)).toEqual([
+        "时间先后关系",
+        "受力依赖关系",
+      ]);
+      expect(payload.neighborNodes.map((neighbor) => neighbor.upstream)).toEqual([true, true]);
+      expect(payload.mechanisms.map((mechanism) => mechanism.mechanismId)).toEqual(
+        coverage === "partial" ? [] : ["mechanism-applicable"],
+      );
+      expect(payload.excludedMechanisms.map((entry) => entry.mechanismId)).toEqual(
+        coverage === "partial"
+          ? ["mechanism-applicable", "mechanism-inapplicable"]
+          : ["mechanism-inapplicable"],
+      );
+      expect(payload.releaseBinding.compositeMemberReleaseRefs).toHaveLength(3);
+      expect(harness.auditRows).toHaveLength(1);
+    },
+  );
 
   it("closes broken relations, foreign projects and revoked authorization without partial results", async () => {
     const broken = makeHarness({
@@ -1173,6 +1225,104 @@ describe("C21 relationship-context and retrieval review", () => {
     expect(outOfScope.auditRows).toHaveLength(0);
   });
 
+  it("loads exact knowledge and rejects foreign observations or revoked model input", async () => {
+    let revoked = false;
+    const harness = makeHarness({
+      verifyCurrent: async () => (revoked ? undefined : authorization()),
+    });
+    const set = RetrievalReviewCandidateSetV1Schema.parse(candidateSetValue());
+    const candidateSetRef = await harness.putValue("model-input-candidates", set);
+    const task = taskSnapshot(candidateSetRef);
+    const modelInput = await harness.service.readReviewModelInput(task);
+    expect(modelInput.candidateSet.members[0]?.entry).toEqual(standardLibraryPackage().entries[0]);
+    const validation = await harness.service.validateReviewIncrement({
+      task,
+      candidate: {
+        schemaVersion: "1",
+        candidateVersion: 1,
+        candidateSetRef,
+        operations: [
+          {
+            operation: "select",
+            memberRef: set.members[0]!.memberRef,
+            evidence: set.members[0]!.evidence,
+            rationaleCode: "supporting-standard",
+          },
+        ],
+      },
+    });
+    const afterValidation = await harness.service.readReviewModelInput(
+      task,
+      validation.validationArtifactRef,
+    );
+    expect(harness.artifactPurposes.get(validation.validationArtifactRef.reference.versionId)).toBe(
+      "agent-validation",
+    );
+    expect(afterValidation.candidateSetRef).toEqual(candidateSetRef);
+    expect(afterValidation.previousObservation?.kind).toBe("validation");
+    const observationRef = await harness.putValue("foreign-model-observation", {
+      kind: "retrieval-result",
+      schemaVersion: "1",
+      taskRef: { ...task.envelope.agentTaskRef, reference: versionRef("another-task") },
+      candidateSetRef,
+      candidateVersion: set.candidateVersion,
+      queryResultRef: set.baselineQueryResultRef,
+      members: set.members,
+      resupplements: [],
+    });
+    await expect(harness.service.readReviewModelInput(task, observationRef)).rejects.toMatchObject({
+      details: { code: "AGENT_INPUT_INVALID" },
+    });
+    revoked = true;
+    await expect(harness.service.readReviewModelInput(task)).rejects.toMatchObject({
+      details: { code: "AGENT_AUTHORIZATION_DENIED" },
+    });
+  });
+
+  it("pairs candidate input reads with the issued validation action", async () => {
+    let issuedInvocationId: string | undefined;
+    const harness = makeHarness({
+      issueReadContext: async (input) => {
+        issuedInvocationId = input.invocationId;
+        return authorization({ grantedCapabilities: [MODULE_BRANCH_CAPABILITY_V1[input.branch]] });
+      },
+      inputReader: {
+        async readExact(input: { queryId: string; workItemRef: typeof workItemRef }) {
+          if (input.queryId !== issuedInvocationId) return { kind: "failed" };
+          return {
+            kind: "succeeded",
+            read: {
+              inputSnapshot: inputSnapshot(),
+              workItem: {
+                workItemRef: input.workItemRef,
+                nodeId: NODE_ID,
+                spatialScopeRefs: [
+                  { kind: "spatial-scope", reference: versionRef("spatial-scope") },
+                ],
+                sourceVersionRefs: [{ kind: "source-version", reference: versionRef("source-a") }],
+                frozenQueryText: "变径空间扩挖 受力依赖",
+              },
+            },
+          };
+        },
+      },
+    });
+    const candidateSet = RetrievalReviewCandidateSetV1Schema.parse(candidateSetValue());
+    const candidateSetRef = await harness.putValue("candidate-set-action-binding", candidateSet);
+    const task = taskSnapshot(candidateSetRef);
+    await expect(
+      harness.service.readFrozenResult(
+        {
+          kind: "read-frozen-result",
+          candidateSetRef,
+          queryResultRef: candidateSet.baselineQueryResultRef,
+          maxMembers: 1,
+        },
+        { task, taskRef: task.envelope.agentTaskRef, actionId: "bound-read" },
+      ),
+    ).resolves.toBeDefined();
+  });
+
   it("rechecks current authorization after validation before tool reads and formal finalization", async () => {
     let revoked = false;
     const harness = makeHarness({
@@ -1231,7 +1381,11 @@ describe("C21 relationship-context and retrieval review", () => {
   it("assembles the five-item context only when every group is present", async () => {
     const taskRefValue = taskRef();
     const completed: { current?: AgentTaskSnapshotV1 } = {};
-    const harness = makeHarness({ task: () => completed.current });
+    let readable = true;
+    const harness = makeHarness({
+      task: () => completed.current,
+      verifyCurrent: async () => (readable ? authorization() : undefined),
+    });
     const candidateSetRef = await harness.putValue(
       `retrieval-review-candidate-set-${taskRefValue.reference.entityId}`,
       RetrievalReviewCandidateSetV1Schema.parse(candidateSetValue()),
@@ -1240,6 +1394,18 @@ describe("C21 relationship-context and retrieval review", () => {
     completed.current = completedTaskSnapshot(taskRefValue, reviewedRef.retrievalArtifactSetRef);
     await harness.service.retrieve(relationshipQuery());
 
+    const readInput = {
+      projectId: PROJECT,
+      actorId: ACTOR,
+      requestedAt: TIMESTAMP,
+      workItemRef,
+      retrievalArtifactSetRef: reviewedRef.retrievalArtifactSetRef,
+      authorization: authorization(),
+    };
+    expect(await harness.service.modelContextReader.readExact(readInput)).toMatchObject({
+      kind: "failed",
+      code: "ENTITY_NOT_FOUND",
+    });
     const assembled = await harness.service.assembleContext({
       projectId: PROJECT,
       actorId: ACTOR,
@@ -1248,9 +1414,7 @@ describe("C21 relationship-context and retrieval review", () => {
       workItemRef,
       authorization: authorization(),
     });
-    expect(assembled.modelContextArtifactSetRef.reference.entityId).toBe(
-      `identification-model-context:${PROJECT}:${workItemRef.reference.entityId}:${taskRefValue.reference.entityId}`,
-    );
+    expect(assembled.modelContextArtifactSetRef.reference.entityId).toMatch(/^[0-9a-f-]{36}$/);
     const modelContext = ModelContextPayloadV1Schema.parse(assembled.payload);
     expect(modelContext.forceDependencies).toHaveLength(1);
     expect(modelContext.mechanisms.map((mechanism) => mechanism.mechanismId)).toEqual([
@@ -1263,6 +1427,51 @@ describe("C21 relationship-context and retrieval review", () => {
     expect(modelContext.retrievalArtifactSetRef).toEqual(reviewedRef.retrievalArtifactSetRef);
     expect([...harness.rows.values()].some((row) => row["resultKind"] === "model-context")).toBe(
       true,
+    );
+    const factsBeforeRead = [harness.rows.size, harness.artifacts.size, harness.auditRows.length];
+    expect(await harness.service.modelContextReader.readExact(readInput)).toMatchObject({
+      kind: "succeeded",
+      read: {
+        payload: assembled.payload,
+        modelContextArtifactSetRef: assembled.modelContextArtifactSetRef,
+      },
+    });
+    for (const [changed, code] of [
+      [
+        {
+          ...readInput,
+          retrievalArtifactSetRef: {
+            ...readInput.retrievalArtifactSetRef,
+            reference: {
+              ...readInput.retrievalArtifactSetRef.reference,
+              versionId: "wrong-version",
+            },
+          },
+        },
+        "ENTITY_NOT_FOUND",
+      ],
+      [
+        { ...readInput, workItemRef: { ...workItemRef, reference: versionRef("wrong-work-item") } },
+        "SOURCE_FACT_DRIFT",
+      ],
+    ] as const)
+      expect(await harness.service.modelContextReader.readExact(changed)).toMatchObject({
+        kind: "failed",
+        code,
+      });
+    expect(
+      await harness.service.modelContextReader.readExact({
+        ...readInput,
+        actorId: "another-actor",
+      }),
+    ).toMatchObject({ kind: "failed", code: "AUTHORIZATION_DENIED" });
+    readable = false;
+    expect(await harness.service.modelContextReader.readExact(readInput)).toMatchObject({
+      kind: "failed",
+      code: "AUTHORIZATION_DENIED",
+    });
+    expect([harness.rows.size, harness.artifacts.size, harness.auditRows.length]).toEqual(
+      factsBeforeRead,
     );
     void candidateSetRef;
 
@@ -1504,15 +1713,12 @@ describe("C21 relationship-context and retrieval review", () => {
   });
 
   it("freezes the official baseline with a stable queryId and writes candidate set v1", async () => {
-    const issued: {
-      readonly invocationId: string;
-      readonly requestedSpatialScopeRefs: readonly { readonly reference: VersionReference }[];
-      readonly requestedSourceVersionRefs: readonly { readonly reference: VersionReference }[];
-    }[] = [];
+    const issued: Parameters<IdentificationContextAuthorizationPortV1["issueReadContext"]>[0][] =
+      [];
     const harness = makeHarness({
       issueReadContext: async (input) => {
         issued.push(input);
-        return authorization({ grantedCapabilities: ["knowledge-modeling.read"] });
+        return authorization({ grantedCapabilities: [MODULE_BRANCH_CAPABILITY_V1[input.branch]] });
       },
     });
     const prepared = await harness.service.prepareReview({
@@ -1528,7 +1734,7 @@ describe("C21 relationship-context and retrieval review", () => {
       readonly queryId: string;
       readonly kind: string;
     };
-    expect(baselineQuery.queryId).toBe(baselineQueryIdFor(NODE_ID));
+    expect(baselineQuery.queryId).toBe(baselineQueryIdFor(NODE_ID, workItemRef));
     expect(baselineQuery.kind).toBe("hybrid-evidence");
     expect(prepared.candidateSet.candidateVersion).toBe(1);
     expect(prepared.candidateSet.resupplements).toEqual([]);
@@ -1539,14 +1745,20 @@ describe("C21 relationship-context and retrieval review", () => {
       segmentEvidence("segment-standard"),
     ]);
     expect(prepared.candidateSet.frozenQueryText).toBe("变径空间扩挖 受力依赖");
-    expect(issued.filter((input) => input.invocationId.startsWith("c21-fact-read:"))).toEqual([
-      expect.objectContaining({
-        requestedSpatialScopeRefs: [
-          { kind: "spatial-scope", reference: versionRef("spatial-scope") },
-        ],
-        requestedSourceVersionRefs: [{ kind: "source-version", reference: versionRef("source-a") }],
-      }),
-    ]);
+    expect(
+      issued.some(
+        (input) =>
+          input.branch === "knowledge-modeling.hybrid-evidence" &&
+          input.invocationId === baselineQuery.queryId,
+      ),
+    ).toBe(true);
+    expect(
+      issued.every(
+        (input) =>
+          authorizationScopeDigest(input.authorization) ===
+          authorizationScopeDigest(authorization()),
+      ),
+    ).toBe(true);
     // 关系结果与基线一起被冻结：同一工作项只对应一个正式关系结果。
     expect([...harness.rows.values()].some((row) => row["resultKind"] === "relationship")).toBe(
       true,
@@ -1560,7 +1772,7 @@ describe("C21 relationship-context and retrieval review", () => {
         projectId: PROJECT,
         actorId: ACTOR,
         requestedAt: TIMESTAMP,
-        queryId: baselineQueryIdFor(NODE_ID),
+        queryId: baselineQueryIdFor(NODE_ID, workItemRef),
         authorization: authorization(),
       }),
     ).rejects.toMatchObject({ details: { code: "BUSINESS_BLOCKED" } });
@@ -1612,11 +1824,11 @@ describe("C21 relationship-context and retrieval review", () => {
     expect(outcome.effect).toBe("committed");
     expect(outcome.resultRef).toMatchObject({ kind: "content-artifact" });
     expect(outcome.usage).toMatchObject({ supplementarySearches: 1 });
+    if (outcome.resultRef?.kind !== "content-artifact")
+      throw new Error("candidate reference required");
     const nextSet = RetrievalReviewCandidateSetV1Schema.parse(
       JSON.parse(
-        new TextDecoder().decode(
-          [...harness.artifacts.values()][[...harness.artifacts.keys()].length - 1]!,
-        ),
+        new TextDecoder().decode(harness.artifacts.get(outcome.resultRef.reference.versionId)!),
       ),
     );
     expect(nextSet.candidateVersion).toBe(2);
@@ -1625,6 +1837,13 @@ describe("C21 relationship-context and retrieval review", () => {
     expect(nextSet.resupplements[0]!.queryId).toBe(
       resupplementQueryIdFor(taskRef().reference.entityId, "action-resupplement-1"),
     );
+    const modelInput = await harness.service.readReviewModelInput(
+      task,
+      outcome.observationArtifactRef,
+    );
+    expect(modelInput.candidateSetRef.reference).toEqual(outcome.resultRef.reference);
+    expect(modelInput.candidateSet.candidateVersion).toBe(2);
+    expect(modelInput.candidateSet.members[0]?.entry).toBeDefined();
 
     await expect(
       tool.execute(
@@ -1648,7 +1867,7 @@ describe("C21 relationship-context and retrieval review", () => {
         retrievalPolicyRef: versionRef("retrieval-policy"),
       },
       projectId: PROJECT,
-      queryId: baselineQueryIdFor(NODE_ID),
+      queryId: baselineQueryIdFor(NODE_ID, workItemRef),
       actorId: ACTOR,
       requestedAt: TIMESTAMP,
       authorization: authorization(),

@@ -20,6 +20,7 @@ import {
 } from "./schema.js";
 
 const { Workbook } = exceljs;
+const CDATA_KEY = "__cdata";
 const XML_OPTIONS = {
   preserveOrder: true,
   ignoreAttributes: false,
@@ -27,6 +28,7 @@ const XML_OPTIONS = {
   processEntities: false,
   htmlEntities: false,
   allowBooleanAttributes: false,
+  cdataPropName: CDATA_KEY,
 } as const;
 
 const mediaTypes: Record<DocumentInputKindV1, readonly string[]> = {
@@ -126,23 +128,65 @@ const findXmlEntries = (
   return found;
 };
 
+// 标准 XML 字符引用要在文本读取边界还原：fast-xml-parser 的 processEntities 不解数字引用，
+// 数字引用只能随 htmlEntities 一起打开，而那会连带解码 HTML 命名实体。
+// CDATA 里的引用不是引用，按字面保留，故解析时用 cdataPropName 单独识别。
+const xmlCharacterReferences: Readonly<Record<string, string>> = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  lt: "<",
+  quot: '"',
+};
+
+const isXmlCharacter = (codePoint: number): boolean =>
+  codePoint === 0x9 ||
+  codePoint === 0xa ||
+  codePoint === 0xd ||
+  (codePoint >= 0x20 && codePoint <= 0xd7ff) ||
+  (codePoint >= 0xe000 && codePoint <= 0xfffd) ||
+  (codePoint >= 0x10000 && codePoint <= 0x10ffff);
+
+const decodeXmlCodePoint = (reference: string, codePoint: number): string =>
+  isXmlCharacter(codePoint) ? String.fromCodePoint(codePoint) : reference;
+
+const decodeXmlCharacterReferences = (text: string): string =>
+  text.replace(
+    /&(?:#(\d+)|#x([0-9A-Fa-f]+)|(amp|apos|gt|lt|quot));/gu,
+    (reference: string, decimal?: string, hex?: string, name?: string): string => {
+      if (name !== undefined) return xmlCharacterReferences[name] ?? reference;
+      const codePoint = decimal === undefined ? Number.parseInt(hex ?? "", 16) : Number(decimal);
+      return decodeXmlCodePoint(reference, codePoint);
+    },
+  );
+
 const collectXmlText = (node: unknown): string => {
   const pieces: string[] = [];
+  const pushText = (value: string, decode: boolean): void => {
+    pieces.push(decode ? decodeXmlCharacterReferences(value) : value);
+  };
+  const visitNodes = (nodes: unknown, decode: boolean): void => {
+    if (typeof nodes === "string") {
+      pushText(nodes, decode);
+      return;
+    }
+    if (!Array.isArray(nodes)) return;
+    for (const item of nodes) {
+      if (typeof item === "string") {
+        pushText(item, decode);
+        continue;
+      }
+      if (typeof item !== "object" || item === null) continue;
+      for (const [key, value] of Object.entries(item)) {
+        if (key === CDATA_KEY) visitNodes(value, false);
+        else if (localName(key) === "#text" && typeof value === "string") pushText(value, decode);
+      }
+    }
+  };
   const visit = (current: unknown): void => {
     for (const entry of xmlEntries(current)) {
-      if (localName(entry.name) === "t") {
-        if (typeof entry.value === "string") pieces.push(entry.value);
-        else if (Array.isArray(entry.value)) {
-          for (const textNode of entry.value) {
-            if (typeof textNode === "string") pieces.push(textNode);
-            else if (typeof textNode === "object" && textNode !== null) {
-              for (const [key, value] of Object.entries(textNode)) {
-                if (localName(key) === "#text" && typeof value === "string") pieces.push(value);
-              }
-            }
-          }
-        }
-      } else visit(entry.value);
+      if (localName(entry.name) === "t") visitNodes(entry.value, true);
+      else visit(entry.value);
     }
   };
   visit(node);

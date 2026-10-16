@@ -496,7 +496,7 @@ describe("knowledge authoring model step", () => {
       policy.tools.segmentSliceToolRef,
     );
     expect(renderModelStep.mock.calls[0]?.[2]).toEqual({});
-    expect(renderModelStep.mock.calls[1]?.[2]).toEqual({
+    expect(renderModelStep.mock.calls[1]?.[2]).toMatchObject({
       previousObservationArtifactRef: observationRef,
     });
 

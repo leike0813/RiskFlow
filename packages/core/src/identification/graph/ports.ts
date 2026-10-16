@@ -2,6 +2,10 @@ import type {
   AuthorizationContextV1,
   IdentificationPreparationSnapshotRefV1,
   IdentificationRunResultRefV1,
+  ModuleBranchV1,
+  SourceVersionRefV1,
+  WorkflowRunRefV1,
+  AgentTaskResultRefV1,
 } from "@riskflow/contracts/ports";
 import type { IdentificationGraphStateV1 } from "@riskflow/contracts/workflows";
 
@@ -11,6 +15,17 @@ import type {
   IdentificationGraphRunResultV1,
   IdentificationGraphRunStateV1,
 } from "./schema.js";
+
+export type IdentificationGraphAuthorizeDownstreamV1 = (input: {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly invocationId: string;
+  readonly branch: ModuleBranchV1;
+  readonly requestedAt: string;
+  readonly requestedSpatialScopeRefs: AuthorizationContextV1["spatialScopeRefs"];
+  readonly requestedSourceVersionRefs?: readonly SourceVersionRefV1[];
+  readonly causalRunRef?: WorkflowRunRefV1;
+}) => Promise<AuthorizationContextV1>;
 
 /**
  * 由组合根注入的已审核策略目录（design D-03）：只按精确引用解析同一版本组合，保留历史版本，
@@ -116,6 +131,8 @@ export interface IdentificationGraphStartCommandV1 {
   readonly validAt: string;
   readonly requestedAt: string;
   readonly authorization: AuthorizationContextV1;
+  readonly issuedInvocationId: string;
+  readonly authorizationBranch: ModuleBranchV1;
   readonly graphVersion: { readonly entityId: string; readonly versionId: string };
   readonly parentRiskFlowRunRef: {
     readonly kind: "workflow-run";
@@ -133,6 +150,8 @@ export interface IdentificationGraphResumeCommandV1 {
   readonly issuedAt: string;
   readonly requestedAt: string;
   readonly authorization: AuthorizationContextV1;
+  readonly issuedInvocationId: string;
+  readonly authorizationBranch: ModuleBranchV1;
   readonly runRef: {
     readonly kind: "workflow-run";
     readonly reference: { readonly entityId: string; readonly versionId: string };
@@ -144,6 +163,7 @@ export interface IdentificationGraphResumeCommandV1 {
 export type IdentificationGraphResumeCauseV1 =
   | {
       readonly kind: "agent-task-completed";
+      readonly agentTaskResultRef?: AgentTaskResultRefV1;
       readonly agentTaskRef: {
         readonly reference: { readonly entityId: string; readonly versionId: string };
       };
@@ -165,6 +185,8 @@ export interface IdentificationGraphCancelCommandV1 {
   readonly issuedAt: string;
   readonly requestedAt: string;
   readonly authorization: AuthorizationContextV1;
+  readonly issuedInvocationId: string;
+  readonly authorizationBranch: ModuleBranchV1;
   readonly runRef: {
     readonly kind: "workflow-run";
     readonly reference: { readonly entityId: string; readonly versionId: string };

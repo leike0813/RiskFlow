@@ -151,7 +151,7 @@ const failure = (
 ): QualityError => new QualityError({ code, reasonCode, targetRef: { entityId, versionId: "1" } });
 
 /**
- * C36 PostgreSQL 适配器（D-03/D-05）：按显式引用有界读取 C04 工件并完整消费 `verified`，
+ * C36 PostgreSQL 适配器（D-03/D-05）：按显式引用有界读取 C04 工件并完整消费 `completed`，
  * 报告先写 C04 不可变工件，再在 C03 单个原子命令中追加索引、命令回执与事实审计。
  * 页面查询走 `postgres-quality-projection.ts`，本文件不提供任何读私表路径。
  */
@@ -229,7 +229,7 @@ export class PostgresQualityEvaluationAdapter
         }
         chunks.push(chunk);
       }
-      await handle.verified;
+      await handle.completed;
       if (handle.manifest.mediaType !== input.expectedMediaType) {
         return {
           kind: "failed",

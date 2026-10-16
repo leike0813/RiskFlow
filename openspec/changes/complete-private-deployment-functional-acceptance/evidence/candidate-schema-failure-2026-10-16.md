@@ -1,0 +1,9 @@
+# v95第三工序模型结构失败
+
+v95前两工序已正式I5通过，校验集版本分别39f72e3dd9a1e17951857489e2f7075f4ba69b9771fa87890542655032122a58、9e7332e635b9a5b3a7f917b03581355d26c44aa279767521a8c731e481727301，失败项为空。第三检索任务completed，1模型/0工具，无修正/瞬态重试。第三次公共继续在2026-10-15T23:47:56Z返回500/TERMINAL_FAILURE，驱动按边界exit1，未发第四次继续，不自动重开批次。
+
+正式回读logs/validation-progress-v95-after-stop.log：父terminal-failure@de8c93f0e4ef0814c807059af2350db74cf646fab478d6d35306840faf56372e，子I4/terminal-failure@a7f333e0b22db1b0d72f360c489929b09c865510aeb791df4a7005fd306f8797。保留原终态和前两份结果，不能恢复或改写。该批次未到I6，不能据此否定或宣称D-87/D-88的实际恢复已验收。
+
+受当前授权及C04完整读取的只读诊断logs/node03-model-v95.log：原响应sha256:e55420f5492bfda874e1343009c683202b55cd7838a41818a9153cefde7fab59，为合法JSON，3条候选，finish_reason=stop；prompt6375/completion576/total6951，1936输出字节，未超4条/32768token/131072字节预算。多个riskElementRelations条目缺targetElement且带未知字段，被唯一strict Schema拒绝。诊断不输出正文或内部思考，无模型/候选/检查点补写，不计PASS。
+
+现MiniMax使用schema-prompt，官方研究已说明该模型的response_format不可依赖。待核查同模型官方function-calling能否作为唯一结构化输出承载，再在当前change补设计/施工图及定向测试；不手工改写失败JSON、不放宽关系Schema、不增预算、不复活v95。

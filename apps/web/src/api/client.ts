@@ -197,6 +197,44 @@ const requestJson = async (input: {
 
 const liveFetcher: C09Fetch = (input, init) => fetch(input, init);
 
+export const sourceOriginalPath = (
+  projectId: string,
+  sourceId: string,
+  versionId: string,
+): string => {
+  for (const value of [projectId, sourceId, versionId]) assertProjectId(value);
+  return `/api/v1/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceId)}/versions/${encodeURIComponent(versionId)}/original`;
+};
+
+export const readSourceOriginalBytes = async (input: {
+  readonly projectId: string;
+  readonly sourceId: string;
+  readonly versionId: string;
+  readonly signal: AbortSignal;
+  readonly fetcher?: C09Fetch;
+}): Promise<Blob> => {
+  let response: Response;
+  try {
+    response = await (input.fetcher ?? liveFetcher)(
+      sourceOriginalPath(input.projectId, input.sourceId, input.versionId),
+      {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: input.signal,
+      },
+    );
+  } catch (error) {
+    if (input.signal.aborted) throw error;
+    throw clientError("TRANSIENT_FAILURE", true);
+  }
+  if (!response.ok)
+    throw clientError(
+      errorCodeFor(response.status, await readJsonBody(response)),
+      response.status === 503,
+    );
+  return response.blob();
+};
+
 export const getRaw = async (request: {
   readonly path: string;
   readonly signal?: AbortSignal;

@@ -22,6 +22,7 @@
  * 真实 C30 登记端口与绑定证明、真实 C05 授权复验。
  */
 import type { Kysely } from "kysely";
+import { c25Version } from "../../../core/test/risk-assessment/fixture.js";
 
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
@@ -855,6 +856,10 @@ export const startHumanDecisionFeedbackFixture =
       runCompletionProof,
       responseLifecycle: state.adapter,
       responseContext,
+      resolveFeedbackPolicies: async () => ({
+        deviationPolicyRef: c25Version("deviation-policy"),
+        calibrationAgentPolicyRef: c25Version("calibration-agent-policy"),
+      }),
       workflowStartControl: {
         graphVersion: C41_GRAPH_VERSION,
         retryPolicyRef: C41_RETRY_POLICY_REF,

@@ -11,7 +11,11 @@
  * 完成回执直接调用 `runtime.resume`（`agent-task-completed` 原因），本组合根不新造事件。
  */
 import type { DomainEventV1 } from "@riskflow/contracts/events";
-import type { AuthorizationContextV1, KnowledgeModelingPortV1 } from "@riskflow/contracts/ports";
+import type {
+  AuthorizationContextV1,
+  KnowledgeModelingPortV1,
+  ModuleBranchV1,
+} from "@riskflow/contracts/ports";
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import type { AgentTaskPortV1 } from "@riskflow/contracts/ports";
 import type { IdentificationContextService } from "@riskflow/core/identification/context";
@@ -69,6 +73,10 @@ export interface IdentificationGraphCompositionOptionsV1 {
   readonly authorization: IdentificationGraphRequestAuthorizationPortV1;
   /** C05 授权复验接缝（start/resume/cancel 命令入口复验）。 */
   readonly runtimeAuthorization: IdentificationGraphAuthorizationPortV1;
+  readonly authorizeDownstream: IdentificationGraphPortsV1["authorizeDownstream"];
+  readonly issueReadContext: NonNullable<
+    Parameters<typeof createPostgresIdentificationGraphAdapter>[0]["issueReadContext"]
+  >;
   /** 真实 PostgreSQL checkpointer（`PostgresSaver`）。 */
   readonly checkpointer: BaseCheckpointSaver;
   /** 不可变策略目录：C17/C21/C22 策略正文与重试策略只按精确引用解析。 */
@@ -105,9 +113,14 @@ export interface IdentificationGraphCompositionOptionsV1 {
    * 恢复事件的授权解析：消费者不发明授权，由组合根按事件所属工程与来源给出当前 `C05` 授权；
    * 返回 `undefined` 表示该事件不可恢复（按拒绝收口，不重试）。
    */
-  readonly recoveryAuthorization: (input: {
-    readonly event: DomainEventV1;
-  }) => Promise<AuthorizationContextV1 | undefined>;
+  readonly recoveryAuthorization: (input: { readonly event: DomainEventV1 }) => Promise<
+    | {
+        readonly authorization: AuthorizationContextV1;
+        readonly issuedInvocationId: string;
+        readonly authorizationBranch: ModuleBranchV1;
+      }
+    | undefined
+  >;
   readonly recoveryConsumerName?: string;
   readonly now?: () => Date;
 }
@@ -133,6 +146,8 @@ const REQUIRED_DEPENDENCIES_V1 = [
   "artifactStore",
   "authorization",
   "runtimeAuthorization",
+  "authorizeDownstream",
+  "issueReadContext",
   "checkpointer",
   "policyProvider",
   "reviewPolicy",
@@ -163,10 +178,12 @@ export const createIdentificationGraphComposition = (
     transactionUnit: options.transactionUnit,
     artifactStore: options.artifactStore,
     authorization: options.authorization,
+    issueReadContext: options.issueReadContext,
     now,
   });
 
   const ports: IdentificationGraphPortsV1 = {
+    authorizeDownstream: options.authorizeDownstream,
     transactionUnit: options.transactionUnit,
     registrationStore: adapter.registrationStore,
     bodies: adapter,
@@ -202,16 +219,34 @@ export const createIdentificationGraphComposition = (
       throw new TypeError("identification graph recovery consumer only accepts review decisions");
     }
     return await options.recoveryConsumer.consume(consumerName, event, async () => {
-      const authorization = await options.recoveryAuthorization({ event });
-      if (authorization === undefined) {
+      const recovery = await options.recoveryAuthorization({ event });
+      if (recovery === undefined) {
         throw new TypeError("identification graph recovery requires a current authorization");
       }
+      const authorization = await options.runtimeAuthorization.verifyCurrent({
+        ...recovery,
+        projectId: event.projectId,
+        actorId: recovery.authorization.actorId,
+        invocationId: recovery.issuedInvocationId,
+        branch: recovery.authorizationBranch,
+        requestedAt: event.recordedAt,
+      });
+      if (authorization === undefined)
+        throw new TypeError("identification graph recovery authorization denied");
+      const executionAuthorization = await options.authorizeDownstream({
+        projectId: event.projectId,
+        actorId: authorization.actorId,
+        branch: "risk-identification.plan",
+        invocationId: `${event.eventId}:cursor`,
+        requestedAt: event.recordedAt,
+        requestedSpatialScopeRefs: authorization.spatialScopeRefs,
+      });
       const runRef = event.payload.resumeRunRef;
       const latest = await adapter.registrationStore.readLatestRunState({
         projectId: event.projectId,
         runId: runRef.reference.entityId,
         actorId: authorization.actorId,
-        authorization,
+        authorization: executionAuthorization,
         requestedAt: event.recordedAt,
       });
       if (latest === undefined) {
@@ -225,6 +260,8 @@ export const createIdentificationGraphComposition = (
         issuedAt: event.recordedAt,
         requestedAt: event.recordedAt,
         authorization,
+        issuedInvocationId: recovery.issuedInvocationId,
+        authorizationBranch: recovery.authorizationBranch,
         runRef,
         expectedRunVersionId: latest.state.runVersionId,
         resumeCause: {

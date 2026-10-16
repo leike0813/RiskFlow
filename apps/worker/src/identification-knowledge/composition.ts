@@ -49,6 +49,8 @@ import {
   type EngineeringDataReadResultV1,
   type KnowledgeModelingPortV1,
   type ReviewAuditPortV1,
+  type SourceVersionRefV1,
+  type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 import type { VersionReference } from "@riskflow/contracts/common";
 
@@ -64,10 +66,19 @@ import {
 } from "./runtime.js";
 
 /**
+ * D-38：受信宿主对当前请求/任务已经声明的冻结空间与资料范围。该字段只能由组合根注入的
+ * 受信来源解析器给出，不从 HTTP、模型或调用方自造上下文接收。
+ */
+export interface IdentificationKnowledgeDeclaredScopeV1 {
+  readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+  readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+}
+
+/**
  * C06 认可的受信调用来源：请求作用域的 `human-session`，或携带 C06 已签发父上下文与同一
  * 真实运行或受限发布命令因果的 `system` 调用。组合根不接受自造的 `AuthorizationContextV1`。
  */
-export type IdentificationKnowledgeAuthorizationSourceV1 =
+export type IdentificationKnowledgeAuthorizationSourceV1 = (
   | { readonly kind: "human-session"; readonly sessionToken: string }
   | {
       readonly kind: "system";
@@ -87,7 +98,8 @@ export type IdentificationKnowledgeAuthorizationSourceV1 =
       readonly parentContext: AuthorizationContextV1;
       readonly causalRunRef?: never;
       readonly causalCommandRef: CommandCausalRefV1;
-    };
+    }
+) & { readonly declaredScope?: IdentificationKnowledgeDeclaredScopeV1 };
 
 export interface PostgresIdentificationKnowledgeCompositionOptionsV1 {
   readonly db: PostgresKnowledgeGovernanceAdapterOptionsV1["db"];
@@ -152,7 +164,10 @@ export interface PostgresIdentificationKnowledgeCompositionV1 {
   /** 生产组合只暴露 C17 façade，不暴露裸 C16 adapter。 */
   readonly adapter: PostgresIdentificationKnowledgeAdapter;
   /** D-20：供 C18/C19 使用的 C16 精确发布解析窄口。 */
-  readonly governedReleases: Pick<PostgresKnowledgeGovernanceAdapter, "resolveGovernedReleases">;
+  readonly governedReleases: Pick<
+    PostgresKnowledgeGovernanceAdapter,
+    "resolveGovernedReleases" | "publishDerivedRelease"
+  >;
   readonly agentTaskAdapter: PostgresAgentTaskAdapter;
   readonly registry: AgentTaskDefinitionRegistry;
   /** 共享 runner 的 C17 模型步回调：其它任务类型必须由调用方注入 `inner`。 */
@@ -165,6 +180,12 @@ export interface PostgresIdentificationKnowledgeCompositionV1 {
     > & { readonly modelGateway?: ModelGatewayPortV1 },
   ): { readonly runner: KnowledgeAuthoringRunner; readonly shared: AgentRuntimeRunner };
 }
+
+/** D-38：调用方未声明范围时才继承受信来源的冻结声明；显式声明（含显式空数组）保持原值。 */
+const declaredScopeOrEmpty = <T>(
+  requested: readonly T[] | undefined,
+  declared: readonly T[] | undefined,
+): T[] => [...(requested ?? declared ?? [])];
 
 const authorizationDenial = (stage: string, capability: string): AccessServiceError =>
   new AccessServiceError(
@@ -224,8 +245,15 @@ export const createPostgresIdentificationKnowledgeComposition = (
       invocationId: request.invocationId,
       projectId: request.projectId,
       branch: request.branch,
-      requestedSpatialScopeRefs: [...(request.requestedSpatialScopeRefs ?? [])],
-      requestedSourceVersionRefs: [...(request.requestedSourceVersionRefs ?? [])],
+      // D-38：调用方未声明范围时继承受信来源冻结声明的范围，C06 仍按当前账号/工程复验。
+      requestedSpatialScopeRefs: declaredScopeOrEmpty(
+        request.requestedSpatialScopeRefs,
+        source.declaredScope?.spatialScopeRefs,
+      ),
+      requestedSourceVersionRefs: declaredScopeOrEmpty(
+        request.requestedSourceVersionRefs,
+        source.declaredScope?.sourceVersionRefs,
+      ),
       requestedAt: request.requestedAt,
     };
     const authorizationRequest: AuthorizationRequestV1 =
@@ -306,6 +334,7 @@ export const createPostgresIdentificationKnowledgeComposition = (
   holders.governance = governance;
   const governedReleases = {
     resolveGovernedReleases: governance.resolveGovernedReleases.bind(governance),
+    publishDerivedRelease: governance.publishDerivedRelease.bind(governance),
   };
 
   const narrowRead: IdentificationPreparationNarrowReadV1 = {

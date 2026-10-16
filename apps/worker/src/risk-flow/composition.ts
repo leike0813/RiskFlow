@@ -43,6 +43,7 @@ export interface RiskFlowGraphCompositionOptionsV1 {
   readonly runtimeAuthorization: RiskFlowGraphAuthorizationPortV1;
   /** C41 人工采纳证明接缝（design D2/D3）：等待态运行只在该证明核对通过后推进。 */
   readonly humanDecisionProof: RiskFlowGraphRuntimeOptionsV1["humanDecisionProof"];
+  readonly identificationPreparation?: RiskFlowGraphRuntimeOptionsV1["identificationPreparation"];
   /** 真实 PostgreSQL checkpointer（`PostgresSaver`）。 */
   readonly checkpointer: BaseCheckpointSaver;
   /** C24 识别子图运行面：子运行由 C24 自己的组合根提供（design D-02）。 */
@@ -121,6 +122,9 @@ export const createRiskFlowGraphComposition = (
     graph,
     authorization: options.runtimeAuthorization,
     humanDecisionProof: options.humanDecisionProof,
+    ...(options.identificationPreparation === undefined
+      ? {}
+      : { identificationPreparation: options.identificationPreparation }),
     now,
   });
 

@@ -11,7 +11,10 @@ import {
   deriveKnowledgeRevisionStatus,
   KnowledgeLifecycleError,
   KnowledgeReleaseV1Schema,
+  KnowledgeReleaseSchema,
+  KnowledgeReleaseV2Schema,
   KnowledgeRevisionV1Schema,
+  parseKnowledgeRelease,
   selectGovernedReleaseCandidates,
   validateApprovalProof,
   validateCandidateArtifactIdentity,
@@ -101,6 +104,51 @@ const releaseFor = (
     occurredAt: effectiveFrom,
     recordedAt: effectiveFrom,
   });
+
+/** D-13：同一人工发布事实的 V2 表达只把两列人工引用移入 `human-reviewed` 来源。 */
+const humanV2For = (release: ReturnType<typeof releaseFor>) => {
+  const { reviewTaskRef, reviewDecisionRef, ...fields } = release;
+  return {
+    ...fields,
+    schemaVersion: "2" as const,
+    publicationOrigin: { kind: "human-reviewed" as const, reviewTaskRef, reviewDecisionRef },
+  };
+};
+
+const derivedReleaseFor = (
+  definitionType: "retrieval-evidence-base" | "applicable-rule-set" | "process-model",
+  parentReleaseRefs: readonly unknown[] = [releaseRef("parent-release-1")],
+  contextRefKind:
+    "identification-preparation-snapshot" | "assessment-preparation-snapshot" = definitionType ===
+  "applicable-rule-set"
+    ? "assessment-preparation-snapshot"
+    : "identification-preparation-snapshot",
+) => ({
+  schemaVersion: "2" as const,
+  releaseRef: releaseRef("derived-release-1"),
+  definitionRef: {
+    kind: "knowledge-definition" as const,
+    reference: { entityId: `definition-${definitionType}`, versionId: "1" },
+  },
+  projectId,
+  definitionType,
+  revisionRef: revisionRef("derived-revision-1"),
+  publicationOrigin: {
+    kind: "derived-approved" as const,
+    parentReleaseRefs,
+    derivationPolicyRef: { entityId: "derivation-policy", versionId: "1" },
+    contextRef: {
+      kind: contextRefKind,
+      reference: { entityId: "preparation-1", versionId: "1" },
+    },
+  },
+  effectiveFrom: recordedAt,
+  commandId: "publish-derived-1",
+  actorId: "actor-1",
+  authorizationContextRef,
+  occurredAt: recordedAt,
+  recordedAt,
+});
 
 const expectFailure = (action: () => void, code: string, reasonCode: string) => {
   try {
@@ -330,5 +378,80 @@ describe("knowledge-governance core", () => {
     expect(
       deriveKnowledgeRevisionStatus({ revision, releaseRefs: [release.releaseRef] }).status,
     ).toBe("published");
+  });
+
+  it("仍按原规则解析 V1 人工发布事实", () => {
+    const release = releaseFor(revisionFor(), "release-1", recordedAt);
+    expect(KnowledgeReleaseSchema.safeParse(release).success).toBe(true);
+    expect(parseKnowledgeRelease(release)).toEqual(KnowledgeReleaseV1Schema.parse(release));
+    // 发布来源联合不放松原有精确审查目标：审查任务必须指向本次修订。
+    expect(
+      KnowledgeReleaseSchema.safeParse({
+        ...release,
+        reviewTaskRef: { ...release.reviewTaskRef, targetRef: revisionRef("other-revision") },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("V2 human-reviewed 保持精确审查目标规则", () => {
+    const humanV2 = humanV2For(releaseFor(revisionFor(), "release-1", recordedAt));
+    const parsed = parseKnowledgeRelease(humanV2);
+    expect(KnowledgeReleaseV2Schema.safeParse(humanV2).success).toBe(true);
+    expect("publicationOrigin" in parsed && parsed.publicationOrigin.kind).toBe("human-reviewed");
+    expect(parsed).toEqual(KnowledgeReleaseV2Schema.parse(humanV2));
+    const origin = humanV2.publicationOrigin;
+    expect(
+      KnowledgeReleaseSchema.safeParse({
+        ...humanV2,
+        publicationOrigin: {
+          ...origin,
+          reviewTaskRef: { ...origin.reviewTaskRef, targetRef: revisionRef("other-revision") },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("derived-approved 只接受两类派生定义并保留父发布、策略与上下文", () => {
+    const preparationKinds = {
+      "retrieval-evidence-base": "identification-preparation-snapshot",
+      "applicable-rule-set": "assessment-preparation-snapshot",
+    } as const;
+    for (const definitionType of ["retrieval-evidence-base", "applicable-rule-set"] as const) {
+      const parsed = KnowledgeReleaseSchema.parse(derivedReleaseFor(definitionType));
+      expect("publicationOrigin" in parsed && parsed.publicationOrigin.kind).toBe(
+        "derived-approved",
+      );
+      if (!("publicationOrigin" in parsed) || parsed.publicationOrigin.kind !== "derived-approved")
+        continue;
+      expect(parsed.publicationOrigin.parentReleaseRefs).toHaveLength(1);
+      expect(parsed.publicationOrigin.derivationPolicyRef).toEqual({
+        entityId: "derivation-policy",
+        versionId: "1",
+      });
+      expect(parsed.publicationOrigin.contextRef).toEqual({
+        kind: preparationKinds[definitionType],
+        reference: { entityId: "preparation-1", versionId: "1" },
+      });
+    }
+    // 派生类型必须匹配对应准备引用，跨准备上下文不可复用。
+    expect(
+      KnowledgeReleaseSchema.safeParse(
+        derivedReleaseFor(
+          "applicable-rule-set",
+          [releaseRef("parent-release-1")],
+          "identification-preparation-snapshot",
+        ),
+      ).success,
+    ).toBe(false);
+    const unsupported = KnowledgeReleaseSchema.safeParse(derivedReleaseFor("process-model"));
+    expect(unsupported.success).toBe(false);
+    if (!unsupported.success) {
+      expect(unsupported.error.issues.some((issue) => issue.path[0] === "definitionType")).toBe(
+        true,
+      );
+    }
+    expect(
+      KnowledgeReleaseSchema.safeParse(derivedReleaseFor("retrieval-evidence-base", [])).success,
+    ).toBe(false);
   });
 });

@@ -49,8 +49,11 @@ import {
   persistRawModelResponse,
   preflightParentArtifacts,
   PersistedResponseLimitError,
+  rawUsageCounts,
   readBoundedBytes,
   ResponseBodyLimitError,
+  structuredTokenLimits,
+  usageCounts,
   usageFromWire,
   type ModelGatewayRequestV1,
   type ParentArtifactPreflightV1,
@@ -72,6 +75,32 @@ const ChatResponseSchema = z
     usage: z.unknown().optional(),
   })
   .passthrough();
+const STRUCTURED_RESULT_FUNCTION_V1 = "emit_result";
+const FunctionChatResponseSchema = ChatResponseSchema.extend({
+  choices: z.array(
+    ChatResponseSchema.shape.choices.element
+      .extend({
+        finish_reason: z.union([ModelTerminationReasonV1Schema, z.literal("tool_calls"), z.null()]),
+        message: z
+          .object({
+            content: z.string().nullable().optional(),
+            tool_calls: z
+              .array(
+                z
+                  .object({
+                    id: z.string().min(1),
+                    type: z.literal("function"),
+                    function: z.object({ name: z.string(), arguments: z.string() }).passthrough(),
+                  })
+                  .passthrough(),
+              )
+              .optional(),
+          })
+          .passthrough(),
+      })
+      .passthrough(),
+  ),
+});
 const EmbeddingResponseSchema = z.object({
   model: z.string(),
   embeddings: z.array(z.array(z.number().refine(Number.isFinite))),
@@ -102,6 +131,7 @@ export interface NetworkApiModelGatewayObservationV1 {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly deltaCount?: number;
+  readonly serverVersion?: string;
   readonly rawResponseRef?: DiagnosticArtifactRefV1;
 }
 
@@ -184,6 +214,16 @@ const chunksOf = async function* (value: Uint8Array): AsyncGenerator<Uint8Array>
   yield value;
 };
 const retryableStatus = (status: number): boolean => [408, 429, 502, 503, 504].includes(status);
+const sameOllamaReleaseLine = (actual: string, expected: string): boolean => {
+  const actualParts = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(actual);
+  const expectedParts = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(expected);
+  return (
+    actualParts !== null &&
+    expectedParts !== null &&
+    actualParts[1] === expectedParts[1] &&
+    actualParts[2] === expectedParts[2]
+  );
+};
 
 export class NetworkApiModelGateway implements ModelGatewayPortV1 {
   readonly #deployments: ReadonlyMap<string, NetworkApiDeploymentConfigV1>;
@@ -261,9 +301,17 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
     const request = this.#parse(StructuredCompletionRequestV1Schema, input);
     const config = this.#deployment(request, "completeStructured", "openai-chat");
     const schema = this.#jsonSchema(request, outputSchema);
+    const functionMode = config.structuredOutputMode === "function-call";
     const schemaSystem = `Return exactly one JSON value satisfying this JSON Schema. Do not include commentary. Schema: ${JSON.stringify(schema)}`;
-    const messages =
-      config.structuredOutputMode === "schema-prompt"
+    const messages = functionMode
+      ? [
+          {
+            role: "system" as const,
+            content: `Return the structured result only by calling ${STRUCTURED_RESULT_FUNCTION_V1} exactly once. Its parameters define the required output schema. Do not put result text or JSON in content.`,
+          },
+          ...request.messages,
+        ]
+      : config.structuredOutputMode === "schema-prompt"
         ? [{ role: "system" as const, content: schemaSystem }, ...request.messages]
         : request.messages;
     const payload = {
@@ -271,6 +319,21 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
       messages,
       max_tokens: request.maxOutputTokens,
       reasoning_effort: config.reasoningEffort,
+      ...(functionMode
+        ? {
+            tools: [
+              {
+                type: "function",
+                function: {
+                  name: STRUCTURED_RESULT_FUNCTION_V1,
+                  description:
+                    "Return the structured result through these parameters; no function is executed.",
+                  parameters: schema,
+                },
+              },
+            ],
+          }
+        : {}),
       ...(config.structuredOutputMode === "server-json-schema"
         ? {
             response_format: {
@@ -281,6 +344,7 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
         : {}),
     };
     const requestBytes = bytes(JSON.stringify(payload)).byteLength;
+    const limits = structuredTokenLimits(request, config.contextWindowTokens);
     let inputTokenLimit: number;
     let control: CallControl | undefined;
     const startedAt = Date.now();
@@ -311,39 +375,54 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
           rawBytes.ref,
           rawBytes.bytes.byteLength,
         );
-      let wire: z.infer<typeof ChatResponseSchema>;
+      let wire: z.infer<typeof FunctionChatResponseSchema>;
       try {
-        wire = ChatResponseSchema.parse(decodeJson(rawBytes.bytes));
+        wire = (functionMode ? FunctionChatResponseSchema : ChatResponseSchema).parse(
+          decodeJson(rawBytes.bytes),
+        );
       } catch {
         throw this.#error(request, "MODEL_PROTOCOL_ERROR", "chat.protocol", false, {
           rawResponseRef: rawBytes.ref,
+          counts: rawUsageCounts(rawBytes.bytes),
         });
       }
+      const choice = wire.choices[0];
+      const call = choice?.message.tool_calls?.[0];
+      const outputText = functionMode ? call?.function.arguments : choice?.message.content;
       if (
         wire.model !== config.modelId ||
         wire.choices.length !== 1 ||
-        wire.choices[0]?.index !== 0 ||
-        wire.choices[0].finish_reason !== "stop" ||
-        typeof wire.choices[0].message.content !== "string"
+        choice?.index !== 0 ||
+        typeof outputText !== "string" ||
+        (functionMode
+          ? (choice.finish_reason !== "tool_calls" && choice.finish_reason !== "stop") ||
+            choice.message.tool_calls?.length !== 1 ||
+            call?.function.name !== STRUCTURED_RESULT_FUNCTION_V1 ||
+            outputText.trim().length === 0 ||
+            Boolean(choice.message.content?.trim())
+          : choice.finish_reason !== "stop")
       )
         throw this.#error(request, "MODEL_STRUCTURE_INVALID", "chat.choice", false, {
           rawResponseRef: rawBytes.ref,
+          counts: usageCounts(usageFromWire(wire.usage)),
         });
       const usage = this.#usage(
         request,
         wire.usage,
         request.maxOutputTokens,
         inputTokenLimit,
-        config.contextWindowTokens,
+        limits.maxContextTokens,
+        rawBytes.ref,
       );
       let value: T;
       try {
-        const output = JSON.parse(stripThinking(wire.choices[0].message.content));
+        const output = JSON.parse(functionMode ? outputText : stripThinking(outputText));
         this.#assertNoAdditionalProperties(output, schema);
         value = outputSchema.parse(output);
       } catch {
         throw this.#error(request, "MODEL_OUTPUT_SCHEMA_INVALID", "chat.output-schema", false, {
           rawResponseRef: rawBytes.ref,
+          counts: usageCounts(usageFromWire(wire.usage)),
         });
       }
       const result = structuredCompletionResultSchema(outputSchema).parse({
@@ -392,7 +471,7 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
     const startedAt = Date.now();
     try {
       const serializedBytes = bytes(JSON.stringify(body)).byteLength;
-      inputTokenLimit = this.#assertBudget(request, config, serializedBytes, serializedBytes);
+      inputTokenLimit = this.#assertBudget(request, config, inputBytes, serializedBytes);
       await this.#runPreflight(request);
       control = this.#control(request, config, signal);
       await this.#ensureOllama(request, config, control);
@@ -428,7 +507,7 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
       )
         throw this.#error(request, "MODEL_EMBEDDING_INVALID", "embedding.shape", false, {
           rawResponseRef: raw.ref,
-          counts: { batchItems: wire.embeddings.length },
+          counts: { batchItems: wire.embeddings.length, inputTokens: wire.prompt_eval_count },
         });
       if (
         wire.prompt_eval_count > inputTokenLimit ||
@@ -691,6 +770,7 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
     config: Extract<NetworkApiDeploymentConfigV1, { protocol: "ollama-embed" }>,
     control: CallControl,
   ): Promise<void> {
+    const startedAt = Date.now();
     const versionResponse = await this.#get(
       config,
       request,
@@ -701,11 +781,19 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
     const version = OllamaVersionSchema.safeParse(
       await this.#jsonResponse(versionResponse, config.maxResponseBytes),
     );
-    if (
-      !versionResponse.ok ||
-      !version.success ||
-      version.data.version !== config.expectedServerVersion
-    )
+    const actualVersion = version.success ? version.data.version : undefined;
+    const compatibleVersion =
+      versionResponse.ok &&
+      actualVersion !== undefined &&
+      sameOllamaReleaseLine(actualVersion, config.expectedServerVersion);
+    this.#emit(
+      "embed",
+      "probe.version",
+      compatibleVersion ? "ok" : "MODEL_DEPLOYMENT_MISMATCH",
+      startedAt,
+      { ...(actualVersion === undefined ? {} : { serverVersion: actualVersion }) },
+    );
+    if (!compatibleVersion)
       throw this.#error(request, "MODEL_DEPLOYMENT_MISMATCH", "probe.version", false);
     const tagsResponse = await this.#get(config, request, control, "api/tags", "probe.tags");
     const tags = OllamaTagsSchema.safeParse(
@@ -768,13 +856,14 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
     contentBytes: number,
     serializedBytes: number,
   ): number {
-    const maxOutputTokens = "maxOutputTokens" in config ? config.maxOutputTokens : 0;
+    const deploymentMaxOutputTokens = "maxOutputTokens" in config ? config.maxOutputTokens : 0;
+    const requestedOutputTokens = "maxOutputTokens" in request ? request.maxOutputTokens : 0;
     assertModelGatewayRequestBudget(
       request,
       {
         maxInputBytes: config.maxInputBytes,
         maxBatchItems: config.maxBatchItems,
-        maxOutputTokens,
+        maxOutputTokens: deploymentMaxOutputTokens,
         contextWindowTokens: config.contextWindowTokens,
       },
       contentBytes,
@@ -789,15 +878,30 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
       },
       this.#now,
     );
+    if (serializedBytes > config.maxInputBytes)
+      throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "request.input-bytes", false, {
+        counts: { inputBytes: serializedBytes },
+      });
     const upper = conservativeTokenUpperBound(
       serializedBytes,
       config.inputTokenUpperBoundPolicy.maxTokensPerInputByte,
       config.inputTokenUpperBoundPolicy.requestOverheadTokens,
     );
-    if (upper + maxOutputTokens > config.contextWindowTokens)
+    if (upper + requestedOutputTokens > config.contextWindowTokens)
       throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "request.context-upper-bound", false, {
         counts: { inputTokens: upper },
       });
+    if ("outputSchemaRef" in request) {
+      const limits = structuredTokenLimits(request, config.contextWindowTokens);
+      if (limits.maxInputTokens !== undefined && upper > limits.maxInputTokens)
+        throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "request.input-quota", false, {
+          counts: { inputTokens: upper },
+        });
+      if (upper + request.maxOutputTokens > limits.maxContextTokens)
+        throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "request.context-quota", false, {
+          counts: { inputTokens: upper },
+        });
+    }
     return upper;
   }
 
@@ -1005,10 +1109,13 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
     maxOutput: number,
     maxInputTokens: number,
     contextWindowTokens: number,
+    rawResponseRef?: DiagnosticArtifactRefV1,
   ): ModelUsageV1 {
     const usage = usageFromWire(value);
     if (!usage.available || usage.inputTokens === undefined || usage.outputTokens === undefined)
-      throw this.#error(request, "MODEL_PROTOCOL_ERROR", "usage.missing", false);
+      throw this.#error(request, "MODEL_PROTOCOL_ERROR", "usage.missing", false, {
+        rawResponseRef,
+      });
     if (
       usage.inputTokens > maxInputTokens ||
       usage.outputTokens > maxOutput ||
@@ -1018,6 +1125,7 @@ export class NetworkApiModelGateway implements ModelGatewayPortV1 {
           usage.totalTokens > contextWindowTokens))
     )
       throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "usage.budget", false, {
+        rawResponseRef,
         counts: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens },
       });
     return usage;

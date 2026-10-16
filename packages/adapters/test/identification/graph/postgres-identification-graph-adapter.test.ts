@@ -1552,7 +1552,6 @@ describe("PostgreSQL identification graph persistence", () => {
         runResultRowFor(plan, resultArtifactRef),
         IdentificationGraphResultRowV1Schema.parse({
           ...resultRowFor("workflow-error", "checkpoint-proof"),
-          ...identityOf(errorRef),
           workflowErrorRef: errorRef,
         }),
       ],
@@ -1616,13 +1615,11 @@ describe("PostgreSQL identification graph persistence", () => {
       { invocationId: "unissued-invocation" },
       { runRef: refOf("workflow-run", OTHER_RUN_ID, RUN_VERSION_ID) },
     ]) {
-      expect(
-        await fixture!.adapter.verifyCheckpointReference({
-          ...input,
-          ...overrides,
-          reference: plan.workPlanRef,
-        }),
-      ).toBe(false);
+      for (const reference of [plan.workPlanRef, errorRef]) {
+        expect(
+          await fixture!.adapter.verifyCheckpointReference({ ...input, ...overrides, reference }),
+        ).toBe(false);
+      }
     }
     for (const reference of [
       plan.absentWorkItemRef,

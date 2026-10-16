@@ -35,6 +35,7 @@ const providers = (overrides = {}) => {
     contextSource: stub(["apply", "freeze", "read", "resolveReadQuery"]),
     monitoringStore: stub(["resolveSnapshotQuery"]),
     knowledgeModeling: stub(["govern", "resolve", "retrieve"]),
+    applicableRuleSetAssembly: stub(["assemble"]),
     riskIdentification: stub(["plan", "analyze", "finalize"]),
     riskIdentificationRead: stub(["read"]),
     riskAssessment: stub(["prepare", "evaluate"]),

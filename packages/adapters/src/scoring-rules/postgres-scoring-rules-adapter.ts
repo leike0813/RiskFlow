@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { sql, type ColumnType, type Kysely, type Selectable, type Transaction } from "kysely";
 
 import type {
@@ -10,6 +12,8 @@ import type {
 } from "@riskflow/contracts/ports";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 import {
+  ApplicableRuleSetAssemblyCommandV1Schema,
+  ApplicableRuleSetAssemblyResultV1Schema,
   ContentArtifactRefV1Schema,
   ContractReferenceV1Schema,
   KnowledgeReleaseRefV1Schema,
@@ -21,6 +25,9 @@ import {
   RuleConflictRefV1Schema,
   StartAgentTaskResultV1Schema,
   type AuthorizationContextV1,
+  type ApplicableRuleSetAssemblyCommandV1,
+  type ApplicableRuleSetAssemblyResultV1,
+  type ApplicableRuleSetAssemblyPortV1,
   type ContractReferenceV1,
   type KnowledgeReleaseRefV1,
   type KnowledgeResolutionCommandV1,
@@ -31,7 +38,7 @@ import {
   type StartAgentTaskCommandV1,
   type SourceVersionRefV1,
 } from "@riskflow/contracts/ports";
-import type { VersionReference } from "@riskflow/contracts/common";
+import type { EvidenceReference, VersionReference } from "@riskflow/contracts/common";
 import { IdentifierSchema, IsoDateTimeSchema } from "@riskflow/contracts/common";
 
 import {
@@ -42,6 +49,7 @@ import {
 import {
   canonicalJson,
   sha256CanonicalJson,
+  type JsonValue,
   type AtomicCommandV1,
   type AtomicCommitV1,
   type TransactionContextV1,
@@ -50,11 +58,11 @@ import {
 import { mapPostgresError } from "../postgres/pool.js";
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
 import type { PostgresDatabase } from "../postgres/types.js";
+import type { PostgresKnowledgeGovernanceAdapter } from "../knowledge-governance/index.js";
 import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
   ArtifactRefV1Schema,
-  ArtifactStoreError,
   type ArtifactReadHandleV1,
   type ArtifactReferenceGuardV1,
   type ArtifactRefV1,
@@ -393,6 +401,7 @@ export interface ScoringRulesGovernedReleaseResolverV1 {
     readonly requiredAt: string;
     readonly asOfRecordedAt: string;
     readonly authorization: AuthorizationContextV1;
+    readonly contextRef?: ContractReferenceV1;
   }): Promise<
     | {
         readonly kind: "succeeded";
@@ -418,6 +427,12 @@ export type ScoringRulesTaskSnapshotReaderV1 = Pick<AgentTaskStoreV1, "getTask">
 
 /** C18 精确配置集合解析（`PostgresAssessmentConfigurationAdapter.resolveConfigurationSet`）。 */
 export interface ScoringRulesConfigurationResolverV1 {
+  readPublishedConfigurationMember(input: {
+    readonly projectId: string;
+    readonly requestId: string;
+    readonly releaseRef: VersionReference;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<{ readonly body: unknown; readonly sha256: string } | undefined>;
   resolveConfigurationSet(
     request: ResolveAssessmentConfigurationSetV1,
   ): Promise<AssessmentConfigurationSetResultV1>;
@@ -440,6 +455,9 @@ export interface ScoringRulesRevisionSubmitterV1 {
     readonly idempotencyKey: string;
     readonly issuedAt: string;
     readonly task?: AgentTaskSnapshotV1;
+    readonly authorization?: AuthorizationContextV1;
+    readonly evidenceReferences?: readonly EvidenceReference[];
+    readonly baseReleaseRef?: KnowledgeReleaseRefV1;
   }): Promise<
     | { readonly kind: "succeeded"; readonly revisionRef: KnowledgeRevisionRefV1 }
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
@@ -501,6 +519,7 @@ export interface PostgresScoringRulesAdapterOptionsV1 {
   readonly governedReleases: ScoringRulesGovernedReleaseResolverV1;
   readonly preparationSnapshot: AssessmentPreparationSnapshotReaderV1;
   readonly submitRevision: ScoringRulesRevisionSubmitterV1;
+  readonly derivedPublisher?: Pick<PostgresKnowledgeGovernanceAdapter, "publishDerivedRelease">;
   readonly conflictReview?: ScoringRulesConflictReviewLinkerV1;
   readonly conflictDecisions?: ScoringRulesConflictDecisionReaderV1;
   readonly startAgentTask: (
@@ -513,7 +532,7 @@ export interface PostgresScoringRulesAdapterOptionsV1 {
     readonly invocationId: string;
     readonly branch: "knowledge-modeling.assessment-basis";
     readonly requestedAt: string;
-    readonly requestedSourceVersionRefs: readonly SourceVersionRefV1[];
+    readonly requestedSourceVersionRefs?: readonly SourceVersionRefV1[];
   }) => Promise<AuthorizationContextV1>;
   readonly now?: () => Date;
 }
@@ -551,7 +570,10 @@ const readBounded = async (handle: ArtifactReadHandleV1): Promise<Uint8Array> =>
  * 审阅链接与不可变评估依据集合，并复用 C15/C16/C18/C08 的公开接缝。
  */
 export class PostgresScoringRulesAdapter
-  implements ScoringRulesGovernancePolicyV1, AssessmentBasisReleaseSetReaderV1
+  implements
+    ScoringRulesGovernancePolicyV1,
+    AssessmentBasisReleaseSetReaderV1,
+    ApplicableRuleSetAssemblyPortV1
 {
   readonly #db: Kysely<ScoringRulesDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
@@ -563,6 +585,7 @@ export class PostgresScoringRulesAdapter
   readonly #governedReleases: ScoringRulesGovernedReleaseResolverV1;
   readonly #preparationSnapshot: AssessmentPreparationSnapshotReaderV1;
   readonly #submitRevision: ScoringRulesRevisionSubmitterV1;
+  readonly #derivedPublisher: PostgresScoringRulesAdapterOptionsV1["derivedPublisher"];
   readonly #conflictReview: ScoringRulesConflictReviewLinkerV1 | undefined;
   readonly #conflictDecisions: ScoringRulesConflictDecisionReaderV1 | undefined;
   readonly #startAgentTask: PostgresScoringRulesAdapterOptionsV1["startAgentTask"];
@@ -593,6 +616,7 @@ export class PostgresScoringRulesAdapter
     this.#governedReleases = options.governedReleases;
     this.#preparationSnapshot = options.preparationSnapshot;
     this.#submitRevision = options.submitRevision;
+    this.#derivedPublisher = options.derivedPublisher;
     this.#conflictReview = options.conflictReview;
     this.#conflictDecisions = options.conflictDecisions;
     this.#startAgentTask = options.startAgentTask;
@@ -655,6 +679,7 @@ export class PostgresScoringRulesAdapter
         return this.#prepareFailure(request, "scoring-rule-source-excluded");
       }
       const configurationSet = await this.#configuration.resolveConfigurationSet({
+        purpose: "assessment",
         requestId: `${request.requestId}:configuration`,
         idempotencyKey: `${request.idempotencyKey}:configuration`,
         projectId: request.projectId,
@@ -1208,13 +1233,22 @@ export class PostgresScoringRulesAdapter
         asContractReference(target),
         "AUTHORIZATION_DENIED",
       );
+    const configurationRequestId = `${requestId}:basis`;
+    const configurationAuthorization = await this.#authorizeConfigurationRead({
+      projectId,
+      actorId: authorization.actorId,
+      invocationId: configurationRequestId,
+      branch: "knowledge-modeling.assessment-basis",
+      requestedAt: authorization.decidedAt,
+    });
     const configuration = await this.#configuration.resolveConfigurationSet({
-      requestId,
+      purpose: "assessment",
+      requestId: configurationRequestId,
       idempotencyKey: requestId,
       projectId,
       actorId: authorization.actorId,
       requestedAt: authorization.decidedAt,
-      authorization: readAuthorization,
+      authorization: configurationAuthorization,
       requiredAt: authorization.decidedAt,
       asOfRecordedAt: authorization.decidedAt,
     });
@@ -1247,7 +1281,7 @@ export class PostgresScoringRulesAdapter
         actorId: authorization.actorId,
         requestId: `${requestId}:indicators`,
         requestedAt: authorization.decidedAt,
-        authorization: readAuthorization,
+        authorization: configurationAuthorization,
         purposeCode: ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
       }),
     );
@@ -1262,7 +1296,7 @@ export class PostgresScoringRulesAdapter
       actorId: authorization.actorId,
       requestId,
       requestedAt: authorization.decidedAt,
-      authorization: readAuthorization,
+      authorization: configurationAuthorization,
     });
     validateScoringRuleConfigurationPackage({
       package: configurationPackage,
@@ -1596,6 +1630,185 @@ export class PostgresScoringRulesAdapter
 
   // ------------------------------------------------------ applicability assembly
 
+  async assemble(
+    command: ApplicableRuleSetAssemblyCommandV1,
+  ): Promise<ApplicableRuleSetAssemblyResultV1> {
+    const parsed = ApplicableRuleSetAssemblyCommandV1Schema.safeParse(command);
+    if (!parsed.success)
+      return ApplicableRuleSetAssemblyResultV1Schema.parse({
+        kind: "failed",
+        error: moduleError({
+          code: "UNSUPPORTED_CONTRACT",
+          causalRunId: command?.commandId ?? "applicable-rule-set-assembly",
+        }),
+      });
+    const input = parsed.data;
+    try {
+      const decision = await this.#access.verify({
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        invocationId: input.commandId,
+        projectId: input.projectId,
+        branch: "knowledge-modeling.assemble-applicable-rule-set",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+        requestedAt: input.authorization.decidedAt,
+      });
+      if (
+        decision.context.actorId !== input.actorId ||
+        decision.context.projectId !== input.projectId ||
+        this.#authorizeConfigurationRead === undefined
+      ) {
+        failScoringRule(
+          "scoring-rule-capability-required",
+          SCORING_RULES_ASSEMBLY_TARGET_REF_V1,
+          "AUTHORIZATION_DENIED",
+        );
+      }
+      const requestId = `assembly-${sha256CanonicalJson({ commandId: input.commandId }).slice(0, 40)}`;
+      const assemblyKey = `assembly-${sha256CanonicalJson({ idempotencyKey: input.idempotencyKey }).slice(0, 40)}`;
+      const payload = {
+        commandId: input.commandId,
+        actorId: input.actorId,
+        issuedAt: input.issuedAt,
+        ...input.payload,
+      };
+      const audit = (
+        action: string,
+        targetRef:
+          | KnowledgeRevisionRefV1
+          | ApplicableRuleSetAssemblyCommandV1["payload"]["preparationSnapshotRef"],
+        commandId = input.commandId,
+      ) => ({
+        auditEntryId: `assembly-${sha256CanonicalJson({ commandId: input.commandId, action })}`,
+        projectId: input.projectId,
+        action,
+        targetRef,
+        actorRef: input.actorId,
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        occurredAt: input.issuedAt,
+        recordedAt: this.#now().toISOString(),
+        version: targetRef.reference,
+        commandId,
+        idempotencyKey: input.idempotencyKey,
+      });
+      // 请求回执先锁定载荷；C04和C16阶段均在短事务外执行，可按原身份续接。
+      await this.#transactionUnit.execute(
+        atomicCommandFor(
+          { ...input, commandId: `${requestId}:request` },
+          "knowledge.assemble-applicable-rule-set.request.v1",
+          payload,
+        ),
+        async () => ({
+          resultRef: input.payload.preparationSnapshotRef,
+          events: [],
+          audit: audit(
+            "knowledge.assemble-applicable-rule-set.requested",
+            input.payload.preparationSnapshotRef,
+            `${requestId}:request`,
+          ),
+        }),
+      );
+      const authorization = await this.#authorizeConfigurationRead({
+        projectId: input.projectId,
+        actorId: input.actorId,
+        invocationId: requestId,
+        branch: "knowledge-modeling.assessment-basis",
+        requestedAt: input.authorization.decidedAt,
+      });
+      const snapshot = await this.#preparationSnapshot.readAssessmentPreparationSnapshot({
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestId,
+        idempotencyKey: `${assemblyKey}:read`,
+        requestedAt: authorization.decidedAt,
+        authorization,
+        preparationSnapshotRef: input.payload.preparationSnapshotRef,
+      });
+      if (snapshot.kind !== "succeeded")
+        return ApplicableRuleSetAssemblyResultV1Schema.parse(snapshot);
+      const projection = AssessmentPreparationProjectionV1Schema.parse(snapshot.projection);
+      const assembled = await this.assembleApplicableRuleSetRevision({
+        ...input.payload,
+        requestId,
+        idempotencyKey: assemblyKey,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: authorization.decidedAt,
+        authorization,
+        projectRevisionRef: projection.projectRevisionRef,
+        applicabilitySnapshotRef: projection.applicabilitySnapshotRef,
+        applicability: projection.applicability,
+        asOfRecordedAt: input.issuedAt,
+      });
+      if (assembled.kind !== "succeeded")
+        return ApplicableRuleSetAssemblyResultV1Schema.parse(assembled);
+      const basis = await this.resolve(
+        {
+          kind: "assessment-basis",
+          commandId: `${requestId}:basis`,
+          idempotencyKey: `${assemblyKey}:basis`,
+          projectId: input.projectId,
+          actorId: input.actorId,
+          issuedAt: input.issuedAt,
+          authorization,
+          payload: {
+            preparationSnapshotRef: input.payload.preparationSnapshotRef,
+            requiredAt: input.payload.requiredAt,
+          },
+        },
+        {
+          definitionType: "applicable-rule-set",
+          releaseRef: assembled.applicableRuleSetReleaseRef,
+          revisionRef: assembled.applicableRuleSetRevisionRef,
+          candidateArtifactRef: assembled.applicableRuleSetArtifactRef,
+        },
+      );
+      if (basis.kind !== "succeeded" || basis.result.kind !== "assessment-basis")
+        return ApplicableRuleSetAssemblyResultV1Schema.parse(basis);
+      const receipt = await this.#transactionUnit.execute(
+        atomicCommandFor(input, "knowledge.assemble-applicable-rule-set.v1", payload),
+        async () => ({
+          resultRef: assembled.applicableRuleSetRevisionRef,
+          events: [],
+          audit: audit(
+            "knowledge.assemble-applicable-rule-set",
+            assembled.applicableRuleSetRevisionRef,
+          ),
+        }),
+      );
+      const revisionRef = KnowledgeRevisionRefV1Schema.parse(receipt.resultRef);
+      const metadata = await this.#findRevisionMetadata(input.projectId, revisionRef);
+      if (metadata === undefined || metadata.definitionType !== "applicable-rule-set")
+        failScoringRule("scoring-rule-revision-unverified", revisionRef);
+      return ApplicableRuleSetAssemblyResultV1Schema.parse({
+        kind: "succeeded",
+        result: {
+          applicableRuleSetRevisionRef: revisionRef,
+          applicableRuleSetArtifactRef: metadata.artifactRef,
+          applicableRuleSetReleaseRef: assembled.applicableRuleSetReleaseRef,
+          assessmentBasisReleaseSetRef: basis.result.assessmentBasisReleaseSetRef,
+        },
+      });
+    } catch (error) {
+      const mapped = mapPostgresError(error, "scoring-rules.assembly");
+      return ApplicableRuleSetAssemblyResultV1Schema.parse({
+        kind: "failed",
+        error:
+          mapped.code === "IDEMPOTENCY_CONFLICT"
+            ? moduleError({
+                code: "IDEMPOTENCY_CONFLICT",
+                causalRunId: input.commandId,
+                idempotencyKey: input.idempotencyKey,
+                priorCommandId: input.commandId,
+              })
+            : await this.#mapError(error, {
+                branch: "knowledge-modeling.assemble-applicable-rule-set",
+                causalRunId: input.commandId,
+              }),
+      });
+    }
+  }
+
   /** 三维筛选 + 冲突门禁 → applicable-rule-set 候选修订（仍需 C16 人工批准）。 */
   async assembleApplicableRuleSetRevision(
     request: AssembleApplicableRuleSetV1,
@@ -1634,6 +1847,11 @@ export class PostgresScoringRulesAdapter
       if (
         projection.projectId !== request.projectId ||
         !sameVersion(
+          projection.projectRevisionRef.reference,
+          request.projectRevisionRef.reference,
+        ) ||
+        canonicalJson(projection.applicability) !== canonicalJson(request.applicability) ||
+        !sameVersion(
           projection.preparationSnapshotRef.reference,
           request.preparationSnapshotRef.reference,
         ) ||
@@ -1644,6 +1862,41 @@ export class PostgresScoringRulesAdapter
       ) {
         failScoringRule(
           "scoring-rule-applicability-mismatch",
+          SCORING_RULES_ASSEMBLY_TARGET_REF_V1,
+        );
+      }
+      if (
+        !sameVersion(request.scoringPolicyRef, this.#policy.policyRef) ||
+        !sameVersion(request.assemblyPolicyRef, this.#policy.assemblyPolicyRef) ||
+        !sameVersion(request.compatibilityRef, this.#policy.compatibilityRef)
+      ) {
+        failScoringRule("scoring-rule-policy-mismatch", SCORING_RULES_ASSEMBLY_TARGET_REF_V1);
+      }
+      const configuration = await this.#configuration.resolveConfigurationSet({
+        purpose: "assessment",
+        requestId: `${request.requestId}:configuration`,
+        idempotencyKey: `${request.idempotencyKey}:configuration`,
+        projectId: request.projectId,
+        actorId: request.actorId,
+        requestedAt: request.requestedAt,
+        authorization,
+        requiredAt: request.requiredAt,
+        asOfRecordedAt: request.asOfRecordedAt,
+      });
+      if (configuration.kind !== "succeeded") return { kind: "failed", error: configuration.error };
+      if (
+        configuration.configurationSet.projectId !== request.projectId ||
+        !sameVersion(
+          configuration.configurationSet.projectRevisionRef.reference,
+          projection.projectRevisionRef.reference,
+        ) ||
+        !sameVersion(
+          configuration.configurationSet.configurationSetRef,
+          request.configurationSetRef,
+        )
+      ) {
+        failScoringRule(
+          "scoring-rule-configuration-incompatible",
           SCORING_RULES_ASSEMBLY_TARGET_REF_V1,
         );
       }
@@ -1793,36 +2046,99 @@ export class PostgresScoringRulesAdapter
         resolvedConflicts: approvedConflicts,
       });
       const contentDigest = applicableRuleSetDocumentDigest(document);
+      if (this.#derivedPublisher === undefined)
+        failScoringRule("scoring-rule-policy-required", SCORING_RULES_ASSEMBLY_TARGET_REF_V1);
+      const contextRef = request.preparationSnapshotRef;
+      const parentReleaseRefs = [
+        ...new Map(
+          candidates.map((candidate) => [
+            canonicalJson(candidate.ruleReleaseRef),
+            candidate.ruleReleaseRef,
+          ]),
+        ).values(),
+      ];
+      const derivationScopeKey = sha256CanonicalJson({
+        contextRef,
+        parentReleaseRefs,
+        configurationMembers: configuration.configurationSet.members,
+        assemblyPolicyRef: request.assemblyPolicyRef,
+      });
       const candidateArtifactRef = ContentArtifactRefV1Schema.parse(
         await this.#put({
           projectId: request.projectId,
           actorId: request.actorId,
-          issuedAt: request.requestedAt,
+          issuedAt: request.asOfRecordedAt,
           authorization,
-          artifactId: `applicable-rule-set-${contentDigest.slice(0, 40)}`,
+          artifactId: `applicable-rule-set-${derivationScopeKey}`,
           purposeCode: APPLICABLE_RULE_SET_ARTIFACT_PURPOSE_CODE_V1,
           mediaType: APPLICABLE_RULE_SET_MEDIA_TYPE_V1,
           value: document,
           parentArtifactRefs: [],
         }),
       );
-      const submitted = await this.#submitRevision.submitRevision({
+      const evidenceReferences = [
+        ...new Map(
+          candidates
+            .flatMap((candidate) => candidate.member.binding.evidenceReferences)
+            .map((evidence) => [canonicalJson(evidence), evidence]),
+        ).values(),
+      ];
+      const published = await this.#derivedPublisher.publishDerivedRelease({
         projectId: request.projectId,
+        actorId: request.actorId,
+        commandId: `${request.requestId}:publish-derived`,
+        idempotencyKey: `${request.idempotencyKey}:publish-derived`,
+        issuedAt: request.requestedAt,
+        effectiveFrom: request.requiredAt,
+        authorization,
         definitionType: "applicable-rule-set",
         candidateArtifactRef,
-        commandId: `${request.requestId}:submit-revision`,
-        idempotencyKey: `${request.idempotencyKey}:submit-revision`,
-        issuedAt: request.requestedAt,
+        evidenceReferences,
+        parentReleaseRefs,
+        derivationPolicyRef: request.assemblyPolicyRef,
+        contextRef,
+        derivationScopeKey,
+        append: async (context, { revision, releaseRef, audit, recordedAt }) => {
+          await this.appendPreparedRevision(context, {
+            revisionRef: revision.revisionRef,
+            commandId: revision.commandId,
+            projectId: request.projectId,
+            definitionType: "applicable-rule-set",
+            candidateArtifactRef,
+            prepared: {
+              definitionType: "applicable-rule-set",
+              projectRevisionRef: request.projectRevisionRef,
+              compatibilityRef: request.compatibilityRef,
+              contentDigest,
+              itemCount: document.includedMembers.length,
+            },
+            auditEntryId: audit.auditEntryId,
+            persistedAt: recordedAt,
+          });
+          return this.appendRelease(context, {
+            command: {
+              kind: "derived-approved",
+              commandId: revision.commandId,
+              idempotencyKey: `${request.idempotencyKey}:publish-derived`,
+              projectId: request.projectId,
+              actorId: request.actorId,
+              issuedAt: request.requestedAt,
+              authorizationContextRef: authorization.authorizationContextRef,
+              authorization,
+            },
+            revisionRef: revision.revisionRef,
+            definitionType: "applicable-rule-set",
+            candidateArtifactRef,
+            releaseRef,
+            audit: { auditEntryId: audit.auditEntryId, version: releaseRef.reference },
+            recordedAt,
+          });
+        },
       });
-      if (submitted.kind === "failed") {
-        return AssembleApplicableRuleSetResultV1Schema.parse({
-          kind: "failed",
-          error: submitted.error,
-        });
-      }
       return AssembleApplicableRuleSetResultV1Schema.parse({
         kind: "succeeded",
-        applicableRuleSetRevisionRef: submitted.revisionRef,
+        applicableRuleSetRevisionRef: published.revisionRef,
+        applicableRuleSetReleaseRef: published.releaseRef,
         applicableRuleSetArtifactRef: candidateArtifactRef,
       });
     } catch (error) {
@@ -1841,13 +2157,14 @@ export class PostgresScoringRulesAdapter
   /** C02 `resolve(assessment-basis)`：物化不可变集合引用，不复制任何正文。 */
   async resolve(
     command: Extract<KnowledgeResolutionCommandV1, { kind: "assessment-basis" }>,
+    assembledMember?: ScoringRulesGovernedReleaseMemberV1,
   ): Promise<KnowledgeResolutionResultV1> {
     try {
       const authorization = await this.#verifyAuthorization({
         authorization: command.authorization,
         projectId: command.projectId,
         requestId: command.commandId,
-        requestedAt: command.payload.requiredAt,
+        requestedAt: command.issuedAt,
       });
       const snapshot = await this.#preparationSnapshot.readAssessmentPreparationSnapshot({
         projectId: command.projectId,
@@ -1876,14 +2193,68 @@ export class PostgresScoringRulesAdapter
       if (projection.projectId !== command.projectId) {
         return this.#resolutionDenied(command, "scoring-rule-project-mismatch");
       }
-      const releases = await this.#governedReleases.resolveGovernedReleases({
-        projectId: command.projectId,
-        requiredDefinitionTypes: ["applicable-rule-set"],
-        requiredAt: command.payload.requiredAt,
-        asOfRecordedAt: command.issuedAt,
-        authorization,
-      });
+      const releases =
+        assembledMember === undefined
+          ? await this.#governedReleases.resolveGovernedReleases({
+              projectId: command.projectId,
+              requiredDefinitionTypes: ["applicable-rule-set"],
+              contextRef: command.payload.preparationSnapshotRef,
+              requiredAt: command.payload.requiredAt,
+              asOfRecordedAt: command.issuedAt,
+              authorization,
+            })
+          : {
+              kind: "succeeded" as const,
+              result: { members: [assembledMember], releaseRefs: [assembledMember.releaseRef] },
+            };
       if (releases.kind === "failed") {
+        if (
+          assembledMember === undefined &&
+          releases.error.code === "BUSINESS_BLOCKED" &&
+          releases.error.blockerKind === "required-release-unavailable"
+        ) {
+          const configuration = await this.#configuration.resolveConfigurationSet({
+            purpose: "assessment",
+            requestId: `${command.commandId}:configuration`,
+            idempotencyKey: `${command.idempotencyKey}:configuration`,
+            projectId: command.projectId,
+            actorId: command.actorId,
+            requestedAt: command.issuedAt,
+            authorization,
+            requiredAt: command.payload.requiredAt,
+            asOfRecordedAt: command.issuedAt,
+          });
+          if (configuration.kind !== "succeeded")
+            return { kind: "failed", error: configuration.error };
+          const assembled = await this.assembleApplicableRuleSetRevision({
+            requestId: `${command.commandId}:assemble`,
+            idempotencyKey: `${command.idempotencyKey}:assemble`,
+            projectId: command.projectId,
+            actorId: command.actorId,
+            requestedAt: command.issuedAt,
+            authorization,
+            preparationSnapshotRef: projection.preparationSnapshotRef,
+            projectRevisionRef: projection.projectRevisionRef,
+            applicabilitySnapshotRef: projection.applicabilitySnapshotRef,
+            applicability: projection.applicability,
+            requiredAt: command.payload.requiredAt,
+            asOfRecordedAt: command.issuedAt,
+            scoringPolicyRef: this.#policy.policyRef,
+            assemblyPolicyRef: this.#policy.assemblyPolicyRef,
+            compatibilityRef: this.#policy.compatibilityRef,
+            configurationSetRef: configuration.configurationSet.configurationSetRef,
+          });
+          if (assembled.kind !== "succeeded")
+            return assembled.kind === "failed"
+              ? { kind: "failed", error: assembled.error }
+              : { kind: "waiting", waiting: assembled.waiting };
+          return this.resolve(command, {
+            definitionType: "applicable-rule-set",
+            releaseRef: assembled.applicableRuleSetReleaseRef,
+            revisionRef: assembled.applicableRuleSetRevisionRef,
+            candidateArtifactRef: assembled.applicableRuleSetArtifactRef,
+          });
+        }
         return KnowledgeResolutionResultV1Schema.parse({ kind: "failed", error: releases.error });
       }
       const release = releases.result.members.find(
@@ -1930,11 +2301,13 @@ export class PostgresScoringRulesAdapter
         !sameVersion(
           document.applicabilitySnapshotRef.reference,
           projection.applicabilitySnapshotRef.reference,
-        )
+        ) ||
+        canonicalJson(document.applicability) !== canonicalJson(projection.applicability)
       ) {
         return this.#resolutionDenied(command, "scoring-rule-applicability-mismatch");
       }
       const configurationSet = await this.#configuration.resolveConfigurationSet({
+        purpose: "assessment",
         requestId: `${command.commandId}:configuration`,
         idempotencyKey: `${command.idempotencyKey}:configuration`,
         projectId: command.projectId,
@@ -2126,8 +2499,7 @@ export class PostgresScoringRulesAdapter
   // ------------------------------------------------------ bounded member read
 
   /**
-   * D-14 成员读取：授权复验先于 C03 回执查询与单点读取；工程与 actor 只取 C06 验证结果，
-   * 缺失/跨工程/成员不符/撤权统一不可枚举拒绝；成功与不可用结果各自以一条只追加审计进入 C03 回执。
+   * 当前权限通过后读取登记成员，每次访问独立记录成功或不可用结果。
    */
   async readAssessmentBasisReleaseSet(
     input: ReadAssessmentBasisReleaseSetV1,
@@ -2161,34 +2533,6 @@ export class PostgresScoringRulesAdapter
       return this.#basisUnavailable(input);
     }
     try {
-      const atomic = atomicCommandFor(
-        {
-          requestId: input.requestId,
-          idempotencyKey: input.idempotencyKey,
-          projectId: authorization.projectId,
-          actorId: authorization.actorId,
-          issuedAt: input.requestedAt,
-          authorization,
-        },
-        "knowledge.read-assessment-basis-release-set.v1",
-        { assessmentBasisReleaseSetRef: input.assessmentBasisReleaseSetRef },
-      );
-      const receipt = await this.#transactionUnit.execute(
-        atomic,
-        async (context): Promise<AtomicCommitV1> =>
-          this.#basisReadCommit(context, input, authorization),
-      );
-      const auditRow = await this.#db
-        .selectFrom("audit.entries")
-        .select(["action"])
-        .where("audit_entry_id", "=", receipt.auditEntryId)
-        .executeTakeFirst();
-      if (auditRow?.action === BASIS_READ_UNAVAILABLE_ACTION) {
-        return this.#basisUnavailable(input);
-      }
-      if (auditRow?.action !== BASIS_READ_SUCCEEDED_ACTION) {
-        return this.#basisReadFailed(input.requestId, "TERMINAL_FAILURE");
-      }
       const row = await this.#db
         .selectFrom("business.assessment_basis_release_sets")
         .selectAll()
@@ -2200,23 +2544,36 @@ export class PostgresScoringRulesAdapter
         row === undefined
           ? undefined
           : basisMemberProjection(row, input.assessmentBasisReleaseSetRef);
-      if (projection === undefined) {
+      if (row !== undefined && projection === undefined)
         return this.#basisReadFailed(input.requestId, "TERMINAL_FAILURE");
+      const accessId = randomUUID();
+      await this.#db
+        .insertInto("audit.entries")
+        .values({
+          audit_entry_id: accessId,
+          project_id: authorization.projectId,
+          action:
+            projection === undefined ? BASIS_READ_UNAVAILABLE_ACTION : BASIS_READ_SUCCEEDED_ACTION,
+          target_ref: input.assessmentBasisReleaseSetRef as unknown as JsonValue,
+          actor_ref: authorization.actorId,
+          authorization_context_ref: authorization.authorizationContextRef as unknown as JsonValue,
+          occurred_at: input.requestedAt,
+          recorded_at: this.#now().toISOString(),
+          persisted_at: sql`clock_timestamp()`,
+          version_ref: input.assessmentBasisReleaseSetRef.reference as unknown as JsonValue,
+          command_id: input.requestId,
+          idempotency_key: accessId,
+          run_id: null,
+          thread_id: null,
+          reason_ref: null,
+        })
+        .execute();
+      if (projection === undefined) {
+        return this.#basisUnavailable(input);
       }
       return AssessmentBasisReleaseSetReadResultV1Schema.parse(projection);
     } catch (error) {
       const mapped = mapPostgresError(error, "scoring-rules.basis-read");
-      if (mapped.code === "IDEMPOTENCY_CONFLICT") {
-        return AssessmentBasisReleaseSetReadResultV1Schema.parse({
-          kind: "failed",
-          error: moduleError({
-            code: "IDEMPOTENCY_CONFLICT",
-            idempotencyKey: input.idempotencyKey,
-            priorCommandId: input.requestId,
-            causalRunId: input.requestId,
-          }),
-        });
-      }
       return this.#basisReadFailed(
         input.requestId,
         mapped.retryable || mapped.code === "CONNECTION_FAILED"
@@ -2256,109 +2613,10 @@ export class PostgresScoringRulesAdapter
         return undefined;
       throw error;
     }
-    const rows = await this.#db
-      .selectFrom("business.assessment_basis_release_sets")
-      .selectAll()
-      .where("project_id", "=", input.projectId)
-      .where(
-        sql<boolean>`member_snapshot -> 'configurationMembers' @> ${JSON.stringify([
-          { releaseRef: { kind: "knowledge-release", reference: input.releaseRef } },
-        ])}::jsonb`,
-      )
-      .limit(201)
-      .execute();
-    if (rows.length > 200) return undefined;
-    const members = rows.flatMap((row) => {
-      const projection = basisMemberProjection(row, {
-        kind: "assessment-basis-release-set",
-        reference: { entityId: row.set_id, versionId: row.version_id },
-      });
-      if (projection?.kind !== "succeeded") return [];
-      return projection.configurationMembers.filter(
-        (member) =>
-          member.releaseRef.reference.entityId === input.releaseRef.entityId &&
-          member.releaseRef.reference.versionId === input.releaseRef.versionId,
-      );
+    return this.#configuration.readPublishedConfigurationMember({
+      ...input,
+      authorization: verified,
     });
-    const member = members[0];
-    if (
-      member === undefined ||
-      members.some(
-        (candidate) =>
-          candidate.definitionType !== member.definitionType ||
-          candidate.artifactRef.reference.entityId !== member.artifactRef.reference.entityId ||
-          candidate.artifactRef.reference.versionId !== member.artifactRef.reference.versionId ||
-          candidate.contentDigest !== member.contentDigest,
-      )
-    ) {
-      return undefined;
-    }
-    try {
-      const parsedDocument = AssessmentConfigurationDocumentV1Schema.safeParse(
-        await this.#readJson(member.artifactRef, {
-          projectId: input.projectId,
-          actorId: verified.actorId,
-          requestId: input.requestId,
-          requestedAt: input.authorization.decidedAt,
-          authorization: verified,
-          purposeCode: ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
-        }),
-      );
-      if (!parsedDocument.success) return undefined;
-      const document = parsedDocument.data;
-      const sha256 = assessmentConfigurationDocumentDigest(document);
-      if (document.definitionType !== member.definitionType || sha256 !== member.contentDigest) {
-        return undefined;
-      }
-      return { body: document, sha256 };
-    } catch (error) {
-      if (
-        error instanceof ArtifactStoreError &&
-        (error.code === "ARTIFACT_ACCESS_DENIED" || error.code === "ARTIFACT_REFERENCE_NOT_FOUND")
-      )
-        return undefined;
-      throw error;
-    }
-  }
-
-  /** 首次执行或重放都由同一事务形成结果；回放时 C03 直接返回既有回执。 */
-  async #basisReadCommit(
-    context: TransactionContextV1,
-    input: ReadAssessmentBasisReleaseSetV1,
-    authorization: AuthorizationContextV1,
-  ): Promise<AtomicCommitV1> {
-    const transaction = asTransaction(context);
-    const recordedAt = this.#now().toISOString();
-    const row = await transaction
-      .selectFrom("business.assessment_basis_release_sets")
-      .selectAll()
-      .where("project_id", "=", authorization.projectId)
-      .where("set_id", "=", input.assessmentBasisReleaseSetRef.reference.entityId)
-      .where("version_id", "=", input.assessmentBasisReleaseSetRef.reference.versionId)
-      .executeTakeFirst();
-    const projection =
-      row === undefined
-        ? undefined
-        : basisMemberProjection(row, input.assessmentBasisReleaseSetRef);
-    const action =
-      projection === undefined ? BASIS_READ_UNAVAILABLE_ACTION : BASIS_READ_SUCCEEDED_ACTION;
-    return {
-      resultRef: input.assessmentBasisReleaseSetRef,
-      audit: {
-        auditEntryId: `${input.requestId}:${action}`,
-        projectId: authorization.projectId,
-        action,
-        targetRef: input.assessmentBasisReleaseSetRef,
-        actorRef: authorization.actorId,
-        authorizationContextRef: authorization.authorizationContextRef,
-        occurredAt: input.requestedAt,
-        recordedAt,
-        version: input.assessmentBasisReleaseSetRef.reference,
-        commandId: input.requestId,
-        idempotencyKey: input.idempotencyKey,
-      },
-      events: [],
-    };
   }
 
   #basisReadFailed(
@@ -2917,11 +3175,12 @@ export class PostgresScoringRulesAdapter
       readonly purposeCode: string;
     },
   ): Promise<unknown> {
+    const readId = `scoring-read-${sha256CanonicalJson({ requestId: input.requestId, authorizationContextRef: input.authorization.authorizationContextRef, requestedAt: input.requestedAt, artifactRef, purposeCode: input.purposeCode })}`;
     const handle = await this.#artifactStore.open(
       ArtifactReadRequestV1Schema.parse({
         schemaVersion: "1",
-        requestId: input.requestId,
-        idempotencyKey: `${input.requestId}:read`,
+        requestId: readId,
+        idempotencyKey: readId,
         artifactRef,
         projectId: input.projectId,
         actorId: input.actorId,
@@ -2932,7 +3191,7 @@ export class PostgresScoringRulesAdapter
       }),
     );
     const bytes = await readBounded(handle);
-    await handle.verified;
+    await handle.completed;
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
   }
 

@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { App } from "../src/app/App.js";
@@ -15,7 +16,9 @@ import {
 import type { ConfirmationStateV1 } from "../src/shared/confirmation.js";
 import type { WebActionV1 } from "../src/shared/actions.js";
 import { WEB_NAVIGATION_V1 } from "../src/shell/navigation.js";
-import { RightDock } from "../src/shell/dock/RightDock.js";
+import { isEvidenceStale, RightDock } from "../src/shell/dock/RightDock.js";
+import { AgentDockContent, type AgentDockViewV1 } from "../src/agent/AgentDock.js";
+import type { AgentTaskRefView } from "../src/api/agentAuditOperations.js";
 
 const metadata = {
   schemaVersion: "1" as const,
@@ -220,11 +223,7 @@ describe("C10 Web shell SSR 结构", () => {
         initialPanel="agent"
         agentContribution={{
           kind: "ready",
-          taskRef: {
-            kind: "agent-task",
-            reference: { entityId: "agent-task-1", versionId: "v1" },
-          },
-          slot: ({ taskRef }) => <span data-agent-task={taskRef.kind}>已审计任务</span>,
+          slot: () => <span data-agent-task="agent-task">已审计任务</span>,
         }}
       />,
     );
@@ -325,5 +324,88 @@ describe("C10 Web 会话恢复外壳", () => {
     );
     expect(restrictedOnly).toContain('data-session-state="restricted"');
     expect(restrictedOnly).not.toContain("data-navigation=");
+  });
+});
+
+/** 停靠区 Agent 标签的真实内容：与工作台、任务详情读同一份共享任务事实。 */
+describe("停靠区 Agent 内容槽", () => {
+  const taskRef: AgentTaskRefView = {
+    kind: "agent-task",
+    reference: { entityId: "agent-task-1", versionId: "v1" },
+    taskType: "data-cleaning",
+    triggerMode: "embedded",
+    modelDeploymentRef: { entityId: "model-1", versionId: "v1" },
+    promptTemplateRef: { entityId: "prompt-1", versionId: "v1" },
+    toolPolicyRef: { entityId: "tools-1", versionId: "v1" },
+    budgetPolicyRef: { entityId: "budget-1", versionId: "v1" },
+    incrementSchemaRef: { entityId: "increment-1", versionId: "v1" },
+    validationPolicyRef: { entityId: "validation-1", versionId: "v1" },
+  };
+
+  const renderDock = (view: AgentDockViewV1): string =>
+    renderToStaticMarkup(
+      <MemoryRouter>
+        <AgentDockContent view={view} projectPath={(path) => path} onSelectTask={() => undefined} />
+      </MemoryRouter>,
+    );
+
+  it("未选任务时列出当前工程的真实任务并保留工作台入口", () => {
+    const html = renderDock({
+      list: {
+        asOfRecordedAt: "2026-10-15T00:00:00.000Z",
+        items: [
+          {
+            agentTaskRef: taskRef,
+            status: "completed",
+            taskVersion: 3,
+            initiatorActorId: "account-1",
+            parentRunRef: {
+              kind: "workflow-run",
+              reference: { entityId: "run-1", versionId: "v1" },
+            },
+            frozenInputRef: {
+              kind: "cleaning-input",
+              reference: { entityId: "input-1", versionId: "v1" },
+            },
+            createdAt: "2026-10-14T00:00:00.000Z",
+            updatedAt: "2026-10-15T00:00:00.000Z",
+          },
+        ],
+      },
+      taskRef: undefined,
+      detail: undefined,
+      loading: false,
+      error: "",
+    });
+    expect(html).toContain("agent-task-1");
+    expect(html).toContain("已完成");
+    expect(html).toContain("数据清洗与部分可用判断");
+    expect(html).toContain('href="/agent"');
+  });
+
+  it("当前工程没有任务时呈现诚实空态，不伪造任务", () => {
+    const html = renderDock({
+      list: { asOfRecordedAt: "2026-10-15T00:00:00.000Z", items: [] },
+      taskRef: undefined,
+      detail: undefined,
+      loading: false,
+      error: undefined,
+    });
+    expect(html).toContain("当前工程暂无 Agent 任务。");
+    expect(html).not.toContain("agent-task-1");
+  });
+
+  it("没有证据不触发自动关闭，只有证据确实过期才收起", () => {
+    // 业务页本来就没有证据，收起面板会连 Agent 标签一起挡住。
+    expect(isEvidenceStale(undefined, false)).toBe(false);
+    expect(isEvidenceStale(undefined, true)).toBe(false);
+    const evidence = {
+      kind: "redacted" as const,
+      sourceName: "source-name",
+      chapterPath: "chapter/path",
+      sourceSegmentId: "source-1-chapter-1-segment-1",
+    };
+    expect(isEvidenceStale(evidence, true)).toBe(false);
+    expect(isEvidenceStale(evidence, false)).toBe(true);
   });
 });

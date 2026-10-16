@@ -143,8 +143,8 @@ export const makeAgentError = (input: AgentErrorInput): AgentStructuredErrorV1 =
 export class AgentRuntimeError extends Error {
   readonly details: AgentStructuredErrorV1;
 
-  constructor(details: AgentStructuredErrorV1) {
-    super(details.code);
+  constructor(details: AgentStructuredErrorV1, options?: ErrorOptions) {
+    super(details.code, options);
     this.name = "AgentRuntimeError";
     this.details = details;
   }
@@ -305,7 +305,7 @@ export const settleAgentBudget = (
   actualInput: AgentBudgetUsageV1,
   now = nowIso(),
   activeWallClockMs = 0,
-  options: { readonly allowWallClockOverrun?: boolean } = {},
+  options: { readonly allowWallClockOverrun?: boolean; readonly allowBudgetOverrun?: boolean } = {},
 ): AgentBudgetLedgerV1 => {
   const policy = AgentTaskBudgetPolicyV1Schema.parse(policyInput);
   const ledger = AgentBudgetLedgerV1Schema.parse(ledgerInput);
@@ -318,13 +318,19 @@ export const settleAgentBudget = (
         : "deterministic-validation";
   const actual = normalizeAgentActionUsage(actionType, actualInput);
   for (const key of usageKeys) {
-    if (actual[key] > reservation.amount[key] || ledger.reserved[key] < reservation.amount[key])
+    if (
+      (!options.allowBudgetOverrun && actual[key] > reservation.amount[key]) ||
+      ledger.reserved[key] < reservation.amount[key]
+    )
       throwAgentError({
         code: "AGENT_BUDGET_EXHAUSTED",
         category: "budget",
         stage: `budget.settle.${key}`,
       });
-    if (ledger.used[key] + actual[key] > (limitFor(policy, key) ?? Number.MAX_SAFE_INTEGER))
+    if (
+      !options.allowBudgetOverrun &&
+      ledger.used[key] + actual[key] > (limitFor(policy, key) ?? Number.MAX_SAFE_INTEGER)
+    )
       throwAgentError({
         code: "AGENT_BUDGET_EXHAUSTED",
         category: "budget",
@@ -371,6 +377,27 @@ export interface AgentTaskSnapshotV1 {
   readonly budgetPolicy: AgentTaskBudgetPolicyV1;
   readonly budgetLedger: AgentBudgetLedgerV1;
 }
+
+/** 已预留的行动允许结算到上限；超额或墙钟耗尽后不得再执行。 */
+export const assertAgentTaskExecutionBudget = (task: AgentTaskSnapshotV1): void => {
+  for (const key of usageKeys) {
+    const limit = limitFor(task.budgetPolicy, key);
+    if (limit !== undefined && task.budgetLedger.used[key] > limit)
+      throwAgentError({
+        code: "AGENT_BUDGET_EXHAUSTED",
+        category: "budget",
+        stage: `authority.budget.${key}`,
+        taskRef: task.envelope.agentTaskRef,
+      });
+  }
+  if (task.budgetLedger.activeWallClockMs >= task.budgetPolicy.maxWallClockMs)
+    throwAgentError({
+      code: "AGENT_WALL_CLOCK_EXCEEDED",
+      category: "budget",
+      stage: "authority.wall-clock",
+      taskRef: task.envelope.agentTaskRef,
+    });
+};
 
 /**
  * C08 属主模块的公共失败证据窄读：只按精确 AgentTaskRef 返回终态失败证据，
@@ -446,6 +473,16 @@ export interface AgentTaskCompletedResultV1 {
   readonly validation?: AgentValidationResultV1;
   readonly usage: AgentBudgetUsageV1;
   readonly actionRefs: readonly VersionReference[];
+}
+
+export interface AgentTaskExecutionAuthorityRequestV1 {
+  readonly taskRef: AgentTaskRefV1;
+  readonly workerId: string;
+  readonly leaseToken: string;
+}
+
+export interface AgentTaskExecutionAuthorityReaderV1 {
+  readExecutionAuthority(input: AgentTaskExecutionAuthorityRequestV1): Promise<AgentTaskSnapshotV1>;
 }
 
 export interface AgentTaskStoreV1 {
@@ -699,7 +736,11 @@ export class AgentTaskDefinitionRegistry {
   }
 }
 
-const taskRefFor = (command: StartAgentTaskCommandV1): AgentTaskRefV1 => ({
+export const agentTaskRefFor = (command: {
+  readonly projectId: string;
+  readonly idempotencyKey: string;
+  readonly payload: Omit<AgentTaskRefV1, "kind" | "reference">;
+}): AgentTaskRefV1 => ({
   kind: "agent-task",
   reference: {
     entityId: `agent-task:${command.projectId}:${command.idempotencyKey}`,
@@ -767,7 +808,7 @@ export const prepareAgentTaskStart = (
   const valid = StartAgentTaskCommandV1Schema.parse(command);
   assertAgentTaskDefinitionForCommand(valid, definition);
   const timestamp = IsoDateTimeSchema.parse(now);
-  const taskRef = taskRefFor(valid);
+  const taskRef = agentTaskRefFor(valid);
   const envelope = envelopeFor(valid, taskRef, timestamp);
   return {
     taskRef,
@@ -1047,6 +1088,7 @@ export const completeAgentStructured = async <T>(input: {
   readonly parentArtifactRefs?: readonly import("../artifacts/schema.js").ArtifactRefV1[];
   readonly outputSchema: z.ZodType<T>;
   readonly maxOutputTokens: number;
+  readonly reservationAmount?: AgentBudgetUsageV1;
   readonly remainingWallClockMs?: number;
   readonly now?: string;
   readonly signal?: AbortSignal;
@@ -1090,6 +1132,38 @@ export const completeAgentStructured = async <T>(input: {
       taskRef: task.agentTaskRef,
     });
   const issuedAt = IsoDateTimeSchema.parse(input.now ?? nowIso());
+  const remainingTokens = (key: "inputTokens" | "outputTokens" | "contextTokens", limit: number) =>
+    Math.min(
+      Math.max(0, limit - input.task.budgetLedger.used[key]),
+      input.reservationAmount?.[key] ??
+        Math.max(
+          0,
+          limit - input.task.budgetLedger.used[key] - input.task.budgetLedger.reserved[key],
+        ),
+    );
+  const maxInputTokens = remainingTokens(
+    "inputTokens",
+    input.task.budgetPolicy.maxInputTokens ?? input.task.budgetPolicy.maxContextTokens,
+  );
+  const maxContextTokens = remainingTokens(
+    "contextTokens",
+    input.task.budgetPolicy.maxContextTokens,
+  );
+  const maxOutputTokens = Math.min(
+    input.maxOutputTokens,
+    remainingTokens(
+      "outputTokens",
+      input.task.budgetPolicy.maxOutputTokens ?? input.task.budgetPolicy.maxContextTokens,
+    ),
+    maxContextTokens,
+  );
+  if (maxInputTokens < 1 || maxOutputTokens < 1 || maxContextTokens < 1)
+    throwAgentError({
+      code: "AGENT_BUDGET_EXHAUSTED",
+      category: "budget",
+      stage: "model.remaining-budget",
+      taskRef: task.agentTaskRef,
+    });
   const deadlineAt = new Date(Date.parse(issuedAt) + remainingWallClockMs).toISOString();
   const request = {
     schemaVersion: "1" as const,
@@ -1108,11 +1182,33 @@ export const completeAgentStructured = async <T>(input: {
     promptTemplateRef: input.promptTemplateRef,
     outputSchemaRef: input.outputSchemaRef,
     messages: input.messages,
-    maxOutputTokens: input.maxOutputTokens,
+    maxOutputTokens,
+    maxInputTokens,
+    maxContextTokens,
   } satisfies StructuredCompletionRequestV1;
   try {
     return await input.gateway.completeStructured(request, input.outputSchema, input.signal);
   } catch (error) {
+    if (error instanceof ModelGatewayError && !isAbortLike(error)) {
+      const budgetFailure = error.code === "MODEL_CONTEXT_EXCEEDED";
+      const repairable = error.code === "MODEL_OUTPUT_SCHEMA_INVALID";
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: budgetFailure
+            ? "AGENT_BUDGET_EXHAUSTED"
+            : repairable
+              ? "AGENT_VALIDATION_REJECTED"
+              : "AGENT_MODEL_FAILURE",
+          category: budgetFailure ? "budget" : repairable ? "validation" : "model",
+          retryable: repairable || error.retryable,
+          ...(repairable ? { reasonCode: "model-output-schema-invalid" } : {}),
+          stage: error.stage,
+          taskRef: task.agentTaskRef,
+          ...(error.rawResponseRef === undefined ? {} : { diagnosticRef: error.rawResponseRef }),
+        }),
+        { cause: error },
+      );
+    }
     if (isAbortLike(error))
       throwAgentError({
         code: "AGENT_CANCELLED",

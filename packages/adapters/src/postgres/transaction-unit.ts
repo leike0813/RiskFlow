@@ -129,7 +129,21 @@ export class PostgresTransactionUnit implements TransactionUnitV1 {
       .select("business.command_receipts.command_id")
       .where("business.command_receipts.project_id", "=", input.projectId)
       .where("audit.entries.project_id", "=", input.projectId)
-      .whereRef("audit.entries.action", "=", "business.command_receipts.command_kind")
+      .where((eb) =>
+        eb.or([
+          eb.and([
+            eb("business.command_receipts.command_kind", "=", "workflow.start-run"),
+            eb("audit.entries.action", "=", "workflow.start-run-bound"),
+          ]),
+          eb.and([
+            eb("business.command_receipts.command_kind", "in", [
+              "identification-graph.start",
+              "assessment-graph.start",
+            ]),
+            eb("audit.entries.action", "=", eb.ref("business.command_receipts.command_kind")),
+          ]),
+        ]),
+      )
       .whereRef("audit.entries.run_id", "=", "business.command_receipts.run_id")
       .whereRef("audit.entries.thread_id", "=", "business.command_receipts.thread_id")
       .whereRef("audit.entries.actor_ref", "=", "business.command_receipts.actor_ref")
@@ -138,11 +152,6 @@ export class PostgresTransactionUnit implements TransactionUnitV1 {
         "=",
         "business.command_receipts.authorization_context_ref",
       )
-      .where("business.command_receipts.command_kind", "in", [
-        "workflow.start-run",
-        "identification-graph.start",
-        "assessment-graph.start",
-      ])
       .where("business.command_receipts.run_id", "=", input.runRef.reference.entityId)
       .where("business.command_receipts.result_ref", "=", jsonValue(input.runRef))
       .where("audit.entries.target_ref", "=", jsonValue(input.runRef))
@@ -207,9 +216,7 @@ export class PostgresTransactionUnit implements TransactionUnitV1 {
             completed_at: null,
             created_at: sql`clock_timestamp()`,
           })
-          .onConflict((conflict) =>
-            conflict.columns(["project_id", "command_kind", "idempotency_key"]).doNothing(),
-          )
+          .onConflict((conflict) => conflict.doNothing())
           .execute();
 
         const row = await transaction

@@ -1,4 +1,5 @@
 import { strToU8, zipSync } from "fflate";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import { DocumentServiceParserError } from "../../../../src/engineering-data/document-conversion/structured-document-converter.js";
@@ -144,66 +145,123 @@ describe("MinerU transport protocols", () => {
     expect(error.diagnostic).toMatchObject({ remoteCancellationConfirmed: true });
   });
 
-  it("submits official v4, uploads without Bearer, then consumes a durable legacy 3.4.4 layout ZIP", async () => {
-    const zip = zipSync({ "layout.json": strToU8(JSON.stringify(legacyLayout)) });
-    const calls: { url: string; init?: RequestInit }[] = [];
-    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
-      const url = String(input);
-      calls.push({ url, init });
-      if (url.endsWith("/api/v4/file-urls/batch")) {
-        return jsonResponse({
-          code: 0,
-          data: {
-            batch_id: "batch-1",
-            file_urls: ["https://mineru.oss-cn-shanghai.aliyuncs.com/signed"],
-          },
-        });
-      }
-      if (url === "https://mineru.oss-cn-shanghai.aliyuncs.com/signed")
-        return new Response(null, { status: 200 });
-      if (url.endsWith("/api/v4/extract-results/batch/batch-1")) {
-        return jsonResponse({
-          code: 0,
-          data: {
-            batch_id: "batch-1",
-            extract_result: [
+  it.each([
+    "symbol.png",
+    "missing.png",
+    "https://example.invalid/symbol.png",
+    "../symbol.png",
+    "ambiguous.png",
+    "broken.png",
+  ])(
+    "consumes durable official ZIP table images and rejects unsafe references: %s",
+    async (imageSrc) => {
+      const imageBytes = new Uint8Array(
+        readFileSync(new URL("../ocr/fixtures/synthetic-scanned.png", import.meta.url)),
+      );
+      const value = structuredClone(legacyLayout) as { pdf_info: { para_blocks: unknown[] }[] };
+      value.pdf_info[0]!.para_blocks.push({
+        type: "table",
+        index: 1,
+        bbox: [0, 0, 300, 200],
+        blocks: [
+          {
+            type: "table_body",
+            index: 0,
+            bbox: [0, 0, 300, 200],
+            lines: [
               {
-                data_id: "conversion_1",
-                file_name: "conversion_1.pdf",
-                state: "done",
-                full_zip_url: "https://cdn-mineru.openxlab.org.cn/result.zip",
+                spans: [
+                  {
+                    type: "table",
+                    html: `<table><tr><td>原文<img src="${imageSrc}"/></td></tr></table>`,
+                  },
+                ],
               },
             ],
           },
-        });
+        ],
+      });
+      const zip = zipSync({
+        "layout.json": strToU8(JSON.stringify(value)),
+        "images/symbol.png": imageBytes,
+        "a/ambiguous.png": imageBytes,
+        "b/ambiguous.png": imageBytes,
+        "images/broken.png": strToU8("not an image"),
+      });
+      const calls: { url: string; init?: RequestInit }[] = [];
+      const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+        const url = String(input);
+        calls.push({ url, init });
+        if (url.endsWith("/api/v4/file-urls/batch")) {
+          return jsonResponse({
+            code: 0,
+            data: {
+              batch_id: "batch-1",
+              file_urls: ["https://mineru.oss-cn-shanghai.aliyuncs.com/signed"],
+            },
+          });
+        }
+        if (url === "https://mineru.oss-cn-shanghai.aliyuncs.com/signed")
+          return new Response(null, { status: 200 });
+        if (url.endsWith("/api/v4/extract-results/batch/batch-1")) {
+          return jsonResponse({
+            code: 0,
+            data: {
+              batch_id: "batch-1",
+              extract_result: [
+                {
+                  data_id: "conversion_1",
+                  file_name: "conversion_1.pdf",
+                  state: "done",
+                  full_zip_url: "https://cdn-mineru.openxlab.org.cn/result.zip",
+                },
+              ],
+            },
+          });
+        }
+        return new Response(zip, { status: 200 });
+      });
+      const persisted: Uint8Array[] = [];
+      const request = makeRequest({
+        persistRawResponse: async ({ bytes }) => {
+          persisted.push(new Uint8Array(bytes));
+          return { artifactRef: rawRef(`raw-${persisted.length}`), bytes: new Uint8Array(bytes) };
+        },
+      });
+      const operation = createMineruDocumentParser({
+        config: makeConfig("official-v4"),
+        credentials: { "mineru-token": "test-token" },
+        fetch,
+      }).parse(request);
+      if (imageSrc !== "symbol.png") {
+        expect(await parserError(operation)).toMatchObject({ retryable: false });
+        return;
       }
-      return new Response(zip, { status: 200 });
-    });
-    const persisted: Uint8Array[] = [];
-    const request = makeRequest({
-      persistRawResponse: async ({ bytes }) => {
-        persisted.push(new Uint8Array(bytes));
-        return { artifactRef: rawRef(`raw-${persisted.length}`), bytes: new Uint8Array(bytes) };
-      },
-    });
-    const result = await createMineruDocumentParser({
-      config: makeConfig("official-v4"),
-      credentials: { "mineru-token": "test-token" },
-      fetch,
-    }).parse(request);
+      const result = await operation;
+      expect(result.parsedDocument.blocks.find((block) => block.kind === "cell")).toMatchObject({
+        text: "原文",
+        unrecognizedImages: [
+          {
+            kind: "unrecognized-image",
+            rawResponseArtifactRef: rawRef("raw-3"),
+            packageEntryPath: "images/symbol.png",
+          },
+        ],
+      });
 
-    expect(
-      result.parsedDocument.blocks.some((block) => block.text.includes("legacy layout fixture")),
-    ).toBe(true);
-    expect(result.additionalParentArtifactRefs).toHaveLength(3);
-    expect(persisted).toHaveLength(3);
-    const upload = calls.find((call) => call.init?.method === "PUT");
-    expect(upload?.init?.headers).toBeUndefined();
-    expect(upload?.init?.body).toBeInstanceOf(Uint8Array);
-    expect(
-      (upload?.init?.headers as Record<string, string> | undefined)?.authorization,
-    ).toBeUndefined();
-  });
+      expect(
+        result.parsedDocument.blocks.some((block) => block.text.includes("legacy layout fixture")),
+      ).toBe(true);
+      expect(result.additionalParentArtifactRefs).toHaveLength(3);
+      expect(persisted).toHaveLength(3);
+      const upload = calls.find((call) => call.init?.method === "PUT");
+      expect(upload?.init?.headers).toBeUndefined();
+      expect(upload?.init?.body).toBeInstanceOf(Uint8Array);
+      expect(
+        (upload?.init?.headers as Record<string, string> | undefined)?.authorization,
+      ).toBeUndefined();
+    },
+  );
 
   it("submits local V1 bytes and accepts queued while polling for completed Middle 2.0", async () => {
     const statuses = ["queued", "completed"];

@@ -17,8 +17,8 @@ import type { VersionReference } from "@riskflow/contracts/common";
 
 import { ArtifactPutCommandV1Schema, type ArtifactStoreV1 } from "../artifacts/index.js";
 import type {
-  IdentificationKnowledgeExactReadV1,
   IdentificationKnowledgeReleaseReaderV1,
+  IdentificationKnowledgeVisibleEntryV1,
 } from "../identification-knowledge/index.js";
 import { EmbeddingRequestV1Schema, type ModelGatewayPortV1 } from "../model/index.js";
 import { canonicalJson, sha256CanonicalJson } from "../persistence/index.js";
@@ -152,7 +152,15 @@ const MEMBER_TEXT_FIELDS: Readonly<Record<RetrievalSourceKindV1, readonly string
     "evolutionPath",
     "consequences",
   ],
-  "standard-library": ["entryId", "level", "standardIdentity", "standardVersion", "clauseRefs"],
+  "standard-library": [
+    "entryId",
+    "level",
+    "standardIdentity",
+    "standardVersion",
+    "clauseRefs",
+    // C17 校验通过的规范正文（可选）参与同一投影与内容摘要。
+    "retrievalText",
+  ],
   "case-library": [
     "entryId",
     "constructionMethod",
@@ -185,6 +193,18 @@ export const retrievalMemberText = (
 
 export const retrievalMemberContentDigest = (text: string): string =>
   createHash("sha256").update(text, "utf8").digest("hex");
+
+/**
+ * 查询 Embedding 文本：策略声明 queryInstruction 时按固定模板渲染，否则用原查询文本。
+ * 指令只作用于查询 Embedding，规范文档正文与 BM25 查询始终使用原文本。
+ */
+export const retrievalQueryEmbeddingText = (
+  queryText: string,
+  policy: HybridRetrievalPolicyV1,
+): string =>
+  policy.queryInstruction === undefined
+    ? queryText
+    : `Instruct: ${policy.queryInstruction}\nQuery:${queryText}`;
 
 /** 由稳定身份摘要派生 Qdrant point 身份。 */
 export const retrievalMemberPointId = (identityDigest: string): string =>
@@ -692,23 +712,6 @@ export interface HybridRetrievalServiceOptionsV1 {
   };
 }
 
-const retrievalEntriesOf = (
-  sourceKind: RetrievalSourceKindV1,
-  read: IdentificationKnowledgeExactReadV1,
-): readonly Readonly<Record<string, unknown>>[] => {
-  if (read.package.definitionType !== sourceKind) return [];
-  if (read.package.definitionType === "risk-mechanism") return read.package.mechanisms;
-  return read.package.entries;
-};
-
-const retrievalEntryIdOf = (
-  sourceKind: RetrievalSourceKindV1,
-  entry: Readonly<Record<string, unknown>>,
-): string | undefined => {
-  const value = entry[sourceKind === "risk-mechanism" ? "mechanismId" : "entryId"];
-  return typeof value === "string" ? value : undefined;
-};
-
 const entryEvidenceSourceVersions = (
   entry: Readonly<Record<string, unknown>>,
 ): readonly { readonly entityId: string; readonly versionId: string }[] => {
@@ -818,7 +821,6 @@ export class HybridRetrievalService {
 
   async #retrieveHybridEvidence(query: HybridQuery): Promise<KnowledgeRetrievalResultV1> {
     const { inputReader, generationStore } = this.#options;
-    const callerScopeDigest = authorizationScopeDigest(query.authorization);
     const refs = {
       inputSnapshotRef: query.payload.inputSnapshotRef,
       workItemRef: query.payload.workItemRef,
@@ -844,7 +846,7 @@ export class HybridRetrievalService {
       });
     }
 
-    const frozen = read.input;
+    let frozen = read.input;
     const policy = frozen.policy;
     const sameReference = (left: VersionReference, right: VersionReference): boolean =>
       left.entityId === right.entityId && left.versionId === right.versionId;
@@ -867,10 +869,7 @@ export class HybridRetrievalService {
       });
     }
 
-    const scopeDigest = authorizationScopeDigest(frozen.authorization);
     if (
-      scopeDigest !== frozen.authorizationScopeDigest ||
-      scopeDigest !== callerScopeDigest ||
       frozen.authorization.projectId !== query.projectId ||
       frozen.authorization.actorId !== query.actorId ||
       !frozen.authorization.grantedCapabilities.includes("knowledge-modeling.retrieve")
@@ -884,22 +883,6 @@ export class HybridRetrievalService {
         occurredAt: this.#now().toISOString(),
       });
     }
-    if (
-      !sameReference(
-        frozen.authorizationContextRef.reference,
-        query.authorization.authorizationContextRef.reference,
-      )
-    ) {
-      return this.#fail(query, refs.inputSnapshotRef, {
-        stage: "authorization",
-        code: "AUTHORIZATION_DENIED",
-        detailCode: "stale-authorization-context",
-        projectId: query.projectId,
-        queryId: query.queryId,
-        occurredAt: this.#now().toISOString(),
-      });
-    }
-
     const generation = await generationStore.readActiveGeneration({
       projectId: query.projectId,
       evidenceBaseReleaseRef: frozen.evidenceBaseReleaseRef,
@@ -916,6 +899,32 @@ export class HybridRetrievalService {
         occurredAt: this.#now().toISOString(),
       });
     }
+
+    const readVisibleEntries = this.#options.sourceFacts.readVisibleEntries;
+    if (readVisibleEntries === undefined) throw new Error("retrieval entry reader is required");
+    const entries = await readVisibleEntries.call(this.#options.sourceFacts, {
+      projectId: query.projectId,
+      releaseRefs: Object.values(generation.identity.memberReleaseRefs),
+      authorization: frozen.authorization,
+    });
+    const visiblePointIds = entries
+      .map((entry) =>
+        retrievalMemberPointId(
+          sha256CanonicalJson(
+            retrievalMemberRefFor({
+              generationRef: generation.generationRef,
+              sourceKind: entry.sourceKind,
+              sourceReleaseRef: entry.sourceReleaseRef,
+              sourceEntryId: entry.sourceEntryId,
+              contentDigest: retrievalMemberContentDigest(
+                retrievalMemberText(entry.sourceKind, entry.entry),
+              ),
+            }),
+          ),
+        ),
+      )
+      .sort();
+    frozen = { ...frozen, authorizationScopeDigest: sha256CanonicalJson(visiblePointIds) };
 
     const requestDigest = retrievalRequestDigest({
       refs: frozen.refs,
@@ -954,15 +963,24 @@ export class HybridRetrievalService {
       );
     }
 
+    if (visiblePointIds.length === 0)
+      return this.#persistResult(query, frozen, generation, [], requestDigest);
+
     const embedding = await this.#embedQuery(query, frozen);
     if (embedding.kind === "failed") {
       return this.#fail(query, frozen.evidenceBaseReleaseRef, embedding.failure);
     }
-    const hybrid = await this.#queryProjection(query, frozen, generation, embedding.vector);
+    const hybrid = await this.#queryProjection(
+      query,
+      frozen,
+      generation,
+      embedding.vector,
+      visiblePointIds,
+    );
     if (hybrid.kind === "failed") {
       return this.#fail(query, frozen.evidenceBaseReleaseRef, hybrid.failure);
     }
-    const facts = await this.#readHitFacts(query, frozen, generation, hybrid.result);
+    const facts = await this.#readHitFacts(query, frozen, generation, hybrid.result, entries);
     if (facts.kind === "failed") {
       return this.#fail(query, frozen.evidenceBaseReleaseRef, facts.failure);
     }
@@ -1004,7 +1022,7 @@ export class HybridRetrievalService {
           deadlineAt: new Date(now.getTime() + policy.embeddingTimeoutMs).toISOString(),
           parentArtifactRefs: [],
           evidenceReferences: [],
-          texts: [frozen.queryText],
+          texts: [retrievalQueryEmbeddingText(frozen.queryText, policy)],
           maxInputBytes: policy.memberByteLimit,
           maxBatchItems: 1,
         }),
@@ -1044,6 +1062,7 @@ export class HybridRetrievalService {
     frozen: HybridRetrievalQueryInputV1,
     generation: RetrievalGenerationV1,
     vector: readonly number[],
+    visiblePointIds: readonly string[],
   ): Promise<
     | { readonly kind: "succeeded"; readonly result: RetrievalHybridQueryResultV1 }
     | { readonly kind: "failed"; readonly failure: HybridRetrievalFailureContextV1 }
@@ -1072,6 +1091,7 @@ export class HybridRetrievalService {
             projectId: query.projectId,
             generationRef: generation.generationRef,
             authorizationScopeDigest: frozen.authorizationScopeDigest,
+            visiblePointIds: [...visiblePointIds],
           },
         }),
       );
@@ -1108,6 +1128,7 @@ export class HybridRetrievalService {
     frozen: HybridRetrievalQueryInputV1,
     generation: RetrievalGenerationV1,
     hybrid: RetrievalHybridQueryResultV1,
+    entries: readonly IdentificationKnowledgeVisibleEntryV1[],
   ): Promise<
     | { readonly kind: "succeeded"; readonly hits: readonly HybridRetrievalHitV1[] }
     | { readonly kind: "failed"; readonly failure: HybridRetrievalFailureContextV1 }
@@ -1115,7 +1136,6 @@ export class HybridRetrievalService {
     const policy = frozen.policy;
     const denseRanks = new Map(hybrid.denseRoute.map((hit) => [hit.pointId, hit.rank]));
     const bm25Ranks = new Map(hybrid.bm25Route.map((hit) => [hit.pointId, hit.rank]));
-    const reads = new Map<string, IdentificationKnowledgeExactReadV1>();
     const hits: HybridRetrievalHitV1[] = [];
     const factualFailure = (
       stage: HybridRetrievalFailureStageV1,
@@ -1143,8 +1163,7 @@ export class HybridRetrievalService {
         ];
       if (
         payload.generationRef.reference.versionId !== hybrid.generationRef.reference.versionId ||
-        payload.projectId !== query.projectId ||
-        payload.authorizationScopeDigest !== frozen.authorizationScopeDigest
+        payload.projectId !== query.projectId
       ) {
         return {
           kind: "failed",
@@ -1180,40 +1199,15 @@ export class HybridRetrievalService {
           ),
         };
       }
-      const releaseKey = `${payload.sourceReleaseRef.reference.entityId}/${payload.sourceReleaseRef.reference.versionId}`;
-      let read = reads.get(releaseKey);
-      if (read === undefined) {
-        const outcome = await this.#options.sourceFacts.readExact({
-          projectId: query.projectId,
-          releaseRef: payload.sourceReleaseRef,
-          actorId: query.actorId,
-          requestedAt: this.#now().toISOString(),
-          invocationId: `hybrid-retrieval-fact-${query.queryId}`,
-          authorization: frozen.authorization,
-        });
-        if (outcome.kind === "failed") {
-          return {
-            kind: "failed",
-            failure:
-              outcome.error.code === "AUTHORIZATION_DENIED"
-                ? factualFailure(
-                    "authorization",
-                    "AUTHORIZATION_RECONCILIATION_FAILED",
-                    "fact-read-authorization-denied",
-                  )
-                : factualFailure(
-                    "source-read",
-                    "SOURCE_FACT_DRIFT",
-                    `fact-read-${outcome.error.code}`,
-                  ),
-          };
-        }
-        read = outcome.read;
-        reads.set(releaseKey, read);
-      }
-      const entry = retrievalEntriesOf(payload.sourceKind, read).find(
-        (candidate) => retrievalEntryIdOf(payload.sourceKind, candidate) === payload.sourceEntryId,
-      );
+      const entry = entries.find(
+        (candidate) =>
+          candidate.sourceKind === payload.sourceKind &&
+          candidate.sourceEntryId === payload.sourceEntryId &&
+          candidate.sourceReleaseRef.reference.entityId ===
+            payload.sourceReleaseRef.reference.entityId &&
+          candidate.sourceReleaseRef.reference.versionId ===
+            payload.sourceReleaseRef.reference.versionId,
+      )?.entry;
       if (entry === undefined) {
         return {
           kind: "failed",

@@ -1,0 +1,963 @@
+{
+  "schemaVersion": 1,
+  "change": "reduce-defensive-design-overhead",
+  "capturedAt": "2026-10-16T12:10:15.269Z",
+  "head": "31ad1a2c47a377f20179e0008241034c14a3bec5",
+  "kind": "uncommitted-combined-workspace",
+  "scope": "施工图列出的源码、调用方、测试与配置；包含原验收的继承未提交成果。此清单不是新的Git提交。",
+  "fileCount": 238,
+  "files": [
+    {
+      "path": ".prettierignore",
+      "sha256": "16b647c88645c0396284d717cdf57105262af428f6ad60d0be7667084cfb800e"
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "9f52f479ef62fad1a524754fa80173a262e778c2478e0f08b16260e8997dfd15"
+    },
+    {
+      "path": "apps/api/src/app.ts",
+      "sha256": "0623c25c5a8d64a8b3922e6c6d0e8fa46fae5542ec0be18f61fb2f30bd485754"
+    },
+    {
+      "path": "apps/api/src/http.ts",
+      "sha256": "13c597f2fee505eb4d3d5eb29874ba96336fa4d919fbc60c9f6abc01e3d84869"
+    },
+    {
+      "path": "apps/api/test/http-shell.test.ts",
+      "sha256": "0da3f9fb099da8c61312389c2a2fd70d3057bbe594204065cecfb56ed30c1740"
+    },
+    {
+      "path": "apps/web/src/agent/AgentTaskProvider.tsx",
+      "sha256": "1b4451a90aa087d32b63ac69e8b86319a8cba299edd2fc084a41360e2c4a52f0"
+    },
+    {
+      "path": "apps/web/src/api/agentAuditOperations.ts",
+      "sha256": "75df1f804173e95fe6aa255bc0c6b932d013a97e494eb0879380e288c15dca2a"
+    },
+    {
+      "path": "apps/web/src/api/operations.ts",
+      "sha256": "c488c3c4c9706c3a46b1dbd6bb88da0dc4529e3e6d10ad0a7e9ae5fdb15b8f12"
+    },
+    {
+      "path": "apps/web/src/pages/AgentTaskDetailPage.tsx",
+      "sha256": "6e473d7d9487cf86f38c4800a6672ca349d6092d0428045830657368b9ecdea1"
+    },
+    {
+      "path": "apps/web/src/pages/AgentWorkbenchPage.tsx",
+      "sha256": "b5e6883e4e1f44e479792843f15e983851e6d5f09f132d3217a0d2c004237720"
+    },
+    {
+      "path": "apps/web/src/pages/AssessmentRunPage.tsx",
+      "sha256": "d6fac48370d3b341476121dd43f1ea9089261979695eb92d81915e86e6385fb6"
+    },
+    {
+      "path": "apps/web/src/pages/RuleSetsPage.tsx",
+      "sha256": "26109c65a17e99afb093f263fec9a70831d2b2244c098fe4f8a71b5ea47740b0"
+    },
+    {
+      "path": "apps/web/src/pages/StartAssessmentPage.tsx",
+      "sha256": "029f5d5d3867f7c0b078891ede8287caa281795db8a086d482ebb6f8d9108451"
+    },
+    {
+      "path": "apps/web/test/browser/agent-audit-operations.spec.ts",
+      "sha256": "b273344e04b75ad9207b9dfda84aa6b95f1e2f388b671d38c9f69d8ecbf6d2b5"
+    },
+    {
+      "path": "apps/web/test/browser/business-server.mjs",
+      "sha256": "61359183fb21ab9b277f6631e6037b7baa6f39418d6a3d80f832638766348ce1"
+    },
+    {
+      "path": "apps/web/test/browser/deploymentPolicies.mjs",
+      "sha256": "1bebfd4a86a04f590ca2d7e6e5820c01e4563bc50dd35203140e2a667adc29ff"
+    },
+    {
+      "path": "apps/web/test/ssr-shells.test.tsx",
+      "sha256": "ac35c32300c002176d23c131c8d52383f9c4a821aff1e1d2870e8219497fcfcb"
+    },
+    {
+      "path": "apps/worker/src/agent-runtime/runner.ts",
+      "sha256": "f4f34600a28880f67afd61ea24a1bc9a7555b120fdef5ce3d25e21a77f8b925b"
+    },
+    {
+      "path": "apps/worker/src/assessment/composition.ts",
+      "sha256": "25dcec864e044f2c1efbeaa7f2a381c4736e9a104a8e2ac38e749e932297512e"
+    },
+    {
+      "path": "apps/worker/src/assessment/graph.ts",
+      "sha256": "18f735c94eaffda6ad014cc30ac7a0be412785ec6df24c30783377e70b8f5e88"
+    },
+    {
+      "path": "apps/worker/src/assessment/runtime.ts",
+      "sha256": "6d698230991ff34ded7ebb58f7a4e909a25640ea535ee771cdcc0d8a090151da"
+    },
+    {
+      "path": "apps/worker/src/engineering-data/cleaning/runtime.ts",
+      "sha256": "a9cfd5af2f95cf9f1c13a8a51e6df276ce943d338fa6d8e19139890e140a383f"
+    },
+    {
+      "path": "apps/worker/src/identification-knowledge/runtime.ts",
+      "sha256": "68bc12a7592535187d82379e0d62378692bda1910c3f3fa54d3024eb2215f2ce"
+    },
+    {
+      "path": "apps/worker/src/identification/candidate-finalization/runtime.ts",
+      "sha256": "d2463cf204a1884f9e1f97e4ececc4bde96ace50f91ffda15d12da049a4d167e"
+    },
+    {
+      "path": "apps/worker/src/identification/context/runtime.ts",
+      "sha256": "9b2198fa1abc8a2fbc34cb8ce12e4ebc99e341134c8d26c8cd94eeaf5f14775a"
+    },
+    {
+      "path": "apps/worker/src/identification/graph/composition.ts",
+      "sha256": "aa9c98219cbab932fd2236eb36955da85b70fc5fad9cf288bbd70dc65f3b55a4"
+    },
+    {
+      "path": "apps/worker/src/identification/graph/graph.ts",
+      "sha256": "4c5ef53a79b903df2d7bed99930905dbb5c4359a3832d6c094e1be3388dab604"
+    },
+    {
+      "path": "apps/worker/src/identification/graph/runtime.ts",
+      "sha256": "520c24cf4b2a17b80cecd55f6e83f583e6c3a51c0c65156c26eb9912c415257b"
+    },
+    {
+      "path": "apps/worker/src/retrieval/composition.ts",
+      "sha256": "884aa0b54b0ec12b831a3c5293c0a21c3915518cac524d37a40b9aea6591425a"
+    },
+    {
+      "path": "apps/worker/src/retrieval/projection-handler.ts",
+      "sha256": "2c1e35fabec58f279506fa28f582d590da3a1c4e73a8cc1254dc8ee0a39842b7"
+    },
+    {
+      "path": "apps/worker/src/risk-flow/graph.ts",
+      "sha256": "c9c7eea20c57787a916d48d96b9fa6e22bf645336e6646ade389a4ee1e2a5147"
+    },
+    {
+      "path": "apps/worker/src/risk-flow/runtime.ts",
+      "sha256": "d221f65117b9299b972d5e0e9c764e9bb249a3fb62622753188e115873c45cc6"
+    },
+    {
+      "path": "apps/worker/src/scoring-rules/runtime.ts",
+      "sha256": "4fb5db8e0b385fc26e39bf179e760cc71027cf1d385ea86b21652509da7424f8"
+    },
+    {
+      "path": "apps/worker/test/agent-runtime/runner.test.ts",
+      "sha256": "72406a1169af70e5f33bfdf8185c9eb343e1521a9cbf520e90a3f1820e75363e"
+    },
+    {
+      "path": "apps/worker/test/assessment/composition.test.ts",
+      "sha256": "dc6d8dda810f941b1300add21ef6b164c12b62615463e2927c0ced37894760f3"
+    },
+    {
+      "path": "apps/worker/test/assessment/runtime.test.ts",
+      "sha256": "5b2f3cd4bf17d69d360216ad39f73a3b9aafdfe989b7d28625fe39dc1f29b44c"
+    },
+    {
+      "path": "apps/worker/test/engineering-data/cleaning/runtime.test.ts",
+      "sha256": "1a04f56585c096dbd5d47930b494a8f692944f7542df7577ce5300d59ec15da0"
+    },
+    {
+      "path": "apps/worker/test/identification-knowledge/composition.test.ts",
+      "sha256": "a2a785765b67ae8a2722c5699d14bfa56565510590e71358a31da4bd87c3dc58"
+    },
+    {
+      "path": "apps/worker/test/identification-knowledge/runtime.test.ts",
+      "sha256": "86288140dd1795437ff4ca7ab7882b19afdc302f37a7fd0291de3de51ec3a2e8"
+    },
+    {
+      "path": "apps/worker/test/identification/context/fixture.ts",
+      "sha256": "86bab1f43b9bae5c8f886785e4f3d1cfd21da37aa87a44fc9b90a7d4ec72dfba"
+    },
+    {
+      "path": "apps/worker/test/identification/graph/control-channels.test.ts",
+      "sha256": "cc163c4839f76374f17e16123acd23260e524aacb33f52de4c9ed40f6cbeb183"
+    },
+    {
+      "path": "apps/worker/test/identification/graph/fixture.ts",
+      "sha256": "2f2042d940e945fc34923d94808de3c89db368f13007b47382b7b4fa310284f5"
+    },
+    {
+      "path": "apps/worker/test/identification/graph/nested-boundary.test.ts",
+      "sha256": "ce63ed9f8096bb22c1dc653b66986aa6947d34f4faf6fea9906293123f2ff068"
+    },
+    {
+      "path": "apps/worker/test/identification/graph/runtime.test.ts",
+      "sha256": "85c9c7590d456d1ef0b8aa510ca2159416b37d5c31e44b02b3a23ead5220cdd8"
+    },
+    {
+      "path": "apps/worker/test/retrieval/projection-handler.test.ts",
+      "sha256": "222aed42b9f4426e1db37678a7d20ab40c0d3b4756e562a5ee8fd429f098bdec"
+    },
+    {
+      "path": "apps/worker/test/risk-flow/acceptance.test.ts",
+      "sha256": "14c142bd6696c56afa85445cd8723a6dc6d0872adbc80cde35c97a94f330ae89"
+    },
+    {
+      "path": "apps/worker/test/risk-flow/composition.test.ts",
+      "sha256": "bde0c33043854dc954d92ecc96f7c560a42a16c5e40468949f25b848f6156f2b"
+    },
+    {
+      "path": "apps/worker/test/risk-flow/runtime.test.ts",
+      "sha256": "8d53d6b11838420bb6465cbb2ec8d5f05fa633b70c3c4274c0338d6430e216bb"
+    },
+    {
+      "path": "apps/worker/test/scoring-rules/runtime.test.ts",
+      "sha256": "2c191ec1eeed1957338575d0d871c86555df847f2a1aad207efd09e8798bc1fc"
+    },
+    {
+      "path": "deployment/ACCEPTANCE.md",
+      "sha256": "9748ef27f9dccc0f4c75d639f9dec3d6b7c49e1a2bc92316c1091eae15f8fd23"
+    },
+    {
+      "path": "deployment/OPERATIONS.md",
+      "sha256": "0ae843ee9942c09ce54cbfb540c0f6ae2b4573ef45233caa825ecd740c1eeaa9"
+    },
+    {
+      "path": "deployment/config.example.json",
+      "sha256": "d4da16ccce2ea8c376a3b03fb485b84e2359601190f7bfa43ea2d2f9bb160506"
+    },
+    {
+      "path": "deployment/functional-run-config.example.json",
+      "sha256": "718aeb325a7052d421832d6fb0ec555a327d044ac43607969d8bca50aba25a73"
+    },
+    {
+      "path": "deployment/release-manifest.example.json",
+      "sha256": "3cdf522b98cccabf8e5457eb1678fb94b3ce6e5f99fad2fba886fd1fe73155d9"
+    },
+    {
+      "path": "eslint.config.js",
+      "sha256": "03fc868cf0db53a70fdf8468d234b18fc726e399ff767ca3f830d88737f342cd"
+    },
+    {
+      "path": "packages/adapters/src/agent-runtime/postgres-agent-task-adapter.ts",
+      "sha256": "d6672af086af6c7640563c7e25e1f006befc194b4c3cac4b3d18caafbb36c6c1"
+    },
+    {
+      "path": "packages/adapters/src/artifacts/artifact-stream-service-handler.ts",
+      "sha256": "00ed8d447642458c1272f4d029059db39d1316e59a0cf6f04ce5fdc070c46b56"
+    },
+    {
+      "path": "packages/adapters/src/artifacts/artifact-stream-service.ts",
+      "sha256": "8f2ae625b63007387f296ddfc536409d77d9bf8339ac8031a984e912cf13ea72"
+    },
+    {
+      "path": "packages/adapters/src/artifacts/filesystem-artifact-store.ts",
+      "sha256": "2a7ca2452692614b142ecdee2f0ed1779a4846d67cd546942db162ae5f6fe4c3"
+    },
+    {
+      "path": "packages/adapters/src/artifacts/index.ts",
+      "sha256": "a95254c8169aa37ee803c200e58368c031fffb56d4ffb73a61d44b814764a899"
+    },
+    {
+      "path": "packages/adapters/src/artifacts/maintenance.ts",
+      "sha256": "4c49fd2a1fe8d9350a7e2e3b3516285b340bafbffebbe8a3cf0a012ff8a2fd1c"
+    },
+    {
+      "path": "packages/adapters/src/artifacts/postgres-artifact-registry.ts",
+      "sha256": "1494a11e05105de8344f535fbe009b6d3f87a85630875f49357394e09ffc64d5"
+    },
+    {
+      "path": "packages/adapters/src/artifacts/remote-artifact-store.ts",
+      "sha256": "4d4692d4a3b4426192a1ea7a1e3a514f4398b835f3a9e4a497ac547b73117dfa"
+    },
+    {
+      "path": "packages/adapters/src/assessment-config/postgres-assessment-configuration-adapter.ts",
+      "sha256": "cca6235b1ea6f4f523578c9b8e8ac4109633adf88e28eb460989d112851cba34"
+    },
+    {
+      "path": "packages/adapters/src/auth/deployment-authorization.ts",
+      "sha256": "369e4a1a245eb5425ae2f551a5efb5b40c37d6d3e59050f6dea1a67ed004fa14"
+    },
+    {
+      "path": "packages/adapters/src/auth/index.ts",
+      "sha256": "36f9c6bbb70ad15c88971f783c942c4b28c33056446f35d27a9d97a1a1e4eff3"
+    },
+    {
+      "path": "packages/adapters/src/auth/postgres-local-identity-access.ts",
+      "sha256": "4d54c1d68753192d7418d8bea40702d4e0e8cfc0276d70e3b16df434e09b6ec9"
+    },
+    {
+      "path": "packages/adapters/src/auth/postgres-types.ts",
+      "sha256": "6baffcdf17ac7f5ec7ce66a64c5942a80a72f3de0cdff087b52f2831a191af0d"
+    },
+    {
+      "path": "packages/adapters/src/calibration/postgres-calibration-adapter.ts",
+      "sha256": "89877187e796a9edf57e9963425f562b2b004a1b345c270db6ecb22a969d7775"
+    },
+    {
+      "path": "packages/adapters/src/deployment/initialization.ts",
+      "sha256": "b9399444c29ef21c9adc2f949fab0179969ee0bb2870db5c2637497cdcee55da"
+    },
+    {
+      "path": "packages/adapters/src/deployment/policies.ts",
+      "sha256": "446a63b75e30fffe63d44663fd404b213e71e92b73a78fa2ef8ec18cf2a2c749"
+    },
+    {
+      "path": "packages/adapters/src/deployment/readers.ts",
+      "sha256": "a62385c248d3aaddd53d685f1f642cb37f15f72042fb818cbb9e71bf763b1029"
+    },
+    {
+      "path": "packages/adapters/src/deployment/schema.ts",
+      "sha256": "a6df501051b985aa542d68a3027f6a70b2ce8b9e80ddb98ca861ffc612008610"
+    },
+    {
+      "path": "packages/adapters/src/engineering-data/catalog/postgres-engineering-data-catalog-adapter.ts",
+      "sha256": "76e0929f9a2de241a28aef2dc16a80a1f3a7ee80fb799f6e5de1da128e9522d6"
+    },
+    {
+      "path": "packages/adapters/src/engineering-data/cleaning/postgres-data-cleaning-store.ts",
+      "sha256": "7ad347064f96052c82a26a15d689ea1962a99b2d1deef9426e4fcebf1d66232c"
+    },
+    {
+      "path": "packages/adapters/src/engineering-data/context-source/postgres-engineering-context-source-registry.ts",
+      "sha256": "acd5a4e4173172b978d6ce3079323c5a68fc28a4e888c1459f7013ab3f76c276"
+    },
+    {
+      "path": "packages/adapters/src/engineering-data/context-source/postgres-external-risk-input-facts-reader.ts",
+      "sha256": "0cbfdc430e7ec484c701be3e0f2f1a6d7422ab0f3f4c2d011fb6daa81ae2238c"
+    },
+    {
+      "path": "packages/adapters/src/engineering-data/context-source/source-original-reader.ts",
+      "sha256": "d977990086518525464bec0732bdbf34105299cd861dd0b8de7a4171aa0d4311"
+    },
+    {
+      "path": "packages/adapters/src/engineering-data/document-conversion/structured-document-converter.ts",
+      "sha256": "71de4fd78597524dc77be2b5ad87218b1a4140c324b6a94d700d1715eba93cae"
+    },
+    {
+      "path": "packages/adapters/src/engineering-data/monitoring/postgres-monitoring-store.ts",
+      "sha256": "9c020afd6317eb55019732d9f727ff6566ac2a252582b23d120a5422c5c66277"
+    },
+    {
+      "path": "packages/adapters/src/human-decision-feedback/postgres-human-decision-feedback-adapter.ts",
+      "sha256": "7194946e104943b687ea44505b2e8ffe21efcdeac7e232a11c4e34ccaf1ceef1"
+    },
+    {
+      "path": "packages/adapters/src/identification-knowledge/postgres-identification-knowledge-adapter.ts",
+      "sha256": "8b32aafeda6a052d08851a3a6936b9a3f64f8b99be93c8b203fae746e5fa85c6"
+    },
+    {
+      "path": "packages/adapters/src/identification/context/postgres-identification-context-adapter.ts",
+      "sha256": "b865a9fbff87c7be3bd24bf1559b34f7571a081c834f8fecfbe95dca8855e3dc"
+    },
+    {
+      "path": "packages/adapters/src/identification/context/postgres-knowledge-retrieval-read.ts",
+      "sha256": "7f68f9d97ab1aba0e18e8c3cb5a0944fd1253c8de2d785f089f647b151f39630"
+    },
+    {
+      "path": "packages/adapters/src/identification/graph/postgres-identification-graph-adapter.ts",
+      "sha256": "a7277eabab4d5154b8015bd0f6482d9348ea7d65610889f261da61a094e2f15f"
+    },
+    {
+      "path": "packages/adapters/src/identification/read/postgres-risk-identification-read.ts",
+      "sha256": "19ffb394cc9e96810a8703f8c6e2989a93b3be24e639c3ca4ca11e3a6def93df"
+    },
+    {
+      "path": "packages/adapters/src/knowledge-governance/postgres-knowledge-governance-adapter.ts",
+      "sha256": "683b218bb0ecfeefc075018700ece81d378d936e29ad2a579b292f45a1db8090"
+    },
+    {
+      "path": "packages/adapters/src/knowledge-governance/postgres-knowledge-governance-read.ts",
+      "sha256": "1963c67ddaa81208b38a61705496f23cbb3cf513e39e1a2b2415be120f40d732"
+    },
+    {
+      "path": "packages/adapters/src/model/config.ts",
+      "sha256": "8ae899a81445a89472765811748e0fd7f9224ebe476f663c4c74fc0cb280c00c"
+    },
+    {
+      "path": "packages/adapters/src/model/llamacpp-model-gateway.ts",
+      "sha256": "ea6f7ba54c929ead5b5b58e62bb76e277a39bd32e37334b9bbf6117819db984d"
+    },
+    {
+      "path": "packages/adapters/src/model/model-gateway-runtime.ts",
+      "sha256": "492e728788fa1d4b22b0e92dabadea367b0934f8b57f2ab840184c7a28ee1464"
+    },
+    {
+      "path": "packages/adapters/src/model/network-api-model-gateway.ts",
+      "sha256": "0a9e3161d8939c594bc07d92b3af94a2431566fbd574bc72c48ee2dad658fc97"
+    },
+    {
+      "path": "packages/adapters/src/postgres/checkpointer.ts",
+      "sha256": "0d7f39a712e0244d7ed8ec33467577e4ee7f43a1ef02d8e07f48de7a7a6d3941"
+    },
+    {
+      "path": "packages/adapters/src/postgres/index.ts",
+      "sha256": "5fa487040c4085d543b71666248f7ec0d89e63f51ff976465be58e3b0dbead10"
+    },
+    {
+      "path": "packages/adapters/src/postgres/migrations/knowledge-modeling/reduce-defensive-design-overhead/000059_derived_knowledge_release_origin.ts",
+      "sha256": "c086acfc1e4b5c23a6ea9114e63f7d44619b6f6b2cafa0d8217b9c93ddacb6db"
+    },
+    {
+      "path": "packages/adapters/src/postgres/transaction-unit.ts",
+      "sha256": "847f661f96ebfc58a19396dba0edf20811a3897f913fb56423120cb605b7942c"
+    },
+    {
+      "path": "packages/adapters/src/quality/postgres-quality-evaluation.ts",
+      "sha256": "2b7589c0269661211a91e93d5b2d743cb92fd7486e5179f0e986c0686bbe7156"
+    },
+    {
+      "path": "packages/adapters/src/recommendation/postgres-recommendation-adapter.ts",
+      "sha256": "626871ced1e00481284776de4dada382363bcac4d1148612a7e183838d583921"
+    },
+    {
+      "path": "packages/adapters/src/response-lifecycle/forecast-executors.ts",
+      "sha256": "aadf2eadecaec6bfb7f14e6300310a4b2ab1f9aa375e5c8ce2e70a5ba05f62c5"
+    },
+    {
+      "path": "packages/adapters/src/response-lifecycle/forecast-model-reader.ts",
+      "sha256": "67f7ee5b572c0ffecc5d3dd5adf6a4d302ad411cbb46f455dc8857b8b86dcf31"
+    },
+    {
+      "path": "packages/adapters/src/response-lifecycle/postgres-response-lifecycle-adapter.ts",
+      "sha256": "ce24ab27068ccfb2ee3e362c1021ecedd90a1cb55c1721a3993f93b4d8bd6ddb"
+    },
+    {
+      "path": "packages/adapters/src/retrieval/postgres-retrieval-adapter.ts",
+      "sha256": "61fb84856591d54f85631f794721d1a40b81aae474d58098635afc6d57dd2112"
+    },
+    {
+      "path": "packages/adapters/src/retrieval/qdrant-rest-client.ts",
+      "sha256": "294ebad83ae7a69ec8a4966ef7bdd465fafc91768231caf4c24994061cb73f36"
+    },
+    {
+      "path": "packages/adapters/src/review-audit/postgres-review-audit-adapter.ts",
+      "sha256": "eba2c5379722effdeabb91e80d7008c3df89a8d87c31aed2c3b031f0b9fb430d"
+    },
+    {
+      "path": "packages/adapters/src/risk-assessment/engine/postgres-risk-assessment-engine.ts",
+      "sha256": "f52316b9f7287b1288a2395c56132fb7496dc347f4b18416d59c04e9f0f5f7e0"
+    },
+    {
+      "path": "packages/adapters/src/scoring-rules/postgres-scoring-rules-adapter.ts",
+      "sha256": "1801f9e6150c583748db8b709074b75352480368db961ac5da851334359a20a3"
+    },
+    {
+      "path": "packages/adapters/src/warning/postgres-warning-lifecycle-adapter.ts",
+      "sha256": "59e87b861658d02b36a08ec42e0d09832480f8f43cd95d09831a7a72de0d4411"
+    },
+    {
+      "path": "packages/adapters/src/workflow/postgres-report-export.ts",
+      "sha256": "56fe0ebe704bd462354ec75aa5b5c269de39f01bc2f493fd75f1e96d9607fe4b"
+    },
+    {
+      "path": "packages/adapters/src/workflow/postgres-run-event-reader.ts",
+      "sha256": "41d2db500741581d68021052603c6395dd894e3d2b84acb7486b7d6499d72587"
+    },
+    {
+      "path": "packages/adapters/src/workflow/postgres-workflow-adapter.ts",
+      "sha256": "f61c88138b76b1d982e0a71c660e25e39e2d586cb4ef2261d09ff0c53f3d1171"
+    },
+    {
+      "path": "packages/adapters/test/agent-runtime/postgres-agent-task-adapter.test.ts",
+      "sha256": "fca338d5e02d52bc53388d28bfd0b81e49cc85329bf94dbc5f0e6d7eb147ab48"
+    },
+    {
+      "path": "packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts",
+      "sha256": "525629399998d0d086ac969e111d04cdf4a2bde32261064cf6404670a26bf3d5"
+    },
+    {
+      "path": "packages/adapters/test/artifacts/remote-artifact-store.test.ts",
+      "sha256": "0ad7769edb7b50fb0d1087655254f1232d3fd8e47d23e2ca031e6d8d885ebd80"
+    },
+    {
+      "path": "packages/adapters/test/assessment-config/fixture.ts",
+      "sha256": "b7b1b867e09230a1caede3a7d19ca9b0a2c13893bb3595e66f57ea6fb7f4ee94"
+    },
+    {
+      "path": "packages/adapters/test/assessment-config/postgres-assessment-configuration-adapter.test.ts",
+      "sha256": "fdeb4c84ed3e999924c6148010ffa03c4a63fd821173b40dcb9c1d2e29de3ee8"
+    },
+    {
+      "path": "packages/adapters/test/auth/fixture.ts",
+      "sha256": "2756e445b8ceb69dd7ebbb819a0c9bc7ce8c70ba8a0eb49f1d9da42687615dc0"
+    },
+    {
+      "path": "packages/adapters/test/auth/local-identity-project-authorization.test.ts",
+      "sha256": "e0f7bd47afed3c90da8fbb524936e8f825f978e7d889c018862dcd8a263fd156"
+    },
+    {
+      "path": "packages/adapters/test/calibration/fixture.ts",
+      "sha256": "e0bc0a093c9903dcdcbee73d7805ccbe3ea549317aba3143cc3351f72aae26f9"
+    },
+    {
+      "path": "packages/adapters/test/calibration/postgres-calibration-adapter.test.ts",
+      "sha256": "f4f49a006e91eb3acdcc43e612df24d24343658cf7d509cfbfbb1d7cd3e8b715"
+    },
+    {
+      "path": "packages/adapters/test/deployment/config-operations.test.ts",
+      "sha256": "8c4bcccd3f2dfe6c58e6148b16503f984f346dd155165715687e0926488446af"
+    },
+    {
+      "path": "packages/adapters/test/deployment/policies-readers.test.ts",
+      "sha256": "58d01a3f133b543829199395082c084da4db3336e2f70476a7348ba8da2adf11"
+    },
+    {
+      "path": "packages/adapters/test/engineering-data/cleaning/fixture.ts",
+      "sha256": "39b244348cc3a297c0d16bb55224e7152758a8384b1dab10512254b0a95c354e"
+    },
+    {
+      "path": "packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts",
+      "sha256": "e89abf3c99eb28d70bf251321652305b50596d6f0b65bc3a57cf3857e2b99abb"
+    },
+    {
+      "path": "packages/adapters/test/engineering-data/document-conversion.test.ts",
+      "sha256": "79b5d06af18fdb5643451fe22a1e59ae85b900e0e4bf7032988631e5141244a6"
+    },
+    {
+      "path": "packages/adapters/test/engineering-data/document-conversion/mineru/fixture.ts",
+      "sha256": "85cbc3ad31593933e71e4386226ec6b2f8b33804112244a23733c29d4b8cf1f1"
+    },
+    {
+      "path": "packages/adapters/test/engineering-data/monitoring/postgres-monitoring-store.test.ts",
+      "sha256": "52e5070270f076025f792a7e21102d1ea2f93d5103e16631aa9dd64ecbb94af4"
+    },
+    {
+      "path": "packages/adapters/test/engineering-data/postgres-engineering-data-catalog.test.ts",
+      "sha256": "a5af38857e4d6a4f7d1bd34b6da550412f61298c633b92037311a5410fac7b67"
+    },
+    {
+      "path": "packages/adapters/test/human-decision-feedback/fixture.ts",
+      "sha256": "510183c25c3311e9185fce44b7d9428d5ecd7ea8059a1dab8bf5c78bccc47ac0"
+    },
+    {
+      "path": "packages/adapters/test/identification-knowledge/fixture.ts",
+      "sha256": "fa2f83bb8b831783215cb2032d25aaa44fb7fa5ad59b9fac524d8a2e8c5b77c9"
+    },
+    {
+      "path": "packages/adapters/test/identification-knowledge/postgres-identification-knowledge-adapter.test.ts",
+      "sha256": "5b0a877a66a0d1ce9e0d84a0bad2d377b83e47fafc2d54f82aca428b94aac367"
+    },
+    {
+      "path": "packages/adapters/test/identification/candidate-finalization/postgres-risk-candidate-adapter.test.ts",
+      "sha256": "1e97e22faae909376ad4277a1162a1c01c59f93218b84c8242f3f49c6fe835a4"
+    },
+    {
+      "path": "packages/adapters/test/identification/context/postgres-knowledge-retrieval-read.test.ts",
+      "sha256": "e8c9c4ba4ff80df9c897eb641433f7b28ffd16c9734011cf689d7a3374b7d5a1"
+    },
+    {
+      "path": "packages/adapters/test/identification/graph/postgres-identification-graph-adapter.test.ts",
+      "sha256": "c08f9dc19b2dd0f1ecc7c8aefa217d14c2bb12ec476b23d9d017b49a81adea71"
+    },
+    {
+      "path": "packages/adapters/test/knowledge-governance/fixture.ts",
+      "sha256": "5229fc7b899789ca512cdaaf11773b9b26603746db73097d59711ba546e3ac02"
+    },
+    {
+      "path": "packages/adapters/test/knowledge-governance/postgres-knowledge-governance-adapter.test.ts",
+      "sha256": "8f1db6414f975b1c10ce188558ea2051260a3212702655bfa668dced619e7c8a"
+    },
+    {
+      "path": "packages/adapters/test/knowledge-governance/postgres-knowledge-governance-read.test.ts",
+      "sha256": "6c438948af0ba0308264308b32e2777b310d750f24dc61a41b39ca55dfda26a5"
+    },
+    {
+      "path": "packages/adapters/test/model/fixture.ts",
+      "sha256": "7457597718542878472f1073c06d0b9331a21666e479e6488d5f59aa875b7069"
+    },
+    {
+      "path": "packages/adapters/test/model/llamacpp-model-gateway.smoke.test.ts",
+      "sha256": "ad87b1e6fd69efebda966e83983fff05fe7c807afcf6ebd1db445145ae9fea54"
+    },
+    {
+      "path": "packages/adapters/test/model/llamacpp-model-gateway.test.ts",
+      "sha256": "a851a5c41c0960f7553d6748b221316e623f79f315a2e2540c045bb2967035ba"
+    },
+    {
+      "path": "packages/adapters/test/model/network-api-model-gateway.smoke.test.ts",
+      "sha256": "bafcaaceb259564339600da66c4f1757679198f8207c9e300acccd4dbc609931"
+    },
+    {
+      "path": "packages/adapters/test/model/network-api-model-gateway.test.ts",
+      "sha256": "7f3696a3fd15fc8c83f75faee3ac13546e9f604cecc4bc37634e22aef4e43c22"
+    },
+    {
+      "path": "packages/adapters/test/postgres/postgres-foundation.test.ts",
+      "sha256": "67a577ca17aacdef6e086ee01d1cb1a05338bf01442e1a183e3c0c4552bd06a1"
+    },
+    {
+      "path": "packages/adapters/test/quality/postgres-quality-evaluation.test.ts",
+      "sha256": "8da4f925df2b1be9ef78ff9419c29dca24b3c6342f04773d9267ae588bfcaa5d"
+    },
+    {
+      "path": "packages/adapters/test/recommendation/fixture.ts",
+      "sha256": "12deb3d91798a4316c66ca10d931f2dc7beae7002793a4a80caf084d2917b13a"
+    },
+    {
+      "path": "packages/adapters/test/recommendation/postgres-recommendation-adapter.test.ts",
+      "sha256": "a874e5609eb77793b6802e45241f930d7b13b72e5c07c70fc11c26134f83bf83"
+    },
+    {
+      "path": "packages/adapters/test/response-lifecycle/fixture.ts",
+      "sha256": "d937bb04c98164a7d077051ccdb72bcc10f23fce6061994f1618e1893dc1f0ae"
+    },
+    {
+      "path": "packages/adapters/test/response-lifecycle/postgres-response-lifecycle-adapter.test.ts",
+      "sha256": "6c6fa04ade30cff9bca79039c377bab7e9bb7932cc9732c59483408732463af3"
+    },
+    {
+      "path": "packages/adapters/test/retrieval/hybrid-retrieval-acceptance.test.ts",
+      "sha256": "3f5b62d634144d0c96ca34fb515f5a7263ccbce0bd28a4f0714b891e6116850c"
+    },
+    {
+      "path": "packages/adapters/test/retrieval/hybrid-retrieval-service.test.ts",
+      "sha256": "f475277f0357729e291b175b199008e12b336b9bf1659e7df64503b4d4fdd780"
+    },
+    {
+      "path": "packages/adapters/test/retrieval/postgres-retrieval-adapter.test.ts",
+      "sha256": "e69f597d5d6d069319caf4768f1563ddf4b48dea73cc24742b2f3d239523c470"
+    },
+    {
+      "path": "packages/adapters/test/retrieval/qdrant-retrieval-adapter.test.ts",
+      "sha256": "fc8a0b1c32d7132ff2f8b05d18889a93939a3ba2a41965f49775b5327db72eb5"
+    },
+    {
+      "path": "packages/adapters/test/review-audit/postgres-review-audit-adapter.test.ts",
+      "sha256": "73d710131cb1f83e4ca00f0f30ffbf22def82373e9a8e9806a52740a4ea6298c"
+    },
+    {
+      "path": "packages/adapters/test/risk-assessment/fixture.ts",
+      "sha256": "b50b7292bbadb168f98f69d9eb1ae62de901151098f7264463bf42f4ff3b6120"
+    },
+    {
+      "path": "packages/adapters/test/risk-assessment/postgres-risk-assessment-engine.test.ts",
+      "sha256": "575b25e828510f24e865beeb4599b7a5db02fda8bfa323e2cc6a3b38052c3295"
+    },
+    {
+      "path": "packages/adapters/test/risk-assessment/postgres-risk-input-facts-reader.test.ts",
+      "sha256": "e3f466465191c72286dedf76e44250dc238df8cab75e24b055026ed8b231a88a"
+    },
+    {
+      "path": "packages/adapters/test/risk-assessment/production-assessment-basis.fixture.ts",
+      "sha256": "c836475389bd79a18dea7045bbf9dd255ccebf170d710e872a4cb5c4ef485936"
+    },
+    {
+      "path": "packages/adapters/test/risk-assessment/production-assessment-basis.test.ts",
+      "sha256": "840280b596491d2438d04c606d9958a4af42e20727f878ebf05375c87c162550"
+    },
+    {
+      "path": "packages/adapters/test/scoring-rules/fixture.ts",
+      "sha256": "df32c4671b27e567ad8c4215d6a70c6439d4d345b8c58414f81803e691976f89"
+    },
+    {
+      "path": "packages/adapters/test/scoring-rules/postgres-scoring-rules-adapter.test.ts",
+      "sha256": "5c6c4748ddc1f6a01790d86e43b32f45f90c75a3090aaa96025cb9b1d8ebc4bc"
+    },
+    {
+      "path": "packages/adapters/test/warning/fixture.ts",
+      "sha256": "ffebc9abc298a29fb7b17088a3c40cb552c5705ce1d0da17e56c62bbe5519cfb"
+    },
+    {
+      "path": "packages/adapters/test/warning/postgres-warning-lifecycle-adapter.test.ts",
+      "sha256": "ae58f9daaa653a2f7252e94ca289b49f65b9f50fe8bb38f22568b8a8c48ec52c"
+    },
+    {
+      "path": "packages/adapters/test/workflow/postgres-workflow-adapter.test.ts",
+      "sha256": "0b2e1789e260940fb85e6bd97dbf46d467d752377e2bc3bf0ef92ff77b761f58"
+    },
+    {
+      "path": "packages/contracts/src/ports/index.ts",
+      "sha256": "120fae83ac39fe7b6508493b2adce16a96a5840c8b7819ff0ac577eb3ace8446"
+    },
+    {
+      "path": "packages/contracts/src/workflows/index.ts",
+      "sha256": "3948d557fa46971585846cc1944dc539fd9aa3a04fc23da128a12f19002be39f"
+    },
+    {
+      "path": "packages/core/src/access/authorization.ts",
+      "sha256": "9721bc5ba766ca8f5e38be5355373fbf8f67b0500b42206697f49452a20b27c0"
+    },
+    {
+      "path": "packages/core/src/access/index.ts",
+      "sha256": "e5fd00d6d499a422660565e87287d6804586537532b17286b4d2b5b68d41ec4f"
+    },
+    {
+      "path": "packages/core/src/access/service.ts",
+      "sha256": "36b3ffdf5f33cd6e1f8a1a9a468a1fb445c4c8711a5d5096fe0084d5806c2154"
+    },
+    {
+      "path": "packages/core/src/agent-runtime/runtime.ts",
+      "sha256": "02483e890aad9bfd1d270d32aac3982a5828e5e88fc7c993d91321df8ca6e231"
+    },
+    {
+      "path": "packages/core/src/agent-runtime/schema.ts",
+      "sha256": "d9988ec722ed31adcb27dbbcfb9e77e76fb9d3d1e7f4dae0e2796dbe7821c7b8"
+    },
+    {
+      "path": "packages/core/src/agent-runtime/ui-read.ts",
+      "sha256": "6f722bfa8eff0e79b8c9ecda90cb9ca66c54faec429cad5a7064ff3586cdc8a7"
+    },
+    {
+      "path": "packages/core/src/artifacts/index.ts",
+      "sha256": "44af3c523b7605c558d8d204f9da9f82a87863a25f0f0def2a1a7aed16ed019f"
+    },
+    {
+      "path": "packages/core/src/artifacts/schema.ts",
+      "sha256": "77783d9e5b31df290c6a78e7427015b533091cbbcc0274bcdc11e1642873f9be"
+    },
+    {
+      "path": "packages/core/src/artifacts/store.ts",
+      "sha256": "56b852e43f574faee86a1567ccb156bb987625f53f72dae30882fa1b6911b11d"
+    },
+    {
+      "path": "packages/core/src/assessment-config/schema.ts",
+      "sha256": "e45bc9850c51a02b9798bafa1716b9e55527b845275f320e174d823684c62b5f"
+    },
+    {
+      "path": "packages/core/src/assessment-config/service.ts",
+      "sha256": "1fd3429f6089ba13ae2c6b489ff173749d26296659b2b1fbb9c3d93f356ee269"
+    },
+    {
+      "path": "packages/core/src/assessment-config/validation.ts",
+      "sha256": "70e8fc3e6b1dbedc0c062e5d4018fa1ca1e83822effa28a1b1b758df01d314f3"
+    },
+    {
+      "path": "packages/core/src/calibration/schema.ts",
+      "sha256": "54633353792102225d3ac8b017b22a521db0d8703779e2735a7d9e70807eedaa"
+    },
+    {
+      "path": "packages/core/src/calibration/service.ts",
+      "sha256": "50b1d57a44fee1006a4a72b64c01974c938bae9be3209cd3aa9a206a46dd7af9"
+    },
+    {
+      "path": "packages/core/src/engineering-data/cleaning/schema.ts",
+      "sha256": "5f57457bcb2469f842efb7f6a2299f5191310214c44ff44bb8acbbb068230b1e"
+    },
+    {
+      "path": "packages/core/src/engineering-data/cleaning/service.ts",
+      "sha256": "ff024e3270cce26c36344908a5da32523fa72fd375b7000017f26f40eb76132a"
+    },
+    {
+      "path": "packages/core/src/human-decision-feedback/schema.ts",
+      "sha256": "da54388e4e00e94dea346c534e9c7cf6111e7fd593c6ad835d3ebe21684dfbe6"
+    },
+    {
+      "path": "packages/core/src/human-decision-feedback/service.ts",
+      "sha256": "bed04ec2f1bb4301c87717791e30f14b2cd94c394cdc60c7ea29a75ff26be1ca"
+    },
+    {
+      "path": "packages/core/src/identification-knowledge/schema.ts",
+      "sha256": "2f6958fffb7e6d167e4303f8fb7ac64e25df9991329aeeefb4981deb55660867"
+    },
+    {
+      "path": "packages/core/src/identification-knowledge/service.ts",
+      "sha256": "0c9c2363ff25bbf92dab23af1555db3fefe9cc0cdf0a90319dae0547976c0f4a"
+    },
+    {
+      "path": "packages/core/src/identification/candidate-finalization/ports.ts",
+      "sha256": "9398b80b752b77a0530e4a410b70d8484cb9fc6452374063ee285af8fe97a877"
+    },
+    {
+      "path": "packages/core/src/identification/candidate-finalization/service.ts",
+      "sha256": "88f60a5a0bf2e6aac59fc9e7af8ea22ce90f3eced20420c218f49e445201acfe"
+    },
+    {
+      "path": "packages/core/src/identification/context/ports.ts",
+      "sha256": "e3f756dea18242076a3e1afbac9a1c78249121e787cc7d435ad9cc2f8043647c"
+    },
+    {
+      "path": "packages/core/src/identification/context/schema.ts",
+      "sha256": "ab22984a7d689309a7e6baf19bc7c723029f9cbf029addb0e7285d8e5e378dcd"
+    },
+    {
+      "path": "packages/core/src/identification/context/service.ts",
+      "sha256": "6ff96c4192c33b45078ea9d3504427773b37511e0d2bb36b257c25400471a1b0"
+    },
+    {
+      "path": "packages/core/src/identification/graph/ports.ts",
+      "sha256": "ede47f128d762370bbf961874e9671f34d5c145425e4315a079537f74c927de8"
+    },
+    {
+      "path": "packages/core/src/identification/graph/schema.ts",
+      "sha256": "9ade5f961a8ca70c0843f60065ccdce255662adf052ea777199b4a51ce81aa2c"
+    },
+    {
+      "path": "packages/core/src/identification/graph/service.ts",
+      "sha256": "a4613b9a8434c0135bfadcdee71a6a99b65c4f4b79f357b1b86cd4f588a32068"
+    },
+    {
+      "path": "packages/core/src/knowledge-governance/index.ts",
+      "sha256": "c36210eab2da3efc435b23cc323cbf67f7cca079a8c115a5c667fa774d4bc9e6"
+    },
+    {
+      "path": "packages/core/src/knowledge-governance/lifecycle.ts",
+      "sha256": "183ceb7a1b852ece432e7966da938cbae282db737ce7ee6cf9a3284a64007b31"
+    },
+    {
+      "path": "packages/core/src/knowledge-governance/schema.ts",
+      "sha256": "97a34e466b589b1545ffa231ddaf60cc1832bf7be0f76dc521f0d53b1cfe93f6"
+    },
+    {
+      "path": "packages/core/src/model/gateway.ts",
+      "sha256": "de42bc1a9fa4f4ede2597216ed8039f3ec6f122b8e1f5f208e3d741d40865aa3"
+    },
+    {
+      "path": "packages/core/src/model/schema.ts",
+      "sha256": "3516ce67ee93c7040127d3f43d66d3a4726e19c46bf25e299c843c0b7fe177e2"
+    },
+    {
+      "path": "packages/core/src/persistence/checkpoint.ts",
+      "sha256": "f09e48eb62bf5e7d214c6b6e46d45300ab11224e1198501f68b371909cf57baa"
+    },
+    {
+      "path": "packages/core/src/quality/evaluate.ts",
+      "sha256": "053d872e6c753df9c56398d881c123920879db566ed0f5ae303929cb6dd2c842"
+    },
+    {
+      "path": "packages/core/src/recommendation/schema.ts",
+      "sha256": "b7e1eaddbe05647f1bd770f820630b628fba212310f32ea4c805b4df3dc18377"
+    },
+    {
+      "path": "packages/core/src/recommendation/service.ts",
+      "sha256": "d497df044d2eb6251fd3c611f8e8a0ed0eca02719acf22ac4284ca72e4433448"
+    },
+    {
+      "path": "packages/core/src/response-lifecycle/schema.ts",
+      "sha256": "c983cc5f22977a4732bb0d82c3bbd2cfea6592e99cbf3be4bdff4b9ceca4e8ef"
+    },
+    {
+      "path": "packages/core/src/response-lifecycle/service.ts",
+      "sha256": "6ee0c35a86bb600c65c2b16dd075b89952b8955ad794d28f7c809c5a8eaabba0"
+    },
+    {
+      "path": "packages/core/src/retrieval/ports.ts",
+      "sha256": "a96ee8e9f4b9d4bae561213c9fd757d26a9bf327a2d280aecbeb7311d24323ec"
+    },
+    {
+      "path": "packages/core/src/retrieval/schema.ts",
+      "sha256": "fa0b69b04b7d81ae299f9c9457b5bbd6ec50de658b9226f913a9248b120d6530"
+    },
+    {
+      "path": "packages/core/src/retrieval/service.ts",
+      "sha256": "c8475bc42dc63783079a047fd50083926eb538ca6ccff520b1421291d180f34b"
+    },
+    {
+      "path": "packages/core/src/risk-assessment/engine/engine.ts",
+      "sha256": "9752f120595e771f968739ebec357ddf874ccc23dd8aae821c61c21c515b804d"
+    },
+    {
+      "path": "packages/core/src/risk-assessment/engine/schema.ts",
+      "sha256": "20ce39e78c9cf638a9d00abf84c70df7053552e60359fdbfdbeec98b4f09643c"
+    },
+    {
+      "path": "packages/core/src/risk-assessment/engine/service.ts",
+      "sha256": "47edbe990018951dfdff96f28c69c74823c927823f3fdbe5ade408cb59bdfc7e"
+    },
+    {
+      "path": "packages/core/src/scoring-rules/schema.ts",
+      "sha256": "06696f6aa7b4052ed25ff4b55114c50d1da8576289b650823a9031a764c049f7"
+    },
+    {
+      "path": "packages/core/src/scoring-rules/service.ts",
+      "sha256": "b19d0b99c4db081ae04586783decedd8d30966c49a3c58321b3d2ba3c9fccaaa"
+    },
+    {
+      "path": "packages/core/src/scoring-rules/validation.ts",
+      "sha256": "ad75ac1df98dc6d4cd17ce043685c9dac8a0706db74074824aa9f30cc3fd8ff8"
+    },
+    {
+      "path": "packages/core/src/warning/schema.ts",
+      "sha256": "06747232288dac460642d34a4959903a96f0de5e1ce53cbfbcf0f88f388034bf"
+    },
+    {
+      "path": "packages/core/src/warning/service.ts",
+      "sha256": "f899edd47abbdcfefb3be02dc9d9bc3b6fd8ea8f7551d836a6a018b91ee9b950"
+    },
+    {
+      "path": "packages/core/src/workflow/schema.ts",
+      "sha256": "a3b45e20b1e28859cf57138bfc31f303cc39751f244f3c34349bbefc2863ad55"
+    },
+    {
+      "path": "packages/core/src/workflow/service.ts",
+      "sha256": "facd059229bb25356f96177d19eb691171436a1437ced4a6042f33229aef325d"
+    },
+    {
+      "path": "packages/core/test/access.test.ts",
+      "sha256": "1506e0b4d8c138065bc815ae6f730910742bfe764d81e97001a887ca38d3f4e6"
+    },
+    {
+      "path": "packages/core/test/assessment-config/assessment-config.test.ts",
+      "sha256": "250a0cd65ca5d259be35dd2f2e3885de4ac46cf946a91459210626295d2efc19"
+    },
+    {
+      "path": "packages/core/test/engineering-data/cleaning.test.ts",
+      "sha256": "9bbadf742ad3eacaac1e0c4cb92c0b767be174eda7197529f89d29a58e607fb6"
+    },
+    {
+      "path": "packages/core/test/identification/candidate-finalization.test.ts",
+      "sha256": "3ff0da709572f1d1a20323706c2dc72b3067ea3773e79984ba3c453abd557695"
+    },
+    {
+      "path": "packages/core/test/identification/context.test.ts",
+      "sha256": "d09aada60d692f0eb94bae0aa5488f205df2fd9f963d84019f347373ddd9c768"
+    },
+    {
+      "path": "packages/core/test/knowledge-governance/knowledge-governance.test.ts",
+      "sha256": "37ecb66a986768ea45b2ffc4c952cad0bc4a2a18fa82c7a035879eeeec1cac59"
+    },
+    {
+      "path": "packages/core/test/retrieval/retrieval.test.ts",
+      "sha256": "961ad5f35d8b33de4369e151432b8aad055260f9b407663c9f6fd284b9f464b9"
+    },
+    {
+      "path": "packages/core/test/scoring-rules/scoring-rules.test.ts",
+      "sha256": "aeefcdf5a24fac1e0b4c878db8fbae32f8bc8cdcc4a2a5a78630c5e49b586d9e"
+    },
+    {
+      "path": "packages/core/test/warning/fixture.ts",
+      "sha256": "921dbeecda06c92f74ee3ff40ee5a1adb211bbdc263f3a0f1209474605662f50"
+    },
+    {
+      "path": "scripts/deployment/api-ports.test.mjs",
+      "sha256": "ca56118ec2a146517e787d823de1bead80c482fe9b67d23feb78c5702ab0234b"
+    },
+    {
+      "path": "scripts/deployment/assessment-composition.test.mjs",
+      "sha256": "a5038e986232bf8af35be7ff5472295c8e82dc585831bd588a1387741742a6e8"
+    },
+    {
+      "path": "scripts/deployment/calibration-task.test.mjs",
+      "sha256": "b77d23c241a1dabfa22f98725aefd80f6f9f4148417fa10f17cb16d9e0aa370f"
+    },
+    {
+      "path": "scripts/deployment/composition.test.mjs",
+      "sha256": "9b79a0896a3980b87b546acfc8f0cf161a821ce626acb33d230ee6d23910467a"
+    },
+    {
+      "path": "scripts/deployment/composition/api-ports.mjs",
+      "sha256": "eb56859d85753858f1a8a5dc25a4075c84d5f66e21965e1f432620e843b3363f"
+    },
+    {
+      "path": "scripts/deployment/composition/assessment.mjs",
+      "sha256": "4d2f4945a1fecc7e1ac8543b4b12ce9e4e47a6404e6ecb01eb97178b820fe03b"
+    },
+    {
+      "path": "scripts/deployment/composition/calibration-task.mjs",
+      "sha256": "4949346211d698e6a9632ad630b189d24b793ed1a8ab6e66cd964a54c2543943"
+    },
+    {
+      "path": "scripts/deployment/composition/identification.mjs",
+      "sha256": "b462c9a40253c650c601f0f494afd84ca0b2d61b56d1237918849f8d2577e86b"
+    },
+    {
+      "path": "scripts/deployment/composition/quality-gate.mjs",
+      "sha256": "2279a106a327753dd3d3b3834933363d8a727a54e77f0fa0953c0fbd784b8bff"
+    },
+    {
+      "path": "scripts/deployment/composition/response-model-step.mjs",
+      "sha256": "a2e1e642409865a980997e7f61784878a9b0e3f32ddb2b23a665882575c4b133"
+    },
+    {
+      "path": "scripts/deployment/entrypoints.test.mjs",
+      "sha256": "4172c724db5a7f89c77d492c187bdad88a1d51bea6003f38c59788547134b8e5"
+    },
+    {
+      "path": "scripts/deployment/provision.mjs",
+      "sha256": "1574ca3082b859659574d5ac82479ede392cd94d4833bd6d6a8cadb2c54d5b43"
+    },
+    {
+      "path": "scripts/deployment/start.mjs",
+      "sha256": "ae4f845e71ce2e132235a94eb5bd70a0743b7c09a869cababff1cfc6a1e61f3d"
+    }
+  ]
+}

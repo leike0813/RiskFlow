@@ -38,45 +38,69 @@ const networkCommon = {
   }),
 };
 
-const openAiBaseUrl = z.string().url().superRefine((value, context) => {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
-      context.addIssue({ code: "custom", message: "chat baseUrl must be credential-free HTTPS" });
+const openAiBaseUrl = z
+  .string()
+  .url()
+  .superRefine((value, context) => {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+        context.addIssue({ code: "custom", message: "chat baseUrl must be credential-free HTTPS" });
+      }
+      if (url.pathname !== "/" && !url.pathname.endsWith("/v1")) {
+        context.addIssue({
+          code: "custom",
+          message: "chat baseUrl path must be empty or end in /v1",
+        });
+      }
+    } catch {
+      context.addIssue({ code: "custom", message: "chat baseUrl must be a valid URL" });
     }
-    if (url.pathname !== "/" && !url.pathname.endsWith("/v1")) {
-      context.addIssue({ code: "custom", message: "chat baseUrl path must be empty or end in /v1" });
-    }
-  } catch {
-    context.addIssue({ code: "custom", message: "chat baseUrl must be a valid URL" });
-  }
-});
+  });
 
 const ollamaBaseUrl = z.literal("http://192.168.13.11:11434");
 
 const networkTiming = (
-  config: { streamIdleTimeoutMs: number; requestTimeoutMs: number; contextWindowTokens: number; maxOutputTokens: number },
+  config: {
+    streamIdleTimeoutMs: number;
+    requestTimeoutMs: number;
+    contextWindowTokens: number;
+    maxOutputTokens: number;
+  },
   context: z.RefinementCtx,
 ): void => {
   if (config.streamIdleTimeoutMs > config.requestTimeoutMs) {
-    context.addIssue({ code: "custom", path: ["streamIdleTimeoutMs"], message: "stream idle timeout exceeds request timeout" });
+    context.addIssue({
+      code: "custom",
+      path: ["streamIdleTimeoutMs"],
+      message: "stream idle timeout exceeds request timeout",
+    });
   }
   if (config.maxOutputTokens > config.contextWindowTokens) {
-    context.addIssue({ code: "custom", path: ["maxOutputTokens"], message: "output budget exceeds context window" });
+    context.addIssue({
+      code: "custom",
+      path: ["maxOutputTokens"],
+      message: "output budget exceeds context window",
+    });
   }
 };
 
 export const NetworkApiDeploymentConfigV1Schema = z.discriminatedUnion("protocol", [
-  z.strictObject({
-    ...networkCommon,
-    protocol: z.literal("openai-chat"),
-    baseUrl: openAiBaseUrl,
-    credentialRef: IdentifierSchema,
-    capabilities: z.array(z.enum(["completeStructured", "streamConversation"])).min(1).max(2),
-    maxOutputTokens: positiveSafeInteger,
-    structuredOutputMode: z.enum(["server-json-schema", "schema-prompt"]),
-    reasoningEffort: z.enum(["low", "medium", "high", "xhigh", "max"]),
-  }).superRefine(networkTiming),
+  z
+    .strictObject({
+      ...networkCommon,
+      protocol: z.literal("openai-chat"),
+      baseUrl: openAiBaseUrl,
+      credentialRef: IdentifierSchema,
+      capabilities: z
+        .array(z.enum(["completeStructured", "streamConversation"]))
+        .min(1)
+        .max(2),
+      maxOutputTokens: positiveSafeInteger,
+      structuredOutputMode: z.enum(["server-json-schema", "schema-prompt", "function-call"]),
+      reasoningEffort: z.enum(["low", "medium", "high", "xhigh", "max"]),
+    })
+    .superRefine(networkTiming),
   z.strictObject({
     ...networkCommon,
     protocol: z.literal("ollama-embed"),

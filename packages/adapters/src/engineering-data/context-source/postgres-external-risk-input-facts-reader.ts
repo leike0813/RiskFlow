@@ -170,7 +170,7 @@ export interface PostgresExternalRiskInputFactsReaderOptionsV1 {
   readonly db: unknown;
   /** C06 当前授权复验端口：两阶段复验当前身份与事件已登记的空间/来源范围。 */
   readonly authorization: Pick<LocalIdentityAccessV1, "verify">;
-  /** C04 工件存储：事件正文只经 verified 有界读取，不使用最新来源或重算摘要。 */
+  /** C04 工件存储：事件正文只经 completed 有界读取，不使用最新来源或重算摘要。 */
   readonly artifactStore: ArtifactStoreV1;
   readonly now?: () => Date;
 }
@@ -360,7 +360,7 @@ export const createPostgresExternalRiskInputFactsReader = (
           }),
         );
         const bytes = await boundedContent(handle.content);
-        const receipt = await handle.verified;
+        const receipt = await handle.completed;
         if (
           refKey(receipt.artifactRef.reference) !== refKey(artifactRef.data.reference) ||
           receipt.content.hash.value !== handle.manifest.content.hash.value ||

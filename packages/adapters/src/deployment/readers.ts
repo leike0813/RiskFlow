@@ -89,7 +89,7 @@ export interface DeploymentConfigurationMemberSourceV1 {
     readonly projectId: string;
     readonly releaseRef: VersionReference;
   }): Promise<{ readonly body: unknown; readonly sha256: string } | undefined>;
-  /** 通过 C04 读取成员正文并完整消费 verified。 */
+  /** 通过 C04 读取成员正文并完整消费 completed。 */
   openArtifact(input: {
     readonly artifactRef: { readonly entityId: string; readonly versionId: string };
     readonly authorization: AuthorizationContextV1;
@@ -107,7 +107,7 @@ export const createDeploymentConfigurationMemberReaderV1 = (
 });
 
 /**
- * C24 acceptanceRoutes：精确 acceptance-route-set 登记 → C04.open → 完整消费 verified
+ * C24 acceptanceRoutes：精确 acceptance-route-set 登记 → C04.open → 完整消费 completed
  * → 原 AcceptanceRouteSet Schema。缺失、漂移或未完整消费一律 undefined。
  */
 export interface DeploymentAcceptanceRouteReaderV1 {
@@ -129,11 +129,11 @@ const readBoundedArtifactJson = async (
       if (byteLength > 1_048_576) throw new RangeError("DEPLOYMENT_ARTIFACT_TOO_LARGE");
       chunks.push(chunk);
     }
-    await handle.verified;
+    await handle.completed;
     return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
   } finally {
-    // 拒绝超限时流关闭可能使 verified 拒绝；保留主错误，不产生未处理事件。
-    void handle.verified.catch(() => undefined);
+    // 拒绝超限时流关闭可能使 completed 拒绝；保留主错误，不产生未处理事件。
+    void handle.completed.catch(() => undefined);
   }
 };
 

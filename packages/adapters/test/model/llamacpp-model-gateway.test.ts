@@ -38,7 +38,7 @@ const queueProbe = (fetcher: ScriptedFetch): void => {
 };
 
 describe("llama.cpp model gateway", () => {
-  it("probes once and durably re-reads structured responses before returning", async () => {
+  it("probes once and persists structured responses before returning", async () => {
     const fetcher = new ScriptedFetch();
     const { gateway, store } = gatewayWith(fetcher);
     queueProbe(fetcher);
@@ -70,11 +70,11 @@ describe("llama.cpp model gateway", () => {
       "/v1/chat/completions",
     ]);
     expect(JSON.parse(fetcher.calls.at(-1)!.body!).model).toBe(testDeployment.modelAlias);
-    expect(store.events).toEqual(["put:start", "put:done", "open:start", "verified"]);
+    expect(store.events).toEqual(["put:start", "put:done"]);
     expect(store.commands[0]!.idempotencyKey).toContain("idempotency-model");
   });
 
-  it("bounds the C04 re-read before parsing a structured response", async () => {
+  it("parses the received response without reopening its saved artifact", async () => {
     const fetcher = new ScriptedFetch();
     const store = new ArtifactStoreLatch();
     store.appendBytesToNextOpen(testDeployment.maxResponseBytes + 1);
@@ -95,10 +95,11 @@ describe("llama.cpp model gateway", () => {
 
     await expect(
       gateway.completeStructured(structuredRequest(), z.strictObject({ risk: z.string() })),
-    ).rejects.toMatchObject({
-      code: "MODEL_ARTIFACT_PERSISTENCE_FAILED",
+    ).resolves.toMatchObject({
+      value: { risk: "stable" },
       rawResponseRef: { kind: "diagnostic-artifact" },
     });
+    expect(store.opened).toHaveLength(0);
   });
 
   it("keeps embedding order and rejects an out-of-order batch without repair", async () => {
@@ -157,7 +158,7 @@ describe("llama.cpp model gateway", () => {
       [0.4, 0.5, 0.6],
     ]);
     expect(result.dimensions).toBe(3);
-    expect(store.events).toEqual(["put:start", "put:done", "open:start", "verified"]);
+    expect(store.events).toEqual(["put:start", "put:done"]);
   });
 
   it("emits only content deltas and waits for finish, DONE, EOF, and put", async () => {
@@ -348,7 +349,7 @@ describe("llama.cpp model gateway", () => {
     ]);
   });
 
-  it("distinguishes invalid JSON from a valid JSON value rejected by Zod", async () => {
+  it("将无效JSON与Schema不符都作为输出错误，保留各自阶段", async () => {
     const invalidJsonFetcher = new ScriptedFetch();
     const { gateway: invalidJsonGateway } = gatewayWith(invalidJsonFetcher);
     queueProbe(invalidJsonFetcher);
@@ -356,6 +357,7 @@ describe("llama.cpp model gateway", () => {
     invalidJsonFetcher.enqueue(
       jsonResponse({
         choices: [{ index: 0, message: { content: '{"risk":' }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
       }),
     );
 
@@ -363,8 +365,9 @@ describe("llama.cpp model gateway", () => {
       .completeStructured(structuredRequest(), z.strictObject({ risk: z.string() }))
       .catch((value: unknown) => value);
     expect(invalidJson).toMatchObject({
-      code: "MODEL_STRUCTURE_INVALID",
+      code: "MODEL_OUTPUT_SCHEMA_INVALID",
       rawResponseRef: { kind: "diagnostic-artifact" },
+      counts: { inputTokens: 5, outputTokens: 1 },
     });
 
     const invalidShapeFetcher = new ScriptedFetch();
@@ -374,6 +377,7 @@ describe("llama.cpp model gateway", () => {
     invalidShapeFetcher.enqueue(
       jsonResponse({
         choices: [{ index: 0, message: { content: '{"risk":1}' }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
       }),
     );
 
@@ -383,6 +387,7 @@ describe("llama.cpp model gateway", () => {
     expect(invalidShape).toMatchObject({
       code: "MODEL_OUTPUT_SCHEMA_INVALID",
       rawResponseRef: { kind: "diagnostic-artifact" },
+      counts: { inputTokens: 5, outputTokens: 2 },
     });
   });
 
@@ -407,6 +412,60 @@ describe("llama.cpp model gateway", () => {
       .catch((value: unknown) => value);
     expect(expired).toMatchObject({ code: "MODEL_REQUEST_TIMEOUT" });
     expect(expiredFetcher.calls).toHaveLength(0);
+  });
+
+  it("rejects an action quota below the deployment window before the inference call", async () => {
+    const fetcher = new ScriptedFetch();
+    const { gateway } = gatewayWith(fetcher);
+    queueProbe(fetcher);
+    fetcher.enqueue(jsonResponse({ tokens: 5 }));
+
+    const error = await gateway
+      .completeStructured(
+        { ...structuredRequest(), maxInputTokens: 3 },
+        z.strictObject({ risk: z.string() }),
+      )
+      .catch((value: unknown) => value);
+
+    expect(error).toMatchObject({ code: "MODEL_CONTEXT_EXCEEDED", counts: { inputTokens: 5 } });
+    expect(fetcher.calls.map((call) => new URL(call.url).pathname)).toEqual([
+      "/health",
+      "/props",
+      "/v1/models",
+      "/v1/chat/completions/input_tokens",
+    ]);
+  });
+
+  it("rejects reported usage above the action allowance with the durable raw response", async () => {
+    const fetcher = new ScriptedFetch();
+    const { gateway } = gatewayWith(fetcher);
+    queueProbe(fetcher);
+    fetcher.enqueue(jsonResponse({ tokens: 5 }));
+    fetcher.enqueue(
+      jsonResponse({
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: '{"risk":"stable"}' },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 5, completion_tokens: 300, total_tokens: 305 },
+      }),
+    );
+
+    const error = await gateway
+      .completeStructured(
+        { ...structuredRequest(), maxContextTokens: 200 },
+        z.strictObject({ risk: z.string() }),
+      )
+      .catch((value: unknown) => value);
+
+    expect(error).toMatchObject({
+      code: "MODEL_CONTEXT_EXCEEDED",
+      rawResponseRef: { kind: "diagnostic-artifact" },
+      counts: { inputTokens: 5, outputTokens: 300 },
+    });
   });
 
   it("rejects a partial stream with its durable raw response", async () => {

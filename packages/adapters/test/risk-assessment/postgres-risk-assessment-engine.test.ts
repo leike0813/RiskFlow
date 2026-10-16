@@ -17,7 +17,7 @@ import {
 } from "@riskflow/contracts/ports";
 import { RiskAssessmentRecordSchema } from "@riskflow/contracts/records";
 
-import { c25ReleaseRef, c25RuntimePolicySet } from "../../../core/test/risk-assessment/fixture.js";
+import { c25ReleaseRef } from "../../../core/test/risk-assessment/fixture.js";
 import { C25_FIXTURE_RISK_RECORD_REF } from "../../../core/test/risk-assessment/fixture.js";
 
 import { startRiskAssessmentEngineFixture, type RiskAssessmentEngineFixtureV1 } from "./fixture.js";
@@ -132,7 +132,6 @@ describe("C25 PostgreSQL risk assessment engine", () => {
         },
         { projectId: fixture.foreignProjectId() },
         { actorId: "another-actor" },
-        { invocationId: "unissued" },
         {
           preparationSnapshotRef: {
             ...preparation,
@@ -178,7 +177,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     expect(await counts()).toEqual(before);
   }, 120_000);
 
-  it("prepare 物化 22 引用输入快照并逐项对上拥有方版本", async () => {
+  it("prepare 仅冻结九项评分引用并逐项对上拥有方版本", async () => {
     const result = await fixture.engine.prepare(
       (await fixture.prepareCommand({ commandId: "c25-prepare" })) as never,
     );
@@ -204,9 +203,9 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     expect(payload.applicableRuleSetRef).toMatchObject({
       entityId: "release-set-applicable-rule-set",
     });
-    expect(payload.warningAggregationPolicyRef).toMatchObject({
-      entityId: "warning-aggregation-policy",
-    });
+    expect(payload.schemaVersion).toBe("2");
+    expect(payload).not.toHaveProperty("warningAggregationPolicyRef");
+    expect(payload).not.toHaveProperty("deviationPolicyRef");
     const referenceFields = Object.entries(payload).filter(
       ([key, value]) =>
         key.endsWith("Ref") &&
@@ -214,7 +213,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
         value !== null &&
         "entityId" in (value as object),
     );
-    expect(referenceFields).toHaveLength(22);
+    expect(referenceFields).toHaveLength(9);
   }, 120_000);
 
   it("C25 精确窄读只返回冻结空间、依据和目标摘要", async () => {
@@ -231,7 +230,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       actorId: fixture.managerId,
       authorization: await fixture.readAuthorization(requestId),
       inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
-      targetReleaseRef: c25ReleaseRef("deviation-policy"),
+      targetReleaseRef: c25ReleaseRef("weight-set"),
     };
     const result = await fixture.engine.readInputSnapshot(query);
     expect(result).toMatchObject({
@@ -710,41 +709,6 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     }
   }, 180_000);
 
-  it("提交前运行时策略版本漂移时关闭失败且零正式事实", async () => {
-    const prepared = await fixture.engine.prepare(
-      (await fixture.prepareCommand({
-        commandId: "c25-prepare-policy-drift",
-        preparation: await freshPreparation("policy-drift"),
-      })) as never,
-    );
-    expect(prepared).toMatchObject({ kind: "succeeded" });
-    if (prepared.kind !== "succeeded") return;
-    const commandId = "c25-evaluate-policy-drift";
-    const recordsBefore = await countRows(
-      fixture,
-      "business.risk_assessment_records",
-      fixture.projectId,
-    );
-    const receiptsBefore = await countReceipts(fixture, commandId);
-    // 读取阶段拿到第一套策略，提交前复验必须发现版本已漂移。
-    fixture.mutatePoliciesAfterFirstRead();
-    try {
-      const result = await fixture.engine.evaluate(
-        (await fixture.evaluateCommand({
-          commandId,
-          inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
-        })) as never,
-      );
-      expect(result).toMatchObject({ kind: "failed", error: { code: "STALE_VERSION" } });
-      expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
-        recordsBefore,
-      );
-      expect(await countReceipts(fixture, commandId)).toBe(receiptsBefore);
-    } finally {
-      fixture.restorePolicies();
-    }
-  }, 180_000);
-
   it("下游授权未声明准备快照来源时读取关闭失败且零正式事实", async () => {
     const prepared = await fixture.engine.prepare(
       (await fixture.prepareCommand({
@@ -1004,42 +968,6 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     );
   }, 180_000);
 
-  it("运行时策略缺失时读策略阶段闭合且零正式事实", async () => {
-    const prepared = await fixture.engine.prepare(
-      (await fixture.prepareCommand({
-        commandId: "c25-prepare-no-policy",
-        preparation: await freshPreparation("no-policy"),
-      })) as never,
-    );
-    expect(prepared).toMatchObject({ kind: "succeeded" });
-    if (prepared.kind !== "succeeded") return;
-    const commandId = "c25-evaluate-no-policy";
-    const recordsBefore = await countRows(
-      fixture,
-      "business.risk_assessment_records",
-      fixture.projectId,
-    );
-    const receiptsBefore = await countReceipts(fixture, commandId);
-    fixture.setPolicies(undefined);
-    try {
-      const evaluated = await fixture.engine.evaluate(
-        (await fixture.evaluateCommand({
-          commandId,
-          inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
-        })) as never,
-      );
-      expect(evaluated.kind).toBe("failed");
-      if (evaluated.kind !== "failed") return;
-      expect(JSON.stringify(evaluated.error)).toContain("policy");
-      expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
-        recordsBefore,
-      );
-      expect(await countReceipts(fixture, commandId)).toBe(receiptsBefore);
-    } finally {
-      fixture.setPolicies(c25RuntimePolicySet({ projectId: fixture.projectId }));
-    }
-  }, 180_000);
-
   it("监测序列样本不足在计算前闭合且无正式事实", async () => {
     const fullSet = fixture.monitoringSnapshotRefs;
     const recordsBefore = await countRows(
@@ -1142,10 +1070,9 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     expect(result).toMatchObject({ kind: "succeeded" });
     if (result.kind !== "succeeded") return;
 
-    // 业务时点用于选择规则/策略版本：basis 与 runtime policy 都按 effectiveAt 读取。
+    // 历史评分依据按业务时点读取。
     const times = fixture.lastReadTimes();
     expect(times.basisRequestedAt).toBe(effectiveAt);
-    expect(times.policyRequiredAt).toBe(effectiveAt);
 
     // 审计发生时间仍是命令 issuedAt（夹具固定 2030-01-01T00:00:00.000Z）。
     const row = await fixture.postgres.postgres.adminPool.query<{
@@ -1242,8 +1169,6 @@ describe("C25 PostgreSQL risk assessment engine", () => {
         "assessmentInputSnapshotRef",
         "assessmentRunRef",
         "auditTrailRef",
-        "calibrationAgentPolicyRef",
-        "deviationPolicyRef",
         "kind",
         "monitoringSnapshotRefs",
         "projectId",
@@ -1665,6 +1590,29 @@ describe("C25 PostgreSQL risk assessment engine", () => {
 
     // 预览只读：契约目录、读取结果、业务审计与 Outbox 全部不增加。
     expect(await catalogWriteCounts()).toEqual(before);
+    fixture.setScoringConfigurationReady(false);
+    try {
+      const missing = await fixture.engine.read(
+        await entryReadQuery({
+          queryId: "c25-entry-context-missing-configuration",
+          payload: {
+            operation: "entry-context",
+            projectRevisionRef: fixture.projectRevisionRef,
+            spatialScopeRef: fixture.businessSpatialScopeRef,
+            pageSize: 1,
+          },
+        }),
+      );
+      expect(missing).toMatchObject({
+        kind: "succeeded",
+        result: {
+          preparationMissingKinds: ["scoring-configuration"],
+        },
+      });
+      expect(await catalogWriteCounts()).toEqual(before);
+    } finally {
+      fixture.setScoringConfigurationReady(true);
+    }
   }, 240_000);
 
   it("pending-catalog 外部事件分支只提交空间即可读取，携带工程修订被严格拒绝", async () => {
@@ -1718,6 +1666,8 @@ describe("C25 PostgreSQL risk assessment engine", () => {
   }, 240_000);
 
   it("入口候选读：错空间、撤权与越界游标返回同型 AUTHORIZATION_DENIED 且零写入", async () => {
+    await fixture.registerExternalRiskEvent("cursor-boundary-a");
+    await fixture.registerExternalRiskEvent("cursor-boundary-b");
     const before = await catalogWriteCounts();
 
     // 载荷空间不在当前已验证空间身份内：披露前拒绝。
@@ -1784,7 +1734,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     );
     expectClosedAuthorizationDenied(crossCursor);
 
-    // 当前授权未携带任何来源授权：C11 只提供空来源集合，存在外部事件时仍安全失败而非空目录。
+    // 页面尚未选择资料时，拥有来源权限的用户仍可读取服务端定位的业务目标。
     const missingSource = await fixture.engine.read(
       await entryReadQuery({
         queryId: "c25-entry-missing-source",
@@ -1796,7 +1746,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
         },
       }),
     );
-    expectClosedAuthorizationDenied(missingSource);
+    expect(missingSource.kind).toBe("succeeded");
 
     // 失败的候选读同样零业务写入。
     expect(await catalogWriteCounts()).toEqual(before);
@@ -1816,9 +1766,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     payload: { spatialScopeRef: fixture.businessSpatialScopeRef },
   });
 
-  it("入口来源定位：无来源授权返回空范围、登记错配或缺失安全失败", async () => {
-    // 无来源授权：C11 只按当前已验证 grant 定位，范围为空而非失败；
-    // 但外部事件逐来源复验仍必须闭合拒绝，不能折算成空目录。
+  it("入口来源定位：空选择可继续按当前权限读取，登记错配或缺失明确失败", async () => {
     await fixture.registerExternalRiskEvent("locator-empty-external");
     const noGrantQueryId = "c25-locator-empty";
     const emptyLocated = await fixture.postgres.registry.readAuthorizedSourceVersions(
@@ -1842,7 +1790,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
         },
       }),
     );
-    expectClosedAuthorizationDenied(noGrantExternal);
+    expect(noGrantExternal.kind).toBe("succeeded");
 
     // 临时篡改 C11 自有 source_versions 登记，验证定位按错配/缺失安全失败并在 finally 复原。
     const row = (

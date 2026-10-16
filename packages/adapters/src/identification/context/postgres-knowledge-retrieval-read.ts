@@ -6,7 +6,6 @@ import {
   type IdentificationContextResultStoreV1,
   type OfficialHybridResultReaderV1,
 } from "@riskflow/core/identification/context";
-import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   ACCESS_POLICY_REF_V1,
   type AuthorizationDecisionV1,
@@ -205,7 +204,6 @@ export class PostgresKnowledgeRetrievalReadAdapter implements KnowledgeRetrieval
       payload.projectId !== query.projectId ||
       payload.queryId !== queryId ||
       payload.actorId !== query.actorId ||
-      payload.authorizationScopeDigest !== authorizationScopeDigest(query.authorization) ||
       !sameReference(
         payload.knowledgeQueryResultRef.reference,
         query.payload.knowledgeQueryResultRef.reference,
@@ -245,7 +243,6 @@ export class PostgresKnowledgeRetrievalReadAdapter implements KnowledgeRetrieval
     });
     if (row === undefined) return denied(query.queryId);
     if (
-      row.authorizationScopeDigest !== authorizationScopeDigest(query.authorization) ||
       !sameReference(
         row.knowledgeQueryResultRef.reference,
         query.payload.knowledgeQueryResultRef.reference,
@@ -311,7 +308,7 @@ export class PostgresKnowledgeRetrievalReadAdapter implements KnowledgeRetrieval
         }
         chunks.push(chunk);
       }
-      await handle.verified;
+      await handle.completed;
       const buffer = new Uint8Array(size);
       let offset = 0;
       for (const chunk of chunks) {

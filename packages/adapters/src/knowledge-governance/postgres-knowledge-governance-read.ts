@@ -774,7 +774,7 @@ export class PostgresKnowledgeGovernanceReadAdapter implements KnowledgeGovernan
         if (size > 4 * 1024 * 1024) throw new RangeError("governance artifact exceeds read bound");
         chunks.push(chunk);
       }
-      await handle.verified;
+      await handle.completed;
       const buffer = new Uint8Array(size);
       let offset = 0;
       for (const chunk of chunks) {

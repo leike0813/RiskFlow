@@ -57,8 +57,13 @@ const makeFoundation = (execute) => ({
       restricted: false,
       sessionToken: "secret-session-token",
     })),
+    authorize: vi.fn(async () => ({ context: conversionAuthorization() })),
     systemAdministration: { execute },
     executeDeploymentProjectAccess: vi.fn(),
+  },
+  monitoringStore: {
+    reviseSeries: vi.fn(),
+    registerAvailabilityPolicy: vi.fn(),
   },
 });
 
@@ -104,7 +109,6 @@ const conversionSucceeded = {
 };
 const makeConversionFoundation = (convert) => {
   const foundation = makeFoundation(vi.fn());
-  foundation.access.authorize = vi.fn(async () => ({ context: conversionAuthorization() }));
   foundation.documentConverter = { convert };
   return foundation;
 };
@@ -378,5 +382,239 @@ describe("受控资料预置", () => {
     expect(() => assertPayloadHasNoOwnedFields({ projectId: "spoofed-project" })).toThrow(
       "PAYLOAD_OWNS_COMMAND_FIELD",
     );
+  });
+});
+
+const monitoringScopeRef = versionRef("spatial-scope", "scope-1");
+const monitoringSeriesRef = versionRef("monitoring-series", "series-1");
+const monitoringPolicyRef = { entityId: "availability-policy-1", versionId: "1" };
+
+const monitoringSeriesStep = (payload = {}) => ({
+  id: "revise-series",
+  op: "monitoring-series-revision",
+  requestedSpatialScopeRefs: [monitoringScopeRef],
+  requestedSourceVersionRefs: [],
+  payload: {
+    monitoringSeriesRef,
+    expectedVersion: "none",
+    projectRevisionRef: versionRef("project-revision", "project-rail-01"),
+    spatialScopeRef: monitoringScopeRef,
+    monitoringObject: "合成盾构区间监测对象",
+    monitoringIndicator: "地表沉降",
+    parameterCode: "surface-settlement",
+    canonicalUnit: "mm",
+    unitConversions: [],
+    effectivePeriod: { validFrom: "2030-01-01T00:00:00.000Z" },
+    ...payload,
+  },
+});
+
+const monitoringPolicyStep = (payload = {}) => ({
+  id: "register-policy",
+  op: "monitoring-availability-policy",
+  requestedSpatialScopeRefs: [monitoringScopeRef],
+  requestedSourceVersionRefs: [],
+  payload: {
+    policy: {
+      availabilityPolicyRef: monitoringPolicyRef,
+      projectId: "project-rail-01",
+      monitoringSeriesRef,
+      windowDurationMs: 3_600_000,
+      intervalMs: 60_000,
+      maxInterpolationGapMs: 120_000,
+      slopeWindowSize: 4,
+      accelerationWindowSize: 4,
+      frequencyWindowSize: 4,
+      anomalyBaselineSize: 8,
+      anomalyScaleFloor: 0.001,
+      frequencyPowerFloor: 0,
+      minimumCoverageRatio: 0.8,
+      maxFrequencySamples: 256,
+      algorithmVersions: {
+        alignment: "v1",
+        slope: "v1",
+        acceleration: "v1",
+        frequency: "v1",
+        anomaly: "v1",
+      },
+      recordedAt: "2030-01-02T03:04:05.000Z",
+      audit: {
+        actorId: "account-admin",
+        action: "register-monitoring-availability-policy",
+        recordedAt: "2030-01-02T03:04:05.000Z",
+      },
+    },
+    ...payload,
+  },
+});
+
+const monitoringCases = [
+  {
+    op: "monitoring-series-revision",
+    stepId: "revise-series",
+    method: "reviseSeries",
+    otherMethod: "registerAvailabilityPolicy",
+    step: monitoringSeriesStep,
+    otherStep: monitoringPolicyStep,
+    unknownDomain: { seriesId: "series-1" },
+    succeeded: {
+      kind: "succeeded",
+      result: {
+        kind: "series-revision",
+        revision: {
+          monitoringSeriesRef,
+          spatialScopeRef: versionRef("spatial-scope", "scope-inner"),
+        },
+      },
+    },
+    expectedRef: monitoringSeriesRef,
+  },
+  {
+    op: "monitoring-availability-policy",
+    stepId: "register-policy",
+    method: "registerAvailabilityPolicy",
+    otherMethod: "reviseSeries",
+    step: monitoringPolicyStep,
+    otherStep: monitoringSeriesStep,
+    unknownDomain: { windowDurationMs: 60_000 },
+    succeeded: {
+      kind: "succeeded",
+      result: {
+        kind: "availability-policy",
+        policy: { availabilityPolicyRef: monitoringPolicyRef },
+      },
+    },
+    expectedRef: monitoringPolicyRef,
+  },
+];
+const monitoringCaseTable = monitoringCases.map((entry) => [entry.op, entry]);
+
+describe("受控监测预置", () => {
+  it.each(monitoringCaseTable)(
+    "步骤 %s 复用宿主信封并投影精确回执引用",
+    async (_op, { stepId, method, step, succeeded, expectedRef }) => {
+      const foundation = makeFoundation(vi.fn());
+      foundation.monitoringStore[method].mockResolvedValue(succeeded);
+      const identity = `provision-run-1-${stepId}`;
+      const output = await runProvisionV1({
+        config: config({ steps: [step()] }),
+        outputFile: join(await makeDirectory(), "checkpoint.json"),
+        foundation,
+        secrets: { "db-app-password": "secret-login-password" },
+        now: () => "2030-01-02T03:04:05.000Z",
+      });
+
+      expect(output.status).toBe("COMPLETED");
+      expect(output.steps[0].resultRef).toEqual(expectedRef);
+      expect(foundation.access.authorize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          invocation: { kind: "human-session", sessionToken: "secret-session-token" },
+          invocationId: identity,
+          projectId: "project-rail-01",
+          branch: "engineering-data.register-monitoring-batch",
+        }),
+      );
+      expect(foundation.monitoringStore[method]).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ...step().payload,
+          commandId: identity,
+          idempotencyKey: identity,
+          projectId: "project-rail-01",
+          actorId: "account-admin",
+          issuedAt: "2030-01-02T03:04:05.000Z",
+          authorization: conversionAuthorization(),
+        }),
+      );
+    },
+  );
+
+  it.each(monitoringCaseTable)("步骤 %s 拒绝伪造宿主字段且不进入端口", async (_op, { step }) => {
+    const foundation = makeFoundation(vi.fn());
+    const result = await runProvisionV1({
+      config: config({ steps: [step({ commandId: "spoofed-command-id" })] }),
+      outputFile: join(await makeDirectory(), "checkpoint.json"),
+      foundation,
+      secrets: { "db-app-password": "secret-login-password" },
+    });
+
+    expect(result.steps[0]).toMatchObject({
+      status: "BLOCKED",
+      code: "PAYLOAD_OWNS_COMMAND_FIELD",
+    });
+    expect(foundation.access.authorize).not.toHaveBeenCalled();
+    expect(foundation.monitoringStore.reviseSeries).not.toHaveBeenCalled();
+    expect(foundation.monitoringStore.registerAvailabilityPolicy).not.toHaveBeenCalled();
+  });
+
+  it.each(monitoringCaseTable)(
+    "步骤 %s 严格拒绝未知领域字段且不进入端口",
+    async (_op, { step, unknownDomain }) => {
+      const foundation = makeFoundation(vi.fn());
+      const result = await runProvisionV1({
+        config: config({ steps: [step(unknownDomain)] }),
+        outputFile: join(await makeDirectory(), "checkpoint.json"),
+        foundation,
+        secrets: { "db-app-password": "secret-login-password" },
+      });
+
+      expect(result.steps[0]).toMatchObject({ status: "BLOCKED" });
+      expect(result.steps[0].resultRef).toBeUndefined();
+      expect(foundation.monitoringStore.reviseSeries).not.toHaveBeenCalled();
+      expect(foundation.monitoringStore.registerAvailabilityPolicy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(monitoringCaseTable)(
+    "步骤 %s 领域失败后阻塞且不执行后续步骤",
+    async (_op, { step, method, otherStep, otherMethod }) => {
+      const foundation = makeFoundation(vi.fn());
+      foundation.monitoringStore[method].mockResolvedValue({
+        kind: "failed",
+        error: { code: "VERSION_CONFLICT" },
+      });
+      const result = await runProvisionV1({
+        config: config({ steps: [step(), otherStep()] }),
+        outputFile: join(await makeDirectory(), "checkpoint.json"),
+        foundation,
+        secrets: { "db-app-password": "secret-login-password" },
+      });
+
+      expect(result.steps).toHaveLength(1);
+      expect(result.steps[0]).toMatchObject({ status: "BLOCKED", code: "VERSION_CONFLICT" });
+      expect(foundation.monitoringStore[otherMethod]).not.toHaveBeenCalled();
+    },
+  );
+
+  it("恢复复用已完成回执且不重复写入", async () => {
+    const outputFile = join(await makeDirectory(), "checkpoint.json");
+    const foundation = makeFoundation(vi.fn());
+    foundation.monitoringStore.reviseSeries.mockResolvedValue(monitoringCases[0].succeeded);
+    foundation.monitoringStore.registerAvailabilityPolicy
+      .mockResolvedValueOnce({ kind: "failed", error: { code: "TRANSIENT_FAILURE" } })
+      .mockResolvedValue(monitoringCases[1].succeeded);
+    const options = {
+      config: config({ steps: [monitoringSeriesStep(), monitoringPolicyStep()] }),
+      outputFile,
+      foundation,
+      secrets: { "db-app-password": "secret-login-password" },
+      now: () => "2030-01-02T03:04:05.000Z",
+    };
+
+    const first = await runProvisionV1(options);
+    const second = await runProvisionV1({ ...options, now: () => "2031-02-03T04:05:06.000Z" });
+
+    expect(first.steps).toMatchObject([
+      { status: "completed", resultRef: monitoringSeriesRef },
+      { status: "BLOCKED", code: "TRANSIENT_FAILURE" },
+    ]);
+    expect(second.status).toBe("COMPLETED");
+    expect(second.steps.map((step) => step.resultRef)).toEqual([
+      monitoringSeriesRef,
+      monitoringPolicyRef,
+    ]);
+    expect(foundation.monitoringStore.reviseSeries).toHaveBeenCalledTimes(1);
+    const [firstAttempt, secondAttempt] =
+      foundation.monitoringStore.registerAvailabilityPolicy.mock.calls.map(([command]) => command);
+    expect(secondAttempt).toEqual(firstAttempt);
   });
 });

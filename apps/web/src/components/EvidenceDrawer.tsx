@@ -208,7 +208,7 @@ export function EvidenceProvider({ children }: { children: ReactNode }) {
                           to={projectPath(
                             `/projects/documents/${encodeURIComponent(
                               dataState.item.sourceVersionRef.reference.entityId,
-                            )}?segment=${encodeURIComponent(current.segmentId)}`,
+                            )}?version=${encodeURIComponent(dataState.item.sourceVersionRef.reference.versionId)}&segment=${encodeURIComponent(current.segmentId)}${dataState.item.segment.pageNumber === undefined ? "" : `&page=${dataState.item.segment.pageNumber}`}`,
                           )}
                           onClick={closeEvidence}
                         >

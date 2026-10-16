@@ -32,8 +32,8 @@ export {
 };
 export type { PostgresCheckpointer };
 export type {
-  ContractReferenceValidator,
-  CheckpointReferenceValidationContextV1,
+  CheckpointStateValidatorV1,
+  CheckpointStateValidationContextV1,
 } from "./checkpointer.js";
 
 export interface PostgresTransactionUnitHandle extends TransactionUnitV1 {

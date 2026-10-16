@@ -1251,6 +1251,7 @@ export class PostgresEngineeringContextSourceRegistry
 
   async resolveSourceVersionForRead(
     query: ResolveSourceVersionForReadQueryV1,
+    options?: { readonly verifyBranch: "engineering-data.source-original-read" },
   ): Promise<ContextSourceResultV1> {
     const parsed = ResolveSourceVersionForReadQueryV1Schema.safeParse(query);
     if (!parsed.success)
@@ -1259,9 +1260,10 @@ export class PostgresEngineeringContextSourceRegistry
     try {
       await this.#verifyRead(
         valid,
-        valid.authorization.grantedCapabilities.includes("engineering-data.write")
-          ? "engineering-data.register-source-delivery"
-          : "engineering-data.evidence-access",
+        options?.verifyBranch ??
+          (valid.authorization.grantedCapabilities.includes("engineering-data.write")
+            ? "engineering-data.register-source-delivery"
+            : "engineering-data.evidence-access"),
         valid.authorization.spatialScopeRefs,
         [valid.sourceVersionRef],
       );
@@ -1280,6 +1282,18 @@ export class PostgresEngineeringContextSourceRegistry
         this.#mapError(error, valid.queryId, "engineering-data.source-version-read"),
       );
     }
+  }
+
+  async readSourceOriginalRegistration(
+    query: ResolveSourceVersionForReadQueryV1,
+  ): Promise<{ registeredBy: string; registeredAt: string }> {
+    const result = await this.resolveSourceVersionForRead(query, {
+      verifyBranch: "engineering-data.source-original-read",
+    });
+    if (result.kind !== "succeeded") throw new Error("source original access denied");
+    const sourceVersion = await this.#readSourceVersion(query.projectId, query.sourceVersionRef);
+    if (sourceVersion === undefined) throw new Error("source original access denied");
+    return { registeredBy: sourceVersion.audit.actorId, registeredAt: sourceVersion.recordedAt };
   }
 
   async createApplicabilitySnapshot(
@@ -1350,6 +1364,12 @@ export class PostgresEngineeringContextSourceRegistry
       };
     if (parsed.data.kind === "monitoring-snapshot" && this.#monitoringStore !== undefined) {
       return this.#monitoringStore.freezeSnapshot(parsed.data);
+    }
+    if (
+      parsed.data.kind === "complete-identification-preparation" &&
+      this.#dataCleaningStore !== undefined
+    ) {
+      return this.#dataCleaningStore.completeIdentificationPreparation(parsed.data);
     }
     if (
       parsed.data.kind === "identification-preparation" &&
@@ -2460,7 +2480,7 @@ export class PostgresEngineeringContextSourceRegistry
       if (length > 1024 * 1024) throw new Error("metadata artifact exceeds 1 MiB");
       chunks.push(chunk);
     }
-    await handle.verified;
+    await handle.completed;
     const bytes = new Uint8Array(length);
     let offset = 0;
     for (const chunk of chunks) {

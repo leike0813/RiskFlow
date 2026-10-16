@@ -95,14 +95,64 @@ export const decideLoginChallengeV1 = (): DesktopNavigationDecisionV1 => ({
 export type DesktopDownloadDecisionV1 =
   { readonly kind: "ask" } | { readonly kind: "deny"; readonly reason: string };
 
+/** 已登记的资料原件下载路径：只认这一个精确路径，不接受任意同源地址。 */
+const SOURCE_ORIGINAL_PATH_V1 =
+  /^\/api\/v1\/projects\/[^/]+\/sources\/[^/]+\/versions\/[^/]+\/original$/;
+
+/** 已登记的 report 用途入口：blob 报告只认这个页面。 */
+const REGISTERED_REPORT_PATH_V1 = "/report/export";
+
+/** 解析为批准 origin 内的 URL；非 https、外域、userinfo 或无法解析都返回 undefined。 */
+const approvedUrlV1 = (config: DesktopConfigV1, target: string): URL | undefined => {
+  if (!isApprovedOriginV1(config, target).approved) return undefined;
+  try {
+    return new URL(target);
+  } catch {
+    return undefined;
+  }
+};
+
+/** blob URL 的真实来源 origin：只认 blob:<https origin>/<id> 的内层 origin。 */
+const blobSourceOriginV1 = (target: string): string | undefined => {
+  if (!target.startsWith("blob:")) return undefined;
+  try {
+    const inner = new URL(target.slice("blob:".length));
+    return inner.protocol === "https:" && inner.username === "" && inner.password === ""
+      ? inner.origin
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 /**
- * 下载处置：只允许业务 origin 发起的下载，且必须由用户选择保存位置。
- * 不接受任意来源或服务端指定路径，也不代写文件。
+ * 下载处置：只放行产品已登记的两类下载，且都由用户选择保存位置。
+ *
+ * - 资料原件：批准 origin 上的精确原件路径，下载真实 HTTP 字节；
+ * - 报告：批准 origin 的登记 report 页创建的 blob 报告。
+ *
+ * `frameUrl` 是发起下载的文档地址，两类都必须落在批准 origin 内；其它同源地址、外域、
+ * 伪造 blob 与缺失来源一律拒绝，事件层取消，不代写路径、不自动打开文件。
  */
 export const decideDownloadV1 = (
   config: DesktopConfigV1,
   url: string,
+  frameUrl: string,
 ): DesktopDownloadDecisionV1 => {
-  const { approved } = isApprovedOriginV1(config, url);
-  return approved ? { kind: "ask" } : { kind: "deny", reason: "download-outside-approved-origin" };
+  const frame = approvedUrlV1(config, frameUrl);
+  const blobOrigin = blobSourceOriginV1(url);
+  if (blobOrigin !== undefined)
+    return blobOrigin === config.publicOrigin && frame?.pathname === REGISTERED_REPORT_PATH_V1
+      ? { kind: "ask" }
+      : { kind: "deny", reason: "blob-download-outside-registered-report" };
+
+  const target = approvedUrlV1(config, url);
+  if (target === undefined) return { kind: "deny", reason: "download-outside-approved-origin" };
+  const disposition = target.searchParams.get("disposition");
+  const attachment =
+    (disposition === null || disposition === "attachment") &&
+    [...target.searchParams.keys()].every((key) => key === "disposition");
+  return frame !== undefined && attachment && SOURCE_ORIGINAL_PATH_V1.test(target.pathname)
+    ? { kind: "ask" }
+    : { kind: "deny", reason: "download-outside-registered-source-original" };
 };

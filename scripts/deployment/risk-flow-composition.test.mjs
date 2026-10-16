@@ -219,6 +219,7 @@ const providers = (bindings = [binding("project-a")]) => {
     riskSpatialPairing: { resolve() {} },
     runtimeAuthorization: { verifyCurrent() {} },
     humanDecisionProof: { verifyHumanDecisionCommitted() {} },
+    identificationPreparation: { read() {} },
   };
 };
 
@@ -384,6 +385,7 @@ describe("C30 部署组合按工程绑定装配", () => {
       "riskSpatialPairing",
       "runtimeAuthorization",
       "humanDecisionProof",
+      "identificationPreparation",
     ]) {
       expect(() => createDeploymentRiskFlowV1({ ...providers(), [name]: undefined })).toThrow(
         "DEPLOYMENT_RISK_FLOW_DEPENDENCY_MISSING",
@@ -399,6 +401,8 @@ describe("C30 部署组合按工程绑定装配", () => {
     expect([...result.compositions.keys()]).toEqual(["project-a", "project-b"]);
     expect(graphCompositionFactory.create).toHaveBeenCalledTimes(2);
     const [a, b] = graphCompositionFactory.create.mock.calls.map(([value]) => value);
+    expect(a.identificationPreparation).toBe(inputs.identificationPreparation);
+    expect(b.identificationPreparation).toBe(inputs.identificationPreparation);
     expect(a.subGraphVersions).toEqual({
       identification: ref("identification-project-a"),
       assessment: ref("assessment-project-a"),

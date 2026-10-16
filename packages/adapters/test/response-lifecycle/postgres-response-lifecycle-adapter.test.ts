@@ -550,7 +550,7 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     });
     const retriedResult = succeeded(retried);
     expect(retriedResult.result.outcome.effectForecastRef).toEqual(outcome.effectForecastRef);
-    // 快照必须由同一次已验证授权形成：换授权引用即失败闭合，不伪造授权。
+    // 已提交命令的冻结载荷不能在重放时改变。
     const forged = await state.forecastResponse({
       ...chain.forecastCommand,
       payload: {
@@ -1063,9 +1063,9 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       }),
     );
     expect(missingArtifact.kind).toBe("failed");
-    const forgedAuthorization = await state.recordFeedback({
+    const mismatchedExecution = await state.recordFeedback({
       ...(await state.feedbackCommand({
-        commandId: "c28-feedback-forged-authorization",
+        commandId: "c28-feedback-mismatched-execution",
         executionRecordRef: execution,
         postActionMonitoringSnapshotRef: post.monitoringSnapshotRef,
         feedbackArtifactRef: artifact,
@@ -1075,13 +1075,13 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       })),
       feedbackInputSnapshot: {
         ...snapshot.body,
-        authorizationContextRef: {
-          kind: "authorization-context",
-          reference: { entityId: "authorization-c28-forged", versionId: "1" },
+        executionRecordRef: {
+          kind: "execution-record",
+          reference: { entityId: "c28-other-execution", versionId: "1" },
         },
       },
     });
-    expect(forgedAuthorization.kind).toBe("failed");
+    expect(mismatchedExecution.kind).toBe("failed");
     expect(await state.countRows("response_feedback_records")).toBe(before);
     expect(await state.countEvents("warning.feedback-recorded.v1", "c28-feedback-early")).toBe(0);
   });
@@ -1845,7 +1845,6 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
       for (const invalid of [
         { projectId: "other-project" },
         { actorId: "other-actor" },
-        { invocationId: "unsigned-read" },
         {
           reference: {
             ...input.reference,

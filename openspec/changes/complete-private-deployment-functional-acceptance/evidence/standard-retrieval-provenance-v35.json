@@ -1,0 +1,49 @@
+{
+  "at": "2026-10-15T06:35:07.577Z",
+  "preparationSnapshotRef": {
+    "kind": "identification-preparation-snapshot",
+    "reference": {
+      "entityId": "identification-preparation-a968bf3d16c9fcddbecbce46a46ee456e2e5cdae",
+      "versionId": "1"
+    }
+  },
+  "source": {
+    "sourceVersionRef": {
+      "kind": "source-version",
+      "reference": {
+        "entityId": "s_5870efd82e8a637233e5f5752b4fac09",
+        "versionId": "1"
+      }
+    },
+    "jsonLdArtifactRef": {
+      "kind": "content-artifact",
+      "reference": {
+        "entityId": "conversion-physical-governance-convert-standard-library-convert",
+        "versionId": "sha256:6f5d21f5db7d03ed9837ee5b86f9ed344a9b4fabf2299825836b26032ed3e1f6"
+      }
+    }
+  },
+  "entries": [
+    {
+      "entryId": "standard-01-risk-management",
+      "evidenceSegmentCount": 8,
+      "textBytes": 758,
+      "lineCount": 8
+    },
+    {
+      "entryId": "standard-02-monitoring",
+      "evidenceSegmentCount": 8,
+      "textBytes": 751,
+      "lineCount": 8
+    },
+    {
+      "entryId": "standard-03-shield-construction",
+      "evidenceSegmentCount": 8,
+      "textBytes": 855,
+      "lineCount": 8
+    }
+  ],
+  "contentClassification": "registered serialized standard-library configuration; no full clause paragraphs",
+  "diagnosticOnly": true,
+  "queryAndLabelsUnchanged": true
+}

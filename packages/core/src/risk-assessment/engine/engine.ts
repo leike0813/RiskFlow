@@ -17,7 +17,7 @@ import type {
   RiskAssessmentRecordRefV1,
 } from "@riskflow/contracts/ports";
 import type {
-  AssessmentInputSnapshotV1,
+  AssessmentInputSnapshot,
   AssessmentPreparationSnapshotV1,
 } from "@riskflow/contracts/workflows";
 
@@ -102,7 +102,7 @@ export interface AssessmentEngineContextV1 {
   readonly projectRevisionRef: ProjectRevisionRefV1;
   readonly preparation: AssessmentPreparationSnapshotV1;
   readonly preparationSnapshotRef: AssessmentPreparationSnapshotRefV1;
-  readonly inputSnapshot: AssessmentInputSnapshotV1;
+  readonly inputSnapshot: AssessmentInputSnapshot;
   readonly inputSnapshotRef: AssessmentInputSnapshotRefV1;
   readonly assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1;
   readonly applicabilitySnapshotRef: ApplicabilityMetadataSnapshotRefV1;

@@ -261,7 +261,7 @@ const startHarness = (behavior: {
         content: (async function* () {
           yield new TextEncoder().encode(JSON.stringify(behavior.manifest ?? manifest));
         })(),
-        verified: Promise.resolve(),
+        completed: Promise.resolve(),
       };
     },
     put: unusedEntryPoint,
@@ -557,7 +557,7 @@ describe("C17 worker identification knowledge composition root", () => {
     );
   });
 
-  it("passes C16 policies and exposes only its authorized governed-release reader", async () => {
+  it("passes C16 policies and resolves governed releases through current authorization", async () => {
     let assessmentPolicyRead = 0;
     let scoringPolicyRead = 0;
     const assessmentConfigurationPolicy = {} as NonNullable<
@@ -590,7 +590,6 @@ describe("C17 worker identification knowledge composition root", () => {
       grantedCapabilities: [MODULE_BRANCH_CAPABILITY_V1["knowledge-modeling.assessment-basis"]],
     };
 
-    expect(Object.keys(harness.composition.governedReleases)).toEqual(["resolveGovernedReleases"]);
     const result = await harness.composition.governedReleases.resolveGovernedReleases({
       projectId: PROJECT_ID,
       requiredDefinitionTypes: ["indicator-system"],
@@ -710,6 +709,101 @@ describe("C17 worker identification knowledge composition root", () => {
     ]);
     expect(harness.narrowReadCalls).toEqual(["readExactPreparation"]);
     expect(harness.engineeringDataCalls).toEqual([]);
+  });
+
+  it("D-38: inherits the trusted declared scope only when the caller declares none", async () => {
+    const declaredSpatialScopeRefs = [
+      { kind: "spatial-scope" as const, reference: ref("scope:declared") },
+    ];
+    const declaredSourceVersionRefs = [
+      { kind: "source-version" as const, reference: ref("source-version:declared") },
+    ];
+    const harness = startHarness({
+      resolve: () => ({
+        kind: "human-session",
+        sessionToken: SESSION_TOKEN,
+        declaredScope: {
+          spatialScopeRefs: declaredSpatialScopeRefs,
+          sourceVersionRefs: declaredSourceVersionRefs,
+        },
+      }),
+      authorize: (request) => issuedContext(request),
+    });
+    const commandId = "c17-resolve-inherited-scope";
+    const result = await harness.composition.adapter.resolve({
+      kind: "identification-basis",
+      commandId,
+      idempotencyKey: commandId,
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: NOW,
+      authorization: commandAuthorization(commandId),
+      payload: { preparationSnapshotRef, requiredAt: NOW },
+    } as never);
+    // 窄读失败是脚本化收口；本条只核对送交 C06 的请求继承了受信来源的冻结范围。
+    expect(result).toMatchObject({ kind: "failed" });
+    expect(harness.authorizeRequests).toEqual([
+      {
+        invocation: { kind: "human-session", sessionToken: SESSION_TOKEN },
+        invocationId: `${commandId}:preparation`,
+        projectId: PROJECT_ID,
+        branch: EVIDENCE_ACCESS_BRANCH,
+        requestedSpatialScopeRefs: declaredSpatialScopeRefs,
+        requestedSourceVersionRefs: declaredSourceVersionRefs,
+        requestedAt: NOW,
+      },
+    ]);
+  });
+
+  it("D-38: keeps an explicitly declared empty scope instead of inheriting", async () => {
+    const harness = startHarness({
+      // 解析回调收到的是调用方提交的请求对象本身；把它标成显式声明空范围，等价于调用方
+      // 自己声明了空范围，组合根不得用受信声明覆盖它。
+      resolve: (request) => {
+        const declared = request as {
+          requestedSpatialScopeRefs?: readonly unknown[];
+          requestedSourceVersionRefs?: readonly unknown[];
+        };
+        declared.requestedSpatialScopeRefs = [];
+        declared.requestedSourceVersionRefs = [];
+        return {
+          kind: "human-session",
+          sessionToken: SESSION_TOKEN,
+          declaredScope: {
+            spatialScopeRefs: [
+              { kind: "spatial-scope" as const, reference: ref("scope:declared") },
+            ],
+            sourceVersionRefs: [
+              { kind: "source-version" as const, reference: ref("source-version:declared") },
+            ],
+          },
+        };
+      },
+      authorize: (request) => issuedContext(request),
+    });
+    const commandId = "c17-resolve-declared-empty-scope";
+    const result = await harness.composition.adapter.resolve({
+      kind: "identification-basis",
+      commandId,
+      idempotencyKey: commandId,
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: NOW,
+      authorization: commandAuthorization(commandId),
+      payload: { preparationSnapshotRef, requiredAt: NOW },
+    } as never);
+    expect(result).toMatchObject({ kind: "failed" });
+    expect(harness.authorizeRequests).toEqual([
+      {
+        invocation: { kind: "human-session", sessionToken: SESSION_TOKEN },
+        invocationId: `${commandId}:preparation`,
+        projectId: PROJECT_ID,
+        branch: EVIDENCE_ACCESS_BRANCH,
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+        requestedAt: NOW,
+      },
+    ]);
   });
 
   it("stops before any target read when the trusted source denies the exact branch", async () => {

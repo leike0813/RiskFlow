@@ -217,8 +217,6 @@ export const c26OpenWarningCommand = (
     readonly commandId?: string;
     readonly idempotencyKey?: string;
     readonly assessmentRecordRef?: RiskAssessmentRecordRefV1;
-    readonly warningAggregationPolicyRef?: { entityId: string; versionId: string };
-    readonly notificationPolicyRef?: { entityId: string; versionId: string };
   } = {},
 ): OpenWarningCommandV1 =>
   ({
@@ -231,9 +229,6 @@ export const c26OpenWarningCommand = (
     authorization: c26Authorization(),
     payload: {
       assessmentRecordRef: overrides.assessmentRecordRef ?? c26AssessmentRecordRef(),
-      warningAggregationPolicyRef:
-        overrides.warningAggregationPolicyRef ?? C26_FIXTURE_AGGREGATION_POLICY_REF,
-      notificationPolicyRef: overrides.notificationPolicyRef ?? C26_FIXTURE_NOTIFICATION_POLICY_REF,
     },
   }) as OpenWarningCommandV1;
 

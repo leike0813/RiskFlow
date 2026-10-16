@@ -89,7 +89,7 @@ describe.skipIf(!enabled)("网络模型 adapter 真实服务 smoke", () => {
         );
         const chunks: Uint8Array[] = [];
         for await (const chunk of opened.content) chunks.push(chunk);
-        const receipt = await opened.verified;
+        const receipt = await opened.completed;
         const bytes = Buffer.concat(chunks);
         expect(bytes.byteLength).toBeGreaterThan(0);
         expect(bytes.toString("utf8")).not.toContain('"reasoning_content"');

@@ -177,6 +177,7 @@ export const StandardLibraryEntryV1Schema = z.strictObject({
   standardIdentity: IdentifierSchema,
   standardVersion: IdentifierSchema,
   clauseRefs: z.array(IdentifierSchema).min(1),
+  retrievalText: z.string().min(1).optional(),
   applicability: ApplicabilityConditionsSchema,
   evidence: evidenceListSchema,
 });
@@ -587,7 +588,7 @@ export interface IdentificationKnowledgeGovernancePolicyV1 {
 
 export interface IdentificationKnowledgeReleaseAppendV1 {
   readonly command: {
-    readonly kind: "publish-approved-release" | "rollback-by-new-release";
+    readonly kind: "publish-approved-release" | "rollback-by-new-release" | "derived-approved";
     readonly commandId: string;
     readonly idempotencyKey: string;
     readonly projectId: string;
@@ -700,6 +701,15 @@ export interface IdentificationEvidenceDecisionV1 {
 
 /** C17 本地窄读接口：只组合 C15 精确准备窄读、C02 查询结果引用、切片和证据资格（D-04）。 */
 export interface IdentificationPreparationKnowledgeReaderV1 {
+  checkStandardRetrievalText(input: {
+    readonly taskRef?: AgentTaskRefV1;
+    readonly projectId: string;
+    readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
+    readonly entry: StandardLibraryEntryV1;
+    readonly actorId: string;
+    readonly requestId: string;
+    readonly requestedAt: string;
+  }): Promise<boolean>;
   readExactPreparation(input: {
     readonly taskRef?: AgentTaskRefV1;
     readonly projectId: string;
@@ -742,6 +752,11 @@ export interface IdentificationPreparationKnowledgeReaderV1 {
 
 /** C20/C24 的唯一消费面：按精确发布引用返回不可变包与治理元数据（D-12）。 */
 export interface IdentificationKnowledgeReleaseReaderV1 {
+  readVisibleEntries?(input: {
+    readonly projectId: string;
+    readonly releaseRefs: readonly KnowledgeReleaseRefV1[];
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<readonly IdentificationKnowledgeVisibleEntryV1[]>;
   readExact(input: {
     readonly projectId: string;
     readonly releaseRef: KnowledgeReleaseRefV1;
@@ -754,6 +769,13 @@ export interface IdentificationKnowledgeReleaseReaderV1 {
     | { readonly kind: "succeeded"; readonly read: IdentificationKnowledgeExactReadV1 }
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
   >;
+}
+
+export interface IdentificationKnowledgeVisibleEntryV1 {
+  readonly sourceKind: "risk-mechanism" | "standard-library" | "case-library";
+  readonly sourceReleaseRef: KnowledgeReleaseRefV1;
+  readonly sourceEntryId: string;
+  readonly entry: Readonly<Record<string, unknown>>;
 }
 
 export interface IdentificationKnowledgeExactReadV1 {

@@ -70,7 +70,7 @@ const tinyPng = (extraChunk?: Uint8Array): Uint8Array => {
   return result;
 };
 
-const makeDocx = (): Uint8Array =>
+const makeDocx = (bodyText = "正文一"): Uint8Array =>
   zipSync({
     "[Content_Types].xml": strToU8(
       `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`,
@@ -81,7 +81,7 @@ const makeDocx = (): Uint8Array =>
     "word/document.xml":
       strToU8(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
     <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>源标题</w:t></w:r></w:p>
-    <w:p><w:r><w:t>正文一</w:t><w:br w:type="page"/></w:r></w:p>
+    <w:p><w:r><w:t>${bodyText}</w:t><w:br w:type="page"/></w:r></w:p>
     <w:p><w:r><w:br w:type="page"/></w:r></w:p>
     <w:tbl>
       <w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>值合并</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>单元格甲</w:t></w:r></w:p></w:tc></w:tr>
@@ -100,7 +100,7 @@ describe("MinerU Middle normalization", () => {
         {
           type: "table_body",
           content:
-            '<table><tr><td rowspan="2" colspan="2"><p>1.2</p></td><td>甲</td></tr><tr><td>乙</td></tr></table>',
+            '<table><tr><td rowspan="2" colspan="2"><p>1.2<eq>\\alpha_{raw}</eq></p></td><td>甲</td></tr><tr><td>乙</td></tr></table>',
         },
         { type: "table_caption", content: [{ type: "text", content: "表注" }] },
         { type: "table_footnote", content: [{ type: "text", content: "脚注" }] },
@@ -133,7 +133,7 @@ describe("MinerU Middle normalization", () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: "cell",
-          text: "1.2",
+          text: "1.2\\alpha_{raw}",
           row: 1,
           column: 1,
           rowSpan: 2,
@@ -155,7 +155,29 @@ describe("MinerU Middle normalization", () => {
     const converted = convertParsedDocument(result.parsedDocument, {
       strategyVersion: "normalization-test-v1",
     });
-    expect(converted.document.tableFields?.map((field) => field.value)).toContain("1.2");
+    expect(converted.document.tableFields?.map((field) => field.value)).toContain(
+      "1.2\\alpha_{raw}",
+    );
+  });
+
+  it.each([
+    ['<eq data-value="1">x</eq>', "table-html-inline-attributes"],
+    ["<eq><script>x</script></eq>", "table-html-rejected"],
+    ["<unknown>x</unknown>", "table-html-tag-unsupported"],
+  ])("rejects unsafe or unknown formula markup: %s", (markup, issue) => {
+    const value = makeMiddle([
+      {
+        type: "table",
+        index: 0,
+        bbox: [0, 0, 1, 1],
+        content: [{ type: "table_body", content: `<table><tr><td>${markup}</td></tr></table>` }],
+      },
+    ]);
+    const error = errorOf(() =>
+      normalizeMineruMiddle(value, makeRequest(), makeConfig("self-hosted-v1"), { pageCount: 1 }),
+    );
+    expect(error.code).toBe("MINERU_MIDDLE_INVALID");
+    expect(error.diagnostic).toMatchObject({ failure: { issue } });
   });
 
   it.each([
@@ -372,6 +394,70 @@ describe("MinerU Middle normalization", () => {
     );
     expect(error.code).toBe("MINERU_MIDDLE_INVALID");
     expect(error.diagnostic).toMatchObject({ failure: { issue: "docx-source-text-mismatch" } });
+  });
+
+  it("matches DOCX source text carrying XML character references with the service text", () => {
+    const encoded = "风险&quot;等级&quot;与&amp;地层";
+    const decoded = '风险"等级"与&地层';
+    const bytes = makeDocx(encoded);
+    const request = makeRequest({
+      bytes,
+      command: {
+        ...makeRequest().command,
+        mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        input: { kind: "docx" },
+      },
+    });
+    const sourceDocx = parseDocx(
+      bytes,
+      { source: request.source, inputKind: "docx", mediaType: request.command.mediaType },
+      DEFAULT_DOCUMENT_CONVERSION_RESOURCE_POLICY_V1,
+    );
+    const docxMiddle = {
+      ...middle,
+      pages: [
+        {
+          page_idx: 0,
+          blocks: [
+            { type: "paragraph_title", index: 0, content: [{ type: "text", content: "源标题" }] },
+            { type: "text", index: 1, content: [{ type: "text", content: decoded }] },
+            {
+              type: "table",
+              index: 2,
+              content: [
+                {
+                  type: "table_body",
+                  content:
+                    '<table><tr><td rowspan="2" colspan="2">值合并</td><td>单元格甲</td></tr><tr><td>单元格乙</td></tr></table>',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const config = makeConfig("official-v4", {
+      qualityPolicy: { minNonEmptyPageRatio: 0, minKeyFieldCoverage: 0, keyFields: [] },
+    });
+    const result = normalizeMineruMiddle(docxMiddle, request, config, { docx: sourceDocx });
+    expect(result.parsedDocument.blocks.some((block) => block.text === decoded)).toBe(true);
+    const encodedMiddle = {
+      ...docxMiddle,
+      pages: [
+        {
+          ...docxMiddle.pages[0]!,
+          blocks: [
+            docxMiddle.pages[0]!.blocks[0],
+            { type: "text", index: 1, content: [{ type: "text", content: encoded }] },
+            docxMiddle.pages[0]!.blocks[2],
+          ],
+        },
+      ],
+    };
+    expect(
+      errorOf(() => normalizeMineruMiddle(encodedMiddle, request, config, { docx: sourceDocx }))
+        .diagnostic,
+    ).toMatchObject({ failure: { issue: "docx-source-text-mismatch" } });
   });
 
   it("uses source image bytes for pixel extents and rejects malformed image data", async () => {

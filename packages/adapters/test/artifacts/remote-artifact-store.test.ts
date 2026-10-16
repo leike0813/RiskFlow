@@ -265,7 +265,7 @@ describe("跨 VM put", () => {
 });
 
 describe("跨 VM open", () => {
-  it("完整消费正文后 verified 成立，字节与摘要一致", async () => {
+  it("完整消费正文后 completed 成立，字节与摘要一致", async () => {
     const { client } = await startStreamFixture();
     const text = "证据定位与人工复核记录";
     const content = encoder.encode(text);
@@ -276,23 +276,23 @@ describe("跨 VM open", () => {
     for await (const chunk of handle.content) received.push(chunk);
     expect(new TextDecoder().decode(Buffer.concat(received))).toBe(text);
 
-    const receipt = await handle.verified;
+    const receipt = await handle.completed;
     expect(receipt.content.byteLength).toBe(content.byteLength);
   }, 180_000);
 
-  it("未完整消费正文时 verified 必须拒绝", async () => {
+  it("未完整消费正文时 completed 必须拒绝", async () => {
     const { client } = await startStreamFixture();
     const text = "部分消费不能算已核验";
     const content = encoder.encode(text);
     const put = await client.put(putCommand("remote-partial", content), textChunks(text));
 
     const handle = await client.open(readRequest("remote-partial", put.artifactRef.reference));
-    // 只取第一块就放弃：verified 不能成立。
+    // 只取第一块就放弃：completed 不能成立。
     for await (const chunk of handle.content) {
       void chunk;
       break;
     }
-    await expect(handle.verified).rejects.toThrow(ArtifactStreamError);
+    await expect(handle.completed).rejects.toThrow(ArtifactStreamError);
   }, 180_000);
 
   it("open 权限被拒绝时不得泄漏工件存在性", async () => {

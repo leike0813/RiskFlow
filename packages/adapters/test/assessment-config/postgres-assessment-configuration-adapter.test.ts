@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   assessmentConfigurationDocumentDigest,
+  ASSESSMENT_SCORING_CONFIGURATION_TYPES,
   type AssessmentConfigurationDefinitionTypeV1,
 } from "@riskflow/core/assessment-config";
 import {
@@ -715,17 +716,36 @@ describe.sequential("PostgreSQL assessment-configuration adapter", () => {
     expect(setRowsAfter.rows.map((row) => row.identity_digest)).toContain(frozenIdentity);
   });
 
+  it("只发布评分八类配置即可形成评分集合，full仍等待其余配置", async () => {
+    const projectId = "assessment-stage-only";
+    const set = makeAssessmentConfigurationFixtureSet();
+    for (const definitionType of ASSESSMENT_SCORING_CONFIGURATION_TYPES) {
+      await importAndPublish({
+        projectId,
+        definitionType,
+        document: set.documents[definitionType],
+      });
+    }
+    const scored = await fixture!.configuration.resolveConfigurationSet({
+      ...resolveRequest(projectId, "stage-assessment"),
+      purpose: "assessment",
+    });
+    expect(scored).toMatchObject({
+      kind: "succeeded",
+      configurationSet: { purpose: "assessment" },
+    });
+    if (scored.kind === "succeeded") expect(scored.configurationSet.members).toHaveLength(8);
+    expect(
+      await fixture!.configuration.resolveConfigurationSet(resolveRequest(projectId, "stage-full")),
+    ).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+  });
+
   it("reads a published member by exact release through C04 and rejects mismatched scope or version", async () => {
     const projectId = "assessment-configuration-member-read";
     const set = makeAssessmentConfigurationFixtureSet();
     const published = await publishWholeSet(projectId, set);
     const target = published.get("weight-set")!;
     const authorization = readFor(projectId);
-    const resolved = await fixture!.configuration.resolveConfigurationSet(
-      resolveRequest(projectId, "published-member-read"),
-    );
-    expect(resolved).toMatchObject({ kind: "succeeded" });
-
     const result = await fixture!.configuration.readPublishedConfigurationMember({
       projectId,
       requestId: nextId("deployment-config-read"),

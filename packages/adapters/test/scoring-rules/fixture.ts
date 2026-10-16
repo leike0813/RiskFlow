@@ -503,6 +503,8 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
     taskStore: cleaning.agentTaskAdapter,
     dataCleaning: cleaning.store,
     configuration: {
+      readPublishedConfigurationMember: (input) =>
+        configurationRef.current!.readPublishedConfigurationMember(input),
       resolveConfigurationSet: (request) =>
         configurationRef.current!.resolveConfigurationSet(request),
     },
@@ -510,6 +512,9 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
       resolveGovernedReleases: (input) => governanceRef.current!.resolveGovernedReleases(input),
     },
     preparationSnapshot,
+    derivedPublisher: {
+      publishDerivedRelease: (input) => governanceRef.current!.publishDerivedRelease(input),
+    },
     submitRevision: {
       submitRevision: async (input) => {
         const governance = governanceRef.current;
@@ -531,9 +536,10 @@ export const startScoringRulesFixture = async (): Promise<ScoringRulesPostgresFi
         verifiedContexts.set(contextKey(authorization.authorizationContextRef), authorization);
         // C16 submit 的精确比较基线来自 authoring manifest；第二次起修订必须声明当前发布。
         const baseReleaseRef =
-          input.task === undefined || input.definitionType !== "structured-scoring-rule"
+          input.baseReleaseRef ??
+          (input.task === undefined || input.definitionType !== "structured-scoring-rule"
             ? undefined
-            : (await scoringRules.loadAuthoringManifest(input.task)).manifest.baseRuleReleaseRef;
+            : (await scoringRules.loadAuthoringManifest(input.task)).manifest.baseRuleReleaseRef);
         const submitted = await governance.govern(
           KnowledgeGovernanceCommandV1Schema.parse({
             kind: "submit-revision",

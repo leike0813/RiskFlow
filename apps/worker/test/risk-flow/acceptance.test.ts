@@ -87,6 +87,8 @@ import type { ArtifactStorePolicyV1 } from "@riskflow/core/artifacts";
 import { ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1 } from "@riskflow/core/assessment-config";
 import {
   CALIBRATION_AGENT_TASK_TYPE_V1,
+  CalibrationValidationPolicyV1Schema,
+  type CalibrationValidationPolicyV1,
   type CalibrationServiceV1,
 } from "@riskflow/core/calibration";
 import { StandardizedRiskRecordWriteV1Schema } from "@riskflow/core/identification/candidate-finalization";
@@ -406,6 +408,39 @@ const basisMembersV1 = () => {
       .map((definitionType) => ({ definitionType, ...member(definitionType) })),
   };
 };
+
+/** C29 校准 Agent 策略：形状由 C29 单一 schema 决定，装配期校验失败即报错，不猜默认值。 */
+const calibrationAgentPolicy = (): CalibrationValidationPolicyV1 =>
+  CalibrationValidationPolicyV1Schema.parse({
+    schemaVersion: "1",
+    policyRef: versionRef("calibration-agent-policy"),
+    projectId: PROJECT_ID,
+    definitionRef: versionRef("calibration-definition"),
+    toolPolicyRef: versionRef("calibration-tool-policy"),
+    incrementSchemaRef: versionRef("calibration-increment-schema"),
+    validationPolicyRef: versionRef("calibration-validation-policy-ref"),
+    budgetPolicy: {
+      schemaVersion: "1",
+      policyRef: versionRef("calibration-budget-policy"),
+      modelDeploymentRef: versionRef("model-deployment"),
+      promptTemplateRef: versionRef("prompt-template"),
+      toolPolicyRef: versionRef("calibration-tool-policy"),
+      maxModelInvocations: 1,
+      maxToolInvocations: 1,
+      maxContextTokens: 4096,
+      maxInputBytes: 4096,
+      maxOutputBytes: 4096,
+      maxCandidates: 1,
+      maxObjects: 2,
+      maxSupplementarySearches: 0,
+      maxCorrections: 0,
+      maxTransientRetries: 0,
+      maxConcurrentActions: 1,
+      maxWallClockMs: 1000,
+    },
+    evidenceRequirementCount: 1,
+    maxOperations: 2,
+  });
 
 interface AssessmentPortDoublesV1 {
   readonly engineeringData: Pick<EngineeringDataPortV1, "freeze">;
@@ -739,7 +774,7 @@ const createPortDoubles = (world: AcceptanceWorldV1): AssessmentPortDoublesV1 =>
             digest("deviation-record-v1"),
           ),
         ),
-        targetDefinitionType: "scoring-rule",
+        targetDefinitionType: "structured-scoring-rule",
       },
     }),
     createSuggestion: async (command) => {
@@ -806,16 +841,7 @@ const createPortDoubles = (world: AcceptanceWorldV1): AssessmentPortDoublesV1 =>
         reference: versionRef("release-scoring-rule"),
       },
       calibrationValidationPolicyRef: versionRef("calibration-validation-policy"),
-      agentPolicy: {
-        schemaVersion: "1",
-        policyRef: versionRef("calibration-agent-policy"),
-        modelDeploymentRef: versionRef("model-deployment"),
-        promptTemplateRef: versionRef("prompt-template"),
-        toolPolicyRef: versionRef("tool-policy"),
-        budgetPolicyRef: versionRef("budget-policy"),
-        incrementSchemaRef: versionRef("increment-schema"),
-        maxAttempts: 2,
-      },
+      agentPolicy: calibrationAgentPolicy(),
     }),
   },
 });
@@ -888,7 +914,6 @@ const startHarness = async (): Promise<AcceptanceHarnessV1> => {
     });
     checkpointer = await setupPostgresCheckpointer({
       ...postgres.checkpointer,
-      validateReference: () => true,
     });
     const world = createWorld();
     const access = createAccess();
@@ -1827,20 +1852,24 @@ describe("C30 全链验收（真实 PostgreSQL + 真实 C03/C04/checkpointer + �
 
     const childRunRef = childRunRefOf(parentCase);
     const childState = await harness.latestState(childRunRef);
-    expect(childState?.state.status).toBe("terminal-failure");
+    // C17 依据解析是技术端口：C19 缺规则集已由解析侧自动组装，这里保住的是上游自身
+    // 可重试的瞬时失败语义，既不当作「缺项等待」也不冒充终态失败。
+    expect(childState?.state.status).toBe("retryable-failure");
     const childRows = await harness.rows(childRunRef);
     expect(
       childRows.find((row) => row.resultKind === "workflow-error")?.workflowErrorRef?.reference
         .entityId,
-    ).toBe("assessment-graph-workflow-error:A1:UPSTREAM_WAITING");
+    ).toBe("assessment-graph-workflow-error:A1:TRANSIENT_FAILURE");
     const parentState = await harness.latestState(parentCase.runRef);
-    expect(parentState?.state.status).toBe("terminal-failure");
+    expect(parentState?.state.status).toBe("retryable-failure");
+    expect(parentState?.state.lastErrorRef).toEqual(childState?.state.lastErrorRef);
     expect(parentState?.state.assessmentRunRefs).toEqual([childRunRef]);
-    // 失败收口路径仍写运行汇总行：汇总正文里零评估/零预警事实（不伪造链尾）。
-    const parentResult = await harness.runResultBody(parentCase.runRef);
-    expect(parentResult.assessmentRecordRefs).toEqual([]);
-    expect(parentResult.warningRecordRefs).toEqual([]);
-    expect(parentResult.responseRecommendationRefs).toEqual([]);
+    expect(parentState?.state.assessmentRecordRefs).toEqual([]);
+    expect(parentState?.state.warningRecordRefs).toEqual([]);
+    expect(parentState?.state.responseRecommendationRefs).toEqual([]);
+    const parentRows = await harness.rows(parentCase.runRef);
+    expect(parentRows.filter((row) => row.resultKind === "workflow-error")).toEqual([]);
+    expect(parentRows.filter((row) => row.resultKind === "run-result")).toEqual([]);
   }, 300_000);
 });
 

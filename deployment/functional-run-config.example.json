@@ -13,6 +13,56 @@
       },
       "expectedTerminalStatus": "completed",
       "requiredReferences": [["items", 0, "latestResultRef"]]
+    },
+    {
+      "stepId": "start-cleaning-task",
+      "operationId": "riskflow_query_agent-task_read",
+      "payload": {
+        "kind": "detail",
+        "agentTaskRef": { "$result": "start-cleaning-task", "path": ["agentTaskRef"] }
+      },
+      "expectedTerminalStatus": "completed",
+      "requiredReferences": [["resultRef", "incrementRef"]]
+    },
+    {
+      "stepId": "start-knowledge-task",
+      "operationId": "riskflow_query_agent-task_read",
+      "payload": {
+        "kind": "detail",
+        "agentTaskRef": { "$result": "start-knowledge-task", "path": ["agentTaskRef"] }
+      },
+      "expectedTerminalStatus": "completed",
+      "requiredReferences": [["resultRef", "candidateRef"]]
+    },
+    {
+      "stepId": "start-retrieval-review-task",
+      "operationId": "riskflow_query_agent-task_read",
+      "payload": {
+        "kind": "detail",
+        "agentTaskRef": { "$result": "start-retrieval-review-task", "path": ["agentTaskRef"] }
+      },
+      "expectedTerminalStatus": "completed",
+      "requiredReferences": [["resultRef", "incrementRef"]]
+    },
+    {
+      "stepId": "start-response-task",
+      "operationId": "riskflow_query_agent-task_read",
+      "payload": {
+        "kind": "detail",
+        "agentTaskRef": { "$result": "start-response-task", "path": ["agentTaskRef"] }
+      },
+      "expectedTerminalStatus": "completed",
+      "requiredReferences": [["resultRef", "candidateRef"]]
+    },
+    {
+      "stepId": "start-calibration-task",
+      "operationId": "riskflow_query_agent-task_read",
+      "payload": {
+        "kind": "detail",
+        "agentTaskRef": { "$result": "start-calibration-task", "path": ["agentTaskRef"] }
+      },
+      "expectedTerminalStatus": "completed",
+      "requiredReferences": [["resultRef", "candidateRef"]]
     }
   ],
   "pollIntervalMs": 1000,

@@ -207,6 +207,9 @@ export const createDeploymentHumanDecisionFeedbackV1 = (options) => {
       "responseContext",
       "readRecommendationContext",
     ),
+    ...(options.resolveFeedbackPolicies === undefined
+      ? {}
+      : { resolveFeedbackPolicies: options.resolveFeedbackPolicies }),
     workflowStartControl: {
       graphVersion: required(
         options.workflowStartControl?.graphVersion,
@@ -338,6 +341,11 @@ export const createDeploymentRiskFlowV1 = (options) => {
     "humanDecisionProof",
     "verifyHumanDecisionCommitted",
   );
+  const identificationPreparation = requiredMethod(
+    options.identificationPreparation,
+    "identificationPreparation",
+    "read",
+  );
   const bindings = required(
     foundation.config?.projectBindings,
     "foundation.config.projectBindings",
@@ -375,6 +383,7 @@ export const createDeploymentRiskFlowV1 = (options) => {
       authorization,
       runtimeAuthorization,
       humanDecisionProof,
+      identificationPreparation,
       checkpointer,
       identificationRuntime,
       assessmentRuntime,

@@ -104,7 +104,7 @@ export interface ScoringRuleRevisionMetadataAssertionV1 {
 }
 
 export interface PublishOrRollbackScoringRuleV1 {
-  readonly kind: "publish-approved-release" | "rollback-by-new-release";
+  readonly kind: "publish-approved-release" | "rollback-by-new-release" | "derived-approved";
   readonly commandId: string;
   readonly idempotencyKey: string;
   readonly projectId: string;

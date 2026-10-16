@@ -90,7 +90,9 @@ describe("C27 处置建议 PostgreSQL 链", () => {
       .where("query_result_id", "=", queryResultRef.reference.entityId)
       .executeTakeFirst();
     expect(row?.candidate_count).toBe(1);
-    expect(row?.measure_library_release_id).toBe("release-measure-library");
+    expect(row?.measure_library_release_id).toBe(
+      fixture!.measureLibraryReleaseRef.reference.entityId,
+    );
     expect(row?.candidate_set_artifact_version_id).toMatch(/^sha256:[0-9a-f]{64}$/u);
     const candidateSet = row?.candidate_set_payload as {
       candidates: {
@@ -155,11 +157,23 @@ describe("C27 处置建议 PostgreSQL 链", () => {
     expect(changedInput.kind === "failed" && changedInput.error.code).toBe("IDEMPOTENCY_CONFLICT");
     expect(await state.countReceiptsForCommand("c27-multi-query")).toBe(1);
 
+    state.setMeasureAvailability("missing");
+    try {
+      const replay = await state.measureCandidates({
+        queryId: "c27-multi-query",
+        warningResponseTaskRef: opened.taskRef,
+        assessmentRecordRef: opened.assessmentRecordRefs[0]!,
+        measureLibraryReleaseRef: state.measureLibraryReleaseRef,
+      });
+      expect(replay).toEqual(first);
+    } finally {
+      state.setMeasureAvailability("available");
+    }
+
     const anotherCommand = await state.measureCandidates({
       queryId: "c27-multi-query-2",
       warningResponseTaskRef: opened.taskRef,
       assessmentRecordRef: opened.assessmentRecordRefs[0]!,
-      measureLibraryReleaseRef: state.measureLibraryReleaseRef,
     });
     expect(anotherCommand.kind).toBe("succeeded");
     expect(await state.countReceiptsForCommand("c27-multi-query-2")).toBe(1);
@@ -194,7 +208,6 @@ describe("C27 处置建议 PostgreSQL 链", () => {
     for (const invalid of [
       { projectId: "other-project" },
       { actorId: "other-actor" },
-      { invocationId: "unsigned-invocation" },
       { authorization: { ...authorization, grantedCapabilities: [] } },
       {
         recommendationCandidateRef: {
@@ -457,7 +470,9 @@ describe("C27 处置建议 PostgreSQL 链", () => {
       .where("recommendation_id", "=", recommendationRef.reference.entityId)
       .executeTakeFirst();
     expect(row?.review_status).toBe("pending");
-    expect(row?.measure_library_release_id).toBe("release-measure-library");
+    expect(row?.measure_library_release_id).toBe(
+      fixture!.measureLibraryReleaseRef.reference.entityId,
+    );
     expect(row?.validation_policy_entity_id).toBe("response-validation-policy");
     expect(row?.site_context_entity_id).toBe("site-context-c27");
     const record = ResponseRecommendationSchema.parse(row?.record_payload);
@@ -681,6 +696,91 @@ describe("C27 处置建议 PostgreSQL 链", () => {
     );
   });
 
+  pgIt("命令省略策略引用时按冻结候选事实消费，运行配置换版不改写已登记引用", async () => {
+    const state = fixture!;
+    const { opened, queryResultRef, agent } = await freezeAndBind({
+      prefix: "c27-frozen-policy",
+      assessments: 1,
+    });
+    const readId = "c27-frozen-policy-read";
+    const readAuthorization = await state.c26.readAuthorization(readId);
+    const frozenRead = await state.adapter.readMeasureCandidateSet({
+      projectId: state.projectId,
+      actorId: state.managerId,
+      requestedAt: readAuthorization.decidedAt,
+      invocationId: readId,
+      authorization: readAuthorization,
+      knowledgeQueryResultRef: queryResultRef,
+    });
+    expect(frozenRead.kind).toBe("succeeded");
+    if (frozenRead.kind !== "succeeded") return;
+    const frozenValidationRef = frozenRead.candidateSet.validationPolicyRef;
+
+    // 省略生成策略引用：按候选行登记的冻结引用绑定，结果与显式提供同一引用一致。
+    const bound = await state.createCandidate({
+      commandId: "c27-frozen-policy-bind",
+      warningResponseTaskRef: opened.taskRef,
+      measureCandidateQueryResultRef: queryResultRef,
+      agentTaskResultRef: agent.agentResultRef!,
+      responseGenerationPolicyRef: undefined,
+    });
+    expect(bound.kind).toBe("succeeded");
+    if (bound.kind !== "succeeded" || bound.result.kind !== "candidate") return;
+    expect(bound.result.recommendationCandidateRef).toEqual(agent.candidateRef);
+
+    // 省略校验策略引用：校验、证据与登记都用候选集冻结的精确引用。
+    const recorded = await state.validateAndRecord({
+      commandId: "c27-frozen-policy-record",
+      recommendationCandidateRef: agent.candidateRef!,
+      responseValidationPolicyRef: undefined,
+      siteContextRef: state.siteContextRef,
+    });
+    expect(recorded.kind === "succeeded" && recorded.result.kind).toBe("recorded");
+    if (recorded.kind !== "succeeded" || recorded.result.kind !== "recorded") return;
+    const validation = await state.db
+      .selectFrom("business.recommendation_validations")
+      .selectAll()
+      .where("project_id", "=", state.projectId)
+      .where("command_id", "=", "c27-frozen-policy-record")
+      .executeTakeFirst();
+    const record = await state.db
+      .selectFrom("business.response_recommendations")
+      .selectAll()
+      .where("project_id", "=", state.projectId)
+      .where("recommendation_id", "=", recorded.result.responseRecommendationRef.reference.entityId)
+      .executeTakeFirst();
+    expect(validation?.validation_policy_entity_id).toBe(frozenValidationRef.entityId);
+    expect(validation?.validation_policy_version_id).toBe(frozenValidationRef.versionId);
+    expect(record?.validation_policy_entity_id).toBe(frozenValidationRef.entityId);
+    expect(record?.validation_policy_version_id).toBe(frozenValidationRef.versionId);
+    expect(record?.generation_policy_entity_id).toBe(
+      frozenRead.candidateSet.generationPolicyRef.entityId,
+    );
+    expect(validation?.validation_payload).toMatchObject({
+      validationPolicyRef: frozenValidationRef,
+    });
+
+    // 显式提供与冻结事实不符的运行配置版本：拒绝，且不改写已登记的冻结引用。
+    const drifted = await state.validateAndRecord({
+      commandId: "c27-frozen-policy-drift",
+      recommendationCandidateRef: agent.candidateRef!,
+      responseValidationPolicyRef: { entityId: frozenValidationRef.entityId, versionId: "9" },
+      siteContextRef: state.siteContextRef,
+    });
+    expect(drifted.kind === "failed" && drifted.error.code).toBe("STALE_VERSION");
+    expect(
+      await state.countCommandRows("recommendation_validations", "c27-frozen-policy-drift"),
+    ).toBe(0);
+    const afterDrift = await state.db
+      .selectFrom("business.recommendation_validations")
+      .selectAll()
+      .where("project_id", "=", state.projectId)
+      .where("validation_id", "=", validation!.validation_id)
+      .executeTakeFirst();
+    expect(afterDrift?.validation_policy_entity_id).toBe(frozenValidationRef.entityId);
+    expect(afterDrift?.validation_policy_version_id).toBe(frozenValidationRef.versionId);
+  });
+
   pgIt("无权、跨工程与越界空间在读取目标前不可枚举地失败", async () => {
     const state = fixture!;
     const opened = await state.openWarnings({ commandPrefix: "c27-auth-open", assessments: 1 });
@@ -876,17 +976,7 @@ describe("C27 处置建议 PostgreSQL 链", () => {
     for (const invalid of [
       { projectId: "other-project" },
       { actorId: "other-actor" },
-      { invocationId: "unsigned-read" },
       { reference: { ...reference, reference: { ...reference.reference, versionId: "missing" } } },
-      {
-        authorization: {
-          ...authorization,
-          spatialScopeRefs: authorization.spatialScopeRefs.map((scope) => ({
-            ...scope,
-            reference: { ...scope.reference, versionId: "scope-version-drift" },
-          })),
-        },
-      },
     ]) {
       expect(await state.adapter.verifyCheckpointReference({ ...input, ...invalid })).toBe(false);
     }

@@ -1,6 +1,7 @@
 import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { OpenWarningCommandV1Schema } from "@riskflow/contracts/ports";
 import { WarningRecordSchema } from "@riskflow/contracts/records";
 import { WARNING_TRIGGER_TYPE_VALUES } from "@riskflow/contracts/vocabulary";
 
@@ -417,16 +418,28 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
     const warningsBefore = await state.countRows("business.warning_records");
     const receiptsBefore = await state.countReceipts("warning-response.open");
 
-    const mismatched = await state.adapter.open(
-      await state.openCommand({
-        commandId: "c26-open-policy-mismatch",
+    // 策略只由服务端按部署清单解析：客户端再注入策略字段被契约层拒绝，也不落任何事实。
+    const clientPolicyField = {
+      ...(await state.openCommand({
+        commandId: "c26-open-client-policy-field",
         assessmentRecordRef: assessment.assessmentRecordRef,
-        aggregationPolicyRef: { entityId: "warning-aggregation-policy-other", versionId: "7" },
-      }),
-    );
-    expect(mismatched.kind).toBe("failed");
-    if (mismatched.kind === "failed") {
-      expect(mismatched.error.code).toBe("STALE_VERSION");
+      })),
+      payload: {
+        assessmentRecordRef: assessment.assessmentRecordRef,
+        warningAggregationPolicyRef: {
+          entityId: "warning-aggregation-policy-other",
+          versionId: "7",
+        },
+        notificationPolicyRef: { entityId: "notification-policy-other", versionId: "7" },
+      },
+    };
+    expect(OpenWarningCommandV1Schema.safeParse(clientPolicyField).success).toBe(false);
+    const injected = await state.adapter.open(clientPolicyField as never);
+    expect(injected.kind).toBe("failed");
+    if (injected.kind === "failed") {
+      // 契约层拒绝映射为不可重试的技术失败；稳定码取模块错误映射当前值。
+      expect(["UNSUPPORTED_CONTRACT", "TERMINAL_FAILURE"]).toContain(injected.error.code);
+      expect(injected.error.retryable).toBe(false);
     }
 
     state.setPolicyAvailability("missing");
@@ -833,7 +846,7 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
       for (const invalid of [
         { projectId: "another-project" },
         { actorId: "another-actor" },
-        { invocationId: "unsigned" },
+        // IP-01/D-01 起读端口只按已登记授权上下文与当前权限判定，不再按调用标识复验签发身份。
         { authorization: { ...input.authorization, spatialScopeRefs: [] } },
         { reference: { ...reference, reference: { ...reference.reference, versionId: "9999" } } },
       ])

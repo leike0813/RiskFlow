@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
+import { ConfirmButton } from "../components/ConfirmButton";
 import { PageStateView } from "../components/PageStateView";
 import { StatusTag } from "../components/StatusTag";
 import { useEngineering, usePageQuery, useProjectPath } from "../api/engineering";
@@ -9,6 +10,7 @@ import {
   actionAvailability,
   readAssessmentResolve,
   readAssessmentRun,
+  submitAssessmentPreparationResume,
   type AssessmentResolveView,
   type AssessmentRunView,
   type KindRef,
@@ -134,6 +136,7 @@ export default function AssessmentRunPage() {
     run.state.kind === "ready"
       ? actionAvailability(run.state.value.actions, "workflow.cancel-run")
       : null;
+  const resumeCommand = useRef({ key: "", commandId: "" });
 
   return (
     <AppShell
@@ -164,6 +167,24 @@ export default function AssessmentRunPage() {
                   <FieldRow label="状态">
                     <StatusTag tone={stateTone(value.status)}>{value.status}</StatusTag>
                   </FieldRow>
+                  {value.waitingRef?.missingKinds !== undefined && (
+                    <FieldRow label="待准备">
+                      {value.waitingRef.missingKinds
+                        .map(
+                          (kind) =>
+                            ({
+                              materials: "工程资料",
+                              knowledge: "知识库",
+                              "scoring-configuration": "评分配置",
+                              "response-configuration": "处置配置",
+                              "forecast-configuration": "预测配置",
+                              "calibration-configuration": "校准配置",
+                              "human-review": "人工审核",
+                            })[kind] ?? kind,
+                        )
+                        .join("、")}
+                    </FieldRow>
+                  )}
                   <FieldRow label="入口模式">
                     <span className="mono">{value.entryMode}</span>
                   </FieldRow>
@@ -276,11 +297,29 @@ export default function AssessmentRunPage() {
               </div>
 
               <Card title="运行控制" style={{ marginTop: 16 }}>
-                <p className="ar-note">
-                  继续与取消是独立的人工动作，需由精确读的可用动作授权： 继续{" "}
-                  {resumeAvailability ?? "—"}，取消 {cancelAvailability ?? "—"}。
-                  当前页面只读登记事实，不在此处发起控制命令。
-                </p>
+                {value.waitingRef?.kind === "business-preparation" ? (
+                  <ConfirmButton
+                    label="准备完成，继续"
+                    resetKey={runKey + value.stateVersion.versionId}
+                    availability={resumeAvailability ?? "hidden"}
+                    summary={["重新检查本阶段所需资料与配置，齐备后继续本次运行。"]}
+                    onConfirm={async () => {
+                      if (selector.projectId === null) return;
+                      const key = runKey + value.stateVersion.versionId;
+                      if (resumeCommand.current.key !== key)
+                        resumeCommand.current = { key, commandId: crypto.randomUUID() };
+                      await submitAssessmentPreparationResume(selector.projectId, {
+                        commandId: resumeCommand.current.commandId,
+                        run: value,
+                      });
+                      run.retry();
+                    }}
+                  />
+                ) : (
+                  <p className="ar-note">
+                    继续 {resumeAvailability ?? "—"}，取消 {cancelAvailability ?? "—"}。
+                  </p>
+                )}
               </Card>
             </>
           )}

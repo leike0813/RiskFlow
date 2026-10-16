@@ -7,6 +7,7 @@
  * 门禁不含模拟分数、SQL 或自由联网路径。
  */
 import { cpus } from "node:os";
+import { randomUUID } from "node:crypto";
 import { clearTimeout, setTimeout } from "node:timers";
 
 import { DeploymentRetrievalDatasetV1Schema } from "../../../packages/adapters/dist/deployment/index.js";
@@ -21,9 +22,10 @@ import {
   RetrievalHybridQueryV1Schema,
   RetrievalIndexManifestV1Schema,
   RetrievalReconciliationV1Schema,
+  retrievalQueryEmbeddingText,
 } from "../../../packages/core/dist/retrieval/index.js";
 
-const REQUIRED_CAPABILITY_V1 = "knowledge-modeling.read";
+const REQUIRED_CAPABILITY_V1 = "knowledge-modeling.retrieve";
 const PASSED_DETAIL_CODE_V1 = "acceptance-gates-passed";
 
 /** 代际成员发布槽位与成员 sourceKind 的精确对应（与 C16 组合发布槽位同源）。 */
@@ -195,7 +197,7 @@ export const createDeploymentBuildQualityGateV1 = (options) => {
   }
 
   /** 按代际读正式事实并逐项精确核对身份；任一漂移都不是本代证据。 */
-  const verifyFormalIdentity = async (input) => {
+  const verifyFormalIdentity = async (input, transactionContext) => {
     const projectId = requiredText(input?.projectId, "projectId");
     const generationRef = required(input?.generationRef, "generationRef");
     let policy;
@@ -225,7 +227,7 @@ export const createDeploymentBuildQualityGateV1 = (options) => {
 
     let read;
     try {
-      read = await generationStore.readGeneration(generationRef);
+      read = await generationStore.readGeneration(generationRef, transactionContext);
     } catch {
       fail("generation-read-failed");
     }
@@ -302,6 +304,8 @@ export const createDeploymentBuildQualityGateV1 = (options) => {
       generation,
       pointIdByMemberKey,
       memberByPointId,
+      /** 双路召回前按同一份已批准本代清单收窄可见范围（D-05）；探针与指标查询共用该范围。 */
+      visiblePointIds: [...memberByPointId.keys()],
     };
   };
 
@@ -317,6 +321,7 @@ export const createDeploymentBuildQualityGateV1 = (options) => {
       generation,
       pointIdByMemberKey,
       memberByPointId,
+      visiblePointIds,
     } = context;
     const queries = dataset.queries;
     const { warmupRuns, measuredRuns } = acceptancePolicy;
@@ -364,7 +369,7 @@ export const createDeploymentBuildQualityGateV1 = (options) => {
       if (signal.aborted) fail("quality-gate-deadline-exceeded");
     };
 
-    /** 每次 Embedding 都按代际登记的授权引用、创建者与 read 能力复验当前权限。 */
+    /** 每次 Embedding 都按代际登记的授权引用、创建者与 retrieve 能力复验当前权限。 */
     const verifiedAuthorization = async () => {
       let decision;
       try {
@@ -396,10 +401,11 @@ export const createDeploymentBuildQualityGateV1 = (options) => {
       const authorization = await verifiedAuthorization();
       stopIfAborted();
       const issuedAt = new Date().toISOString();
+      const invocationId = `deployment-quality-gate-embed:${projectId}:${query.queryId}:${randomUUID()}`;
       const request = EmbeddingRequestV1Schema.parse({
         schemaVersion: "1",
-        invocationId: `deployment-quality-gate-embed:${projectId}:${query.queryId}:${issuedAt}`,
-        idempotencyKey: `deployment-quality-gate-embed:${projectId}:${query.queryId}`,
+        invocationId,
+        idempotencyKey: invocationId,
         issuedAt,
         projectId,
         actorId: generation.createdBy,
@@ -412,7 +418,8 @@ export const createDeploymentBuildQualityGateV1 = (options) => {
         ).toISOString(),
         parentArtifactRefs: [],
         evidenceReferences: [],
-        texts: [query.queryText],
+        // 与正式检索共用同一渲染：指令只作用于查询 Embedding，BM25 查询仍用原文本。
+        texts: [retrievalQueryEmbeddingText(query.queryText, policy)],
         maxInputBytes: policy.memberByteLimit,
         maxBatchItems: 1,
       });
@@ -452,6 +459,7 @@ export const createDeploymentBuildQualityGateV1 = (options) => {
               projectId,
               generationRef,
               authorizationScopeDigest: generation.authorizationScopeDigest,
+              visiblePointIds: [...visiblePointIds],
             },
           }),
         );
@@ -540,12 +548,12 @@ export const createDeploymentBuildQualityGateV1 = (options) => {
   };
 
   return {
-    async evaluate(input) {
+    async evaluate(input, transactionContext) {
       const controller = new AbortController();
       // 总界覆盖整个 evaluate：读取代际、身份核对、真实测量与报告保存都在同一个截止内，
       // 迟到的成功不成立——已开始的动作自行 settle，但绝不能把超时判成通过。
       const run = (async () => {
-        const context = await verifyFormalIdentity(input);
+        const context = await verifyFormalIdentity(input, transactionContext);
         const measured = await measure(context, controller.signal);
         const report = evaluateRetrievalAcceptance({
           policy: measured.policy,

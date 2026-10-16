@@ -19,7 +19,7 @@ import type {
 export interface ArtifactReadHandleV1 {
   readonly manifest: ArtifactManifestV1;
   readonly content: AsyncIterable<Uint8Array>;
-  readonly verified: Promise<ArtifactReadReceiptV1>;
+  readonly completed: Promise<ArtifactReadReceiptV1>;
 }
 
 export interface ArtifactReconcileHandleV1 {

@@ -241,6 +241,38 @@ export const terminalStatusOfV1 = (operationId, payload, result, targetResultRef
 
 const digestOf = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
+const runConfigDigestOfV1 = (config) =>
+  digestOf({
+    ...config,
+    password: createHash("sha256")
+      .update(String(config.password ?? ""))
+      .digest("hex"),
+  });
+
+/** 桌面宿主只读同次报告；沿原摘要拒绝换配置、换运行或未受理的回执。 */
+export const readFunctionalAcceptanceReportV1 = (configPath, reportPath) => {
+  const configFile = resolve(configPath);
+  const config = FunctionalAcceptanceConfigV1Schema.parse(readJson(configFile));
+  const runConfig = readJson(resolve(dirname(configFile), config.runConfigFile));
+  const report = readJson(resolve(reportPath));
+  const synthetic = readJson(join(dirname(resolve(reportPath)), "synthetic", "run.json"));
+  if (
+    report.schemaVersion !== "1" ||
+    synthetic.schemaVersion !== "1" ||
+    typeof report.runId !== "string" ||
+    report.runId !== synthetic.runId ||
+    !["RUNNING", "PASS", "awaiting-human"].includes(report.status) ||
+    report.configDigest !== digestOf(config) ||
+    report.runConfigDigest !== runConfigDigestOfV1(runConfig) ||
+    !["COMPLETED", "SUBMITTED"].includes(synthetic.status) ||
+    !Array.isArray(synthetic.steps) ||
+    synthetic.steps.length < 1
+  ) {
+    throw new SyntheticAcceptanceError("FUNCTIONAL_REPORT_RUN_MISMATCH");
+  }
+  return { config, runConfig, report, synthetic };
+};
+
 const renderReport = (state) =>
   [
     "# RiskFlow 功能验收观察",
@@ -317,12 +349,7 @@ export const runFunctionalAcceptance = async ({
   const runConfigPath = resolve(dirname(configFile), acceptance.runConfigFile);
   const runConfig = readJson(runConfigPath);
   const check = checkPack(pack);
-  const runConfigDigest = digestOf({
-    ...runConfig,
-    password: createHash("sha256")
-      .update(String(runConfig.password ?? ""))
-      .digest("hex"),
-  });
+  const runConfigDigest = runConfigDigestOfV1(runConfig);
   const configDigest = digestOf(acceptance);
   if (
     prior !== null &&

@@ -548,16 +548,19 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "engineering-data.register-monitoring-batch": "engineering-data.write",
   "engineering-data.register-external-risk-event": "engineering-data.write",
   "engineering-data.identification-preparation": "engineering-data.freeze",
+  "engineering-data.complete-identification-preparation": "engineering-data.freeze",
   "engineering-data.assessment-preparation": "engineering-data.freeze",
   "engineering-data.monitoring-snapshot": "engineering-data.freeze",
   "engineering-data.source-segments": "engineering-data.read",
   "engineering-data.monitoring-snapshot-query": "engineering-data.read",
   "engineering-data.evidence-access": "engineering-data.read",
+  "engineering-data.source-original-read": "engineering-data.read",
   "knowledge-modeling.submit-revision": "knowledge-modeling.govern",
   "knowledge-modeling.request-review": "knowledge-modeling.govern",
   "knowledge-modeling.publish-approved-release": "knowledge-modeling.govern",
   "knowledge-modeling.deactivate-release": "knowledge-modeling.govern",
   "knowledge-modeling.rollback-by-new-release": "knowledge-modeling.govern",
+  "knowledge-modeling.assemble-applicable-rule-set": "knowledge-modeling.govern",
   "knowledge-modeling.identification-basis": "knowledge-modeling.read",
   "knowledge-modeling.assessment-basis": "knowledge-modeling.read",
   "knowledge-modeling.hybrid-evidence": "knowledge-modeling.retrieve",
@@ -701,7 +704,31 @@ export const AuthorizationContextV1Schema = z.union([
 ]);
 export type AuthorizationContextV1 = z.infer<typeof AuthorizationContextV1Schema>;
 
+export const BusinessPreparationMissingKindSchema = z.enum([
+  "materials",
+  "knowledge",
+  "scoring-configuration",
+  "response-configuration",
+  "forecast-configuration",
+  "calibration-configuration",
+  "human-review",
+]);
+export type BusinessPreparationMissingKind = z.infer<typeof BusinessPreparationMissingKindSchema>;
+export const BusinessPreparationRefSchema = z.union([
+  WorkflowRunRefV1Schema,
+  AssessmentPreparationSnapshotRefV1Schema,
+  IdentificationPreparationSnapshotRefV1Schema,
+  KnowledgePreparationTaskRefV1Schema,
+]);
+export type BusinessPreparationRef = z.infer<typeof BusinessPreparationRefSchema>;
+
 export const WaitingRefV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("business-preparation"),
+    stage: IdentifierSchema,
+    preparationRef: BusinessPreparationRefSchema,
+    missingKinds: z.array(BusinessPreparationMissingKindSchema).min(1).max(7),
+  }),
   z.strictObject({
     kind: z.literal("knowledge-preparation"),
     knowledgePreparationTaskRef: KnowledgePreparationTaskRefV1Schema,
@@ -1077,6 +1104,12 @@ const IdentificationPreparationCommandPayloadV1Schema = z.strictObject({
   dataProcessingPolicyRef: VersionReferenceSchema,
 });
 
+// D-49 完成入口：请求只携带精确任务引用，由完成命令按当前授权消费原任务的清单与结果；
+// 成功结果复用原 identification-preparation，不新增结果形状。
+const CompleteIdentificationPreparationCommandPayloadV1Schema = z.strictObject({
+  agentTaskRef: AgentTaskRefV1Schema,
+});
+
 export const WorkflowEntryModeV1_VALUES = [
   "identify-and-assess",
   "assess",
@@ -1111,6 +1144,11 @@ export const EngineeringFreezeCommandV1Schema = z.discriminatedUnion("kind", [
     "identification-preparation",
     IdentificationPreparationCommandPayloadV1Schema,
     branchCapability("engineering-data.identification-preparation"),
+  ),
+  commandSchema(
+    "complete-identification-preparation",
+    CompleteIdentificationPreparationCommandPayloadV1Schema,
+    branchCapability("engineering-data.complete-identification-preparation"),
   ),
   commandSchema(
     "assessment-preparation",
@@ -1447,6 +1485,33 @@ export const KnowledgeGovernanceCommandV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type KnowledgeGovernanceCommandV1 = z.infer<typeof KnowledgeGovernanceCommandV1Schema>;
 
+/**
+ * C19 正式组装入口（IP-17/IP-19）：单分支窄命令，映射既有 `knowledge-modeling.govern`。
+ * 不并入治理命令联合——组装只登记待审候选修订，调用方不能借此提交人工决定或发布。
+ * payload 只含精确引用与业务时刻：工程、主体、授权与记录时间边界取命令信封，
+ * 工程修订、适用性与规则成员只取 C11 生产准备投影，不由调用方自报。
+ */
+export const ApplicableRuleSetAssemblyPayloadV1Schema = z.strictObject({
+  preparationSnapshotRef: AssessmentPreparationSnapshotRefV1Schema,
+  requiredAt: IsoDateTimeSchema,
+  scoringPolicyRef: VersionReferenceSchema,
+  assemblyPolicyRef: VersionReferenceSchema,
+  compatibilityRef: VersionReferenceSchema,
+  configurationSetRef: VersionReferenceSchema,
+});
+export type ApplicableRuleSetAssemblyPayloadV1 = z.infer<
+  typeof ApplicableRuleSetAssemblyPayloadV1Schema
+>;
+
+export const ApplicableRuleSetAssemblyCommandV1Schema = commandSchema(
+  "assemble-applicable-rule-set",
+  ApplicableRuleSetAssemblyPayloadV1Schema,
+  branchCapability("knowledge-modeling.assemble-applicable-rule-set"),
+);
+export type ApplicableRuleSetAssemblyCommandV1 = z.infer<
+  typeof ApplicableRuleSetAssemblyCommandV1Schema
+>;
+
 export const KnowledgeResolutionCommandV1Schema = z.discriminatedUnion("kind", [
   commandSchema(
     "identification-basis",
@@ -1490,7 +1555,7 @@ export const KnowledgeRetrievalQueryV1Schema = z.discriminatedUnion("kind", [
     z.strictObject({
       assessmentRecordRef: RiskAssessmentRecordRefV1Schema,
       warningResponseTaskRef: WarningResponseTaskRefV1Schema,
-      measureLibraryReleaseRef: MeasureLibraryReleaseRefV1Schema,
+      measureLibraryReleaseRef: MeasureLibraryReleaseRefV1Schema.optional(),
     }),
     branchCapability("knowledge-modeling.measure-candidates"),
   ),
@@ -1614,8 +1679,6 @@ export const OpenWarningCommandV1Schema = z.discriminatedUnion("kind", [
     "open",
     z.strictObject({
       assessmentRecordRef: RiskAssessmentRecordRefV1Schema,
-      warningAggregationPolicyRef: VersionReferenceSchema,
-      notificationPolicyRef: VersionReferenceSchema,
     }),
     branchCapability("warning-response.open"),
   ),
@@ -1629,7 +1692,7 @@ export const RecommendationCommandV1Schema = z.discriminatedUnion("kind", [
       warningResponseTaskRef: WarningResponseTaskRefV1Schema,
       measureCandidateQueryResultRef: KnowledgeQueryResultRefV1Schema,
       agentTaskResultRef: AgentTaskResultRefV1Schema,
-      responseGenerationPolicyRef: VersionReferenceSchema,
+      responseGenerationPolicyRef: VersionReferenceSchema.optional(),
     }),
     branchCapability("warning-response.create-candidate"),
   ),
@@ -1637,7 +1700,7 @@ export const RecommendationCommandV1Schema = z.discriminatedUnion("kind", [
     "validate-and-record",
     z.strictObject({
       recommendationCandidateRef: RecommendationCandidateRefV1Schema,
-      responseValidationPolicyRef: VersionReferenceSchema,
+      responseValidationPolicyRef: VersionReferenceSchema.optional(),
       siteContextRef: VersionReferenceSchema,
     }),
     branchCapability("warning-response.validate-and-record"),
@@ -1744,6 +1807,10 @@ export type WorkflowRunTriggerTypeV1 = z.infer<typeof WorkflowRunTriggerTypeV1Sc
 
 export const ResumeCauseV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
+    kind: z.literal("business-preparation-ready"),
+    preparationRef: BusinessPreparationRefSchema,
+  }),
+  z.strictObject({
     kind: z.literal("review-resolved"),
     reviewDecisionRef: ReviewDecisionRefV1Schema,
   }),
@@ -1774,6 +1841,13 @@ export const ResumeCauseV1Schema = z.discriminatedUnion("kind", [
     kind: z.literal("human-decision-committed"),
     routeDecisionRef: RouteDecisionRefV1Schema,
   }),
+  // D-51：识别阶段等待中的父运行按本命令显式绑定一份已成立的识别准备。
+  // 该原因只携带精确准备引用；工程修订、空间集合与资料版本集合由部署侧
+  // 按当前权限核验，命令本身不提交任务、来源或父运行身份。
+  z.strictObject({
+    kind: z.literal("identification-preparation-ready"),
+    identificationPreparationSnapshotRef: IdentificationPreparationSnapshotRefV1Schema,
+  }),
 ]);
 export type ResumeCauseV1 = z.infer<typeof ResumeCauseV1Schema>;
 
@@ -1796,6 +1870,7 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
   z.strictObject({
     ...workflowStartControlShape,
     entryMode: z.literal("identify-and-assess"),
+    executionBatchId: IdentifierSchema.optional(),
     projectRevisionRef: ProjectRevisionRefV1Schema,
     spatialScopeRefs: z.array(SpatialScopeRefV1Schema).min(1),
     sourceVersionRefs: z.array(SourceVersionRefV1Schema).min(1),
@@ -2453,8 +2528,8 @@ export const ActualAssessmentProofV1Schema = z.strictObject({
   assessmentInputSnapshotRef: AssessmentInputSnapshotRefV1Schema,
   assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema,
   monitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema),
-  deviationPolicyRef: VersionReferenceSchema,
-  calibrationAgentPolicyRef: VersionReferenceSchema,
+  deviationPolicyRef: VersionReferenceSchema.optional(),
+  calibrationAgentPolicyRef: VersionReferenceSchema.optional(),
   assessmentRunRef: WorkflowRunRefV1Schema,
   auditTrailRef: AuditTrailRefV1Schema,
   recordedAt: IsoDateTimeSchema,
@@ -3046,6 +3121,27 @@ export const KnowledgeResolutionResultV1Schema = moduleResultSchema(
 );
 export type KnowledgeResolutionResultV1 = z.infer<typeof KnowledgeResolutionResultV1Schema>;
 
+/**
+ * 已批准评分规则的确定性组装成功返回正式发布及本次评分依据。
+ */
+export const ApplicableRuleSetAssemblySuccessV1Schema = z.strictObject({
+  applicableRuleSetRevisionRef: KnowledgeRevisionRefV1Schema,
+  applicableRuleSetArtifactRef: ContentArtifactRefV1Schema,
+  applicableRuleSetReleaseRef: KnowledgeReleaseRefV1Schema,
+  assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema,
+});
+export type ApplicableRuleSetAssemblySuccessV1 = z.infer<
+  typeof ApplicableRuleSetAssemblySuccessV1Schema
+>;
+
+export const ApplicableRuleSetAssemblyResultV1Schema = moduleResultSchema(
+  ApplicableRuleSetAssemblySuccessV1Schema,
+  true,
+);
+export type ApplicableRuleSetAssemblyResultV1 = z.infer<
+  typeof ApplicableRuleSetAssemblyResultV1Schema
+>;
+
 export const KnowledgeRetrievalResultV1Schema = moduleResultSchema(
   KnowledgeRetrievalSuccessV1Schema,
 );
@@ -3161,6 +3257,14 @@ export interface KnowledgeModelingPortV1 {
   ): Promise<KnowledgeGovernanceResultForCommandV1<T>>;
   resolve(command: KnowledgeResolutionCommandV1): Promise<KnowledgeResolutionResultV1>;
   retrieve(query: KnowledgeRetrievalQueryV1): Promise<KnowledgeRetrievalResultV1>;
+}
+
+/**
+ * C19 组装窄端口：与 `KnowledgeModelingPortV1` 并列注入，既有实现者无需增补方法，
+ * 广义治理命令联合也不承载组装（design D-39）。
+ */
+export interface ApplicableRuleSetAssemblyPortV1 {
+  assemble(command: ApplicableRuleSetAssemblyCommandV1): Promise<ApplicableRuleSetAssemblyResultV1>;
 }
 
 export interface RiskIdentificationPortV1 {
@@ -3329,6 +3433,7 @@ export type SourceCatalogDeliveryKindV1 = z.infer<typeof SourceCatalogDeliveryKi
 export const SourceCatalogItemV1Schema = z.strictObject({
   sourceVersionRef: SourceVersionRefV1Schema,
   sourceId: IdentifierSchema,
+  sourceName: c32ReadText.optional(),
   documentType: c32ReadText.optional(),
   formedAt: IsoDateTimeSchema.optional(),
   sourceOrganization: c32ReadText.optional(),
@@ -3351,6 +3456,44 @@ export const SourceCatalogPageV1Schema = z.strictObject({
   nextCursor: c32ReadCursor.optional(),
 });
 export type SourceCatalogPageV1 = z.infer<typeof SourceCatalogPageV1Schema>;
+
+export const SourceOriginalQueryV1Schema = querySchema(
+  "source-original",
+  z.strictObject({ sourceVersionRef: SourceVersionRefV1Schema }),
+  "engineering-data.read",
+);
+export type SourceOriginalQueryV1 = z.infer<typeof SourceOriginalQueryV1Schema>;
+export const SourceOriginalInfoV1Schema = z.strictObject({
+  kind: z.literal("source-original"),
+  sourceVersionRef: SourceVersionRefV1Schema,
+  sourceName: c32ReadText,
+  registeredBy: IdentifierSchema,
+  registeredAt: IsoDateTimeSchema,
+  deliveryKind: SourceCatalogDeliveryKindV1Schema,
+  originalFileName: c32ReadText.optional(),
+  fileName: c32ReadText,
+  mediaType: c32ReadText,
+  byteLength: c32NonNegativeInt.max(104_857_600),
+  previewKind: z.enum(["pdf", "image", "text", "download"]),
+});
+export type SourceOriginalInfoV1 = z.infer<typeof SourceOriginalInfoV1Schema>;
+export const SourceOriginalReadResultV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("succeeded"), result: SourceOriginalInfoV1Schema }),
+  z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
+]);
+export type SourceOriginalReadResultV1 = z.infer<typeof SourceOriginalReadResultV1Schema>;
+export interface SourceOriginalReadPortV1 {
+  read(query: SourceOriginalQueryV1): Promise<SourceOriginalReadResultV1>;
+  /** 内容已完整核验；调用方在传输结束/中断时释放本请求暂存。 */
+  open(
+    query: SourceOriginalQueryV1,
+    signal: AbortSignal,
+  ): Promise<{
+    readonly info: SourceOriginalInfoV1;
+    readonly content: AsyncIterable<Uint8Array>;
+    close(): Promise<void>;
+  }>;
+}
 
 // ---- engineering-data：监测目录 ----
 
@@ -4509,6 +4652,7 @@ export const AssessmentEntryContextViewV1Schema = z.strictObject({
   applicabilityNextCursor: c34ReadCursor.optional(),
   externalEventNextCursor: c34ReadCursor.optional(),
   runPolicy: entryRunPolicyV1,
+  preparationMissingKinds: z.array(BusinessPreparationMissingKindSchema).max(7).optional(),
   actions: readActionsV1,
 });
 export type AssessmentEntryContextViewV1 = z.infer<typeof AssessmentEntryContextViewV1Schema>;
@@ -4689,6 +4833,7 @@ export const AssessmentRunViewV1Schema = z.strictObject({
   runRef: WorkflowRunRefV1Schema,
   entryMode: WorkflowEntryModeV1Schema,
   status: WorkflowRunStatusV1Schema,
+  waitingRef: WaitingRefV1Schema.optional(),
   stage: IdentifierSchema,
   graphVersion: VersionReferenceSchema,
   actorRef: IdentifierSchema,

@@ -806,6 +806,66 @@ test("运行结果与复核任务独立有界续页，终态保留引用", async
   await expect(page.locator(".ar-two-col li")).toHaveCount(5);
 });
 
+test("业务准备等待显示缺项，继续提交原准备引用并刷新状态", async ({ page }) => {
+  const preparationRef = {
+    kind: "workflow-run",
+    reference: { entityId: "preparation-ui", versionId: "1" },
+  };
+  let reads = 0;
+  let submission;
+  let stateVersion;
+  await page.route("**/queries/risk-assessment.read", async (route) => {
+    if (route.request().postDataJSON().payload.operation !== "run-read") return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    reads += 1;
+    stateVersion = body.result.stateVersion.versionId;
+    body.result.status = "waiting";
+    body.result.waitingRef = {
+      kind: "business-preparation",
+      stage: "A1",
+      preparationRef,
+      missingKinds: ["scoring-configuration"],
+    };
+    body.result.actions = [{ branch: "workflow.resume-run", availability: "allowed" }];
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/commands/workflow.resume-run", async (route) => {
+    submission = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      json: {
+        kind: "waiting",
+        waiting: {
+          kind: "business-preparation",
+          stage: "A1",
+          preparationRef,
+          missingKinds: ["scoring-configuration"],
+        },
+      },
+    });
+  });
+  await login(
+    page,
+    server.operatorLogin,
+    withProject(`/assessment/runs/${server.paginatedRunRef.reference.entityId}`, {
+      version: server.paginatedRunRef.reference.versionId,
+    }),
+  );
+  await expect(page.getByText("评分配置", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "准备完成，继续", exact: true }).click();
+  const before = reads;
+  await page.getByRole("button", { name: "确认准备完成，继续", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect.poll(() => reads).toBeGreaterThan(before);
+  expect(submission.payload).toEqual({
+    workflowRunRef: server.paginatedRunRef,
+    expectedStateVersion: stateVersion,
+    resumeCause: { kind: "business-preparation-ready", preparationRef },
+  });
+});
+
 test("慢读取保持单在途轮询，隐藏、终态和卸载停止刷新", async ({ page }) => {
   test.setTimeout(90_000);
   let count = 0;
@@ -1074,9 +1134,9 @@ test("采纳、执行与反馈成立真实事实后，偏差驱动出校准建�
   await page.getByRole("button", { name: "确认采纳建议", exact: true }).click();
   const adoptionHttp = await adoptionResponse;
   const adopted = { status: adoptionHttp.status(), body: await adoptionHttp.json() };
+  expect(adopted.status, `采纳应成立，实际 ${JSON.stringify(adopted.body)}`).toBe(200);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByText("已采纳", { exact: true })).toBeVisible();
-  expect(adopted.status, `采纳应成立，实际 ${JSON.stringify(adopted.body)}`).toBe(200);
   const adoption = adopted.body?.result;
   // 结果判别式本身就是决定事实：`adoption` 表示已采纳并已产生真实预测运行绑定，
   // `decline` 表示终局拒绝且不返回运行引用。不另造一个与判别式重复的字段来断言。
@@ -1514,6 +1574,7 @@ test("启动向导响应丢失后按原身份原载荷重试，取得同一运�
 
 test("启动向导以完整精确引用提交重评，返回真实重评运行", async ({ page }) => {
   test.setTimeout(240_000);
+  await page.setViewportSize({ width: 1024, height: 600 });
   // 重评需要真实前驱：先经真实 UI 初评落一条评估记录。
   await openStartWizard(page);
   await page.getByRole("button", { name: "启动评估", exact: true }).click();

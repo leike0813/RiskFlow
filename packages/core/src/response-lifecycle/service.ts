@@ -499,6 +499,7 @@ export interface ResponseLifecycleContextReaderV1 {
       readonly reference: VersionReference;
     };
     readonly definitionTypes: readonly string[];
+    readonly policyRef?: VersionReference;
   }): Promise<readonly ResponseLifecycleBasisMemberV1[]>;
 
   /** C14 精确监测快照：只读取冻结引用，不查 latest、不自行选择序列或 cutoff。 */

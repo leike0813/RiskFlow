@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import {
   AuthorizationContextRefV1Schema,
+  AssessmentPreparationSnapshotRefV1Schema,
+  IdentificationPreparationSnapshotRefV1Schema,
   AuthorizationContextV1Schema,
   ContentArtifactRefV1Schema,
   ContractReferenceV1Schema,
@@ -194,6 +196,69 @@ export const KnowledgeReleaseV1Schema = z
   });
 export type KnowledgeReleaseV1 = z.infer<typeof KnowledgeReleaseV1Schema>;
 
+export const KnowledgePublicationOriginSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("human-reviewed"),
+    reviewTaskRef: ReviewTaskRefV1Schema,
+    reviewDecisionRef: ReviewDecisionRefV1Schema,
+  }),
+  z.strictObject({
+    kind: z.literal("derived-approved"),
+    parentReleaseRefs: z.array(KnowledgeReleaseRefV1Schema).min(1),
+    derivationPolicyRef: VersionReferenceSchema,
+    contextRef: z.union([
+      AssessmentPreparationSnapshotRefV1Schema,
+      IdentificationPreparationSnapshotRefV1Schema,
+    ]),
+  }),
+]);
+export const KnowledgeReleaseV2Schema = z
+  .strictObject(KnowledgeReleaseV1Schema.shape)
+  .omit({ reviewTaskRef: true, reviewDecisionRef: true })
+  .extend({ schemaVersion: z.literal("2"), publicationOrigin: KnowledgePublicationOriginSchema })
+  .superRefine((release, context) => {
+    const origin = release.publicationOrigin;
+    if (origin.kind === "human-reviewed") {
+      const parsed = KnowledgeReleaseV1Schema.safeParse({
+        ...Object.fromEntries(
+          Object.entries(release).filter(
+            ([key]) => key !== "schemaVersion" && key !== "publicationOrigin",
+          ),
+        ),
+        reviewTaskRef: origin.reviewTaskRef,
+        reviewDecisionRef: origin.reviewDecisionRef,
+      });
+      if (!parsed.success) for (const issue of parsed.error.issues) context.addIssue({ ...issue });
+    } else {
+      if (!["retrieval-evidence-base", "applicable-rule-set"].includes(release.definitionType))
+        context.addIssue({
+          code: "custom",
+          path: ["definitionType"],
+          message: "unsupported derived definition type",
+        });
+      if (
+        (release.definitionType === "applicable-rule-set" &&
+          origin.contextRef.kind !== "assessment-preparation-snapshot") ||
+        (release.definitionType === "retrieval-evidence-base" &&
+          origin.contextRef.kind !== "identification-preparation-snapshot")
+      )
+        context.addIssue({
+          code: "custom",
+          path: ["publicationOrigin", "contextRef"],
+          message: "derived preparation type mismatch",
+        });
+      if (release.restoredFromReleaseRef !== undefined && release.reasonCode === undefined)
+        context.addIssue({
+          code: "custom",
+          path: ["reasonCode"],
+          message: "rollback requires a reason",
+        });
+    }
+  });
+export type KnowledgeReleaseV2 = z.infer<typeof KnowledgeReleaseV2Schema>;
+export const KnowledgeReleaseSchema = z.union([KnowledgeReleaseV1Schema, KnowledgeReleaseV2Schema]);
+export type KnowledgeRelease = z.infer<typeof KnowledgeReleaseSchema>;
+
 export const KnowledgeReleaseDecisionV1Schema = z.strictObject({
   decisionRef: versionedRef("knowledge-release-decision"),
   releaseRef: KnowledgeReleaseRefV1Schema,
@@ -233,18 +298,20 @@ const uniqueDefinitionTypes = z
   .refine((values) => new Set(values).size === values.length);
 
 export const ResolveGovernedReleasesRequestV1Schema = z.strictObject({
+  invocationId: IdentifierSchema.optional(),
   projectId: IdentifierSchema,
   requiredDefinitionTypes: uniqueDefinitionTypes,
   requiredAt: IsoDateTimeSchema,
   asOfRecordedAt: IsoDateTimeSchema,
   authorization: AuthorizationContextV1Schema,
+  contextRef: ContractReferenceV1Schema.optional(),
 });
 export type ResolveGovernedReleasesRequestV1 = z.infer<
   typeof ResolveGovernedReleasesRequestV1Schema
 >;
 
 export const GovernedReleaseCandidateV1Schema = z.strictObject({
-  release: KnowledgeReleaseV1Schema,
+  release: KnowledgeReleaseSchema,
   deactivatedAt: IsoDateTimeSchema.optional(),
   deactivatedRecordedAt: IsoDateTimeSchema.optional(),
 });

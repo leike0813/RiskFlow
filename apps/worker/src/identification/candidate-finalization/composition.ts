@@ -80,6 +80,9 @@ export const createRiskCandidateFinalizationComposition = (
       );
     }
   }
+  if (typeof options.modelContextReader.readExact !== "function") {
+    throw new TypeError("risk candidate finalization requires a model context reader");
+  }
   const adapter = createPostgresRiskCandidateFinalizationAdapter({
     db: options.db,
     transactionUnit: options.transactionUnit,

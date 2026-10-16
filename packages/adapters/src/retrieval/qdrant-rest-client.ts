@@ -122,12 +122,12 @@ const collectionPath = (collectionName: string): string =>
 const filterBody = (input: {
   readonly projectId: string;
   readonly generationKey: string;
-  readonly authorizationScopeDigest: string;
+  readonly visiblePointIds: readonly string[];
 }): Readonly<Record<string, unknown>> => ({
   must: [
     { key: "projectId", match: { value: input.projectId } },
     { key: "generationKey", match: { value: input.generationKey } },
-    { key: "authorizationScopeDigest", match: { value: input.authorizationScopeDigest } },
+    { has_id: [...input.visiblePointIds] },
   ],
 });
 
@@ -358,7 +358,7 @@ export class QdrantRetrievalProjection implements RetrievalProjectionPortV1 {
     const filter = filterBody({
       projectId: input.filter.projectId,
       generationKey: input.filter.generationRef.reference.versionId,
-      authorizationScopeDigest: input.filter.authorizationScopeDigest,
+      visiblePointIds: input.filter.visiblePointIds,
     });
     const denseRequest = {
       query: { nearest: [...input.queryDenseVector] },

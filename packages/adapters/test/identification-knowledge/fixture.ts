@@ -320,7 +320,10 @@ export interface IdentificationKnowledgeFixtureV1 {
   ) => Promise<AuthorizationContextV1>;
   builderInput(): IdentificationKnowledgeBuilderInputV1;
   /** Opens an independent project with its own frozen identification preparation. */
-  createPreparationWorld(suffix: string): Promise<IdentificationPreparationWorldV1>;
+  createPreparationWorld(
+    suffix: string,
+    documentKinds?: CleaningWorldOptionsV1["documentKinds"],
+  ): Promise<IdentificationPreparationWorldV1>;
   close(): Promise<void>;
 }
 
@@ -397,7 +400,6 @@ const readPreparationWorld = async (
   const segmentIds = [
     ...new Set(read.result.inputs.flatMap((status) => status.retainedSegmentIds)),
   ];
-  const evidenceSource = snapshot.sourceVersionRefs[0]!;
   const context: IdentificationKnowledgeWorldContextV1 = {
     projectId: world.projectId,
     spatialScopeRefs: [...snapshot.spatialScopeRefs],
@@ -412,13 +414,17 @@ const readPreparationWorld = async (
     segmentIds,
     excludedSegmentIds,
     readAuthorization: authorization,
-    evidence: segmentIds
-      .filter((segmentId) => !excluded.has(segmentId))
-      .slice(0, 4)
-      .map((segmentId) => ({
-        locator: { sourceSegmentId: segmentId },
-        sourceVersion: evidenceSource.reference,
-      })),
+    evidence: read.result.inputs.flatMap((status) =>
+      status.sourceVersionRef === undefined
+        ? []
+        : status.retainedSegmentIds
+            .filter((segmentId) => !excluded.has(segmentId))
+            .slice(0, 4)
+            .map((segmentId) => ({
+              locator: { sourceSegmentId: segmentId },
+              sourceVersion: status.sourceVersionRef!.reference,
+            })),
+    ),
   };
 };
 
@@ -513,6 +519,7 @@ export const startIdentificationKnowledgeFixture =
       return context;
     };
     const preparationReader = new PostgresIdentificationPreparationKnowledgeReader({
+      artifactStore: cleaning.artifactStore,
       narrowRead: {
         preparationRead: cleaning.store,
         engineeringData: cleaning.registry,
@@ -754,10 +761,10 @@ export const startIdentificationKnowledgeFixture =
         generatedAt: IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
         evidence: world.evidence,
       }),
-      async createPreparationWorld(suffix) {
+      async createPreparationWorld(suffix, documentKinds = ["csv"]) {
         const extra = await prepareWorld(cleaning, {
           suffix,
-          documentKinds: ["csv"],
+          documentKinds,
         });
         readingCache.set(extra.projectId, extra);
         return extra;

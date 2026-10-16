@@ -2097,7 +2097,7 @@ export class PostgresCalibrationAdapter
       }
       chunks.push(chunk);
     }
-    await handle.verified;
+    await handle.completed;
     const buffer = new Uint8Array(byteLength);
     let offset = 0;
     for (const chunk of chunks) {

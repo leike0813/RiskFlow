@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   AgentTaskDefinitionRegistry,
   AgentRuntimeError,
@@ -22,14 +24,18 @@ import {
 } from "@riskflow/core/agent-runtime";
 import {
   ArtifactReadRequestV1Schema,
+  ArtifactStoreError,
+  ArtifactRefV1Schema,
   type ArtifactRefV1,
   type ArtifactStoreV1,
 } from "@riskflow/core/artifacts";
-import type {
-  ModelGatewayPortV1,
-  StructuredCompletionRequestV1,
-  StructuredCompletionResultV1,
+import {
+  ModelGatewayError,
+  type ModelGatewayPortV1,
+  type StructuredCompletionRequestV1,
+  type StructuredCompletionResultV1,
 } from "@riskflow/core/model";
+import { AccessServiceError } from "@riskflow/core/access";
 import {
   AgentTaskResultRefV1Schema,
   type AgentTaskRefV1,
@@ -47,14 +53,23 @@ import type {
   AgentTaskExecutionStoreV1,
 } from "@riskflow/adapters/agent-runtime";
 
+export interface AgentCompletedToolCallV1 {
+  readonly toolRef: VersionReference;
+  readonly input: unknown;
+  readonly observationArtifactRef: ArtifactRefV1;
+}
+
+/** 模型步上下文只提供已完成的工具事实；数组长度由原任务硬工具预算约束，不另设上限。 */
 export interface AgentModelStepContextV1 {
   readonly previousObservationArtifactRef?: ArtifactRefV1;
+  readonly completedToolCalls?: ReadonlyArray<AgentCompletedToolCallV1>;
 }
 
 export interface AgentModelStepRequestV1 {
   readonly messages: StructuredCompletionRequestV1["messages"];
   readonly maxOutputTokens: number;
   readonly outputSchemaRef?: VersionReference;
+  readonly outputSchema?: Parameters<ModelGatewayPortV1["completeStructured"]>[1];
   readonly reservationAmount?: Partial<AgentBudgetUsageV1>;
   readonly domainTool?: {
     readonly toolRef: VersionReference;
@@ -95,6 +110,7 @@ export interface AgentRuntimeRunnerOptionsV1 {
     response: StructuredCompletionResultV1<unknown>,
     task: AgentTaskSnapshotV1,
     definition: AgentTaskDefinitionV1,
+    context?: AgentModelStepContextV1,
   ) => Promise<AgentStepOutcomeV1> | AgentStepOutcomeV1;
   readonly persistArtifact?: (input: {
     readonly task: AgentTaskSnapshotV1;
@@ -103,8 +119,16 @@ export interface AgentRuntimeRunnerOptionsV1 {
     readonly value: unknown;
     readonly signal: AbortSignal;
   }) => Promise<ArtifactRefV1>;
+  readonly onAction?: (actionId: string) => void;
   /** 宿主可选注入的任务作用域：单任务执行（模型、工具、候选收口、租约处理）整体在其中运行；未注入时行为不变。 */
-  readonly runTask?: (task: AgentTaskSnapshotV1, operation: () => Promise<void>) => Promise<void>;
+  readonly runTask?: (
+    task: AgentTaskSnapshotV1,
+    operation: () => Promise<void>,
+    execution: {
+      readonly workerId: string;
+      readonly leaseToken: string;
+    },
+  ) => Promise<void>;
 }
 
 const nowIso = (): string => new Date().toISOString();
@@ -118,6 +142,37 @@ const asError = (
   actionId: string,
 ): AgentStructuredErrorV1 => {
   if (error instanceof AgentRuntimeError) return error.details;
+  if (error instanceof ArtifactStoreError)
+    return makeAgentError({
+      code:
+        error.code === "ARTIFACT_ACCESS_DENIED"
+          ? "AGENT_AUTHORIZATION_DENIED"
+          : "AGENT_ARTIFACT_FAILURE",
+      category: error.code === "ARTIFACT_ACCESS_DENIED" ? "authorization" : "artifact",
+      retryable: error.retryable,
+      stage: error.stage,
+      taskRef,
+      actionId,
+      diagnosticRef: error.diagnosticRef,
+    });
+  if (error instanceof AccessServiceError)
+    return makeAgentError({
+      code: "AGENT_AUTHORIZATION_DENIED",
+      category: "authorization",
+      retryable: error.details.retryable,
+      stage: error.details.stage,
+      taskRef,
+      actionId,
+    });
+  if (error instanceof ModelGatewayError)
+    return makeAgentError({
+      code: "AGENT_MODEL_FAILURE",
+      category: "model",
+      retryable: error.retryable,
+      stage: error.stage,
+      taskRef,
+      actionId,
+    });
   if (
     (typeof DOMException !== "undefined" &&
       error instanceof DOMException &&
@@ -136,9 +191,9 @@ const asError = (
       actionId,
     });
   return makeAgentError({
-    code: "AGENT_MODEL_FAILURE",
-    category: "model",
-    retryable: true,
+    code: "AGENT_TOOL_FAILURE",
+    category: "tool",
+    retryable: false,
     stage: "worker.step",
     taskRef,
     actionId,
@@ -348,7 +403,11 @@ export class AgentRuntimeRunner {
       processed += 1;
       // 作用域构造失败时直接上抛：租约未确认，等原过期恢复，不在本处伪造终态。
       if (this.#options.runTask === undefined) await this.#runClaim(claim, signal);
-      else await this.#options.runTask(claim.task, () => this.#runClaim(claim, signal));
+      else
+        await this.#options.runTask(claim.task, () => this.#runClaim(claim, signal), {
+          workerId: claim.workerId,
+          leaseToken: claim.leaseToken,
+        });
     }
     return processed;
   }
@@ -425,6 +484,7 @@ export class AgentRuntimeRunner {
     purposeCode: string,
     signal: AbortSignal,
   ): Promise<unknown> {
+    this.#options.onAction?.(actionId);
     const store = this.#options.artifactStore;
     const requiredCapability = task.envelope.authorization.grantedCapabilities[0];
     if (store === undefined || requiredCapability === undefined)
@@ -439,42 +499,51 @@ export class AgentRuntimeRunner {
         }),
       );
     const now = IsoDateTimeSchema.parse(this.#now());
-    const handle = await awaitWithAbort(
-      store.open(
-        ArtifactReadRequestV1Schema.parse({
-          schemaVersion: "1",
-          requestId: `${actionId}:${purposeCode}:read`,
-          idempotencyKey: `${actionId}:${purposeCode}:read`,
-          artifactRef,
-          projectId: task.envelope.projectId,
-          actorId: task.envelope.actorId,
-          requestedAt: now,
-          purposeCode,
-          requiredCapability,
-          authorization: task.envelope.authorization,
-        }),
-      ),
-      signal,
-    );
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    for await (const chunk of handle.content) {
-      size += chunk.byteLength;
-      if (size > 1_048_576)
-        throw new AgentRuntimeError(
-          makeAgentError({
-            code: "AGENT_ARTIFACT_FAILURE",
-            category: "artifact",
-            retryable: false,
-            stage: "worker.recovery.artifact-size",
-            taskRef: task.envelope.agentTaskRef,
-            actionId,
+    const readId = `${actionId}:${purposeCode}:read:${randomUUID()}`;
+    try {
+      const handle = await awaitWithAbort(
+        store.open(
+          ArtifactReadRequestV1Schema.parse({
+            schemaVersion: "1",
+            requestId: readId,
+            idempotencyKey: readId,
+            artifactRef,
+            projectId: task.envelope.projectId,
+            actorId: task.envelope.actorId,
+            requestedAt: now,
+            purposeCode,
+            requiredCapability,
+            authorization: task.envelope.authorization,
           }),
-        );
-      chunks.push(chunk);
+        ),
+        signal,
+      );
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      for await (const chunk of handle.content) {
+        size += chunk.byteLength;
+        if (size > 1_048_576)
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_ARTIFACT_FAILURE",
+              category: "artifact",
+              retryable: false,
+              stage: "worker.recovery.artifact-size",
+              taskRef: task.envelope.agentTaskRef,
+              actionId,
+            }),
+          );
+        chunks.push(chunk);
+      }
+      await awaitWithAbort(handle.completed, signal);
+      return JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
+    } catch (error) {
+      // 恢复证据不可读时无法证明安全重放，保留失败类别并终止。
+      throw new AgentRuntimeError({
+        ...asError(error, task.envelope.agentTaskRef, actionId),
+        retryable: false,
+      });
     }
-    await awaitWithAbort(handle.verified, signal);
-    return JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
   }
 
   async #executeModel(
@@ -482,7 +551,10 @@ export class AgentRuntimeRunner {
     definition: AgentTaskDefinitionV1,
     actionId: string,
     signal: AbortSignal,
+    reservationAmount: AgentBudgetUsageV1,
+    observeResponse: (response: StructuredCompletionResultV1<unknown>) => void,
     rendered?: AgentModelStepRequestV1,
+    context?: AgentModelStepContextV1,
   ): Promise<{
     readonly outcome: AgentStepOutcomeV1;
     readonly raw: StructuredCompletionResultV1<unknown>;
@@ -525,14 +597,17 @@ export class AgentRuntimeRunner {
       promptTemplateRef: task.envelope.promptTemplateRef,
       outputSchemaRef,
       messages: request.messages,
-      outputSchema: definition.actionSchema,
+      outputSchema: request.outputSchema ?? definition.actionSchema,
       maxOutputTokens: request.maxOutputTokens,
+      reservationAmount,
       remainingWallClockMs: task.budgetPolicy.maxWallClockMs - task.budgetLedger.activeWallClockMs,
       now: this.#now(),
       signal,
     });
-    this.#options.registry.parseAction(task.envelope.taskType, raw.value);
-    return { raw, outcome: await interpret(raw, task, definition) };
+    observeResponse(raw);
+    if (request.outputSchema === undefined)
+      this.#options.registry.parseAction(task.envelope.taskType, raw.value);
+    return { raw, outcome: await interpret(raw, task, definition, context) };
   }
 
   async #runClaim(claim: AgentTaskClaimV1, signal: AbortSignal): Promise<void> {
@@ -548,6 +623,9 @@ export class AgentRuntimeRunner {
     else signal.addEventListener("abort", abortOperation, { once: true });
     let leaseMonitor: LeaseMonitorV1 | undefined;
     let actionStartedAt: number | undefined;
+    let actionEvidenceRef: ArtifactRefV1 | undefined;
+    let actionUsage: AgentBudgetUsageV1 | undefined;
+    let actionRawResponseRef: ArtifactRefV1 | undefined;
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     let wallClockExceeded = false;
     const activeActionWallClockMs = () =>
@@ -556,6 +634,9 @@ export class AgentRuntimeRunner {
       if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
       deadlineTimer = undefined;
       actionStartedAt = undefined;
+      actionEvidenceRef = undefined;
+      actionUsage = undefined;
+      actionRawResponseRef = undefined;
     };
     const throwLeaseFailure = () => {
       if (wallClockExceeded)
@@ -637,13 +718,9 @@ export class AgentRuntimeRunner {
               task.budgetPolicy.maxSupplementarySearches,
             ),
             corrections: remaining(task, "corrections", task.budgetPolicy.maxCorrections),
-            transientRetries: remaining(
-              task,
-              "transientRetries",
-              task.budgetPolicy.maxTransientRetries,
-            ),
           });
     try {
+      this.#options.onAction?.(actionId);
       definition = this.#options.registry.get(taskRef.taskType);
       await this.#options.store.verifyWorker(currentTask, currentTask.envelope.commandId);
       if (operationController.signal.aborted || currentTask.state.cancelRequested) {
@@ -658,6 +735,7 @@ export class AgentRuntimeRunner {
       }
       let pendingTool: { readonly toolRef: VersionReference; readonly input: unknown } | undefined;
       let previousObservationArtifactRef: ArtifactRefV1 | undefined;
+      const completedToolCalls: AgentCompletedToolCallV1[] = [];
       let completed = await this.#options.store.findAction(taskRef, actionId);
       while (completed?.status === "completed" && completed.resultRef === undefined) {
         if (
@@ -689,7 +767,48 @@ export class AgentRuntimeRunner {
             pendingTool = { toolRef, input };
           }
         } else if (completed.actionType === "domain-tool") {
-          previousObservationArtifactRef = completed.resultArtifactRef;
+          if (completed.resultArtifactRef === undefined)
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_ARTIFACT_FAILURE",
+                category: "artifact",
+                retryable: false,
+                stage: "worker.recovery.observation",
+                taskRef,
+                actionId,
+              }),
+            );
+          const recorded = await this.#readJson(
+            currentTask,
+            actionId,
+            completed.resultArtifactRef,
+            "agent-tool-observation",
+            operationController.signal,
+          );
+          if (
+            typeof recorded !== "object" ||
+            recorded === null ||
+            !("observationArtifactRef" in recorded)
+          )
+            throw new AgentRuntimeError(
+              makeAgentError({
+                code: "AGENT_ARTIFACT_FAILURE",
+                category: "artifact",
+                retryable: false,
+                stage: "worker.recovery.observation",
+                taskRef,
+                actionId,
+              }),
+            );
+          previousObservationArtifactRef = ArtifactRefV1Schema.parse(
+            recorded.observationArtifactRef,
+          );
+          if (pendingTool !== undefined)
+            completedToolCalls.push({
+              toolRef: pendingTool.toolRef,
+              input: pendingTool.input,
+              observationArtifactRef: previousObservationArtifactRef,
+            });
           pendingTool = undefined;
         }
         sequence += 1;
@@ -722,6 +841,35 @@ export class AgentRuntimeRunner {
         }
         return;
       }
+      if (completed?.status === "failed" && completed.actionType === "domain-tool") {
+        const intent = await this.#readJson(
+          currentTask,
+          actionId,
+          completed.intentArtifactRef,
+          "agent-action-intent",
+          operationController.signal,
+        );
+        if (
+          typeof intent !== "object" ||
+          intent === null ||
+          !("toolRef" in intent) ||
+          !("input" in intent)
+        )
+          throw new AgentRuntimeError(
+            makeAgentError({
+              code: "AGENT_INPUT_INVALID",
+              category: "input",
+              retryable: false,
+              stage: "worker.retry.intent",
+              taskRef,
+              actionId,
+            }),
+          );
+        pendingTool = {
+          toolRef: VersionReferenceSchema.parse(intent.toolRef),
+          input: this.#options.registry.parseAction(taskRef.taskType, intent.input),
+        };
+      }
       leaseMonitor = startLeaseMonitor({
         store: this.#options.store,
         claim,
@@ -732,6 +880,7 @@ export class AgentRuntimeRunner {
       });
       let recovering = completed?.status === "started";
       while (true) {
+        this.#options.onAction?.(actionId);
         let rendered: AgentModelStepRequestV1 | undefined;
         let reservation: AgentTaskActionReservationV1;
         let outcome: AgentStepOutcomeV1;
@@ -782,7 +931,8 @@ export class AgentRuntimeRunner {
               throw new Error("invalid tool intent");
             toolRef = VersionReferenceSchema.parse(intent.toolRef);
             typedToolInput = this.#options.registry.parseAction(taskRef.taskType, intent.input);
-          } catch {
+          } catch (error) {
+            if (error instanceof AgentRuntimeError) throw error;
             throw new AgentRuntimeError(
               makeAgentError({
                 code: "AGENT_ACTION_UNCERTAIN",
@@ -862,13 +1012,30 @@ export class AgentRuntimeRunner {
                   taskRef,
                 }),
               );
-            rendered = await this.#options.renderModelStep(
-              currentTask,
-              definition,
-              previousObservationArtifactRef === undefined
+            rendered = await this.#options.renderModelStep(currentTask, definition, {
+              ...(previousObservationArtifactRef === undefined
                 ? {}
-                : { previousObservationArtifactRef },
-            );
+                : { previousObservationArtifactRef }),
+              ...(completedToolCalls.length === 0
+                ? {}
+                : { completedToolCalls: [...completedToolCalls] }),
+            });
+            if (completed?.errorCode === "AGENT_VALIDATION_REJECTED")
+              rendered = {
+                ...rendered,
+                messages: [
+                  ...rendered.messages,
+                  {
+                    role: "user",
+                    content: JSON.stringify({
+                      validationFeedback: {
+                        code: completed.errorCode,
+                        reasonCode: currentTask.state.error?.reasonCode,
+                      },
+                    }),
+                  },
+                ],
+              };
             toolRef =
               rendered.domainTool === undefined
                 ? undefined
@@ -886,6 +1053,27 @@ export class AgentRuntimeRunner {
               actionType = "domain-tool";
             } else {
               actionType = "model-invocation";
+              const maxOutputTokens = Math.min(
+                rendered.maxOutputTokens,
+                remaining(
+                  currentTask,
+                  "outputTokens",
+                  currentTask.budgetPolicy.maxOutputTokens ??
+                    currentTask.budgetPolicy.maxContextTokens,
+                ),
+              );
+              if (maxOutputTokens < 1)
+                throw new AgentRuntimeError(
+                  makeAgentError({
+                    code: "AGENT_BUDGET_EXHAUSTED",
+                    category: "budget",
+                    retryable: false,
+                    stage: "worker.model.output-budget",
+                    taskRef,
+                    actionId,
+                  }),
+                );
+              rendered = { ...rendered, maxOutputTokens };
               if (
                 this.#options.modelGateway === undefined ||
                 this.#options.interpretModelStep === undefined
@@ -921,23 +1109,26 @@ export class AgentRuntimeRunner {
             return;
           }
           await this.#options.store.verifyWorker(currentTask, currentTask.envelope.commandId);
-          const intentArtifactRef = await this.#persistJson(
-            currentTask,
-            actionId,
-            "agent-action-intent",
-            {
-              schemaVersion: "1",
-              taskRef,
-              actionId,
-              sequence,
-              actionType,
-              modelDeploymentRef: taskRef.modelDeploymentRef,
-              promptTemplateRef: taskRef.promptTemplateRef,
-              toolPolicyRef: taskRef.toolPolicyRef,
-              ...(toolRef === undefined ? {} : { toolRef, input: typedToolInput }),
-            },
-            operationController.signal,
-          );
+          const intentArtifactRef =
+            completed?.status === "failed"
+              ? completed.intentArtifactRef
+              : await this.#persistJson(
+                  currentTask,
+                  actionId,
+                  "agent-action-intent",
+                  {
+                    schemaVersion: "1",
+                    taskRef,
+                    actionId,
+                    sequence,
+                    actionType,
+                    modelDeploymentRef: taskRef.modelDeploymentRef,
+                    promptTemplateRef: taskRef.promptTemplateRef,
+                    toolPolicyRef: taskRef.toolPolicyRef,
+                    ...(toolRef === undefined ? {} : { toolRef, input: typedToolInput }),
+                  },
+                  operationController.signal,
+                );
           throwLeaseFailure();
           const requestedAmount = maxUsage(
             rendered?.reservationAmount,
@@ -947,8 +1138,22 @@ export class AgentRuntimeRunner {
               : {
                   ...(currentTask.budgetPolicy.maxInputTokens === undefined
                     ? {}
-                    : { inputTokens: currentTask.budgetPolicy.maxInputTokens }),
-                  outputTokens: rendered.maxOutputTokens,
+                    : {
+                        inputTokens: remaining(
+                          currentTask,
+                          "inputTokens",
+                          currentTask.budgetPolicy.maxInputTokens,
+                        ),
+                      }),
+                  outputTokens: Math.min(
+                    rendered.maxOutputTokens,
+                    remaining(
+                      currentTask,
+                      "outputTokens",
+                      currentTask.budgetPolicy.maxOutputTokens ??
+                        currentTask.budgetPolicy.maxContextTokens,
+                    ),
+                  ),
                 },
           );
           reservation = await this.#options.store.reserveAction({
@@ -964,6 +1169,12 @@ export class AgentRuntimeRunner {
             amount: requestedAmount,
             now: this.#now(),
           });
+          actionUsage = {
+            ...emptyAgentBudgetUsage(),
+            transientRetries: reservation.reservation.amount.transientRetries,
+            corrections: completed?.errorCode === "AGENT_VALIDATION_REJECTED" ? 1 : 0,
+          };
+          completed = undefined;
           intentRecorded = true;
           throwLeaseFailure();
           actionStartedAt = Date.now();
@@ -1003,7 +1214,21 @@ export class AgentRuntimeRunner {
                 definition,
                 actionId,
                 operationController.signal,
+                reservation.reservation.amount,
+                (response) => {
+                  actionRawResponseRef = response.rawResponseRef;
+                  actionUsage = {
+                    ...usageFromModel(
+                      response,
+                      rendered?.messages ?? [],
+                      reservation.reservation.amount,
+                    ),
+                    transientRetries: reservation.reservation.amount.transientRetries,
+                    corrections: actionUsage?.corrections ?? 0,
+                  };
+                },
                 rendered,
+                { completedToolCalls: [...completedToolCalls] },
               ),
               operationController.signal,
             );
@@ -1056,7 +1281,7 @@ export class AgentRuntimeRunner {
         const evidenceRef = await this.#persistJson(
           reservation.task,
           actionId,
-          "agent-action-result",
+          actionType === "domain-tool" ? "agent-tool-observation" : "agent-action-result",
           {
             schemaVersion: "1",
             taskRef,
@@ -1076,6 +1301,7 @@ export class AgentRuntimeRunner {
           },
           operationController.signal,
         );
+        actionEvidenceRef = evidenceRef;
         throwLeaseFailure();
         let usage = normalizeAgentActionUsage(
           actionType,
@@ -1086,6 +1312,15 @@ export class AgentRuntimeRunner {
                 usageFromModel(modelRaw, rendered?.messages ?? [], reservation.reservation.amount),
               ),
         );
+        usage = {
+          ...usage,
+          corrections: Math.max(usage.corrections, actionUsage?.corrections ?? 0),
+          transientRetries: Math.max(
+            usage.transientRetries,
+            reservation.reservation.amount.transientRetries,
+          ),
+        };
+        actionUsage = usage;
         if (actionType === "model-invocation" && outcome.kind === "tool-request") {
           currentTask = await this.#options.store.completeAction({
             taskRef,
@@ -1123,13 +1358,20 @@ export class AgentRuntimeRunner {
             workerId: claim.workerId,
             leaseToken: claim.leaseToken,
             actionId,
-            resultArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
+            resultArtifactRef: evidenceRef,
             usage,
             activeWallClockMs: activeActionWallClockMs(),
             now: this.#now(),
           });
           intentRecorded = false;
           clearAction();
+          // 成功完成的工具事实在清除待执行配对前入列，供后续模型步与恢复复用。
+          if (pendingTool !== undefined)
+            completedToolCalls.push({
+              toolRef: pendingTool.toolRef,
+              input: pendingTool.input,
+              observationArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
+            });
           previousObservationArtifactRef = outcome.resultArtifactRef ?? evidenceRef;
           pendingTool = undefined;
           sequence += 1;
@@ -1166,6 +1408,7 @@ export class AgentRuntimeRunner {
             candidate.candidateVersion > 1 ? { corrections: 1 } : undefined,
           );
           usage = normalizeAgentActionUsage(actionType, maxUsage(usage, measuredUsage));
+          actionUsage = usage;
           const validation = AgentValidationResultV1Schema.parse(
             await awaitWithAbort(
               Promise.resolve(
@@ -1278,7 +1521,10 @@ export class AgentRuntimeRunner {
             workerId: claim.workerId,
             leaseToken: claim.leaseToken,
             actionId,
-            resultArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
+            resultArtifactRef:
+              actionType === "domain-tool"
+                ? evidenceRef
+                : (outcome.resultArtifactRef ?? evidenceRef),
             usage,
             activeWallClockMs: activeActionWallClockMs(),
             now: this.#now(),
@@ -1347,7 +1593,10 @@ export class AgentRuntimeRunner {
             leaseToken: claim.leaseToken,
             actionId,
             resultRef: outcome.resultRef,
-            resultArtifactRef: outcome.resultArtifactRef ?? evidenceRef,
+            resultArtifactRef:
+              actionType === "domain-tool"
+                ? evidenceRef
+                : (outcome.resultArtifactRef ?? evidenceRef),
             usage,
             activeWallClockMs: activeActionWallClockMs(),
             now: this.#now(),
@@ -1412,6 +1661,23 @@ export class AgentRuntimeRunner {
       }
     } catch (error) {
       if (leaseMonitor !== undefined) await leaseMonitor.stop().catch(() => undefined);
+      const modelFailure =
+        error instanceof ModelGatewayError
+          ? error
+          : error instanceof AgentRuntimeError && error.cause instanceof ModelGatewayError
+            ? error.cause
+            : undefined;
+      if (modelFailure?.rawResponseRef !== undefined) {
+        actionRawResponseRef = modelFailure.rawResponseRef;
+        actionUsage = {
+          ...(actionUsage ?? emptyAgentBudgetUsage()),
+          modelInvocations: 1,
+          inputTokens: modelFailure.counts?.inputTokens ?? 0,
+          outputTokens: modelFailure.counts?.outputTokens ?? 0,
+          contextTokens:
+            (modelFailure.counts?.inputTokens ?? 0) + (modelFailure.counts?.outputTokens ?? 0),
+        };
+      }
       const failure = wallClockExceeded
         ? makeAgentError({
             code: "AGENT_WALL_CLOCK_EXCEEDED",
@@ -1423,12 +1689,12 @@ export class AgentRuntimeRunner {
           })
         : asError(leaseMonitor?.failure() ?? error, taskRef, actionId);
       if (!intentRecorded) {
-        if (!failure.retryable && this.#options.store.failTask !== undefined)
+        if (this.#options.store.failTask !== undefined)
           await this.#options.store.failTask({
             taskRef,
             workerId: claim.workerId,
             leaseToken: claim.leaseToken,
-            error: failure,
+            error: { ...failure, retryable: false },
             now: this.#now(),
           });
         else
@@ -1441,6 +1707,22 @@ export class AgentRuntimeRunner {
           });
         return;
       }
+      if (actionEvidenceRef === undefined && actionRawResponseRef !== undefined)
+        actionEvidenceRef = await this.#persistJson(
+          currentTask,
+          actionId,
+          "agent-action-result",
+          {
+            schemaVersion: "1",
+            taskRef,
+            actionId,
+            disposition: "failed",
+            rawResponseRef: actionRawResponseRef,
+            usage: actionUsage,
+            error: failure,
+          },
+          new AbortController().signal,
+        );
       await this.#options.store.failAction({
         taskRef,
         workerId: claim.workerId,
@@ -1448,6 +1730,8 @@ export class AgentRuntimeRunner {
         actionId,
         error: failure,
         uncertain: failure.code === "AGENT_ACTION_UNCERTAIN",
+        ...(actionEvidenceRef === undefined ? {} : { resultArtifactRef: actionEvidenceRef }),
+        ...(actionUsage === undefined ? {} : { usage: actionUsage }),
         activeWallClockMs: activeActionWallClockMs(),
         now: this.#now(),
       });

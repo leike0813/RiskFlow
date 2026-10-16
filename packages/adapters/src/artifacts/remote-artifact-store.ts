@@ -231,15 +231,15 @@ export const createRemoteArtifactStoreV1 = (
       }
       const resolvedManifest = ArtifactManifestV1Schema.parse(jsonOf(first.value.payload));
 
-      // verified 只反映消费结果，自身不驱动迭代。
+      // completed 只反映消费结果，自身不驱动迭代。
       // 与 C04 filesystem store 相同：显式 deferred，避免 ES2023 下缺 withResolvers。
       let resolveVerified!: (receipt: ArtifactReadReceiptV1) => void;
       let rejectVerified!: (error: unknown) => void;
-      const verified = new Promise<ArtifactReadReceiptV1>((resolvePromise, rejectPromise) => {
+      const completed = new Promise<ArtifactReadReceiptV1>((resolvePromise, rejectPromise) => {
         resolveVerified = resolvePromise;
         rejectVerified = rejectPromise;
       });
-      void verified.catch(() => undefined);
+      void completed.catch(() => undefined);
 
       const content = (async function* (): AsyncGenerator<Uint8Array> {
         let drained = false;
@@ -264,7 +264,7 @@ export const createRemoteArtifactStoreV1 = (
             }
             throw new ArtifactStreamError(ARTIFACT_STREAM_ERROR_V1.unexpectedFrame);
           }
-          // 只有消费方把正文读完，且回执与 manifest 一致，才算 verified。
+          // 只有消费方把正文读完，且回执与 manifest 一致，才算 completed。
           if (receipt === undefined) {
             throw new ArtifactStreamError(ARTIFACT_STREAM_ERROR_V1.incompleteRead);
           }
@@ -290,7 +290,7 @@ export const createRemoteArtifactStoreV1 = (
         }
       })();
 
-      return { manifest: resolvedManifest, content, verified };
+      return { manifest: resolvedManifest, content, completed };
     },
 
     async drain(timeoutMs: number) {

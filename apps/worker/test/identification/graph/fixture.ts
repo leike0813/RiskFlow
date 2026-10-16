@@ -17,6 +17,7 @@ import { join } from "node:path";
 import type { VersionReference } from "@riskflow/contracts/common";
 import {
   ModuleErrorV1Schema,
+  MODULE_BRANCH_CAPABILITY_V1,
   type AgentTaskRefV1,
   type IdentificationAnalysisCommandV1,
   type IdentificationFinalizationCommandV1,
@@ -35,6 +36,7 @@ import type { IdentificationPreparationSnapshotV1 } from "@riskflow/contracts/wo
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import {
+  agentTaskRefFor,
   AgentBudgetLedgerV1Schema,
   AgentStructuredErrorV1Schema,
   AgentTaskBudgetPolicyV1Schema,
@@ -419,6 +421,7 @@ export interface IdentificationGraphWorldV1 {
   mechanismNodes: readonly string[];
   /** 每个工作项的 C08 任务内部状态；缺省 `completed`。 */
   agentTaskStatus: Map<string, AgentInternalStatusV1>;
+  agentTaskParents: Map<string, WorkflowRunRefV1>;
   /** I5 每个工作项的 `repair-and-validate` 覆盖结果。 */
   validationOverride: Map<string, "failed" | "waiting">;
   /** I4 返回正式零结果的工作项节点（缺省非空候选）。 */
@@ -455,6 +458,7 @@ export interface IdentificationGraphWorldV1 {
     readonly prepareReview: { readonly taskRef: AgentTaskRefV1 }[];
     readonly assembleContext: { readonly workItemRef: { reference: VersionReference } }[];
     readonly startTask: {
+      readonly taskRef: AgentTaskRefV1;
       readonly commandId: string;
       readonly idempotencyKey: string;
       readonly payload: {
@@ -487,6 +491,7 @@ export const createWorld = (): IdentificationGraphWorldV1 => ({
   applicableNodes: [NODE_CURRENT, NODE_NEIGHBOR],
   mechanismNodes: [NODE_CURRENT, NODE_NEIGHBOR],
   agentTaskStatus: new Map(),
+  agentTaskParents: new Map(),
   validationOverride: new Map(),
   zeroResultNodes: new Set(),
   zeroResultRead: new Map(),
@@ -514,13 +519,16 @@ export const createWorld = (): IdentificationGraphWorldV1 => ({
 });
 
 /** 稳定输入快照身份与工作计划身份（与 core 纯函数同一派生规则，供用例断言）。 */
-const INPUT_SNAPSHOT_REF = identificationInputSnapshotRefFor({
-  projectId: PROJECT_ID,
-  preparationSnapshotRef: PREPARATION_SNAPSHOT_REF,
-  policySetRef: POLICY_SET_REF,
-  processModelReleaseRef: PROCESS_MODEL_RELEASE_REF.reference,
-  retrievalEvidenceBaseReleaseRef: EVIDENCE_BASE_RELEASE_REF.reference,
-});
+const inputSnapshotRefForRun = (identificationRunRef?: WorkflowRunRefV1) =>
+  identificationInputSnapshotRefFor({
+    identificationRunRef,
+    projectId: PROJECT_ID,
+    preparationSnapshotRef: PREPARATION_SNAPSHOT_REF,
+    policySetRef: POLICY_SET_REF,
+    processModelReleaseRef: PROCESS_MODEL_RELEASE_REF.reference,
+    retrievalEvidenceBaseReleaseRef: EVIDENCE_BASE_RELEASE_REF.reference,
+  });
+const INPUT_SNAPSHOT_REF = inputSnapshotRefForRun();
 const WORK_PLAN_REF = identificationWorkPlanRefFor({
   projectId: PROJECT_ID,
   inputSnapshotRef: INPUT_SNAPSHOT_REF,
@@ -532,24 +540,33 @@ export const WORK_PLAN_ENTITY_ID = WORK_PLAN_REF.reference.entityId;
 export const workItemRefFor = (
   workPlanEntityId: string,
   nodeId: string,
+  runRef?: WorkflowRunRefV1,
 ): { readonly kind: "identification-work-item"; readonly reference: VersionReference } =>
   identificationWorkItemRefFor({
     projectId: PROJECT_ID,
     workPlanRef:
       workPlanEntityId === WORK_PLAN_ENTITY_ID
-        ? WORK_PLAN_REF
+        ? runRef === undefined
+          ? WORK_PLAN_REF
+          : identificationWorkPlanRefFor({
+              projectId: PROJECT_ID,
+              inputSnapshotRef: inputSnapshotRefForRun(runRef),
+            })
         : refOf("identification-work-plan", workPlanEntityId),
     nodeId,
   });
 
 /** 稳定 Agent 任务身份：直接复用图的公开派生函数，避免夹具与实现漂移。 */
-export const reviewTaskRefFor = (workItemRef: {
-  readonly kind: "identification-work-item";
-  readonly reference: VersionReference;
-}): AgentTaskRefV1 =>
+export const reviewTaskRefFor = (
+  workItemRef: {
+    readonly kind: "identification-work-item";
+    readonly reference: VersionReference;
+  },
+  runRef: WorkflowRunRefV1 = PARENT_RUN_REF,
+): AgentTaskRefV1 =>
   retrievalReviewTaskRefFor({
     projectId: PROJECT_ID,
-    workItemRef,
+    idempotencyKey: `${runRef.reference.versionId}:I3:task:${workItemRef.reference.entityId}`,
     refs: {
       policyRef: REVIEW_POLICY_REF,
       modelDeploymentRef: MODEL_DEPLOYMENT_REF,
@@ -641,17 +658,14 @@ const zeroResultValueFor = (nodeId: string): RiskCandidateZeroResultV1 =>
     formedAt: TIMESTAMP,
   });
 
-/** 占位计划身份：只用于构造替身“返回”的任务引用，图从不据此比对身份。 */
-const DUMMY_WORK_PLAN_ENTITY_ID = `identification-work-plan:${PROJECT_ID}:seed`;
-
-/** 仅用于替身返回值的任务引用（图用的是自己按冻结引用派生的身份）。 */
-const dummyTaskRefFor = (nodeId: string): AgentTaskRefV1 =>
-  reviewTaskRefFor(workItemRefFor(DUMMY_WORK_PLAN_ENTITY_ID, nodeId));
-
 /** C08 任务快照替身：图只读 `state.status` 与 `state.resultRef`。 */
 export const agentTaskSnapshot = (
   taskRef: AgentTaskRefV1,
-  input: { readonly status: AgentInternalStatusV1; readonly incrementRef: VersionReference },
+  input: {
+    readonly status: AgentInternalStatusV1;
+    readonly incrementRef: VersionReference;
+    readonly parentRunRef?: WorkflowRunRefV1;
+  },
 ): AgentTaskSnapshotV1 => {
   const envelope = AgentTaskEnvelopeV1Schema.parse({
     schemaVersion: "1",
@@ -662,7 +676,7 @@ export const agentTaskSnapshot = (
     triggerMode: "embedded",
     projectId: PROJECT_ID,
     actorId: ACTOR_ID,
-    parentRunRef: PARENT_RUN_REF,
+    parentRunRef: input.parentRunRef ?? PARENT_RUN_REF,
     frozenInputRef: refOf(
       "content-artifact",
       "retrieval-review-candidate-set",
@@ -806,7 +820,7 @@ export const createGraphAccess = (world: IdentificationGraphWorldV1): GraphAcces
           invocationId: input.invocationId,
           branch: input.branch,
         });
-        return revoked ? undefined : authorizationContext();
+        return revoked ? undefined : input.authorization;
       },
     },
   };
@@ -1011,14 +1025,20 @@ const createPortDoubles = (input: {
         input.projectId !== PROJECT_ID ||
         input.zeroResultRef.reference.entityId !== expected.reference.entityId ||
         input.zeroResultRef.reference.versionId !== expected.reference.versionId ||
-        input.inputSnapshotRef.reference.entityId !== INPUT_SNAPSHOT_REF.reference.entityId ||
-        input.inputSnapshotRef.reference.versionId !== INPUT_SNAPSHOT_REF.reference.versionId
+        input.inputSnapshotRef.reference.entityId !== INPUT_SNAPSHOT_REF.reference.entityId
       ) {
         return { kind: "inconsistent" };
       }
       const override = world.zeroResultRead.get(nodeId);
       if (override !== undefined) return { kind: override };
-      return { kind: "read", zeroResult: zeroResultValueFor(nodeId) };
+      return {
+        kind: "read",
+        zeroResult: RiskCandidateZeroResultV1Schema.parse({
+          ...zeroResultValueFor(nodeId),
+          inputSnapshotRef: input.inputSnapshotRef,
+          workItemRef: input.workItemRef,
+        }),
+      };
     },
   };
 
@@ -1111,6 +1131,7 @@ const createPortDoubles = (input: {
           throw new TypeError("start-task must freeze a content artifact");
         }
         world.calls.startTask.push({
+          taskRef: agentTaskRefFor(command),
           commandId: command.commandId,
           idempotencyKey: command.idempotencyKey,
           payload: {
@@ -1122,7 +1143,10 @@ const createPortDoubles = (input: {
           },
         });
         const nodeId = nodeIdOf(frozenInputRef.reference.entityId);
-        return { kind: "succeeded", result: { agentTaskRef: dummyTaskRefFor(nodeId) } };
+        if (command.payload.parentRunRef !== undefined) {
+          world.agentTaskParents.set(nodeId, command.payload.parentRunRef);
+        }
+        return { kind: "succeeded", result: { agentTaskRef: agentTaskRefFor(command) } };
       },
     },
     agentTaskReader: {
@@ -1133,6 +1157,7 @@ const createPortDoubles = (input: {
         return agentTaskSnapshot(taskRef, {
           status,
           incrementRef: retrievalArtifactSetRefFor(taskRef).reference,
+          parentRunRef: world.agentTaskParents.get(nodeIdOf(taskRef.reference.entityId)),
         });
       },
     },
@@ -1391,6 +1416,10 @@ export interface IdentificationGraphHarnessV1 {
 export interface StartHarnessOptionsV1 {
   /** 故障注入：令第 N 次检查点写入失败（其余写入仍走真实实现）。 */
   readonly failCheckpointPutAt?: number;
+  /** 指定业务动作提交后的首次检查点写入失败。 */
+  readonly failCheckpointAfterCommit?: string;
+  /** 故障注入：指定阶段首次登记在事务内回滚，保留已写入的 C04 正文。 */
+  readonly failStageCommitOnce?: string;
 }
 
 /** 每例一个容器：完整生产迁移链 + C04 工件存储 + 真实 C03 PostgreSQL checkpointer。 */
@@ -1402,6 +1431,8 @@ export const startIdentificationGraphHarness = async (
   let rootDirectory: string | undefined;
   let artifactStore: (ArtifactStoreV1 & { close(): Promise<void> }) | undefined;
   let checkpointer: PostgresCheckpointer | undefined;
+  let checkpointFailureArmed = false;
+  let checkpointWritesFailureArmed = false;
   try {
     await runPostgresMigrations({
       connection: postgres.migrator,
@@ -1424,9 +1455,11 @@ export const startIdentificationGraphHarness = async (
     artifactStore = store;
     checkpointer = await setupPostgresCheckpointer({
       ...postgres.checkpointer,
-      validateReference: () => true,
     });
-    if (options.failCheckpointPutAt !== undefined) {
+    if (
+      options.failCheckpointPutAt !== undefined ||
+      options.failCheckpointAfterCommit !== undefined
+    ) {
       // 故障注入：第 N 次检查点写入失败，其余调用仍走真实 checkpointer 实现。
       const failAt = options.failCheckpointPutAt;
       const realPut = checkpointer.put.bind(checkpointer);
@@ -1434,8 +1467,23 @@ export const startIdentificationGraphHarness = async (
       Object.defineProperty(checkpointer, "put", {
         value: async (...args: Parameters<PostgresCheckpointer["put"]>) => {
           puts += 1;
-          if (puts === failAt) throw new TypeError("injected checkpoint write failure");
+          if (puts === failAt || checkpointFailureArmed) {
+            checkpointFailureArmed = false;
+            throw new TypeError("injected checkpoint write failure");
+          }
           return await realPut(...args);
+        },
+      });
+    }
+    if (options.failCheckpointAfterCommit !== undefined) {
+      const realPutWrites = checkpointer.putWrites.bind(checkpointer);
+      Object.defineProperty(checkpointer, "putWrites", {
+        value: async (...args: Parameters<PostgresCheckpointer["putWrites"]>) => {
+          if (checkpointWritesFailureArmed) {
+            checkpointWritesFailureArmed = false;
+            throw new TypeError("injected checkpoint writes failure");
+          }
+          return await realPutWrites(...args);
         },
       });
     }
@@ -1455,8 +1503,33 @@ export const startIdentificationGraphHarness = async (
       authorization: access.port,
       now: () => clock.current,
     });
+    let stageCommitFailed = false;
     const ports: IdentificationGraphPortsV1 = {
-      transactionUnit,
+      authorizeDownstream: async ({ branch }) => ({
+        ...authorizationContext(),
+        grantedCapabilities: [MODULE_BRANCH_CAPABILITY_V1[branch]],
+      }),
+      transactionUnit: {
+        execute: async (command, handler, transactionOptions) => {
+          const result = await transactionUnit.execute(
+            command,
+            async (context) => {
+              const result = await handler(context);
+              if (!stageCommitFailed && command.commandKind === options.failStageCommitOnce) {
+                stageCommitFailed = true;
+                throw new TypeError("injected stage commit rollback");
+              }
+              return result;
+            },
+            transactionOptions,
+          );
+          if (command.commandKind === options.failCheckpointAfterCommit) {
+            checkpointFailureArmed = true;
+            checkpointWritesFailureArmed = true;
+          }
+          return result;
+        },
+      },
       registrationStore: adapter.registrationStore,
       bodies: adapter,
       checkpoints: adapter,
@@ -1504,6 +1577,8 @@ export const startIdentificationGraphHarness = async (
           actorId: ACTOR_ID,
           commandId,
           idempotencyKey: `idempotency:${commandId}`,
+          issuedInvocationId: commandId,
+          authorizationBranch: "workflow.start-run",
           issuedAt: clock.current.toISOString(),
           validAt: clock.current.toISOString(),
           requestedAt: clock.current.toISOString(),
@@ -1521,6 +1596,8 @@ export const startIdentificationGraphHarness = async (
           projectId: PROJECT_ID,
           actorId: ACTOR_ID,
           commandId,
+          issuedInvocationId: commandId,
+          authorizationBranch: "workflow.resume-run",
           idempotencyKey: overrides.idempotencyKey ?? `idempotency:${commandId}`,
           issuedAt: clock.current.toISOString(),
           requestedAt: clock.current.toISOString(),
@@ -1536,6 +1613,8 @@ export const startIdentificationGraphHarness = async (
           projectId: PROJECT_ID,
           actorId: ACTOR_ID,
           commandId,
+          issuedInvocationId: commandId,
+          authorizationBranch: "workflow.cancel-run",
           idempotencyKey: `idempotency:${commandId}`,
           issuedAt: clock.current.toISOString(),
           requestedAt: clock.current.toISOString(),
@@ -1586,7 +1665,7 @@ export const startIdentificationGraphHarness = async (
         );
         const chunks: Uint8Array[] = [];
         for await (const chunk of handle.content) chunks.push(chunk);
-        await handle.verified;
+        await handle.completed;
         const bytes = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
         let offset = 0;
         for (const chunk of chunks) {

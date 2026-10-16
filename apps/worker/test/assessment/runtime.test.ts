@@ -289,7 +289,7 @@ interface AssessmentWorldV1 {
   readonly clock: { current: Date };
   prepareOutcome: "succeeded" | "waiting" | "business-blocked";
   evaluateOutcome: "succeeded" | "transient";
-  basisResolution: "succeeded" | "unavailable";
+  basisResolution: "succeeded" | "unavailable" | "missing-configuration";
   /** 反馈入口校准支路：越限偏差才进入 A3/A4。 */
   feedbackDeviation: "exceeded" | "within-threshold";
   calibrationAgent: "completed" | "waiting" | "failed";
@@ -614,6 +614,20 @@ const createPortDoubles = (world: AssessmentWorldV1): AssessmentPortDoublesV1 =>
       if (world.basisResolution === "unavailable") {
         return { kind: "failed", error: transientFailure("c17-resolve") };
       }
+      if (world.basisResolution === "missing-configuration")
+        return {
+          kind: "failed",
+          error: {
+            code: "BUSINESS_BLOCKED",
+            category: "business-blocked",
+            retryable: false,
+            stageCode: "c17-resolve",
+            occurredAt: TIMESTAMP,
+            causalRunId: command.commandId,
+            blockerKind: "scoring-rule-configuration-incomplete",
+            blockerRef: command.payload.preparationSnapshotRef,
+          },
+        };
       const payload = command.payload;
       return {
         kind: "succeeded",
@@ -777,7 +791,7 @@ const createPortDoubles = (world: AssessmentWorldV1): AssessmentPortDoublesV1 =>
             digest("calibration-input-v1"),
           ),
           deviationRecordRef,
-          targetDefinitionType: "scoring-rule",
+          targetDefinitionType: "structured-scoring-rule",
         },
       };
     },
@@ -907,6 +921,7 @@ interface AssessmentGraphHarnessV1 {
   readonly composition: AssessmentGraphCompositionV1;
   readonly runtime: AssessmentGraphRuntimeV1;
   readonly graph: AssessmentGraphRunnerV1;
+  failNextCheckpointAt(stage: string): void;
   scope(input: {
     readonly entryMode: WorkflowEntryModeV1;
     readonly frozenRefs: readonly ContractReferenceV1[];
@@ -955,8 +970,19 @@ const startHarness = async (): Promise<AssessmentGraphHarnessV1> => {
     });
     checkpointer = await setupPostgresCheckpointer({
       ...postgres.checkpointer,
-      validateReference: () => true,
     });
+    let failedCheckpointStage: string | undefined;
+    const originalPut = checkpointer.put.bind(checkpointer);
+    checkpointer.put = async (...args) => {
+      if (
+        failedCheckpointStage !== undefined &&
+        failedCheckpointStage === args[1].channel_values.stage
+      ) {
+        failedCheckpointStage = undefined;
+        throw new Error("synthetic checkpoint write failure");
+      }
+      return originalPut(...args);
+    };
     const world = createWorld();
     const access = createAccess();
     const doubles = createPortDoubles(world);
@@ -983,6 +1009,9 @@ const startHarness = async (): Promise<AssessmentGraphHarnessV1> => {
       composition,
       runtime: composition.runtime,
       graph: composition.graph,
+      failNextCheckpointAt(stage) {
+        failedCheckpointStage = stage;
+      },
       scope(input) {
         const entryIdentity = workflowEntryIdentityFor({
           entryMode: input.entryMode,
@@ -1150,6 +1179,7 @@ const resetWorld = (
     >
   > = {},
 ) => {
+  harness.world.clock.current = new Date(TIMESTAMP);
   harness.world.prepareOutcome = input.prepareOutcome ?? "succeeded";
   harness.world.evaluateOutcome = input.evaluateOutcome ?? "succeeded";
   harness.world.basisResolution = input.basisResolution ?? "succeeded";
@@ -1324,6 +1354,111 @@ const stageResultStages = (
   rows.filter((row) => row.resultKind === "stage-result").map((row) => row.stage);
 
 describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", () => {
+  it("评分配置未齐保持等待，精确准备引用补齐后续办且不重复冻结资料", async () => {
+    resetWorld({ basisResolution: "missing-configuration" });
+    const inputs = entryInputsFor("business-preparation");
+    const scope = harness.scope({
+      entryMode: "assess",
+      frozenRefs: inputs.frozenRefs,
+      riskRecordRef: inputs.riskInput,
+    });
+    const command = harness.startCommand({
+      scope,
+      entryMode: "assess",
+      overrides: {
+        spatialScopeRef: SPATIAL_SCOPE_REF,
+        applicabilityMetadataSnapshotRef: inputs.applicabilityMetadataSnapshotRef,
+        monitoringSnapshotRefs: inputs.monitoringSnapshotRefs,
+        acceptedRiskRecordRef: inputs.riskInput,
+      },
+    });
+    const waiting = await harness.runtime.start(command);
+    expect(waiting.status).toBe("waiting");
+    expect(waiting.lastWaitingRef).toMatchObject({
+      kind: "business-preparation",
+      stage: "A1",
+      missingKinds: ["scoring-configuration"],
+    });
+    if (waiting.lastWaitingRef?.kind !== "business-preparation")
+      throw new Error("expected preparation waiting");
+    const rowsBefore = await harness.rows(scope.runRef);
+    await expectFailure(
+      harness.runtime.resume({
+        ...command,
+        expectedRunVersionId: waiting.runVersionId,
+        resumeCause: { kind: "business-preparation-ready", preparationRef: scope.runRef },
+      }),
+      { code: "UPSTREAM_WAITING", detailCode: "preparation-reference-mismatch", retryable: false },
+    );
+    expect(await harness.rows(scope.runRef)).toEqual(rowsBefore);
+    const resumedAt = "2030-03-01T01:00:00.000Z";
+    harness.world.clock.current = new Date(resumedAt);
+    harness.world.basisResolution = "succeeded";
+    const resumed = await harness.runtime.resume({
+      ...command,
+      expectedRunVersionId: waiting.runVersionId,
+      resumeCause: {
+        kind: "business-preparation-ready",
+        preparationRef: waiting.lastWaitingRef.preparationRef,
+      },
+    });
+    expect(resumed.status).toBe("completed");
+    expect(harness.world.calls.freeze).toHaveLength(1);
+    expect(harness.world.calls.basisResolve).toHaveLength(2);
+    expect(harness.world.calls.basisResolve[1]).toMatchObject({
+      issuedAt: resumedAt,
+      payload: { requiredAt: TIMESTAMP },
+    });
+    expect(
+      (
+        await harness.composition.registrationStore.readLatestRunState({
+          projectId: PROJECT_ID,
+          runId: scope.runRef.reference.entityId,
+          actorId: command.actorId,
+          requestedAt: resumedAt,
+          authorization: command.authorization,
+        })
+      )?.state.assessmentBasisReleaseSetRef,
+    ).toBeDefined();
+    expect(
+      new Set(harness.world.calls.evaluate.map((call) => sha256CanonicalJson(call.payload))).size,
+    ).toBe(1);
+  });
+
+  it("A1 业务提交领先检查点时从已登记阶段继续，不重复准备依据", async () => {
+    resetWorld();
+    const inputs = entryInputsFor("assessment-business-ahead");
+    const scope = harness.scope({
+      entryMode: "assess",
+      frozenRefs: inputs.frozenRefs,
+      riskRecordRef: inputs.riskInput,
+    });
+    const command = harness.startCommand({
+      scope,
+      entryMode: "assess",
+      overrides: {
+        spatialScopeRef: SPATIAL_SCOPE_REF,
+        applicabilityMetadataSnapshotRef: inputs.applicabilityMetadataSnapshotRef,
+        monitoringSnapshotRefs: inputs.monitoringSnapshotRefs,
+        acceptedRiskRecordRef: inputs.riskInput,
+      },
+    });
+    harness.failNextCheckpointAt("A2");
+    await expect(harness.runtime.start(command)).rejects.toMatchObject({
+      error: { retryable: true },
+    });
+    const cursor = await harness.latestState(scope.runRef);
+    expect(cursor?.state.stage).toBe("A2");
+    const resumed = await harness.runtime.resume({
+      ...command,
+      expectedRunVersionId: cursor!.state.runVersionId,
+      resumeCause: { kind: "user-confirmed" },
+    });
+    expect(resumed.status).toBe("completed");
+    expect(harness.world.calls.basisResolve).toHaveLength(1);
+    expect(harness.world.calls.freeze).toHaveLength(1);
+  });
+
   it("R1/S1 历史完整输入：historical-backfill 只用冻结的历史依据引用，登记新的评估记录", async () => {
     resetWorld();
     const inputs = entryInputsFor("r1s1", { basisVersionId: "historical-3" });
@@ -1592,9 +1727,7 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
     // C26 只按已提交的评估记录开一次预警登记，返回空触发集合：没有预警行，也没有任何 C27/C28/C29/Agent 调用。
     expect(harness.world.calls.warningOpen).toHaveLength(1);
     const warningCommand = harness.world.calls.warningOpen[0] as OpenWarningCommandV1;
-    expect(warningCommand.payload.warningAggregationPolicyRef).toEqual(
-      versionRef("warning-aggregation-policy"),
-    );
+    expect(Object.keys(warningCommand.payload)).toEqual(["assessmentRecordRef"]);
     const latest = await harness.latestState(outcome.runRef);
     expect(latest?.state.warningRecordRefs).toEqual([]);
     expect(latest?.state.assessmentRecordRefs).toEqual([
@@ -1724,7 +1857,7 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
     );
   });
 
-  it("已知缺口边界：冻结依据引用与解析都不可得时稳定失败且不产生阶段成功事实", async () => {
+  it("依据解析发生瞬态故障时保留上游成果并给出可重试失败", async () => {
     resetWorld({ basisResolution: "unavailable" });
     const inputs = entryInputsFor("basis-unavailable");
     const scope = harness.scope({
@@ -1744,8 +1877,7 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
         },
       }),
     );
-    // 依据不可得：A0 已成立事实保留，A1 起没有阶段成功事实，运行以不可重试错误收口。
-    expect(outcome.status).toBe("terminal-failure");
+    expect(outcome.status).toBe("retryable-failure");
     expect(outcome.stage).toBe("A1");
     expect(outcome.errorRef).toBeDefined();
     expect(stageResultStages(await harness.rows(scope.runRef))).toEqual(["A0"]);
@@ -2100,6 +2232,13 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
     const latest = await harness.latestState(outcome.runRef);
     expect(latest?.state.deviationRecordRefs).toEqual([]);
     expect(latest?.state.calibrationSuggestionRefs).toEqual([]);
+    expect(harness.world.calls.prepareInput).toHaveLength(1);
+    expect(latest?.state.calibrationPolicy?.agentPolicy).toEqual(
+      harness.world.calls.calibrationAgent[0]?.agentPolicy,
+    );
+    expect(latest?.state.calibrationPreparedInput?.frozenInputRef).toEqual(
+      harness.world.calls.calibrationAgent[0]?.frozenInputRef,
+    );
     const checkpoint = await harness.checkpointState(
       harness.scope({ entryMode: "record-response-feedback", frozenRefs: inputs.frozenRefs })
         .threadId,

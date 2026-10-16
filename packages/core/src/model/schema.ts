@@ -113,6 +113,8 @@ export const StructuredCompletionRequestV1Schema = z
     outputSchemaRef: VersionReferenceSchema,
     messages: z.array(ModelMessageV1Schema).min(1).max(256),
     maxOutputTokens: positiveSafeInteger,
+    maxInputTokens: positiveSafeInteger.optional(),
+    maxContextTokens: positiveSafeInteger.optional(),
   })
   .superRefine(validateInvocationBase);
 export type StructuredCompletionRequestV1 = z.infer<typeof StructuredCompletionRequestV1Schema>;

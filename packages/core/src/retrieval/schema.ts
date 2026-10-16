@@ -162,6 +162,8 @@ export const HybridRetrievalPolicyV1Schema = z
     /** 适用的检索证据库定义类型；本 change 只支持组合发布包。 */
     evidenceBaseDefinitionType: z.literal("retrieval-evidence-base"),
     modelDeploymentRef: VersionReferenceSchema,
+    /** 可选查询指令：只渲染查询 Embedding 文本，同一策略版本内固定。 */
+    queryInstruction: z.string().trim().min(1).optional(),
     dense: z.strictObject({
       vectorName: z.literal(RETRIEVAL_DENSE_VECTOR_NAME_V1),
       dimensions: positiveInt,
@@ -430,6 +432,7 @@ export const RetrievalHybridQueryV1Schema = z.strictObject({
     projectId: IdentifierSchema,
     generationRef: RetrievalGenerationRefV1Schema,
     authorizationScopeDigest: sha256Schema,
+    visiblePointIds: z.array(IdentifierSchema),
   }),
 });
 export type RetrievalHybridQueryV1 = z.infer<typeof RetrievalHybridQueryV1Schema>;

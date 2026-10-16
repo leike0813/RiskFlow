@@ -46,7 +46,17 @@ export const AGENT_UI_READ_PAGE_SIZE_MAX_V1 = 50;
 export const AGENT_UI_READ_PAGE_SIZE_DEFAULT_V1 = 25;
 
 const readPageSize = z.number().int().min(1).max(AGENT_UI_READ_PAGE_SIZE_MAX_V1);
-const readCursor = z.string().min(1).max(512);
+const readCursor = z.string().min(1);
+
+/** 所有任务页共用排序位置，业务筛选由服务端 binding 校验。 */
+export const AgentUiReadCursorV1Schema = z.strictObject({
+  v: z.literal("1"),
+  binding: z.string().min(1),
+  asOfRecordedAt: IsoDateTimeSchema,
+  keyA: z.string().min(1),
+  keyB: z.string(),
+});
+export type AgentUiReadCursorV1 = z.infer<typeof AgentUiReadCursorV1Schema>;
 const nonNegativeInteger = z.number().int().nonnegative().refine(Number.isSafeInteger);
 const positiveInteger = z.number().int().positive().refine(Number.isSafeInteger);
 
@@ -231,7 +241,12 @@ const listPayload = z.strictObject({
   cursor: readCursor.optional(),
   pageSize: readPageSize.optional(),
 });
-const detailPayload = z.strictObject({ agentTaskRef: AgentTaskRefV1Schema });
+const detailPayload = z.strictObject({
+  agentTaskRef: z.union([
+    AgentTaskRefV1Schema,
+    z.strictObject({ kind: z.literal("agent-task"), reference: VersionReferenceSchema }),
+  ]),
+});
 const targetPagePayload = z.strictObject({
   agentTaskRef: AgentTaskRefV1Schema,
   cursor: readCursor.optional(),

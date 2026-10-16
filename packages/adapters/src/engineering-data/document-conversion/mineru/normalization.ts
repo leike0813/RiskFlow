@@ -5,6 +5,7 @@ import {
   type DocumentPageExtentV1,
   type NormalizedBlockV1,
   type ParsedDocumentV1,
+  type UnrecognizedTableImageRefV1,
 } from "@riskflow/core/engineering-data/document-conversion";
 import type { JsonValue } from "@riskflow/core/persistence";
 
@@ -18,8 +19,14 @@ import type { MineruSourceInfoV1 } from "./source.js";
 
 type UnknownRecord = Record<string, unknown>;
 type TypedRecord = UnknownRecord & { readonly type: string };
-type HtmlCell = { readonly text: string; readonly rowSpan: number; readonly columnSpan: number };
+type HtmlCell = {
+  readonly text: string;
+  readonly rowSpan: number;
+  readonly columnSpan: number;
+  readonly unrecognizedImages?: UnrecognizedTableImageRefV1[];
+};
 type HtmlTable = readonly (readonly HtmlCell[])[];
+export type TableImageResolver = (src: string) => UnrecognizedTableImageRefV1;
 
 const sourceComponent = (value: string): string =>
   value.replace(/[^A-Za-z0-9_]/gu, "_").slice(0, 96) || "document";
@@ -110,20 +117,37 @@ const pageCoordinate = (
 };
 
 const TABLE_TAGS = new Set(["table", "thead", "tbody", "tfoot", "tr", "td", "th"]);
-const INLINE_TAGS = new Set(["p", "br", "span", "b", "strong", "i", "em", "u", "s", "sub", "sup"]);
+const INLINE_TAGS = new Set([
+  "p",
+  "br",
+  "span",
+  "b",
+  "strong",
+  "i",
+  "em",
+  "u",
+  "s",
+  "sub",
+  "sup",
+  "eq",
+]);
 
 const parseHtmlTable = (
   html: string,
   maxBytes: number,
   maxCells: number,
   location: string,
+  resolveImage?: TableImageResolver,
 ): HtmlTable => {
   if (
     Buffer.byteLength(html, "utf8") > maxBytes ||
-    /<!\s*(?:doctype|entity)|<\s*(?:script|style|iframe|object|img)\b/iu.test(html)
+    /<!\s*(?:doctype|entity)|<\s*(?:script|style|iframe|object)\b/iu.test(html)
   ) {
     throw invalid({ issue: "table-html-rejected", location });
   }
+  for (const match of html.matchAll(/<\s*img\b[^>]*>/giu))
+    if (!/^<img\s+src\s*=\s*(?:"[^"<>]*"|'[^'<>]*')\s*\/>$/u.test(match[0]))
+      throw invalid({ issue: "table-image-shape", location });
   if (XMLValidator.validate(`<root>${html}</root>`) !== true)
     throw invalid({ issue: "table-html-malformed", location });
   let tree: unknown;
@@ -141,8 +165,13 @@ const parseHtmlTable = (
   }
   let nodeCount = 0;
   let cellCount = 0;
+  let imageCount = 0;
   const rows: HtmlCell[][] = [];
-  const readText = (items: unknown[], allowText: boolean): string => {
+  const readText = (
+    items: unknown[],
+    allowText: boolean,
+    images?: UnrecognizedTableImageRefV1[],
+  ): string => {
     let text = "";
     for (const itemValue of items) {
       if (++nodeCount > maxCells * 8 + 64)
@@ -171,13 +200,26 @@ const parseHtmlTable = (
               for (const nested of section) readRow(nested);
             } else readRow(rowItemValue);
           }
+        } else if (tag === "img") {
+          const attrs = record(item[":@"]) ?? {};
+          if (
+            !allowText ||
+            images === undefined ||
+            resolveImage === undefined ||
+            Object.keys(attrs).length !== 1 ||
+            typeof attrs["@_src"] !== "string" ||
+            children.length > 0
+          )
+            throw invalid({ issue: "table-image-shape", location });
+          if (++imageCount > maxCells) throw invalid({ issue: "table-image-limit", location });
+          images.push(resolveImage(attrs["@_src"]));
         } else if (INLINE_TAGS.has(tag)) {
           const attrs = record(item[":@"]) ?? {};
           if (Object.keys(attrs).length > 0)
             throw invalid({ issue: "table-html-inline-attributes", location });
-          text += readText(children, allowText);
+          text += readText(children, allowText, images);
         } else if (TABLE_TAGS.has(tag) && tag !== "td" && tag !== "th" && tag !== "tr") {
-          text += readText(children, allowText);
+          text += readText(children, allowText, images);
         } else if (tag !== "td" && tag !== "th" && tag !== "tr") {
           throw invalid({ issue: "table-html-tag-unsupported", location, tag });
         }
@@ -215,11 +257,13 @@ const parseHtmlTable = (
           throw invalid({ issue: "table-cell-attribute", location, attribute: key });
       const children = cellItem[tag];
       if (!Array.isArray(children)) throw invalid({ issue: "table-cell-content", location });
-      const content = readText(children, true);
+      const images: UnrecognizedTableImageRefV1[] = [];
+      const content = readText(children, true, images);
       cells.push({
         text: content,
         rowSpan: parseSpan(attrs, "rowspan"),
         columnSpan: parseSpan(attrs, "colspan"),
+        ...(images.length === 0 ? {} : { unrecognizedImages: images }),
       });
       cellCount += 1;
       if (cellCount > maxCells) throw invalid({ issue: "table-cell-limit", location });
@@ -290,6 +334,12 @@ const expandTable = (
         blockId: blockId(`cell-${cellNumber}`),
         kind: "cell",
         text: cell.text,
+        ...(cell.unrecognizedImages === undefined
+          ? {}
+          : {
+              unrecognizedImages: cell.unrecognizedImages,
+              ...(cell.text.trim().length === 0 ? { value: null } : {}),
+            }),
         chapterId: sourceComponent(tableId),
         segmentId: sourceComponent(tableId),
         headingPath: [...headingPath],
@@ -544,6 +594,7 @@ export const normalizeMineruMiddle = (
   request: DocumentServiceParserRequestV1,
   config: MineruConfigV1,
   sourceInfo: MineruSourceInfoV1,
+  resolveImage?: TableImageResolver,
 ): { parsedDocument: ParsedDocumentV1; diagnostic: JsonValue } => {
   const root = record(middle);
   if (root === undefined || !Array.isArray(root.pages) || root.pages.length === 0) {
@@ -639,6 +690,7 @@ export const normalizeMineruMiddle = (
   let tableCount = 0;
   let cellCount = 0;
   let serviceTextCharacters = 0;
+  let tableImageCount = 0;
   const pageSeen = new Set<number>();
   for (let pageArrayIndex = 0; pageArrayIndex < pages.length; pageArrayIndex += 1) {
     const page = record(pages[pageArrayIndex]);
@@ -815,6 +867,13 @@ export const normalizeMineruMiddle = (
             Math.min(policy.maxXmlBytes, config.maxResponseBytes),
             policy.maxCells,
             location,
+            config.protocol === "official-v4" && resolveImage !== undefined
+              ? (src) => {
+                  if (++tableImageCount > Math.min(policy.maxCells, policy.maxOutputBlocks))
+                    throw invalid({ issue: "table-image-limit", location });
+                  return resolveImage(src);
+                }
+              : undefined,
           );
           const tableCellCount = table.reduce((sum, row) => sum + row.length, 0);
           if (cellCount + tableCellCount > policy.maxCells)

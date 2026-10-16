@@ -1,0 +1,4522 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-10-15T11:30:44.293Z",
+  "status": "CANDIDATE_AWAITING_FORMAL_USE_CONFIRMATION",
+  "syntheticSample": true,
+  "sampleNotice": "合成样本、待甲方复核",
+  "formalQualityPass": false,
+  "newMeasurementPerformed": false,
+  "candidateDatasetRef": {
+    "entityId": "retrieval-dataset-synthetic-v1",
+    "versionId": "physical-20261015-v13"
+  },
+  "originalDatasetRef": {
+    "entityId": "retrieval-dataset-synthetic-v1",
+    "versionId": "physical-20261015-v12"
+  },
+  "evidenceBaseReleaseRef": {
+    "kind": "retrieval-evidence-base-release",
+    "reference": {
+      "entityId": "knowledge-release-b33e7df3-3b60-4035-a083-7be249731961",
+      "versionId": "1"
+    }
+  },
+  "rubric": {
+    "version": "evidence-answerability-v1",
+    "task": "按查询明确要求的知识判断相关性；评价回答能力，非全业务链所有关联材料的覆盖。读取每个查询及全部15成员，不能只检查原正标签。",
+    "grades": {
+      "0": "未回答所问；仅共享词语、通用背景、邻近风险、相关但未被询问的监测/行动，或无可靠直接证据。",
+      "1": "直接回答查询明确提出的一个次要子问题，须指出该子问题及精确证据；不能仅因为同领域、通用风险管理或提出监测建议而给正标签。",
+      "2": "证据直接回答核心问题的实质部分，但条件、适用阶段或覆盖范围有明确限制；须列出该限制，历史条款仅在历史查询或明确相关的历史机理说明中作为受限依据。",
+      "3": "直接回答查询核心问题，关键对象、条件和所问结论相符；机理或案例中有明确相应触发/失效事实，或标准中有对应规则/程序。"
+    },
+    "uncertain": "证据不足或rubric边界有争议时单独标明，不以名次、得分或希望的PASS决定，不假定省略条款存在。",
+    "historical": "已废止状态及标准断面适用性不变；历史解释不成为现行作业依据。",
+    "safety": "只读语料与标签复核；不调用检索/Embedding，不做验收PASS或甲方复核结论。"
+  },
+  "review": {
+    "auxiliaryAgentId": "01a13f4e-fc42-78a0-a4ce-e99760be402e",
+    "model": "inherited-default",
+    "rankingProvided": false,
+    "oldLabelsProvided": false,
+    "reviewedQueries": 10,
+    "reviewedMembersPerQuery": 15,
+    "parentHasSeenHistoricalRanking": true,
+    "parentProposalSavedBeforeAuxiliaryResult": true,
+    "auxiliaryUncertainCount": 3,
+    "adjudications": [
+      {
+        "queryId": "query-mechanism-03-water-inrush",
+        "sourceKind": "standard-library",
+        "sourceEntryId": "standard-03-shield-construction",
+        "finalGrade": 0,
+        "decision": "证据未直接描述查询的承压水突破密封/薄弱带及携砂入舱，也未给出所问扩径适用工序；防渗气压保持属于历史开仓控制语境，不能补推失效通道和携砂事实。",
+        "fieldPaths": [
+          "/clauseRefs/0",
+          "/retrievalText"
+        ],
+        "parentInitialProposedGrade": 2,
+        "reviewerPositive": false
+      },
+      {
+        "queryId": "query-standard-02-monitoring-selection",
+        "sourceKind": "risk-mechanism",
+        "sourceEntryId": "mechanism-02",
+        "finalGrade": 0,
+        "decision": "泛指支护结构变形及地表沉降的指标列表没有给出管片/周围岩土应测选测规则、缺当地经验的控制值选取或断面限制；仅名称相邻，不直接回答本规范选型问题。",
+        "fieldPaths": [
+          "/monitoringIndicators",
+          "/applicability/constructionMethod"
+        ],
+        "reviewerPositive": false
+      },
+      {
+        "queryId": "query-standard-02-monitoring-selection",
+        "sourceKind": "risk-mechanism",
+        "sourceEntryId": "mechanism-04",
+        "finalGrade": 0,
+        "decision": "地表沉降已在查询中作为已知控制对象；重复该指标名并未提供额外的项目选型规则、控制值方法或适用限制，不能当成次要子问题的直接答案。",
+        "fieldPaths": [
+          "/monitoringIndicators",
+          "/applicability/constructionMethod"
+        ],
+        "reviewerPositive": false
+      }
+    ],
+    "unresolved": []
+  },
+  "invariants": {
+    "oldQueriesUnchanged": true,
+    "oldDatasetBytesUnchanged": true,
+    "oldFailedReportUnchanged": true,
+    "formalCorpusUnchanged": true,
+    "modelUnchanged": true,
+    "budgetUnchanged": true,
+    "productionAlgorithmUnchanged": true,
+    "thresholdsUnchanged": true,
+    "topK": 5
+  },
+  "acceptancePolicy": {
+    "schemaVersion": "1",
+    "acceptancePolicyRef": {
+      "entityId": "physical-retrieval-acceptance-policy",
+      "versionId": "physical-20261015-v12"
+    },
+    "datasetRef": {
+      "entityId": "retrieval-dataset-synthetic-v1",
+      "versionId": "physical-20261015-v12"
+    },
+    "syntheticSample": true,
+    "topK": 5,
+    "denseRecallAt5Min": 0.8,
+    "bm25RecallAt5Min": 0.8,
+    "rrfRecallAt5Min": 0.9,
+    "rrfNdcgAt5Min": 0.8,
+    "reconciliationRatioMin": 1,
+    "authorizationLeakageMax": 0,
+    "qdrantQueryP95MsMax": 2000,
+    "warmupRuns": 1,
+    "measuredRuns": 3
+  },
+  "sourceMembers": [
+    {
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-01",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-risk-mechanism-candidate-v15",
+          "versionId": "sha256:e1bf063396bb4e193e58472ff6b1072cc374ceae8f41963caeaa95c082638314"
+        }
+      },
+      "packageEntryPointer": "/mechanisms/0",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_5"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_6"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_7"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_8"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_9"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_10"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_11"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_12"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_13"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_14"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_15"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_01-segment_16"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-02",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-risk-mechanism-candidate-v15",
+          "versionId": "sha256:e1bf063396bb4e193e58472ff6b1072cc374ceae8f41963caeaa95c082638314"
+        }
+      },
+      "packageEntryPointer": "/mechanisms/1",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_17"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_18"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_19"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_20"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_21"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_22"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_23"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_24"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_25"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_26"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_27"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_02-segment_28"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-03",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-risk-mechanism-candidate-v15",
+          "versionId": "sha256:e1bf063396bb4e193e58472ff6b1072cc374ceae8f41963caeaa95c082638314"
+        }
+      },
+      "packageEntryPointer": "/mechanisms/2",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_29"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_30"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_31"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_32"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_33"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_34"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_35"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_36"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_37"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_38"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_39"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_03-segment_40"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-04",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-risk-mechanism-candidate-v15",
+          "versionId": "sha256:e1bf063396bb4e193e58472ff6b1072cc374ceae8f41963caeaa95c082638314"
+        }
+      },
+      "packageEntryPointer": "/mechanisms/3",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_41"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_42"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_43"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_44"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_45"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_46"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_47"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_48"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_49"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_50"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_51"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_04-segment_52"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-05",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-risk-mechanism-candidate-v15",
+          "versionId": "sha256:e1bf063396bb4e193e58472ff6b1072cc374ceae8f41963caeaa95c082638314"
+        }
+      },
+      "packageEntryPointer": "/mechanisms/4",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_53"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_54"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_55"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_56"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_57"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_58"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_59"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_60"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_61"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_62"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_63"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_05-segment_64"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-06",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-risk-mechanism-candidate-v15",
+          "versionId": "sha256:e1bf063396bb4e193e58472ff6b1072cc374ceae8f41963caeaa95c082638314"
+        }
+      },
+      "packageEntryPointer": "/mechanisms/5",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_65"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_66"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_67"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_68"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_69"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_70"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_71"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_72"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_73"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_74"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_75"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_baa06323b7398504401063b4888945a4-mechanism_06-segment_76"
+          },
+          "sourceVersion": {
+            "entityId": "s_baa06323b7398504401063b4888945a4",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-01-risk-management",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-04a20112-b67d-42e3-9556-312ccdcfbfae",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-standard-text-candidate-v48",
+          "versionId": "sha256:a6597f6a57ab8bc62e31d7db828626c4a55d0a72aa383a0239cbca52b4ba420b"
+        }
+      },
+      "packageEntryPointer": "/entries/0",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_0b9bd233b248a06a6cd6d7bf494fd882-page_14-region_p14_b17"
+          },
+          "sourceVersion": {
+            "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_0b9bd233b248a06a6cd6d7bf494fd882-page_20-region_p20_b2"
+          },
+          "sourceVersion": {
+            "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_0b9bd233b248a06a6cd6d7bf494fd882-mineru_table_p20_b3-mineru_table_p20_b3"
+          },
+          "sourceVersion": {
+            "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_0b9bd233b248a06a6cd6d7bf494fd882-page_20-region_p20_b3_caption_1"
+          },
+          "sourceVersion": {
+            "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_0b9bd233b248a06a6cd6d7bf494fd882-page_20-region_p20_b4"
+          },
+          "sourceVersion": {
+            "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_0b9bd233b248a06a6cd6d7bf494fd882-mineru_table_p20_b5-mineru_table_p20_b5"
+          },
+          "sourceVersion": {
+            "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_0b9bd233b248a06a6cd6d7bf494fd882-page_20-region_p20_b5_caption_1"
+          },
+          "sourceVersion": {
+            "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_0b9bd233b248a06a6cd6d7bf494fd882-page_62-region_p62_b6"
+          },
+          "sourceVersion": {
+            "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_0b9bd233b248a06a6cd6d7bf494fd882-page_69-region_p69_b3"
+          },
+          "sourceVersion": {
+            "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_0b9bd233b248a06a6cd6d7bf494fd882-page_69-region_p69_b4"
+          },
+          "sourceVersion": {
+            "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-02-monitoring",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-04a20112-b67d-42e3-9556-312ccdcfbfae",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-standard-text-candidate-v48",
+          "versionId": "sha256:a6597f6a57ab8bc62e31d7db828626c4a55d0a72aa383a0239cbca52b4ba420b"
+        }
+      },
+      "packageEntryPointer": "/entries/1",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-page_23-region_p23_b1_caption_4"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-mineru_table_p23_b2-mineru_table_p23_b2"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-page_23-region_p23_b2_caption_1"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-mineru_table_p24_b1-mineru_table_p24_b1"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-page_24-region_p24_b1_caption_1"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-page_24-region_p24_b1_caption_3"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-page_62-region_p62_b13"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-mineru_table_p65_b2-mineru_table_p65_b2"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-page_65-region_p65_b2_caption_1"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-page_65-region_p65_b2_caption_3"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-mineru_table_p65_b3-mineru_table_p65_b3"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-page_65-region_p65_b3_caption_1"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_e262258290e088bf32d3faac957b3a6b-page_65-region_p65_b3_caption_3"
+          },
+          "sourceVersion": {
+            "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-03-shield-construction",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-04a20112-b67d-42e3-9556-312ccdcfbfae",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-standard-text-candidate-v48",
+          "versionId": "sha256:a6597f6a57ab8bc62e31d7db828626c4a55d0a72aa383a0239cbca52b4ba420b"
+        }
+      },
+      "packageEntryPointer": "/entries/2",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_2439a3741bc0bd916b8a40ec331efd97-page_41-region_p41_b12"
+          },
+          "sourceVersion": {
+            "entityId": "s_2439a3741bc0bd916b8a40ec331efd97",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_2439a3741bc0bd916b8a40ec331efd97-page_62-region_p62_b6"
+          },
+          "sourceVersion": {
+            "entityId": "s_2439a3741bc0bd916b8a40ec331efd97",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_2439a3741bc0bd916b8a40ec331efd97-page_111-region_p111_b1"
+          },
+          "sourceVersion": {
+            "entityId": "s_2439a3741bc0bd916b8a40ec331efd97",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_2439a3741bc0bd916b8a40ec331efd97-page_111-region_p111_b2"
+          },
+          "sourceVersion": {
+            "entityId": "s_2439a3741bc0bd916b8a40ec331efd97",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_2439a3741bc0bd916b8a40ec331efd97-page_111-region_p111_b3"
+          },
+          "sourceVersion": {
+            "entityId": "s_2439a3741bc0bd916b8a40ec331efd97",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_2439a3741bc0bd916b8a40ec331efd97-page_111-region_p111_b4"
+          },
+          "sourceVersion": {
+            "entityId": "s_2439a3741bc0bd916b8a40ec331efd97",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_2439a3741bc0bd916b8a40ec331efd97-page_111-region_p111_b5"
+          },
+          "sourceVersion": {
+            "entityId": "s_2439a3741bc0bd916b8a40ec331efd97",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_2439a3741bc0bd916b8a40ec331efd97-page_111-region_p111_b6"
+          },
+          "sourceVersion": {
+            "entityId": "s_2439a3741bc0bd916b8a40ec331efd97",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_2439a3741bc0bd916b8a40ec331efd97-page_111-region_p111_b7"
+          },
+          "sourceVersion": {
+            "entityId": "s_2439a3741bc0bd916b8a40ec331efd97",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-01",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-case-library-candidate-v15",
+          "versionId": "sha256:ce7e428b91e5519e689ab40b3730a3ee1fe983e0fd3f50db495b8b13fcda5115"
+        }
+      },
+      "packageEntryPointer": "/entries/0",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_01-segment_5"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_01-segment_6"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_01-segment_7"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_01-segment_8"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_01-segment_9"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_01-segment_10"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_01-segment_11"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_01-segment_12"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_01-segment_13"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_01-segment_14"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-02",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-case-library-candidate-v15",
+          "versionId": "sha256:ce7e428b91e5519e689ab40b3730a3ee1fe983e0fd3f50db495b8b13fcda5115"
+        }
+      },
+      "packageEntryPointer": "/entries/1",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_02-segment_15"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_02-segment_16"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_02-segment_17"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_02-segment_18"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_02-segment_19"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_02-segment_20"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_02-segment_21"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_02-segment_22"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_02-segment_23"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_02-segment_24"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-03",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-case-library-candidate-v15",
+          "versionId": "sha256:ce7e428b91e5519e689ab40b3730a3ee1fe983e0fd3f50db495b8b13fcda5115"
+        }
+      },
+      "packageEntryPointer": "/entries/2",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_03-segment_25"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_03-segment_26"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_03-segment_27"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_03-segment_28"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_03-segment_29"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_03-segment_30"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_03-segment_31"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_03-segment_32"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_03-segment_33"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_03-segment_34"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-04",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-case-library-candidate-v15",
+          "versionId": "sha256:ce7e428b91e5519e689ab40b3730a3ee1fe983e0fd3f50db495b8b13fcda5115"
+        }
+      },
+      "packageEntryPointer": "/entries/3",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_04-segment_35"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_04-segment_36"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_04-segment_37"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_04-segment_38"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_04-segment_39"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_04-segment_40"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_04-segment_41"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_04-segment_42"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_04-segment_43"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_04-segment_44"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-05",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-case-library-candidate-v15",
+          "versionId": "sha256:ce7e428b91e5519e689ab40b3730a3ee1fe983e0fd3f50db495b8b13fcda5115"
+        }
+      },
+      "packageEntryPointer": "/entries/4",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_05-segment_45"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_05-segment_46"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_05-segment_47"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_05-segment_48"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_05-segment_49"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_05-segment_50"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_05-segment_51"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_05-segment_52"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_05-segment_53"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_05-segment_54"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        }
+      ]
+    },
+    {
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-06",
+      "sourceReleaseRef": {
+        "kind": "knowledge-release",
+        "reference": {
+          "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+          "versionId": "1"
+        }
+      },
+      "candidateArtifactRef": {
+        "kind": "content-artifact",
+        "reference": {
+          "entityId": "physical-governance-case-library-candidate-v15",
+          "versionId": "sha256:ce7e428b91e5519e689ab40b3730a3ee1fe983e0fd3f50db495b8b13fcda5115"
+        }
+      },
+      "packageEntryPointer": "/entries/5",
+      "sourceEvidenceReferences": [
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_06-segment_55"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_06-segment_56"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_06-segment_57"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_06-segment_58"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_06-segment_59"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_06-segment_60"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_06-segment_61"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_06-segment_62"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_06-segment_63"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        },
+        {
+          "locator": {
+            "sourceSegmentId": "s_d2261a936ce020e7b101e6d3ecd3d764-case_entry_06-segment_64"
+          },
+          "sourceVersion": {
+            "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+            "versionId": "1"
+          }
+        }
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "queryText": "变径扩挖过程中开挖面控制压力低于地层自稳能力，土体抗剪不足导致局部塌方并伴随地表塌陷，应识别哪类风险机理？",
+      "isOriginal": true,
+      "positiveCount": 3,
+      "zeroRationale": "mechanism-02、case-entry-02：描述支护侵限失效的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-03、case-entry-03：描述承压水携砂突涌的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-04、case-entry-04：描述过挖沉降的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-05、case-entry-05：描述驱动或制动故障的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-06、case-entry-06：描述装配接缝连接失效的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nstandard-01-risk-management：仅给概率/损失分级及处置原则，未回答压力不足导致掌子面失稳的机理类别。\nstandard-02-monitoring：规定管片及周围土体监测项目和控制值，未说明开挖面压力—抗剪—塌方机理。"
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "queryText": "扩挖段支护时机与刚度不匹配，管片拼装偏差累积后侵限，如何判断支护结构失效风险？",
+      "isOriginal": true,
+      "positiveCount": 2,
+      "zeroRationale": "mechanism-01、case-entry-01：描述掌子面失稳的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-03、case-entry-03：描述承压水携砂突涌的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-04、case-entry-04：描述过挖沉降的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-05、case-entry-05：描述驱动或制动故障的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-06、case-entry-06：描述装配接缝连接失效的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nstandard-01-risk-management：分级和接受准则没有支护时机、刚度或拼装侵限的失效判断依据。\nstandard-02-monitoring：管片位移、收敛和螺栓应力监测属于相关观测，未给出题述支护失效机理；查询没有要求选择监测项目。\nstandard-03-shield-construction：开仓气压与监测警情报送均未解释支护刚度/时机不匹配导致侵限。"
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "queryText": "承压水沿盾尾密封或开挖面薄弱带突破并携砂涌入舱内，识别渗流突涌机理及其适用工序。",
+      "isOriginal": true,
+      "positiveCount": 2,
+      "zeroRationale": "mechanism-01、case-entry-01：描述掌子面失稳的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-02、case-entry-02：描述支护侵限失效的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-04、case-entry-04：描述过挖沉降的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-05、case-entry-05：描述驱动或制动故障的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-06、case-entry-06：描述装配接缝连接失效的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nstandard-01-risk-management：风险分级通则未说明突涌触发、通道和适用工序。\nstandard-02-monitoring：孔隙水压力等是监测项目，未说明承压水突破携砂机理及其适用工序。"
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "queryText": "扩挖量超出设计控制值，地表累计沉降与变化速率同步增大，对应哪条过挖与地表沉降机理？",
+      "isOriginal": true,
+      "positiveCount": 2,
+      "zeroRationale": "mechanism-01、case-entry-01：描述掌子面失稳的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-02、case-entry-02：描述支护侵限失效的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-03、case-entry-03：描述承压水携砂突涌的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-05、case-entry-05：描述驱动或制动故障的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-06、case-entry-06：描述装配接缝连接失效的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nstandard-01-risk-management：一般概率/损失分级未解释过挖与沉降的触发关系。\nstandard-02-monitoring：虽有地表沉降累计值和变化速率控制表，但未写明过挖导致两者同步增大的机理；查询未要求控制值。且常规盾构、标准断面限制不能省略。\nstandard-03-shield-construction：开仓保压及变形警情报送未回答过挖成因与沉降机理。"
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "queryText": "变径驱动或制动回路异常，装备在坡道段失去动力或制停能力，应识别何种施工装备故障机理？",
+      "isOriginal": true,
+      "positiveCount": 2,
+      "zeroRationale": "mechanism-01、case-entry-01：描述掌子面失稳的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-02、case-entry-02：描述支护侵限失效的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-03、case-entry-03：描述承压水携砂突涌的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-04、case-entry-04：描述过挖沉降的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-06、case-entry-06：描述装配接缝连接失效的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nstandard-01-risk-management：通用风险等级不说明驱动或制动回路故障机理。\nstandard-02-monitoring：管片与岩土监测不回答装备动力/制停失效。\nstandard-03-shield-construction：提到进仓检修设备只是气压开仓背景，没有驱动、制动回路或坡道失控事实。"
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "queryText": "狭小空间内拼装构件错位、连接件未紧固导致接缝承载能力不足，识别装配连接失效机理。",
+      "isOriginal": true,
+      "positiveCount": 2,
+      "zeroRationale": "mechanism-01、case-entry-01：描述掌子面失稳的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-02、case-entry-02：描述支护侵限失效的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-03、case-entry-03：描述承压水携砂突涌的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-04、case-entry-04：描述过挖沉降的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nmechanism-05、case-entry-05：描述驱动或制动故障的触发或事件，未给出本查询所问的触发—失效对应关系；共同工序、量测越限或一般后果不能替代该证据。\nstandard-01-risk-management：风险分级及管理原则没有接缝承载失效事实。\nstandard-02-monitoring：管片连接螺栓应力属于监测选项，未说明错位/未紧固导致接缝承载不足的机理。\nstandard-03-shield-construction：气压开仓和警情报送均未回答构件连接失效。"
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "queryText": "地下工程风险等级应根据哪些因素划分？分级与风险接受程度、处置原则之间有什么对应依据？",
+      "isOriginal": false,
+      "positiveCount": 1,
+      "zeroRationale": "mechanism-01、mechanism-02、mechanism-03、mechanism-04、mechanism-05、mechanism-06、case-entry-01、case-entry-02、case-entry-03、case-entry-04、case-entry-05、case-entry-06：六类机理及六个案例说明具体风险和通用合成处置，没有概率/损失分级规则及各级风险接受—处置映射。\nstandard-02-monitoring：工程监测等级与监测项目/控制值不是所问风险等级及接受准则。\nstandard-03-shield-construction：警情报送和历史开仓保压没有风险四级、接受程度及处置原则的对应关系。"
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "queryText": "盾构隧道管片变形和周围土体应选择哪些监测项目？管片竖向位移、净空收敛及地表沉降控制值在缺少当地经验时如何确定，适用范围有什么限制？",
+      "isOriginal": false,
+      "positiveCount": 1,
+      "zeroRationale": "mechanism-01、mechanism-03、mechanism-05、mechanism-06：地下水位、泥水/注浆压力、盾构姿态或泛指支护变形仅为各自机理指标；未给管片竖向位移/收敛及周围土体项目选择规则、无经验控制值。\ncase-entry-01、case-entry-02、case-entry-03、case-entry-04、case-entry-05、case-entry-06：个案工程条件或事件中的变形、地表沉降以及通用复核指标行动，不是监测项目选型或无地方经验时控制值确定依据。\nstandard-01-risk-management：按风险级别加强监测只属管理原则，没有所问管片/土体项目和控制值程序。\nstandard-03-shield-construction：超过允许变形比例后的报送不回答允许值本身如何确定，也未列管片/土体监测项目。"
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "queryText": "施工监测达到预警标准，或者实测变形超过允许变形的一定比例时，应启动什么报送行动，比例条件是什么？",
+      "isOriginal": false,
+      "positiveCount": 1,
+      "zeroRationale": "mechanism-01、mechanism-02、mechanism-03、mechanism-04、mechanism-05、mechanism-06、case-entry-01、case-entry-02、case-entry-03、case-entry-04、case-entry-05、case-entry-06：机理仅泛称量测越限，案例仅暂停作业/复核指标，没有题述预警标准或允许变形2/3条件下的警情报送规则。\nstandard-01-risk-management：编制预警/应急处置方案及风险管理不等于监测触发后的警情报送程序，亦无所问比例。\nstandard-02-monitoring：给监测项目和允许控制值，但冻结片段没有达到预警或超过允许变形比例的报送行动。"
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "queryText": "仅查询已废止条款的历史技术内容：气压开仓前的工作压力需要如何确定，为什么要考虑开挖面土侧压力与地下水，如何验证保压效果？这些内容不作为现行强制条款使用。",
+      "isOriginal": false,
+      "positiveCount": 1,
+      "zeroRationale": "mechanism-01、mechanism-02、mechanism-03、mechanism-04、mechanism-05、mechanism-06、case-entry-01、case-entry-02、case-entry-03、case-entry-04、case-entry-05、case-entry-06：失稳/突涌机理及个案虽说明相关风险，但没有历史气压开仓工作压力确定、土侧/水头考虑或保压试验程序；其它机理更不回答该问题。\nstandard-01-risk-management：风险分级与接受准则不含气压开仓历史技术程序。\nstandard-02-monitoring：管片/周围土体监测及位移控制值不含开仓工作气压计算或保压检验。"
+    }
+  ],
+  "matrix": [
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-01",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "触发因素明确将开挖面控制压力不足、土体抗剪不足、局部塌方与地表塌陷连到掌子面稳定性失效；节点包含变径空间扩挖，直接回答所问风险类别。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors/0",
+        "/nodeIds",
+        "/applicability"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "限条目声明的原位变径盾构、地层和阶段；未提供量化判据，不据此推定具体工程已发生失效。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-01-risk-management",
+      "oldGrade": 1,
+      "grade": 0,
+      "reasonCode": "GENERAL_FRAMEWORK_NOT_ASKED",
+      "reason": "风险分级与接受准则是通用背景，查询未询问等级/接受/处置框架。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-02-monitoring",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "MONITORING_NOT_ASKED",
+      "reason": "监测项目及控制值未给出本查询具体触发机理；不能以相关监测替代所问机理。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-03-shield-construction",
+      "oldGrade": 2,
+      "grade": 2,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "历史7.8.6说明开仓气压须与开挖面土侧压力相适应以保证开挖面稳定，并要求计算和保压试验；实质解释所问压力支撑与开挖面稳定的关系，可作为受限机理依据。",
+      "fieldPaths": [
+        "/clauseRefs/0",
+        "/retrievalText"
+      ],
+      "limitations": [
+        "7.8.6自2023-03-01起废止，仅作历史机理解释，不作现行作业依据。",
+        "内容针对气压开仓，未完整描述变径扩挖时土体抗剪不足及地表塌陷，不能把开仓试验程序直接移用于扩挖。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-01",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "事件为掌子面失稳与塌方，工况文字明确包含同一压力不足—抗剪不足—塌方/塌陷链，工序含变径空间扩挖，可直接佐证所问类别。",
+      "fieldPaths": [
+        "/events/0",
+        "/outcomes/0",
+        "/process",
+        "/constructionMethod"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "仅以条目明载的工况、事件和工序作匹配；通用合成处置文字不证明处置有效，也不扩展个案适用范围。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-02",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "触发因素逐项对应扩挖段支护时机与刚度不匹配、管片拼装偏差累积及侵限，明示其属于支护结构失效。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors/0",
+        "/nodeIds",
+        "/preconditions/0"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "限条目声明的原位变径盾构、地层和阶段；未提供量化判据，不据此推定具体工程已发生失效。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-01-risk-management",
+      "oldGrade": 1,
+      "grade": 0,
+      "reasonCode": "GENERAL_FRAMEWORK_NOT_ASKED",
+      "reason": "风险分级与接受准则是通用背景，查询未询问等级/接受/处置框架。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-02-monitoring",
+      "oldGrade": 2,
+      "grade": 0,
+      "reasonCode": "MONITORING_NOT_ASKED",
+      "reason": "监测项目及控制值未给出本查询具体触发机理；不能以相关监测替代所问机理。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-03-shield-construction",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_SCOPE",
+      "reason": "气压开仓及警情报送未直接说明本查询的失效触发关系；进仓检修背景也不证明驱动/制动故障。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-02",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "工况直接记录相同支护时机/刚度不匹配和拼装偏差累积侵限，事件为初支侵限与支护失效，工序含变径空间扩挖。",
+      "fieldPaths": [
+        "/events/0",
+        "/outcomes/0",
+        "/process"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "仅以条目明载的工况、事件和工序作匹配；通用合成处置文字不证明处置有效，也不扩展个案适用范围。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-03",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "触发因素完整对应承压水沿盾尾密封或开挖面薄弱带突破并携砂涌入舱内，类型为渗流突涌；明确关联刀盘扩径、盾体扩径、扩径准备三个节点，回答机理及工序。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors/0",
+        "/nodeIds",
+        "/applicability"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "限条目声明的原位变径盾构、地层和阶段；未提供量化判据，不据此推定具体工程已发生失效。",
+        "具体关联节点为刀盘扩径、盾体扩径、扩径准备；宽泛engineeringStage列表不证明其它阶段均有同样触发事实。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-01-risk-management",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "GENERAL_FRAMEWORK_NOT_ASKED",
+      "reason": "风险分级与接受准则是通用背景，查询未询问等级/接受/处置框架。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-02-monitoring",
+      "oldGrade": 2,
+      "grade": 0,
+      "reasonCode": "MONITORING_NOT_ASKED",
+      "reason": "监测项目及控制值未给出本查询具体触发机理；不能以相关监测替代所问机理。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-03-shield-construction",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "ADJUDICATED_NO_DIRECT_ANSWER",
+      "reason": "证据未直接描述查询的承压水突破密封/薄弱带及携砂入舱，也未给出所问扩径适用工序；防渗气压保持属于历史开仓控制语境，不能补推失效通道和携砂事实。",
+      "fieldPaths": [
+        "/clauseRefs/0",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": true
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-03",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "事件为渗流涌砂涌泥，工况有同一承压水突破携砂入舱事实；process明确为扩径准备、刀盘扩径、盾体扩径，覆盖所问机理对应及工序。",
+      "fieldPaths": [
+        "/events/0",
+        "/outcomes/0",
+        "/process",
+        "/engineeringConditions"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "仅以条目明载的工况、事件和工序作匹配；通用合成处置文字不证明处置有效，也不扩展个案适用范围。",
+        "个案工程条件写明上软下硬复合地层，不能仅因通用applicability列出多种地层就视为各地层均有个案证据。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-04",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "类型直接为过挖与地表沉降，触发因素明确扩挖量超出设计控制值及地表累计沉降、变化速率同步增大，完整对应题述关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors/0",
+        "/nodeIds"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "限条目声明的原位变径盾构、地层和阶段；未提供量化判据，不据此推定具体工程已发生失效。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-01-risk-management",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "GENERAL_FRAMEWORK_NOT_ASKED",
+      "reason": "风险分级与接受准则是通用背景，查询未询问等级/接受/处置框架。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-02-monitoring",
+      "oldGrade": 2,
+      "grade": 0,
+      "reasonCode": "MONITORING_NOT_ASKED",
+      "reason": "监测项目及控制值未给出本查询具体触发机理；不能以相关监测替代所问机理。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-03-shield-construction",
+      "oldGrade": 1,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_SCOPE",
+      "reason": "气压开仓及警情报送未直接说明本查询的失效触发关系；进仓检修背景也不证明驱动/制动故障。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-04",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "事件为过挖与地表沉降超标，工况同时写明扩挖量超设计及累计沉降/速率同步增加，直接佐证相同风险对应。",
+      "fieldPaths": [
+        "/events/0",
+        "/outcomes/0",
+        "/process",
+        "/engineeringConditions"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "仅以条目明载的工况、事件和工序作匹配；通用合成处置文字不证明处置有效，也不扩展个案适用范围。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-05",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "触发因素明确为变径驱动或制动回路异常、坡道段失去动力或制停能力，类型为施工装备故障，关键部件、条件与失效后果均吻合。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors/0",
+        "/nodeIds"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "限条目声明的原位变径盾构、地层和阶段；未提供量化判据，不据此推定具体工程已发生失效。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-01-risk-management",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "GENERAL_FRAMEWORK_NOT_ASKED",
+      "reason": "风险分级与接受准则是通用背景，查询未询问等级/接受/处置框架。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-02-monitoring",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "MONITORING_NOT_ASKED",
+      "reason": "监测项目及控制值未给出本查询具体触发机理；不能以相关监测替代所问机理。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-03-shield-construction",
+      "oldGrade": 2,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_SCOPE",
+      "reason": "气压开仓及警情报送未直接说明本查询的失效触发关系；进仓检修背景也不证明驱动/制动故障。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-05",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "事件为施工装备故障，工况明确相同驱动/制动回路异常及坡道失去动力/制停能力，可直接佐证所问故障类别。",
+      "fieldPaths": [
+        "/events/0",
+        "/outcomes/0",
+        "/process"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "仅以条目明载的工况、事件和工序作匹配；通用合成处置文字不证明处置有效，也不扩展个案适用范围。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CAUSAL_TRIGGER",
+      "reason": "条目描述另一具体触发/失效机理；相同工序、通用后果或共享指标不直接回答本查询的触发关系。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-06",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "触发因素明确狭小空间构件错位、连接件未紧固及接缝承载能力不足，直接归为装配连接失效。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors/0",
+        "/nodeIds"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "限条目声明的原位变径盾构、地层和阶段；未提供量化判据，不据此推定具体工程已发生失效。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-01-risk-management",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "GENERAL_FRAMEWORK_NOT_ASKED",
+      "reason": "风险分级与接受准则是通用背景，查询未询问等级/接受/处置框架。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-02-monitoring",
+      "oldGrade": 2,
+      "grade": 0,
+      "reasonCode": "MONITORING_NOT_ASKED",
+      "reason": "监测项目及控制值未给出本查询具体触发机理；不能以相关监测替代所问机理。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-03-shield-construction",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_SCOPE",
+      "reason": "气压开仓及警情报送未直接说明本查询的失效触发关系；进仓检修背景也不证明驱动/制动故障。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_CASE_EVENT",
+      "reason": "案例的事件及触发工况不同；通用处置或相同工序不直接回答本查询。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/process"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-06",
+      "oldGrade": 3,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "事件为装配连接失效，工况含狭小空间、构件错位、未紧固与接缝承载不足的完整对应，可直接佐证所问机理。",
+      "fieldPaths": [
+        "/events/0",
+        "/outcomes/0",
+        "/process"
+      ],
+      "limitations": [
+        "冻结语料标为合成样本、待甲方复核；匹配度不代表真实事故或措施效果已获验证。",
+        "仅以条目明载的工况、事件和工序作匹配；通用合成处置文字不证明处置有效，也不扩展个案适用范围。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-01-risk-management",
+      "oldGrade": 0,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "3.2.4和4.3.1以风险发生可能性及损失划分四级；表4.3.2将I至IV级分别连到不可接受、不愿接受、可接受、可忽略及相应降低风险、管理/监测、日常审视原则，直接覆盖分级因素及接受—处置依据。",
+      "fieldPaths": [
+        "/standardIdentity",
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [
+        "只依据冻结的城市轨道交通地下工程片段，不外推所有地下工程或补充缺失条款。",
+        "条目末段3.2.4解释文字截断；判断依赖前部完整规则和表格，不补齐截断内容。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-02-monitoring",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_RULE",
+      "reason": "该标准条目提供其它类型的规则，未直接回答本查询要求的分级/选型/报送/历史试验规则。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-03-shield-construction",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_RULE",
+      "reason": "该标准条目提供其它类型的规则，未直接回答本查询要求的分级/选型/报送/历史试验规则。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "ADJUDICATED_NO_DIRECT_ANSWER",
+      "reason": "泛指支护结构变形及地表沉降的指标列表没有给出管片/周围岩土应测选测规则、缺当地经验的控制值选取或断面限制；仅名称相邻，不直接回答本规范选型问题。",
+      "fieldPaths": [
+        "/monitoringIndicators",
+        "/applicability/constructionMethod"
+      ],
+      "limitations": [],
+      "adjudicated": true
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "ADJUDICATED_NO_DIRECT_ANSWER",
+      "reason": "地表沉降已在查询中作为已知控制对象；重复该指标名并未提供额外的项目选型规则、控制值方法或适用限制，不能当成次要子问题的直接答案。",
+      "fieldPaths": [
+        "/monitoringIndicators",
+        "/applicability/constructionMethod"
+      ],
+      "limitations": [],
+      "adjudicated": true
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-01-risk-management",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_RULE",
+      "reason": "该标准条目提供其它类型的规则，未直接回答本查询要求的分级/选型/报送/历史试验规则。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-02-monitoring",
+      "oldGrade": 0,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "4.2.2区分各监测等级的应测/选测项目：竖向位移、净空收敛、地表沉降均应测，水平位移一级应测、二三级选测，其余表列项目选测。9.2.2说明结合地质、设计参数、监测等级和当地经验，无经验时用两张控制表，表内分别给管片沉降/差异沉降/收敛及地表累计值与速率，并明示标准断面限制，完整回答所问程序与范围。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText",
+        "/applicability/constructionMethod"
+      ],
+      "limitations": [
+        "条目适用工法仅列常规盾构；地表控制表注明主要适用于标准断面，不能直接作为变径非标准断面定值依据。",
+        "控制值须区分岩土类型、工程监测等级、累计值与变化速率；冻结文本的百分号转义按原字段保留，不自行改表。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-03-shield-construction",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_RULE",
+      "reason": "该标准条目提供其它类型的规则，未直接回答本查询要求的分级/选型/报送/历史试验规则。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-01-risk-management",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_RULE",
+      "reason": "该标准条目提供其它类型的规则，未直接回答本查询要求的分级/选型/报送/历史试验规则。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-02-monitoring",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_RULE",
+      "reason": "该标准条目提供其它类型的规则，未直接回答本查询要求的分级/选型/报送/历史试验规则。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-03-shield-construction",
+      "oldGrade": 0,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "15.5.3直接规定监测数据达到预警标准，或实测变形值大于允许变形的2/3时进行警情报送；准确回答行动、比例及两个触发条件的或关系。",
+      "fieldPaths": [
+        "/clauseRefs/1",
+        "/retrievalText"
+      ],
+      "limitations": [
+        "比例条件为严格大于2/3，不改写成大于等于；达到预警标准为另一独立条件。",
+        "冻结片段未给报送对象、时限或渠道，不补推。7.8.6的废止标注不扩大为15.5.3也被废止。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "risk-mechanism",
+      "sourceEntryId": "mechanism-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/mechanismType",
+        "/triggeringFactors",
+        "/monitoringIndicators"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-01-risk-management",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_RULE",
+      "reason": "该标准条目提供其它类型的规则，未直接回答本查询要求的分级/选型/报送/历史试验规则。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-02-monitoring",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "OTHER_STANDARD_RULE",
+      "reason": "该标准条目提供其它类型的规则，未直接回答本查询要求的分级/选型/报送/历史试验规则。",
+      "fieldPaths": [
+        "/clauseRefs",
+        "/retrievalText"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "standard-library",
+      "sourceEntryId": "standard-03-shield-construction",
+      "oldGrade": 0,
+      "grade": 3,
+      "reasonCode": "DIRECT_ANSWER",
+      "reason": "历史7.8.6及其说明要求计算和试验确定工作压力，以水头压力加地质/环境/开挖面位置调整量计算，并解释适应土侧压力以维持开挖面稳定和防地下水渗漏；分别给土压平衡盾构置换、压力不低于理论值与2h保压判定，以及泥水平衡盾构造膜、供气能力比例和2h保压检验，直接覆盖历史压力确定、原因及验证。",
+      "fieldPaths": [
+        "/clauseRefs/0",
+        "/retrievalText",
+        "/standardIdentity"
+      ],
+      "limitations": [
+        "7.8.6自2023-03-01起废止；文内旧称强制性条文仅为历史原文，不作为现行强制要求。",
+        "土压平衡与泥水平衡试验条件不同；供气量小于供气能力10%的判定及大于50%的停止/修膜条件只按泥水平衡段理解。",
+        "只复核冻结历史技术内容，不判断其能否用于具体工程现行作业。"
+      ],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-01",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-02",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-03",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-04",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-05",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "sourceKind": "case-library",
+      "sourceEntryId": "case-entry-06",
+      "oldGrade": 0,
+      "grade": 0,
+      "reasonCode": "NO_REQUESTED_RULE_OR_PROCEDURE",
+      "reason": "条目给出具体风险触发/事件或指标名，没有本查询所问的规范规则/控制值方法/比例报送/历史试验程序；主题相邻不构成直接答案。",
+      "fieldPaths": [
+        "/events",
+        "/outcomes",
+        "/treatments"
+      ],
+      "limitations": [],
+      "adjudicated": false
+    }
+  ],
+  "diff": {
+    "originalPositive": 21,
+    "originalPositiveRetained": 13,
+    "removed": [
+      {
+        "queryId": "query-mechanism-01-face-stability",
+        "sourceKind": "standard-library",
+        "sourceEntryId": "standard-01-risk-management",
+        "oldGrade": 1,
+        "grade": 0,
+        "reasonCode": "GENERAL_FRAMEWORK_NOT_ASKED",
+        "reason": "风险分级与接受准则是通用背景，查询未询问等级/接受/处置框架。",
+        "fieldPaths": [
+          "/clauseRefs",
+          "/retrievalText"
+        ],
+        "limitations": [],
+        "adjudicated": false
+      },
+      {
+        "queryId": "query-mechanism-02-support-failure",
+        "sourceKind": "standard-library",
+        "sourceEntryId": "standard-01-risk-management",
+        "oldGrade": 1,
+        "grade": 0,
+        "reasonCode": "GENERAL_FRAMEWORK_NOT_ASKED",
+        "reason": "风险分级与接受准则是通用背景，查询未询问等级/接受/处置框架。",
+        "fieldPaths": [
+          "/clauseRefs",
+          "/retrievalText"
+        ],
+        "limitations": [],
+        "adjudicated": false
+      },
+      {
+        "queryId": "query-mechanism-02-support-failure",
+        "sourceKind": "standard-library",
+        "sourceEntryId": "standard-02-monitoring",
+        "oldGrade": 2,
+        "grade": 0,
+        "reasonCode": "MONITORING_NOT_ASKED",
+        "reason": "监测项目及控制值未给出本查询具体触发机理；不能以相关监测替代所问机理。",
+        "fieldPaths": [
+          "/clauseRefs",
+          "/retrievalText"
+        ],
+        "limitations": [],
+        "adjudicated": false
+      },
+      {
+        "queryId": "query-mechanism-03-water-inrush",
+        "sourceKind": "standard-library",
+        "sourceEntryId": "standard-02-monitoring",
+        "oldGrade": 2,
+        "grade": 0,
+        "reasonCode": "MONITORING_NOT_ASKED",
+        "reason": "监测项目及控制值未给出本查询具体触发机理；不能以相关监测替代所问机理。",
+        "fieldPaths": [
+          "/clauseRefs",
+          "/retrievalText"
+        ],
+        "limitations": [],
+        "adjudicated": false
+      },
+      {
+        "queryId": "query-mechanism-04-over-excavation-settlement",
+        "sourceKind": "standard-library",
+        "sourceEntryId": "standard-02-monitoring",
+        "oldGrade": 2,
+        "grade": 0,
+        "reasonCode": "MONITORING_NOT_ASKED",
+        "reason": "监测项目及控制值未给出本查询具体触发机理；不能以相关监测替代所问机理。",
+        "fieldPaths": [
+          "/clauseRefs",
+          "/retrievalText"
+        ],
+        "limitations": [],
+        "adjudicated": false
+      },
+      {
+        "queryId": "query-mechanism-04-over-excavation-settlement",
+        "sourceKind": "standard-library",
+        "sourceEntryId": "standard-03-shield-construction",
+        "oldGrade": 1,
+        "grade": 0,
+        "reasonCode": "OTHER_STANDARD_SCOPE",
+        "reason": "气压开仓及警情报送未直接说明本查询的失效触发关系；进仓检修背景也不证明驱动/制动故障。",
+        "fieldPaths": [
+          "/clauseRefs",
+          "/retrievalText"
+        ],
+        "limitations": [],
+        "adjudicated": false
+      },
+      {
+        "queryId": "query-mechanism-05-equipment-failure",
+        "sourceKind": "standard-library",
+        "sourceEntryId": "standard-03-shield-construction",
+        "oldGrade": 2,
+        "grade": 0,
+        "reasonCode": "OTHER_STANDARD_SCOPE",
+        "reason": "气压开仓及警情报送未直接说明本查询的失效触发关系；进仓检修背景也不证明驱动/制动故障。",
+        "fieldPaths": [
+          "/clauseRefs",
+          "/retrievalText"
+        ],
+        "limitations": [],
+        "adjudicated": false
+      },
+      {
+        "queryId": "query-mechanism-06-assembly-connection",
+        "sourceKind": "standard-library",
+        "sourceEntryId": "standard-02-monitoring",
+        "oldGrade": 2,
+        "grade": 0,
+        "reasonCode": "MONITORING_NOT_ASKED",
+        "reason": "监测项目及控制值未给出本查询具体触发机理；不能以相关监测替代所问机理。",
+        "fieldPaths": [
+          "/clauseRefs",
+          "/retrievalText"
+        ],
+        "limitations": [],
+        "adjudicated": false
+      }
+    ],
+    "changedGrades": [],
+    "addedToOriginal": [],
+    "newQueries": 4,
+    "newQueryPositive": 4,
+    "totalPositive": 17,
+    "totalZero": 133
+  },
+  "approvalBoundary": "仅候选准备；具体差异确认前不绑定运行配置、不测量或激活。"
+}

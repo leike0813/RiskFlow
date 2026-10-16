@@ -580,6 +580,34 @@ export const createAssessmentGraphRuntime = (
         occurredAt: options.now().toISOString(),
       });
     }
+    if (
+      cursorBefore.status === "waiting" &&
+      cursorBefore.lastWaitingRef?.kind === "business-preparation"
+    ) {
+      const cause = command.resumeCause as
+        | {
+            readonly kind?: string;
+            readonly preparationRef?: {
+              readonly kind?: string;
+              readonly reference?: { readonly entityId?: string; readonly versionId?: string };
+            };
+          }
+        | undefined;
+      const expected = cursorBefore.lastWaitingRef.preparationRef;
+      if (
+        cause?.kind !== "business-preparation-ready" ||
+        cause.preparationRef?.kind !== expected.kind ||
+        cause.preparationRef.reference?.entityId !== expected.reference.entityId ||
+        cause.preparationRef.reference.versionId !== expected.reference.versionId
+      )
+        throw runFailure({
+          stage: cursorStage,
+          code: "UPSTREAM_WAITING",
+          retryable: false,
+          detailCode: "preparation-reference-mismatch",
+          occurredAt: options.now().toISOString(),
+        });
+    }
     const rows = await ports.registrationStore.listRunRows({
       projectId: run.projectId,
       runId: run.runRef.reference.entityId,

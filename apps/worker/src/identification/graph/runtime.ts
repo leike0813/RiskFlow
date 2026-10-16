@@ -55,6 +55,7 @@ import {
   parseIdentificationGraphState,
   readCursor,
   readFrozenPolicyForRun,
+  identificationAuthorizationFor,
   toIdentificationGraphError,
   type IdentificationGraphPortsV1,
   type IdentificationGraphRunContextV1,
@@ -192,12 +193,6 @@ const readCheckpointState = async (input: {
   );
 };
 
-const invocationIdFor = (input: {
-  readonly operation: string;
-  readonly projectId: string;
-  readonly targetId: string;
-}): string => `c24-${input.operation}:${input.projectId}:${input.targetId}`;
-
 /** 命令回执：同键同摘要重放返回既有回执，异摘要由 C03 事务单元收口为不可重试冲突。 */
 const recordCommandReceipt = async (input: {
   readonly ports: IdentificationGraphPortsV1;
@@ -330,6 +325,69 @@ export const createIdentificationGraphRuntime = (
 ): IdentificationGraphRuntimeV1 => {
   const { ports } = options;
 
+  const executionAuthorizationFor = async (command: {
+    projectId: string;
+    actorId: string;
+    authorization: AuthorizationContextV1;
+    issuedInvocationId: string;
+    authorizationBranch: ModuleBranchV1;
+    commandId: string;
+    issuedAt: string;
+    requestedAt: string;
+    parentRiskFlowRunRef?: WorkflowRunRefV1;
+    runRef?: WorkflowRunRefV1;
+  }) => {
+    const control = await options.authorization.verifyCurrent({
+      authorization: command.authorization,
+      projectId: command.projectId,
+      actorId: command.actorId,
+      invocationId: command.issuedInvocationId,
+      branch: command.authorizationBranch,
+      requestedAt: command.requestedAt,
+    });
+    if (control === undefined)
+      throw runFailure({
+        stage: "I0",
+        code: "AUTHORIZATION_DENIED",
+        retryable: false,
+        detailCode: "authorization_denied",
+        occurredAt: options.now().toISOString(),
+      });
+    const invocationId = command.commandId;
+    const causalRunRef = command.parentRiskFlowRunRef ?? command.runRef;
+    if (causalRunRef === undefined) throw new TypeError("IDENTIFICATION_EXECUTION_CAUSE_REQUIRED");
+    const authorization = await ports.authorizeDownstream({
+      projectId: command.projectId,
+      actorId: command.actorId,
+      branch: "risk-identification.plan",
+      invocationId,
+      requestedAt: command.requestedAt,
+      requestedSpatialScopeRefs: control.spatialScopeRefs,
+      causalRunRef,
+    });
+    const verified = await options.authorization.verifyCurrent({
+      authorization,
+      projectId: command.projectId,
+      actorId: command.actorId,
+      branch: "risk-identification.plan",
+      invocationId,
+      requestedAt: command.requestedAt,
+    });
+    if (
+      verified === undefined ||
+      verified.grantedCapabilities.length !== 1 ||
+      verified.grantedCapabilities[0] !== "risk-identification.run"
+    )
+      throw runFailure({
+        stage: "I0",
+        code: "AUTHORIZATION_DENIED",
+        retryable: false,
+        detailCode: "execution_authorization_denied",
+        occurredAt: options.now().toISOString(),
+      });
+    return { authorization: verified, invocationId };
+  };
+
   const parseGraphResult = (value: unknown): IdentificationGraphStateV1 =>
     IdentificationGraphStateV1Schema.parse(
       typeof value === "object" && value !== null
@@ -374,7 +432,12 @@ export const createIdentificationGraphRuntime = (
           inputSnapshotRef,
           workItemRef: zeroResult.workItemRef,
           zeroResultRef: zeroResult.zeroResultRef,
-          authorization: input.run.authorization,
+          authorization: await identificationAuthorizationFor({
+            ports,
+            run: input.run,
+            branch: "risk-identification.assemble-and-infer",
+            invocationId: `${input.run.runRef.reference.versionId}:I4:${zeroResult.workItemRef.reference.entityId}`,
+          }),
         });
         if (read.kind !== "read") inconsistent();
       }
@@ -391,7 +454,7 @@ export const createIdentificationGraphRuntime = (
     const inconsistent = (): never => {
       throw runFailure({
         stage: cursor.stage,
-        code: "CHECKPOINT_INCONSISTENT",
+        code: "TERMINAL_FAILURE",
         retryable: false,
         detailCode: "checkpoint-inconsistent",
         occurredAt: options.now().toISOString(),
@@ -409,7 +472,36 @@ export const createIdentificationGraphRuntime = (
     if (snapshots.length > 1 || plans.length > 1) inconsistent();
     const snapshot = snapshots[0];
     const plan = plans[0];
-    const latestStageRef = cursor.lastStageResultRef;
+    const committedStages = rows.filter(
+      (row) =>
+        row.resultKind === "stage-result" &&
+        row.projectId === run.projectId &&
+        row.runId === run.runRef.reference.entityId &&
+        row.runVersionId === cursor.runVersionId,
+    );
+    if (committedStages.length > 1) inconsistent();
+    const committedStage = committedStages[0];
+    const registeredStageRef =
+      committedStage?.resultKind === "stage-result" ? committedStage.stageResultRef : undefined;
+    if (
+      registeredStageRef !== undefined &&
+      cursor.lastStageResultRef !== undefined &&
+      sha256CanonicalJson(registeredStageRef) !== sha256CanonicalJson(cursor.lastStageResultRef)
+    )
+      inconsistent();
+    // 阶段正文与游标同事务登记，旧游标可能没有可选指针。
+    const latestStageRef =
+      registeredStageRef ?? cursor.lastStageResultRef ?? checkpointState.lastStageResultRef;
+    if (
+      cursor.stage !== checkpointState.stage &&
+      registeredStageRef === undefined &&
+      !(
+        checkpointState.stage === "I6" &&
+        cursor.stage === "I9" &&
+        cursor.validatedCandidateSetRefs.length === 0
+      )
+    )
+      inconsistent();
     const previousStageRef = checkpointState.lastStageResultRef;
     const stageChanged =
       latestStageRef !== undefined &&
@@ -591,12 +683,14 @@ export const createIdentificationGraphRuntime = (
     cursor: IdentificationGraphRunStateV1,
     state: IdentificationGraphStateV1,
   ): boolean =>
+    cursor.status === "running" ||
     cursor.stage !== state.stage ||
     cursor.status !== state.status ||
-    cursor.lastStageResultRef?.reference.entityId !==
-      state.lastStageResultRef?.reference.entityId ||
-    cursor.lastStageResultRef?.reference.versionId !==
-      state.lastStageResultRef?.reference.versionId;
+    (cursor.lastStageResultRef !== undefined &&
+      (cursor.lastStageResultRef.reference.entityId !==
+        state.lastStageResultRef?.reference.entityId ||
+        cursor.lastStageResultRef.reference.versionId !==
+          state.lastStageResultRef?.reference.versionId));
 
   /**
    * 已确认子检查点的等待核对（design D-02/D-03）：只在精确子线程、冻结身份、等待状态与最新只追加
@@ -711,6 +805,7 @@ export const createIdentificationGraphRuntime = (
 
   return {
     async start(command) {
+      const execution = await executionAuthorizationFor(command);
       const runIdentity = identificationRunIdentityFor({
         projectId: command.projectId,
         parentRiskFlowRunRef: command.parentRiskFlowRunRef,
@@ -722,11 +817,7 @@ export const createIdentificationGraphRuntime = (
         actorId: command.actorId,
         authorization: command.authorization,
         commandId: command.commandId,
-        issuedInvocationId: invocationIdFor({
-          operation: "workflow-start",
-          projectId: command.projectId,
-          targetId: command.commandId,
-        }),
+        issuedInvocationId: execution.invocationId,
         idempotencyKey: command.idempotencyKey,
         issuedAt: command.issuedAt,
         validAt: command.validAt,
@@ -737,27 +828,7 @@ export const createIdentificationGraphRuntime = (
         preparationSnapshotRef: command.preparationSnapshotRef,
         threadId: runIdentity.threadId,
       };
-      const authorized = await options.authorization.verifyCurrent({
-        authorization: command.authorization,
-        projectId: command.projectId,
-        actorId: command.actorId,
-        invocationId: invocationIdFor({
-          operation: "workflow-start",
-          projectId: command.projectId,
-          targetId: command.commandId,
-        }),
-        branch: "workflow.start-run",
-        requestedAt: command.requestedAt,
-      });
-      if (authorized === undefined) {
-        throw runFailure({
-          stage: "I0",
-          code: "AUTHORIZATION_DENIED",
-          retryable: false,
-          detailCode: "authorization_denied",
-          occurredAt: options.now().toISOString(),
-        });
-      }
+      const authorized = execution.authorization;
       const frozenRun: IdentificationGraphRunContextV1 = { ...run, authorization: authorized };
       const replayed = await recordCommandReceipt({
         ports,
@@ -872,18 +943,43 @@ export const createIdentificationGraphRuntime = (
     },
 
     async resume(command) {
+      const execution = await executionAuthorizationFor(command);
+      const authorized = execution.authorization;
+      if (
+        command.resumeCause.kind === "agent-task-completed" &&
+        command.resumeCause.agentTaskResultRef !== undefined
+      ) {
+        const result = command.resumeCause.agentTaskResultRef;
+        const task = await ports.agentTaskReader.getTask(result.agentTaskRef);
+        if (
+          task === undefined ||
+          task.state.status !== "completed" ||
+          sha256CanonicalJson(task.envelope.agentTaskRef.reference) !==
+            sha256CanonicalJson(result.agentTaskRef.reference) ||
+          sha256CanonicalJson(command.resumeCause.agentTaskRef.reference) !==
+            sha256CanonicalJson(result.agentTaskRef.reference) ||
+          task.envelope.projectId !== command.projectId ||
+          task.envelope.actorId !== command.actorId ||
+          sha256CanonicalJson(task.envelope.parentRunRef) !== sha256CanonicalJson(command.runRef) ||
+          sha256CanonicalJson(task.state.resultRef ?? null) !== sha256CanonicalJson(result)
+        ) {
+          throw runFailure({
+            stage: "I3",
+            code: "AUTHORIZATION_DENIED",
+            retryable: false,
+            detailCode: "agent-task-result-binding-mismatch",
+            occurredAt: options.now().toISOString(),
+          });
+        }
+      }
       const cursorBefore = await readCursor({
         ports,
         run: {
           projectId: command.projectId,
           actorId: command.actorId,
-          authorization: command.authorization,
+          authorization: authorized,
           commandId: command.commandId,
-          issuedInvocationId: invocationIdFor({
-            operation: "workflow-resume",
-            projectId: command.projectId,
-            targetId: command.commandId,
-          }),
+          issuedInvocationId: execution.invocationId,
           idempotencyKey: command.idempotencyKey,
           issuedAt: command.issuedAt,
           validAt: command.issuedAt,
@@ -904,27 +1000,6 @@ export const createIdentificationGraphRuntime = (
           code: "ENTITY_NOT_FOUND",
           retryable: false,
           detailCode: "entity_not_found",
-          occurredAt: options.now().toISOString(),
-        });
-      }
-      const authorized = await options.authorization.verifyCurrent({
-        authorization: command.authorization,
-        projectId: command.projectId,
-        actorId: command.actorId,
-        invocationId: invocationIdFor({
-          operation: "workflow-resume",
-          projectId: command.projectId,
-          targetId: command.commandId,
-        }),
-        branch: "workflow.resume-run",
-        requestedAt: command.requestedAt,
-      });
-      if (authorized === undefined) {
-        throw runFailure({
-          stage: cursorBefore.stage,
-          code: "AUTHORIZATION_DENIED",
-          retryable: false,
-          detailCode: "authorization_denied",
           occurredAt: options.now().toISOString(),
         });
       }
@@ -958,11 +1033,7 @@ export const createIdentificationGraphRuntime = (
         actorId: command.actorId,
         authorization: authorized,
         commandId: command.commandId,
-        issuedInvocationId: invocationIdFor({
-          operation: "workflow-resume",
-          projectId: command.projectId,
-          targetId: command.commandId,
-        }),
+        issuedInvocationId: execution.invocationId,
         idempotencyKey: command.idempotencyKey,
         issuedAt: command.issuedAt,
         validAt: command.issuedAt,
@@ -1164,37 +1235,14 @@ export const createIdentificationGraphRuntime = (
     },
 
     async cancel(command) {
-      const authorized = await options.authorization.verifyCurrent({
-        authorization: command.authorization,
-        projectId: command.projectId,
-        actorId: command.actorId,
-        invocationId: invocationIdFor({
-          operation: "workflow-cancel",
-          projectId: command.projectId,
-          targetId: command.commandId,
-        }),
-        branch: "workflow.cancel-run",
-        requestedAt: command.requestedAt,
-      });
-      if (authorized === undefined) {
-        throw runFailure({
-          stage: "I0",
-          code: "AUTHORIZATION_DENIED",
-          retryable: false,
-          detailCode: "authorization_denied",
-          occurredAt: options.now().toISOString(),
-        });
-      }
+      const execution = await executionAuthorizationFor(command);
+      const authorized = execution.authorization;
       const provisionalRun: IdentificationGraphRunContextV1 = {
         projectId: command.projectId,
         actorId: command.actorId,
         authorization: authorized,
         commandId: command.commandId,
-        issuedInvocationId: invocationIdFor({
-          operation: "workflow-cancel",
-          projectId: command.projectId,
-          targetId: command.commandId,
-        }),
+        issuedInvocationId: execution.invocationId,
         idempotencyKey: command.idempotencyKey,
         issuedAt: command.issuedAt,
         validAt: command.issuedAt,

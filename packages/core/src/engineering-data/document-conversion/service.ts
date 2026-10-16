@@ -259,8 +259,12 @@ const buildSegments = (
   });
 };
 
-const scalarFromBlock = (block: NormalizedBlockV1): TableFieldV1["value"] =>
-  block.value === undefined ? block.text : block.value;
+const scalarFromBlock = (block: NormalizedBlockV1): TableFieldV1["value"] => {
+  if (block.value !== undefined) return block.value;
+  if (block.text.length > 0) return block.text;
+  // An image-only cell carries no scalar; explicit null keeps it distinct from an empty text cell.
+  return (block.unrecognizedImages?.length ?? 0) > 0 ? null : block.text;
+};
 
 const buildTableFields = (parsed: ParsedDocumentV1): TableFieldV1[] =>
   parsed.blocks
@@ -282,6 +286,9 @@ const buildTableFields = (parsed: ParsedDocumentV1): TableFieldV1[] =>
         row: block.row,
         column: block.column,
         value,
+        ...(block.unrecognizedImages === undefined
+          ? {}
+          : { unrecognizedImages: block.unrecognizedImages }),
         ...(block.formula === undefined ? {} : { formula: block.formula }),
         ...(block.cachedValue === undefined ? {} : { cachedValue: block.cachedValue }),
         ...(block.rowSpan === undefined || block.columnSpan === undefined

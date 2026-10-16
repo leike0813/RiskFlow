@@ -304,6 +304,7 @@ export interface PostgresHumanDecisionFeedbackAdapterOptionsV1 {
   readonly responseLifecycle: ResponseLifecycleServiceV1;
   readonly responseContext: ResponseLifecycleContextReaderV1;
   readonly workflowStartControl: HumanDecisionFeedbackServicePortsV1["workflowStartControl"];
+  readonly resolveFeedbackPolicies?: HumanDecisionFeedbackServicePortsV1["resolveFeedbackPolicies"];
   readonly now?: () => Date;
 }
 
@@ -347,6 +348,9 @@ export class PostgresHumanDecisionFeedbackAdapter
         responseLifecycle: options.responseLifecycle,
         responseContext: options.responseContext,
         workflowStartControl: options.workflowStartControl,
+        ...(options.resolveFeedbackPolicies === undefined
+          ? {}
+          : { resolveFeedbackPolicies: options.resolveFeedbackPolicies }),
         now: this.#now,
       },
     });

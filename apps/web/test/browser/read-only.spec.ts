@@ -3,7 +3,7 @@
  * 监测详情 → 知识治理四页 → 证据脱敏两态 → 检索深链 → 权限降级。
  * 服务由 server.mjs 以真实 PostgreSQL/迁移/会话/工件接缝启动；任何一步失败都计为失败。
  */
-import { expect, test } from "@playwright/test";
+import { expect, request, test } from "@playwright/test";
 
 import { startBusinessBrowserServer } from "./business-server.mjs";
 
@@ -116,6 +116,26 @@ test("资料目录与详情呈现登记事实，证据抽屉呈现定位", async
 
   await page.getByText(server.sourceAVersionEntityId, { exact: false }).first().click();
   await page.waitForURL(/\/projects\/documents\//);
+  await expect(page.getByRole("tab", { name: "原件", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("link", { name: "下载原件" })).toBeVisible();
+  const original = await page.getByRole("link", { name: "下载原件" }).getAttribute("href");
+  const authorized = await page.evaluate(async (href) => {
+    const response = await fetch(href, { credentials: "same-origin" });
+    return { status: response.status, byteLength: (await response.arrayBuffer()).byteLength };
+  }, original!);
+  expect(authorized.status).toBe(200);
+  expect(authorized.byteLength).toBeGreaterThan(0);
+  const anonymousContext = await request.newContext();
+  try {
+    const anonymous = await anonymousContext.get(new URL(original!, page.url()).href);
+    expect(anonymous.status()).toBe(401);
+  } finally {
+    await anonymousContext.dispose();
+  }
+  await page.getByRole("tab", { name: "解析与清洗" }).click();
   await expect(page.getByText("资料元数据")).toBeVisible();
   await expect(page.getByText("章节结构与资料段")).toBeVisible();
 

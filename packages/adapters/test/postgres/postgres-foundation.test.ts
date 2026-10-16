@@ -10,7 +10,6 @@ import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 
 import type { DomainEventV1 } from "@riskflow/contracts/events";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
-import type { ContractReferenceV1 } from "@riskflow/contracts/ports";
 import type {
   AtomicCommandV1,
   AtomicCommitV1,
@@ -29,7 +28,7 @@ import {
   createPostgresOutbox,
   createPostgresTransactionUnit,
   setupPostgresCheckpointer,
-  type CheckpointReferenceValidationContextV1,
+  type CheckpointStateValidationContextV1,
   type PostgresCheckpointer,
 } from "../../src/postgres/index.js";
 import { getPostgresTransaction } from "../../src/postgres/transaction-unit.js";
@@ -80,6 +79,7 @@ import * as assessmentEntryCatalogCursorKeysMigration from "../../src/postgres/m
 import * as deploymentOperationsMigration from "../../src/postgres/migrations/platform/deliver-offline-private-deployment-and-operations/000056_deployment_operations.js";
 import * as workflowRunEventsMigration from "../../src/postgres/migrations/workflow/deliver-offline-private-deployment-and-operations/000057_workflow_run_events.js";
 import * as assessmentEntrySnapshotMigration from "../../src/postgres/migrations/workflow/deliver-offline-private-deployment-and-operations/000058_assessment_entry_snapshot_reference.js";
+import * as derivedKnowledgeReleaseMigration from "../../src/postgres/migrations/knowledge-modeling/reduce-defensive-design-overhead/000059_derived_knowledge_release_origin.js";
 
 import * as fixtureMigration from "./fixtures/migrations/platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.js";
 import * as agentTaskFixtureMigration from "./fixtures/migrations/agent-task/deliver-unified-bounded-agent-runtime/900002_agent_task_fixture.js";
@@ -577,6 +577,15 @@ const testMigrationManifest = [
     module: assessmentEntrySnapshotMigration,
   },
   {
+    root: "production",
+    relativePath:
+      "knowledge-modeling/reduce-defensive-design-overhead/000059_derived_knowledge_release_origin.ts",
+    migrationName:
+      "000059_knowledge-modeling_reduce-defensive-design-overhead_derived_knowledge_release_origin",
+    sequence: 59,
+    module: derivedKnowledgeReleaseMigration,
+  },
+  {
     root: "fixture",
     relativePath:
       "platform/deliver-postgresql-outbox-and-checkpoint-foundation/900001_fixture_fact.ts",
@@ -666,10 +675,6 @@ describe("PostgreSQL foundation", () => {
   let outbox: ReturnType<typeof createPostgresOutbox> | undefined;
   let consumer: ReturnType<typeof createPostgresIdempotentConsumer> | undefined;
   let checkpointer: PostgresCheckpointer | undefined;
-  const unavailableReferenceIds = new Set<string>();
-  const validateReference = (reference: ContractReferenceV1) =>
-    !unavailableReferenceIds.has(reference.reference.entityId);
-
   const seedCommand = async (suffix: string, value: number) => {
     const command = makeCommand(suffix, value);
     const commit = makeCommit(command, command.commandId);
@@ -721,7 +726,6 @@ describe("PostgreSQL foundation", () => {
 
     checkpointer = await setupPostgresCheckpointer({
       ...fixture.checkpointer,
-      validateReference,
     });
     transactionUnit = createPostgresTransactionUnit(fixture.app);
     outbox = createPostgresOutbox(fixture.worker);
@@ -1037,7 +1041,7 @@ describe("PostgreSQL foundation", () => {
           resultRef: runRef,
           audit: {
             ...commit.audit,
-            action: commandKind,
+            action: commandKind === "workflow.start-run" ? "workflow.start-run-bound" : commandKind,
             targetRef: runRef,
             reasonRef: parentRunRef,
           },
@@ -1093,6 +1097,42 @@ describe("PostgreSQL foundation", () => {
         { projectId: command.projectId, runRef },
       ])
         expect(await transactionUnit!.readWorkflowRunBinding(rejected)).toBe(false);
+    }
+    for (const commandKind of [
+      "workflow.start-run",
+      "identification-graph.start",
+      "assessment-graph.start",
+    ]) {
+      const suffix = nextId("mismatched-startup-audit");
+      const runRef = {
+        kind: "workflow-run" as const,
+        reference: { entityId: `run-${suffix}`, versionId: "v1" },
+      };
+      const command = {
+        ...makeCommand(suffix),
+        commandKind,
+        runId: runRef.reference.entityId,
+        threadId: `thread-${suffix}`,
+      };
+      await transactionUnit!.execute(command, async () => {
+        const commit = makeCommit(command, suffix, 0);
+        return {
+          ...commit,
+          resultRef: runRef,
+          audit: {
+            ...commit.audit,
+            targetRef: runRef,
+            action: commandKind === "workflow.start-run" ? commandKind : "workflow.start-run-bound",
+          },
+        };
+      });
+      expect(
+        await transactionUnit!.readWorkflowRunBinding({
+          projectId: command.projectId,
+          runRef,
+          threadId: command.threadId,
+        }),
+      ).toBe(false);
     }
     for (const rollback of [false, true]) {
       const suffix = nextId("unaccepted-binding");
@@ -1393,6 +1433,9 @@ describe("PostgreSQL foundation", () => {
     await expect(transactionUnit!.execute(conflictCommand, handler)).rejects.toMatchObject({
       code: "IDEMPOTENCY_CONFLICT",
     });
+    await expect(
+      transactionUnit!.execute({ ...replayCommand, idempotencyKey: "other-command-key" }, handler),
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
     const replayFactCount = await fixture!.adminPool.query(
       "SELECT count(*)::int AS count FROM business.fixture_facts WHERE project_id = $1",
       [replayCommand.projectId],
@@ -1409,14 +1452,13 @@ describe("PostgreSQL foundation", () => {
       await writeFact(context, command.payload.factId as string, command.projectId);
       return commit;
     };
-    const [first, second] = await Promise.all([
-      transactionUnit!.execute(command, handler),
-      transactionUnit!.execute(command, handler),
-    ]);
+    const receipts = await Promise.all(
+      Array.from({ length: 16 }, () => transactionUnit!.execute(command, handler)),
+    );
     expect(calls).toBe(1);
-    expect(first.resultRef).toEqual(second.resultRef);
-    expect(first.auditEntryId).toBe(second.auditEntryId);
-    expect([first.replayed, second.replayed].sort()).toEqual([false, true]);
+    for (const receipt of receipts) expect(receipt.resultRef).toEqual(commit.resultRef);
+    expect(new Set(receipts.map((receipt) => receipt.auditEntryId)).size).toBe(1);
+    expect(receipts.filter((receipt) => !receipt.replayed)).toHaveLength(1);
   });
 
   it("claims, retries, confirms, reclaims and exhausts Outbox leases", async () => {
@@ -1780,6 +1822,7 @@ describe("PostgreSQL foundation", () => {
     expect((await officialSaver.get(savedConfig))?.id).toBe(checkpoint.id);
     const listed = [];
     for await (const item of checkpointer!.list(config)) listed.push(item);
+    // 历史阶段的正文可用性不参与进度读取。
     expect(listed).toHaveLength(1);
     expect(listed[0]?.checkpoint.id).toBe(checkpoint.id);
 
@@ -1796,31 +1839,6 @@ describe("PostgreSQL foundation", () => {
     ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
     await expect(
       checkpointer!.putWrites(savedConfig, [["stage", "I0"]], "wrong-graph-write"),
-    ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
-    const missingWriteRef = resultRef("missing-checkpoint-write");
-    unavailableReferenceIds.add(missingWriteRef.reference.entityId);
-    await expect(
-      checkpointer!.putWrites(savedConfig, [["resultRef", missingWriteRef]], "missing-ref-write"),
-    ).rejects.toMatchObject({
-      code: "CHECKPOINT_INCONSISTENT",
-      stage: "checkpointer.reference",
-    });
-    unavailableReferenceIds.delete(missingWriteRef.reference.entityId);
-    await expect(
-      checkpointer!.put(
-        config,
-        { ...checkpoint, password: "forbidden" } as never,
-        metadata,
-        channelVersions,
-      ),
-    ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
-    await expect(
-      checkpointer!.put(
-        config,
-        checkpoint,
-        { ...metadata, counters_since_delta_snapshot: { stage: [1, "secret"] } } as never,
-        channelVersions,
-      ),
     ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
     await expect(
       checkpointer!.put(
@@ -1841,22 +1859,6 @@ describe("PostgreSQL foundation", () => {
         channelVersions,
       ),
     ).rejects.toMatchObject({ code: "CHECKPOINT_INCONSISTENT" });
-
-    unavailableReferenceIds.add(graphState.resultRef.reference.entityId);
-    await expect(checkpointer!.getTuple(savedConfig)).rejects.toMatchObject({
-      code: "CHECKPOINT_INCONSISTENT",
-      stage: "checkpointer.reference",
-    });
-    const listWithMissingReference = async () => {
-      const items = [];
-      for await (const item of checkpointer!.list(config)) items.push(item);
-      return items;
-    };
-    await expect(listWithMissingReference()).rejects.toMatchObject({
-      code: "CHECKPOINT_INCONSISTENT",
-      stage: "checkpointer.reference",
-    });
-    unavailableReferenceIds.delete(graphState.resultRef.reference.entityId);
 
     const appPool = userPool(fixture!.app);
     const workerPool = userPool(fixture!.worker);
@@ -1879,7 +1881,6 @@ describe("PostgreSQL foundation", () => {
     await checkpointer!.end();
     checkpointer = createPostgresCheckpointer({
       ...fixture!.checkpointer,
-      validateReference,
     });
     const restored = await checkpointer.getTuple(savedConfig);
     expect(restored?.checkpoint.id).toBe(checkpoint.id);
@@ -1891,18 +1892,17 @@ describe("PostgreSQL foundation", () => {
     expect(businessRows.rows[0]?.count).toBeGreaterThan(0);
   });
 
-  it("validates every checkpoint operation against the current runtime context", async () => {
-    const observed: CheckpointReferenceValidationContextV1[] = [];
+  it("validates runtime ownership once per checkpoint operation", async () => {
+    const observed: CheckpointStateValidationContextV1[] = [];
     const contextSaver = await setupPostgresCheckpointer({
       ...fixture!.checkpointer,
-      validateReference: (_reference, context) => {
+      validateState: (context) => {
         observed.push(context);
         return true;
       },
     });
     const legacySaver = createPostgresCheckpointer({
       ...fixture!.checkpointer,
-      validateReference: () => true,
     });
     const threadId = nextId("checkpoint-context-thread");
     const stateSuffix = nextId("checkpoint-context-state");

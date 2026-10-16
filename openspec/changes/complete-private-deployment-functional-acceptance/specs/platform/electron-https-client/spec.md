@@ -1,5 +1,14 @@
 ## ADDED Requirements
 
+### Requirement: 当前桌面原件与Agent行为必须和Web一致
+
+Electron MUST 加载同一受信HTTPS的原件/PDF/Agent界面，下载只允许批准origin的原件及既有报告用途，用户选择保存位置。不得新增通用本机IPC、自动打开文件或放宽iframe/Node/窗口/TLS边界。
+
+#### Scenario: 保存原件并查看任务
+
+- **WHEN** 用户在当前平台真实Electron选择已有原件下载并打开Agent
+- **THEN** 文件实际保存且与登记字节一致，任务与Chrome对应同一正式引用，无重启后台任务
+
 ### Requirement: 桌面功能验收与正式离线发布分阶段
 
 后续功能阶段 MUST 以真实功能证据核验完整 Web 独立运行和当前平台 Electron 的导航、TLS/证书、权限、会话、命令确认/幂等、SSE 重连与已受理任务继续。桌面特有行为须有桌面证据，代码存在或浏览器测试不能替代。正式签名、多平台安装、三 VM 与硬件材料缺项不得阻塞已有完整功能证据的当前功能 PASS、集成和归档。

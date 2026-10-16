@@ -71,6 +71,7 @@ import { createRiskInputFactsReader } from "../../../packages/core/dist/risk-ass
 import {
   CALIBRATION_VALIDATION_POLICY,
   DEMO_FORECAST_POLICIES,
+  DEMO_RUNTIME_POLICY_REFS,
   DEMO_RISK_FLOW_CONFIG,
   createRecommendationPolicies,
   createResponseAgentPolicy,
@@ -702,14 +703,16 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
             invocationId: request.invocationId,
             projectId: request.projectId,
             branch: request.branch,
-            requestedSpatialScopeRefs: [...(request.requestedSpatialScopeRefs ?? [spatialScopeRef])],
+            requestedSpatialScopeRefs: [
+              ...(request.requestedSpatialScopeRefs ?? [spatialScopeRef]),
+            ],
             requestedSourceVersionRefs: [
               ...(request.requestedSourceVersionRefs ?? downstreamSourceVersionRefs),
             ],
           })
         ).context;
       } catch (error) {
-                throw error;
+        throw error;
       }
     };
     /**
@@ -788,7 +791,10 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       status: "active",
       effectivePeriod: { validFrom: NOW },
     });
-    if (spatialRevision.kind !== "succeeded" || spatialRevision.result.kind !== "spatial-revision") {
+    if (
+      spatialRevision.kind !== "succeeded" ||
+      spatialRevision.result.kind !== "spatial-revision"
+    ) {
       throw new Error("demo fixture spatial revision failed");
     }
     const businessSpatialScopeRef = spatialRevision.result.revision.spatialScopeRef;
@@ -860,9 +866,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         },
       });
       if (delivery.kind !== "succeeded") {
-        throw new Error(
-          `demo fixture delivery ${suffix} failed: ${JSON.stringify(delivery)}`,
-        );
+        throw new Error(`demo fixture delivery ${suffix} failed: ${JSON.stringify(delivery)}`);
       }
       const sourceVersionRef = delivery.result.sourceVersionRef;
       const segmentIds = ["segment_1", "segment_2"].map(
@@ -939,7 +943,10 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         "SELECT current_revision_id FROM business.source_access_policies WHERE source_access_grant_id = $1",
         [result.resultRef.entityId],
       );
-      const grant = { entityId: result.resultRef.entityId, versionId: registered.rows[0].current_revision_id };
+      const grant = {
+        entityId: result.resultRef.entityId,
+        versionId: registered.rows[0].current_revision_id,
+      };
       sourceVersionsByGrant.set(`${grant.entityId}\u0000${grant.versionId}`, sourceVersionRef);
       return result;
     };
@@ -1007,9 +1014,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       },
     });
     if (convertibleDelivery.kind !== "succeeded") {
-      throw new Error(
-        `demo fixture delivery c15 failed: ${JSON.stringify(convertibleDelivery)}`,
-      );
+      throw new Error(`demo fixture delivery c15 failed: ${JSON.stringify(convertibleDelivery)}`);
     }
     const convertibleSourceVersionRef = convertibleDelivery.result.sourceVersionRef;
     await reviseSourceAccess(convertibleSourceVersionRef, "c15", "project-shared", []);
@@ -1341,7 +1346,10 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         projectId: PROJECT_ID,
         actorId: baseAuth.actorId,
         issuedAt: NOW,
-        authorization: await monitoringAuth(identity("series"), "engineering-data.register-monitoring-batch"),
+        authorization: await monitoringAuth(
+          identity("series"),
+          "engineering-data.register-monitoring-batch",
+        ),
         monitoringSeriesRef: seriesRef,
         expectedVersion: "none",
         projectRevisionRef,
@@ -1354,7 +1362,9 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         effectivePeriod: { validFrom: NOW },
       });
       if (revised.kind !== "succeeded") {
-        throw new Error(`demo fixture series failed ${input.seriesId}: ${JSON.stringify(revised).slice(0, 500)}`);
+        throw new Error(
+          `demo fixture series failed ${input.seriesId}: ${JSON.stringify(revised).slice(0, 500)}`,
+        );
       }
       const policy = await monitoringStore.registerAvailabilityPolicy({
         commandId: identity("policy"),
@@ -1362,7 +1372,10 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         projectId: PROJECT_ID,
         actorId: baseAuth.actorId,
         issuedAt: NOW,
-        authorization: await monitoringAuth(identity("policy"), "engineering-data.register-monitoring-batch"),
+        authorization: await monitoringAuth(
+          identity("policy"),
+          "engineering-data.register-monitoring-batch",
+        ),
         policy: {
           availabilityPolicyRef: policyRef,
           projectId: PROJECT_ID,
@@ -1389,7 +1402,8 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
           audit: { actorId: baseAuth.actorId, action: "policy", recordedAt: NOW },
         },
       });
-      if (policy.kind !== "succeeded") throw new Error(`demo fixture availability policy failed ${input.seriesId}`);
+      if (policy.kind !== "succeeded")
+        throw new Error(`demo fixture availability policy failed ${input.seriesId}`);
       const sampleLines = [
         JSON.stringify({
           schemaVersion: "1",
@@ -1445,7 +1459,10 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         projectId: PROJECT_ID,
         actorId: sampleAuth.actorId,
         issuedAt: NOW,
-        authorization: await monitoringAuth(identity("batch"), "engineering-data.register-monitoring-batch"),
+        authorization: await monitoringAuth(
+          identity("batch"),
+          "engineering-data.register-monitoring-batch",
+        ),
         kind: "register-monitoring-batch",
         payload: {
           monitoringSeriesRef: seriesRef,
@@ -1456,7 +1473,9 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         },
       });
       if (batch.kind !== "succeeded") {
-        throw new Error(`demo fixture monitoring batch failed ${input.seriesId}: ${JSON.stringify(batch)}`);
+        throw new Error(
+          `demo fixture monitoring batch failed ${input.seriesId}: ${JSON.stringify(batch)}`,
+        );
       }
       const snapshot = await registry.freeze({
         commandId: identity("freeze"),
@@ -1464,7 +1483,10 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         projectId: PROJECT_ID,
         actorId: sampleAuth.actorId,
         issuedAt: NOW,
-        authorization: await monitoringAuth(identity("freeze"), "engineering-data.monitoring-snapshot"),
+        authorization: await monitoringAuth(
+          identity("freeze"),
+          "engineering-data.monitoring-snapshot",
+        ),
         kind: "monitoring-snapshot",
         payload: {
           monitoringSeriesRef: seriesRef,
@@ -1620,7 +1642,10 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
             reference: { entityId: `${definitionId}-rt`, versionId: "1" },
             reviewType: "knowledge-revision",
             targetRef: kindRef("knowledge-revision", `${definitionId}-rev-1`),
-            waitingRunRef: { kind: "workflow-run", reference: { entityId: `${definitionId}-run`, versionId: "1" } },
+            waitingRunRef: {
+              kind: "workflow-run",
+              reference: { entityId: `${definitionId}-run`, versionId: "1" },
+            },
           }),
           review_decision_ref: JSON.stringify(kindRef("review-decision", `${definitionId}-rd`)),
           effective_from: NOW,
@@ -1662,10 +1687,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         projectId: PROJECT_ID,
         definitionType: "process-model",
         validationPolicyRef: versionRef("demo-validation-policy"),
-        preparationSnapshotRef: kindRef(
-          "identification-preparation-snapshot",
-          "demo-preparation",
-        ),
+        preparationSnapshotRef: kindRef("identification-preparation-snapshot", "demo-preparation"),
         generatedAt: NOW,
         nodes: [
           processNode("PN-EXPAND-01", "扩径准备", ["小盾构到达扩径工位"], ["扩径模块就绪"]),
@@ -1700,10 +1722,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         projectId: PROJECT_ID,
         definitionType: "risk-mechanism",
         validationPolicyRef: versionRef("demo-validation-policy"),
-        preparationSnapshotRef: kindRef(
-          "identification-preparation-snapshot",
-          "demo-preparation",
-        ),
+        preparationSnapshotRef: kindRef("identification-preparation-snapshot", "demo-preparation"),
         generatedAt: NOW,
         processModelReleaseRef: {
           kind: "process-model-release",
@@ -1824,9 +1843,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
           evidence: [sampleEvidence],
         },
       ],
-      excludedMechanisms: [
-        { mechanismId: "MEC-VDS-018", reasonCode: "applicability-mismatch" },
-      ],
+      excludedMechanisms: [{ mechanismId: "MEC-VDS-018", reasonCode: "applicability-mismatch" }],
       authorizationScopeDigest: scopeDigest,
       authorizationContextRef: baseAuth.authorizationContextRef,
       knowledgeQueryResultRef: relationshipResultRef,
@@ -1965,9 +1982,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         },
       });
       if (result.kind !== "succeeded") {
-        throw new Error(
-          `demo fixture review request ${suffix} failed: ${JSON.stringify(result)}`,
-        );
+        throw new Error(`demo fixture review request ${suffix} failed: ${JSON.stringify(result)}`);
       }
       return result.result.reviewTaskRef;
     };
@@ -2341,18 +2356,15 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         `stage-result:${completedRunId}:${stage}`,
         sha(`stage-result-completed-${stage}`),
       );
-      const artifactRef = await putGraphBody(
-        `demo-c33-body-stage-${completedSuffix}-${stage}`,
-        {
-          bodyKind: "stage-result",
-          stageResult: {
-            schemaVersion: "1",
-            runRef: completedRunRef,
-            recordedAt: completedValidAt,
-            ...body,
-          },
+      const artifactRef = await putGraphBody(`demo-c33-body-stage-${completedSuffix}-${stage}`, {
+        bodyKind: "stage-result",
+        stageResult: {
+          schemaVersion: "1",
+          runRef: completedRunRef,
+          recordedAt: completedValidAt,
+          ...body,
         },
-      );
+      });
       stageRows.push(
         graphRowFor({
           kind: "stage-result",
@@ -2400,10 +2412,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
             "validation-snapshot",
             `validation-snapshot:${completedRunId}`,
           ),
-          evidenceSnapshotRef: kindRef(
-            "evidence-snapshot",
-            `evidence-snapshot:${completedRunId}`,
-          ),
+          evidenceSnapshotRef: kindRef("evidence-snapshot", `evidence-snapshot:${completedRunId}`),
           reviewPolicyRef: versionRef("demo-review-policy"),
           forcedReviewReasonCode: "below-confidence-threshold",
         },
@@ -2756,7 +2765,6 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
      */
     const checkpointer = await setupPostgresCheckpointer({
       ...roleConfig("riskflow_checkpointer_login"),
-      validateReference: () => true,
     });
     closeables.push(() => checkpointer.end());
 
@@ -2947,7 +2955,12 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
     // 播种按运行逐个进行：C31 的 risk-overview 每页只展开一个运行，翻页完全由用户驱动。
     // 只有一个运行就永远只有一页，「按页追溯」无从验收，因此这里登记两个真实运行，
     // 让下一页游标成为真实游标而不是构造出来的假游标。
-    const seedRiskOverviewRun = async (suffix, parentRunRef, status = "completed", referenceCount = 0) => {
+    const seedRiskOverviewRun = async (
+      suffix,
+      parentRunRef,
+      status = "completed",
+      referenceCount = 0,
+    ) => {
       const chainRunId = `risk-flow-run:${PROJECT_ID}:${suffix}`;
       const chainRunVersionId = sha(`c33-${suffix}-run-version`);
       const chainRunRef = kindRef("workflow-run", chainRunId, chainRunVersionId);
@@ -2957,8 +2970,8 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       };
       // 冻结引用必须与 risk-overview 登记的目标逐字一致：登记目标只有工程修订
       // （总览查询不传空间范围）。多带一个空间引用会让入口行匹配不上，整页失败闭合。
-      const chainFrozenRefs = suffix === "chain-a" || suffix === "chain-b"
-        ? [projectRevisionRef] : [spatialScopeRef];
+      const chainFrozenRefs =
+        suffix === "chain-a" || suffix === "chain-b" ? [projectRevisionRef] : [spatialScopeRef];
       const chainStateArtifactId = `c33-${suffix}-run-state:${chainRunId}:${chainRunVersionId}`;
       // C30 正文写入沿真实授权接缝复验：身份由签发方给出，端口按同一身份复验，
       // 不用无签发方的端口内派生身份。
@@ -2974,124 +2987,132 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         body: WorkflowGraphArtifactBodyV1Schema.parse({
           bodyKind: "run-state",
           runState: {
-          schemaVersion: "1",
-          projectId: PROJECT_ID,
-          runId: chainRunId,
-          runVersionId: chainRunVersionId,
-          entryMode: "identify-and-assess",
-          graphVersion: versionRef("demo-risk-flow", "1"),
+            schemaVersion: "1",
+            projectId: PROJECT_ID,
+            runId: chainRunId,
+            runVersionId: chainRunVersionId,
+            entryMode: "identify-and-assess",
+            graphVersion: versionRef("demo-risk-flow", "1"),
+            entryIdentity: chainEntryIdentity,
+            stage: "result-summary",
+            status,
+            parentRunRef,
+            assessmentRunRefs: [],
+            acceptedRiskRecordRefs: [recordAutoRef, recordReviewRef],
+            assessmentRecordRefs: [assessmentRef],
+            warningRecordRefs: [warningRef],
+            responseRecommendationRefs: [recommendationRef],
+            deviationRecordRefs: [deviationRef],
+            calibrationSuggestionRefs: [calibrationRef],
+            recordedAt: chainRecordedAt,
+          },
+        }),
+        authorization: chainBodyAuth,
+      });
+      const chainRowBase = (rowSuffix) => ({
+        schemaVersion: "1",
+        projectId: PROJECT_ID,
+        resultId: `${chainRunId}:${rowSuffix}`,
+        resultVersionId: sha(`c33-${suffix}-result-${rowSuffix}`),
+        runId: chainRunId,
+        runVersionId: chainRunVersionId,
+        entryMode: "identify-and-assess",
+        // 命令身份按运行区分：复用同一 commandId 会让第二次播种撞上第一次的幂等登记。
+        commandId: `demo-c33-${suffix}-${rowSuffix}`,
+        idempotencyKey: `demo-c33-${suffix}-${rowSuffix}`,
+        requestDigest: sha(`demo-c33-${suffix}-request-${rowSuffix}`),
+        actorRef: baseAuth.actorId,
+        authorizationContextRef: baseAuth.authorizationContextRef,
+        authorizationScopeDigest: scopeDigest,
+        validAt: chainRecordedAt,
+        recordedAt: chainRecordedAt,
+        persistedAt: chainRecordedAt,
+        auditEntryId: `demo-c33-${suffix}-${rowSuffix}:audit`,
+        frozenRefs: chainFrozenRefs,
+      });
+      const registerChainRow = async (row) => {
+        const commandId = row.commandId;
+        await transactionUnit.execute(
+          {
+            projectId: PROJECT_ID,
+            commandKind: "workflow.register-row",
+            commandId,
+            idempotencyKey: row.idempotencyKey,
+            payload: { resultId: row.resultId, fixture: "合成样本、待甲方复核" },
+            actorRef: baseAuth.actorId,
+            authorizationContextRef: baseAuth.authorizationContextRef,
+            issuedAt: chainRecordedAt,
+            runId: chainRunId,
+          },
+          async (context) => {
+            await workflow.registrationStore.registerRow(
+              { row, occurredAt: chainRecordedAt },
+              context,
+            );
+            return {
+              resultRef: chainRunRef,
+              audit: {
+                auditEntryId: row.auditEntryId,
+                projectId: PROJECT_ID,
+                action: "workflow.register-row",
+                targetRef: chainRunRef,
+                actorRef: baseAuth.actorId,
+                authorizationContextRef: baseAuth.authorizationContextRef,
+                occurredAt: chainRecordedAt,
+                recordedAt: chainRecordedAt,
+                version: chainRunRef.reference,
+                commandId,
+                idempotencyKey: commandId,
+                runId: chainRunId,
+              },
+              events: [],
+            };
+          },
+        );
+      };
+      await registerChainRow(
+        WorkflowGraphResultRowV1Schema.parse({
+          ...chainRowBase("entry-snapshot"),
+          resultKind: "entry-snapshot",
+          stage: "preparing",
           entryIdentity: chainEntryIdentity,
-          stage: "result-summary",
-          status,
-          parentRunRef,
-          assessmentRunRefs: [],
-          acceptedRiskRecordRefs: [recordAutoRef, recordReviewRef],
-          assessmentRecordRefs: [assessmentRef],
-          warningRecordRefs: [warningRef],
-          responseRecommendationRefs: [recommendationRef],
-          deviationRecordRefs: [deviationRef],
-          calibrationSuggestionRefs: [calibrationRef],
-          recordedAt: chainRecordedAt,
-        },
-      }),
-      authorization: chainBodyAuth,
-    });
-    const chainRowBase = (rowSuffix) => ({
-      schemaVersion: "1",
-      projectId: PROJECT_ID,
-      resultId: `${chainRunId}:${rowSuffix}`,
-      resultVersionId: sha(`c33-${suffix}-result-${rowSuffix}`),
-      runId: chainRunId,
-      runVersionId: chainRunVersionId,
-      entryMode: "identify-and-assess",
-      // 命令身份按运行区分：复用同一 commandId 会让第二次播种撞上第一次的幂等登记。
-      commandId: `demo-c33-${suffix}-${rowSuffix}`,
-      idempotencyKey: `demo-c33-${suffix}-${rowSuffix}`,
-      requestDigest: sha(`demo-c33-${suffix}-request-${rowSuffix}`),
-      actorRef: baseAuth.actorId,
-      authorizationContextRef: baseAuth.authorizationContextRef,
-      authorizationScopeDigest: scopeDigest,
-      validAt: chainRecordedAt,
-      recordedAt: chainRecordedAt,
-      persistedAt: chainRecordedAt,
-      auditEntryId: `demo-c33-${suffix}-${rowSuffix}:audit`,
-      frozenRefs: chainFrozenRefs,
-    });
-    const registerChainRow = async (row) => {
-      const commandId = row.commandId;
-      await transactionUnit.execute(
-        {
-          projectId: PROJECT_ID,
-          commandKind: "workflow.register-row",
-          commandId,
-          idempotencyKey: row.idempotencyKey,
-          payload: { resultId: row.resultId, fixture: "合成样本、待甲方复核" },
-          actorRef: baseAuth.actorId,
-          authorizationContextRef: baseAuth.authorizationContextRef,
-          issuedAt: chainRecordedAt,
-          runId: chainRunId,
-        },
-        async (context) => {
-          await workflow.registrationStore.registerRow(
-            { row, occurredAt: chainRecordedAt },
-            context,
-          );
-          return {
-            resultRef: chainRunRef,
-            audit: {
-              auditEntryId: row.auditEntryId,
-              projectId: PROJECT_ID,
-              action: "workflow.register-row",
-              targetRef: chainRunRef,
-              actorRef: baseAuth.actorId,
-              authorizationContextRef: baseAuth.authorizationContextRef,
-              occurredAt: chainRecordedAt,
-              recordedAt: chainRecordedAt,
-              version: chainRunRef.reference,
-              commandId,
-              idempotencyKey: commandId,
-              runId: chainRunId,
-            },
-            events: [],
-          };
-        },
+        }),
       );
-    };
-    await registerChainRow(
-      WorkflowGraphResultRowV1Schema.parse({
-        ...chainRowBase("entry-snapshot"),
-        resultKind: "entry-snapshot",
-        stage: "preparing",
-        entryIdentity: chainEntryIdentity,
-      }),
-    );
-    await registerChainRow(
-      WorkflowGraphResultRowV1Schema.parse({
-        ...chainRowBase("run-state"),
-        resultKind: "run-state",
-        resultVersionId: chainRunVersionId,
-        stage: "result-summary",
-        artifactRef: chainStateArtifactRef,
-      }),
-    );
+      await registerChainRow(
+        WorkflowGraphResultRowV1Schema.parse({
+          ...chainRowBase("run-state"),
+          resultKind: "run-state",
+          resultVersionId: chainRunVersionId,
+          stage: "result-summary",
+          artifactRef: chainStateArtifactRef,
+        }),
+      );
       for (let index = 0; index < referenceCount + (referenceCount > 0 ? 50 : 0); index += 1) {
-        if (index < referenceCount) await registerChainRow(WorkflowGraphResultRowV1Schema.parse({
-          ...chainRowBase(`result-${index}`),
-          resultKind: "stage-result",
-          stage: "assessment",
-          stageResultRef: kindRef("stage-result", `${chainRunId}:result-${index}`),
-        }));
-        await registerChainRow(WorkflowGraphResultRowV1Schema.parse({
-          ...chainRowBase(`waiting-${index}`),
-          resultKind: "waiting",
-          stage: "assessment",
-          waitingRef: { kind: "review", reviewTaskRef: {
-            ...kindRef("review-task", `${chainRunId}:review-${index}`),
-            reviewType: "response-candidate",
-            waitingRunRef: chainRunRef,
-            targetRef: kindRef("recommendation-candidate", `${chainRunId}:candidate-${index}`),
-          } },
-        }));
+        if (index < referenceCount)
+          await registerChainRow(
+            WorkflowGraphResultRowV1Schema.parse({
+              ...chainRowBase(`result-${index}`),
+              resultKind: "stage-result",
+              stage: "assessment",
+              stageResultRef: kindRef("stage-result", `${chainRunId}:result-${index}`),
+            }),
+          );
+        await registerChainRow(
+          WorkflowGraphResultRowV1Schema.parse({
+            ...chainRowBase(`waiting-${index}`),
+            resultKind: "waiting",
+            stage: "assessment",
+            waitingRef: {
+              kind: "review",
+              reviewTaskRef: {
+                ...kindRef("review-task", `${chainRunId}:review-${index}`),
+                reviewType: "response-candidate",
+                waitingRunRef: chainRunRef,
+                targetRef: kindRef("recommendation-candidate", `${chainRunId}:candidate-${index}`),
+              },
+            },
+          }),
+        );
       }
       return chainRunRef;
     };
@@ -3155,9 +3176,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       reviewAuthorizationProvider: {
         authorize: (request) => operatorAuth(request.invocationId, request.branch),
       },
-      assessmentConfigurationPolicy: forwardTo(
-        () => governanceTargets.assessmentConfiguration,
-      ),
+      assessmentConfigurationPolicy: forwardTo(() => governanceTargets.assessmentConfiguration),
       scoringRulesPolicy: forwardTo(() => governanceTargets.scoringRules),
     });
     // C16 的发布解析按「定义类型集合 + requiredAt + asOfRecordedAt」派生固定 invocationId
@@ -3212,6 +3231,9 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       governedReleases: governedReleaseResolver,
       // 准备快照投影由所属的 C11 提供，不注入假投影。
       preparationSnapshot: registry,
+      derivedPublisher: {
+        publishDerivedRelease: (input) => knowledgeGovernance.publishDerivedRelease(input),
+      },
       // C19 的修订提交没有独立写路径：经 C16 `submit-revision` 与 C07 审阅、C16 发布同事务
       // 落库。授权按提交调用身份单独签发，不复用编制入口的上下文。
       submitRevision: {
@@ -3327,7 +3349,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       preparationContext: registry,
       riskInputFacts,
       basisReader: scoringRules,
-      runtimePolicies: createRiskAssessmentRuntimePolicies({ projectId: PROJECT_ID }),
+      configuration: assessmentConfiguration,
       monitoring: monitoringStore,
       authorizeDownstream,
       entryContext: createAssessmentEntryContextReadPort(registry),
@@ -3519,7 +3541,8 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
           payload: {
             definitionType,
             ...(publishedConfigurationReleaseRefs.has(definitionType)
-              ? { baseReleaseRef: publishedConfigurationReleaseRefs.get(definitionType) } : {}),
+              ? { baseReleaseRef: publishedConfigurationReleaseRefs.get(definitionType) }
+              : {}),
             candidateArtifactRef: artifactRef,
             evidenceReferences: [
               {
@@ -3546,8 +3569,15 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       const suffix = `:historical-matrix-${Date.now()}`;
       const documents = structuredClone(configurationDocuments);
       documents["risk-matrix"].content.matrixVersion = "2026.10";
-      const matrixRef = { entityId: documents["risk-matrix"].content.matrixId, versionId: "2026.10" };
-      for (const type of ["risk-matrix", "risk-acceptance-threshold", "monitoring-warning-threshold"]) {
+      const matrixRef = {
+        entityId: documents["risk-matrix"].content.matrixId,
+        versionId: "2026.10",
+      };
+      for (const type of [
+        "risk-matrix",
+        "risk-acceptance-threshold",
+        "monitoring-warning-threshold",
+      ]) {
         if (type !== "risk-matrix") documents[type].content.riskMatrixRef = matrixRef;
         await publishConfigurationDefinition(type, documents, suffix);
       }
@@ -3582,9 +3612,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         projectId: PROJECT_ID,
         algorithmVersion: "parameter-forecast-v1",
         method: DEMO_FORECAST_POLICIES[0].method,
-        inputIndicators: [
-          { indicatorId: DEMO_FORECAST_POLICIES[0].targetIndicatorId, unit: "mm" },
-        ],
+        inputIndicators: [{ indicatorId: DEMO_FORECAST_POLICIES[0].targetIndicatorId, unit: "mm" }],
         targetIndicatorId: DEMO_FORECAST_POLICIES[0].targetIndicatorId,
         unit: "mm",
         stepMs: 1000,
@@ -3637,7 +3665,10 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         actorId: (await operatorAuth(authoringCommandId, "knowledge-modeling.assessment-basis"))
           .actorId,
         requestedAt: NOW,
-        authorization: await operatorAuth(authoringCommandId, "knowledge-modeling.assessment-basis"),
+        authorization: await operatorAuth(
+          authoringCommandId,
+          "knowledge-modeling.assessment-basis",
+        ),
         // C19 按 (工程, 清洗任务) 缓存首次的 C15 读取身份，并用它自己的 requestId 向 C06
         // 复验，因此签发标识必须与 requestId 同值。C15 的 `readBoundResult` 只按
         // `engineering-data.evidence-access` 复验，正文能否读到由 C04 的访问快照
@@ -3677,57 +3708,80 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
           // `risk-assessment-rule-coverage` 关闭失败；一次编制只带一条，因为适用规则集的
           // `includedMembers` 按 release 唯一。`indicatorItem` 用 C18 已发布的指标标识，
           // 编制候选按 indicatorIds 集合校验。
-          operations: [{
-            kind: "add-rule",
-            ruleId: `RULE-${indicatorId}`,
-            rule: {
+          operations: [
+            {
+              kind: "add-rule",
               ruleId: `RULE-${indicatorId}`,
-              applicabilityConditions: {
-                constructionMethod: ["变径盾构法"],
-                stratumCondition: ["富水软弱地层"],
-                engineeringStage: ["变径空间扩挖"],
+              rule: {
+                ruleId: `RULE-${indicatorId}`,
+                applicabilityConditions: {
+                  constructionMethod: ["变径盾构法"],
+                  stratumCondition: ["富水软弱地层"],
+                  engineeringStage: ["变径空间扩挖"],
+                },
+                indicatorItem: indicatorId,
+                // 演示阈值：按指标各自的量纲给分档线。评分规则是「命中即取值」：实际值必须落在
+                // 某条分档线上，否则按 `scoring-value-out-of-range` 拒绝。沉降短期速率的序列
+                // 实际值是 2 mm/s，因此它需要一条它能命中的 mm/s 量纲分档线（0.5 是监测预警
+                // 阈值，2 ≥ 0.5 所以速率预警照常开出），并配一条从 0 起的完整等级区间。
+                // 该指标基础分与累计沉降同为 3，后果侧 `maximum` 组合结果不变，P/C 与风险
+                // 等级不因新增该指标而移动。
+                scoringThresholds:
+                  indicatorId === POSSIBILITY_DEMO_INDICATOR_ID
+                    ? [
+                        {
+                          thresholdId: "demo-th-chamber-pressure",
+                          score: 3,
+                          value: 300,
+                          operator: "gte",
+                        },
+                      ]
+                    : indicatorId === SETTLEMENT_SLOPE_DEMO_INDICATOR_ID
+                      ? [
+                          {
+                            thresholdId: "demo-th-settlement-slope",
+                            score: 3,
+                            value: 1,
+                            operator: "gte",
+                          },
+                        ]
+                      : [
+                          {
+                            thresholdId: "demo-th-settlement",
+                            score: 3,
+                            value: 10,
+                            operator: "gte",
+                          },
+                        ],
+                gradeIntervals:
+                  indicatorId === SETTLEMENT_SLOPE_DEMO_INDICATOR_ID
+                    ? [
+                        // 等级区间必须首尾相接且不重叠：上界缺省会当成 +∞，两段就叠在一起了。
+                        { grade: "demo-level-1", lowerBound: 0, upperBound: 3 },
+                        { grade: "demo-level-3", lowerBound: 3 },
+                      ]
+                    : [{ grade: "demo-level-3", lowerBound: 3 }],
+                exceptionClauses: [],
+                // 证据定位符必须命中 C15 保留的资料段，否则整份候选按证据未核实拒绝。
+                evidenceLocator: { sourceSegmentId: retainedSourceSegments[0].sourceSegmentId },
+                ruleVersion: {
+                  entityId: `RULE-${indicatorId}`,
+                  versionId: "1",
+                },
+                // 编制候选只能是待审状态：批准由 C07 审核决定，Agent 无权自行置为已批准。
+                reviewStatus: "pending",
               },
-              indicatorItem: indicatorId,
-              // 演示阈值：按指标各自的量纲给分档线。评分规则是「命中即取值」：实际值必须落在
-              // 某条分档线上，否则按 `scoring-value-out-of-range` 拒绝。沉降短期速率的序列
-              // 实际值是 2 mm/s，因此它需要一条它能命中的 mm/s 量纲分档线（0.5 是监测预警
-              // 阈值，2 ≥ 0.5 所以速率预警照常开出），并配一条从 0 起的完整等级区间。
-              // 该指标基础分与累计沉降同为 3，后果侧 `maximum` 组合结果不变，P/C 与风险
-              // 等级不因新增该指标而移动。
-              scoringThresholds:
-                indicatorId === POSSIBILITY_DEMO_INDICATOR_ID
-                  ? [{ thresholdId: "demo-th-chamber-pressure", score: 3, value: 300, operator: "gte" }]
-                  : indicatorId === SETTLEMENT_SLOPE_DEMO_INDICATOR_ID
-                    ? [{ thresholdId: "demo-th-settlement-slope", score: 3, value: 1, operator: "gte" }]
-                    : [{ thresholdId: "demo-th-settlement", score: 3, value: 10, operator: "gte" }],
-              gradeIntervals:
-                indicatorId === SETTLEMENT_SLOPE_DEMO_INDICATOR_ID
-                  ? [
-                      // 等级区间必须首尾相接且不重叠：上界缺省会当成 +∞，两段就叠在一起了。
-                      { grade: "demo-level-1", lowerBound: 0, upperBound: 3 },
-                      { grade: "demo-level-3", lowerBound: 3 },
-                    ]
-                  : [{ grade: "demo-level-3", lowerBound: 3 }],
-              exceptionClauses: [],
-              // 证据定位符必须命中 C15 保留的资料段，否则整份候选按证据未核实拒绝。
-              evidenceLocator: { sourceSegmentId: retainedSourceSegments[0].sourceSegmentId },
-              ruleVersion: {
-                entityId: `RULE-${indicatorId}`,
-                versionId: "1",
-              },
-              // 编制候选只能是待审状态：批准由 C07 审核决定，Agent 无权自行置为已批准。
-              reviewStatus: "pending",
+              sourceVersionRef: retainedSourceSegments[0].sourceVersionRef,
+              evidenceReferences: [
+                {
+                  locator: { sourceSegmentId: retainedSourceSegments[0].sourceSegmentId },
+                  // 证据引用的 `sourceVersion` 是扁平版本引用；`sourceVersionRef` 才是带
+                  // `reference` 包裹的来源版本。两者形状不同，不能互相套用。
+                  sourceVersion: retainedSourceSegments[0].sourceVersionRef.reference,
+                },
+              ],
             },
-            sourceVersionRef: retainedSourceSegments[0].sourceVersionRef,
-            evidenceReferences: [
-              {
-                locator: { sourceSegmentId: retainedSourceSegments[0].sourceSegmentId },
-                // 证据引用的 `sourceVersion` 是扁平版本引用；`sourceVersionRef` 才是带
-                // `reference` 包裹的来源版本。两者形状不同，不能互相套用。
-                sourceVersion: retainedSourceSegments[0].sourceVersionRef.reference,
-              },
-            ],
-          }],
+          ],
         },
       });
       if (finalizedRule.status !== "completed" || !("candidateRef" in finalizedRule)) {
@@ -3747,9 +3801,10 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
     const preparationCommandId = `${PROJECT_ID}:c11-preparation`;
     const preparationSourceRefs = [
       ...new Map(
-        [...retainedSourceSegments.map((entry) => entry.sourceVersionRef), sourceA.sourceVersionRef].map(
-          (ref) => [ref.reference.entityId, ref],
-        ),
+        [
+          ...retainedSourceSegments.map((entry) => entry.sourceVersionRef),
+          sourceA.sourceVersionRef,
+        ].map((ref) => [ref.reference.entityId, ref]),
       ).values(),
     ];
     const preparationAuthorization = await operatorAuth(
@@ -3782,9 +3837,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       preparationFrozen.kind !== "succeeded" ||
       preparationFrozen.result.kind !== "assessment-preparation"
     ) {
-      throw new Error(
-        `C11 评估准备冻结失败: ${JSON.stringify(preparationFrozen).slice(0, 600)}`,
-      );
+      throw new Error(`C11 评估准备冻结失败: ${JSON.stringify(preparationFrozen).slice(0, 600)}`);
     }
     const preparationSnapshotRef = preparationFrozen.result.assessmentPreparationSnapshotRef;
 
@@ -3823,7 +3876,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
     if (assembled.kind !== "succeeded") {
       throw new Error(`C19 组装失败: ${JSON.stringify(assembled).slice(0, 600)}`);
     }
-    await publishApprovedRelease(assembled.applicableRuleSetRevisionRef);
+    declaredBaseReleaseRefs.set("applicable-rule-set", assembled.applicableRuleSetReleaseRef);
 
     // ---- C27 处置建议：Agent 任务契约与 C08 只读接缝 ----
     //
@@ -3905,10 +3958,10 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
           };
         },
         finalizeIncrement: ({ candidate, task }) =>
-          buildCompletedAgentTaskResult(
-            task.envelope.agentTaskRef,
-            { kind: "calibration-suggestion", reference: candidate.inputSnapshotRef.reference },
-          ),
+          buildCompletedAgentTaskResult(task.envelope.agentTaskRef, {
+            kind: "calibration-suggestion",
+            reference: candidate.inputSnapshotRef.reference,
+          }),
       },
     });
     registeredAgentTaskDefinitions.push(recommendationTaskDefinition, calibrationTaskDefinition);
@@ -3960,8 +4013,6 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       "application/vnd.riskflow.agent-action-result+json",
       { schemaVersion: "1", role: "agent-action-result" },
     );
-
-
 
     /**
      * C28 人工反馈文档工件（人工提交的业务输入，非「播种已写成功」）。
@@ -4022,7 +4073,8 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       for (let attempt = 0; attempt < 32; attempt += 1) {
         claim = await agentTasks.claim({ workerId: input.workerId, leaseDurationMs: 600_000 });
         if (claim === undefined) break;
-        if (claim.task.envelope.agentTaskRef.reference.entityId === taskRef.reference.entityId) break;
+        if (claim.task.envelope.agentTaskRef.reference.entityId === taskRef.reference.entityId)
+          break;
         await agentTasks.releaseLease({
           taskRef: claim.task.envelope.agentTaskRef,
           workerId: input.workerId,
@@ -4129,11 +4181,9 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       const started = await agentTasks.startTask(
         StartAgentTaskCommandV1Schema.parse({
           ...startCommand,
-          authorization: await operatorAuth(
-            startCommand.commandId,
-            "agent-task.start-task",
-            [...downstreamSourceVersionRefs],
-          ),
+          authorization: await operatorAuth(startCommand.commandId, "agent-task.start-task", [
+            ...downstreamSourceVersionRefs,
+          ]),
         }),
       );
       if (started.kind !== "succeeded") {
@@ -4231,7 +4281,6 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
           "knowledge-modeling.govern",
         );
 
-
         const driven = await driveAgentTask({
           workerId: CALIBRATION_WORKER_ID,
           issuedAt: input.run.issuedAt,
@@ -4316,6 +4365,13 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         db: appRuntime.db,
         artifactStore,
         basis: scoringRules,
+        configuration: assessmentConfiguration,
+        runtimePolicies: () => ({
+          generationPolicyRef: DEMO_RUNTIME_POLICY_REFS.responseGenerationPolicyRef,
+          validationPolicyRef: DEMO_RUNTIME_POLICY_REFS.responseValidationPolicyRef,
+          agentPolicyRef: DEMO_RUNTIME_POLICY_REFS.responseAgentPolicyRef,
+          reviewPolicyRef: DEMO_RUNTIME_POLICY_REFS.reviewPolicyRef,
+        }),
         // C27 自身查询上下文只带处置域能力；依据集合与配置正文按知识读用途另签，
         // 否则 `readAssessmentBasisReleaseSet` 恒返回 unavailable，正式建议永不成立。
         authorizeDownstream,
@@ -4416,6 +4472,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       artifactStore,
       basis: scoringRules,
       monitoring: monitoringStore,
+      readStagePolicy: (input) => assessmentConfiguration.readPublishedConfigurationMember(input),
       measureReleases: {
         readPublishedMeasureReleases: async (input) => {
           const sourceVersionRefs = input.authorization.sourceAccessGrantRefs.map((grant) => {
@@ -4436,10 +4493,13 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
               requestedSpatialScopeRefs: input.authorization.spatialScopeRefs,
               requestedSourceVersionRefs: sourceVersionRefs,
             });
-            if (!isAuthorizationSubset(
-              { ...input.authorization, grantedCapabilities: authorization.grantedCapabilities },
-              authorization,
-            )) throw new Error("measure release authorization exceeded request");
+            if (
+              !isAuthorizationSubset(
+                { ...input.authorization, grantedCapabilities: authorization.grantedCapabilities },
+                authorization,
+              )
+            )
+              throw new Error("measure release authorization exceeded request");
             const result = await measureReleaseReader.read({
               kind: "governance-read",
               queryId,
@@ -4452,10 +4512,12 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
                 knowledgeReleaseRef: { kind: "knowledge-release", reference },
               },
             });
-            if (result.kind !== "succeeded" ||
-                result.result.definitionType !== "measure-library" ||
-                result.result.releaseRef.reference.entityId !== reference.entityId ||
-                result.result.releaseRef.reference.versionId !== reference.versionId) {
+            if (
+              result.kind !== "succeeded" ||
+              result.result.definitionType !== "measure-library" ||
+              result.result.releaseRef.reference.entityId !== reference.entityId ||
+              result.result.releaseRef.reference.versionId !== reference.versionId
+            ) {
               return [];
             }
             confirmed.push(reference);
@@ -4502,6 +4564,10 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       bindingProof: workflow.bindingProof,
       assessmentProof: assessmentEngine,
       runCompletionProof: workflow.runCompletionProof,
+      resolveFeedbackPolicies: async () => ({
+        deviationPolicyRef: publishedConfigurationReleaseRefs.get("deviation-policy").reference,
+        calibrationAgentPolicyRef: DEMO_RUNTIME_POLICY_REFS.calibrationAgentPolicyRef,
+      }),
       responseLifecycle,
       responseContext,
       // 服务端已发布的入口控制，绝不取自客户端载荷。
@@ -4709,10 +4775,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       );
     }
     const reportQueryResultRef = overviewQuery.result.queryResultRef;
-    const exportAuthorization = await operatorAuth(
-      "demo-c35-report-export",
-      "projection.export",
-    );
+    const exportAuthorization = await operatorAuth("demo-c35-report-export", "projection.export");
     const reportExportResult = await reportExport.exportReport({
       queryId: "demo-c35-report-export",
       projectId: PROJECT_ID,
@@ -4786,7 +4849,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
               authorization: probeAuthorization,
             });
             for await (const _chunk of handle.content) void _chunk;
-            await handle.verified;
+            await handle.completed;
             return { status: "available" };
           })(componentId, signal);
         // 本装配没有任何模型网关接线：如实呈现缺席，而不是把注册表里的引用说成可用。

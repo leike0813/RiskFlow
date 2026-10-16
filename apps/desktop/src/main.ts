@@ -1,11 +1,11 @@
-import { BrowserWindow, app } from "electron";
+import { BrowserWindow, app, type Session } from "electron";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { DesktopConfigError, parseDesktopConfigV1, type DesktopConfigV1 } from "./config.js";
 import {
   DESKTOP_WEB_PREFERENCES_V1,
-  decideCertificateErrorV1,
+  decideDownloadV1,
   decideMainFrameNavigationV1,
   decideNewWindowV1,
   decidePermissionRequestV1,
@@ -40,6 +40,24 @@ const showConnectionState = (window: BrowserWindow, message: string, retryOrigin
   window.loadFile(pagePath, { query: { message, retry: retryOrigin } }).catch(() => undefined);
 };
 
+/** 下载策略按会话只挂一次：多窗口不得重复处理同一次下载。 */
+const downloadPolicySessionsV1 = new WeakSet<Session>();
+
+/**
+ * IP-18/D-36：把登记的下载判定接到真实会话。
+ *
+ * 放行的下载保留 Chromium 默认 save dialog，由用户选择位置；用户取消即零写入。
+ * 拒绝项在下载开始前取消，主进程不代写路径、不自动打开文件，也不新增本机能力。
+ */
+const attachDownloadPolicyV1 = (targetSession: Session, config: DesktopConfigV1): void => {
+  if (downloadPolicySessionsV1.has(targetSession)) return;
+  downloadPolicySessionsV1.add(targetSession);
+  targetSession.on("will-download", (event, item, _webContents, frame) => {
+    const decision = decideDownloadV1(config, item.getURL(), frame?.url ?? "");
+    if (decision.kind === "deny") event.preventDefault();
+  });
+};
+
 const createWindow = (config: DesktopConfigV1): BrowserWindow => {
   const window = new BrowserWindow({
     width: 1440,
@@ -56,7 +74,10 @@ const createWindow = (config: DesktopConfigV1): BrowserWindow => {
     if (decision.kind === "deny") event.preventDefault();
   });
   window.webContents.on("will-frame-navigate", (event) => {
-    if (decideSubframeNavigationV1().kind === "deny") event.preventDefault();
+    const decision = event.isMainFrame
+      ? decideMainFrameNavigationV1(config, event.url)
+      : decideSubframeNavigationV1();
+    if (decision.kind === "deny") event.preventDefault();
   });
   window.webContents.setWindowOpenHandler(() => ({ action: decideNewWindowV1().kind }));
   window.webContents.on("will-attach-webview", (event) => event.preventDefault());
@@ -65,9 +86,7 @@ const createWindow = (config: DesktopConfigV1): BrowserWindow => {
   });
   window.webContents.session.setPermissionCheckHandler(() => false);
   // 证书错误与认证挑战都不代为处理：私有 CA 通过系统信任链部署。
-  window.webContents.session.setCertificateVerifyProc((_request, callback) => {
-    callback(decideCertificateErrorV1().kind === "allow" ? 0 : -2);
-  });
+  attachDownloadPolicyV1(window.webContents.session, config);
   window.webContents.on("login", (event) => {
     event.preventDefault();
   });

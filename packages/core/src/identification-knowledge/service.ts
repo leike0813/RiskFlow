@@ -35,6 +35,7 @@ import {
   type KnowledgeAuthoringIncrementV1,
   type ProcessModelPackageV1,
   type RiskMechanismPackageV1,
+  type StandardLibraryEntryV1,
 } from "./schema.js";
 
 /** 逐项校验使用的稳定检查身份；同一检查在包与增量两侧保持一致。 */
@@ -83,6 +84,7 @@ export const IDENTIFICATION_KNOWLEDGE_REASON_CODES_V1 = {
   standardLevelNotAllowed: "standard-level-not-allowed",
   caseMethodNotAllowed: "case-method-not-allowed",
   entryEvidenceIneligible: "entry-evidence-ineligible",
+  standardRetrievalTextInvalid: "standard-retrieval-text-invalid",
   compositeMemberInvalid: "composite-member-invalid",
   compositeMemberDuplicate: "composite-member-duplicate",
   incrementTargetMismatch: "increment-target-mismatch",
@@ -108,6 +110,7 @@ const TERMINAL_REASON_CODE_TABLE: Readonly<Record<string, true>> = {
   [IDENTIFICATION_KNOWLEDGE_REASON_CODES_V1.edgeEvidenceIneligible]: true,
   [IDENTIFICATION_KNOWLEDGE_REASON_CODES_V1.mechanismEvidenceIneligible]: true,
   [IDENTIFICATION_KNOWLEDGE_REASON_CODES_V1.entryEvidenceIneligible]: true,
+  [IDENTIFICATION_KNOWLEDGE_REASON_CODES_V1.standardRetrievalTextInvalid]: true,
   [IDENTIFICATION_KNOWLEDGE_REASON_CODES_V1.unknownProcessModel]: true,
   [IDENTIFICATION_KNOWLEDGE_REASON_CODES_V1.standardLevelNotAllowed]: true,
   [IDENTIFICATION_KNOWLEDGE_REASON_CODES_V1.caseMethodNotAllowed]: true,
@@ -135,6 +138,10 @@ export interface IdentificationProcessModelNodeV1 {
 export interface IdentificationKnowledgeValidationDependenciesV1 {
   readonly projectId: string;
   readonly policy: IdentificationKnowledgeValidationPolicyV1;
+  readonly checkStandardRetrievalText?: (input: {
+    readonly entry: StandardLibraryEntryV1;
+    readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
+  }) => Promise<boolean>;
   readonly checkEvidence: (input: {
     readonly evidenceReferences: readonly EvidenceReference[];
     readonly purposeCode: string;
@@ -525,6 +532,24 @@ const validateStandardLibraryPackage = async (
       continue;
     }
     const evidence = await evidenceCheck(dependencies, entry.evidence);
+    if (evidence.eligible && entry.retrievalText !== undefined) {
+      const verified = await dependencies.checkStandardRetrievalText?.({
+        entry,
+        preparationSnapshotRef: packageValue.preparationSnapshotRef,
+      });
+      if (verified !== true) {
+        items.push(
+          rejected(
+            IDENTIFICATION_KNOWLEDGE_CHECK_IDS_V1.standardEntry,
+            "standard-entry",
+            entry.entryId,
+            IDENTIFICATION_KNOWLEDGE_REASON_CODES_V1.standardRetrievalTextInvalid,
+            entry.evidence,
+          ),
+        );
+        continue;
+      }
+    }
     items.push(
       evidence.eligible
         ? accepted(

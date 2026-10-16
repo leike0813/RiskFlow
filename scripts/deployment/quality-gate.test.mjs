@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { authorizationScopeDigest } from "../../packages/core/dist/retrieval/index.js";
 
 import { createDeploymentBuildQualityGateV1 } from "./composition/quality-gate.mjs";
+import { startRetrievalFixture } from "../../packages/adapters/test/retrieval/postgres-retrieval-fixture.ts";
 
 /**
  * C37 D-20 / IP-04：C20 构建门禁的部署组合行为。
@@ -40,7 +41,7 @@ const authorization = {
   authorizationContextRef,
   actorId: ACTOR_ID,
   projectId: PROJECT_ID,
-  grantedCapabilities: ["knowledge-modeling.read"],
+  grantedCapabilities: ["knowledge-modeling.retrieve"],
   spatialScopeRefs: [
     { kind: "spatial-scope", reference: { entityId: "spatial-scope-1", versionId: "1" } },
   ],
@@ -263,14 +264,23 @@ const queryResult = (overrides = {}) => ({
 });
 
 const createHarness = (options = {}) => {
-  const state = { embedCalls: [], queryCalls: 0, verifyCalls: [], reports: [] };
+  const state = {
+    embedCalls: [],
+    queryCalls: 0,
+    queryTexts: [],
+    queryFilters: [],
+    verifyCalls: [],
+    reports: [],
+  };
   const gate = createDeploymentBuildQualityGateV1({
     datasets: [dataset],
     acceptancePolicies: [{ projectId: PROJECT_ID, policy: acceptancePolicy }],
     generationStore: { readGeneration: async () => structuredClone(generation) },
     projection: {
-      queryHybrid: async () => {
+      queryHybrid: async (query) => {
         state.queryCalls += 1;
+        state.queryTexts.push(query.queryText);
+        state.queryFilters.push(query.filter);
         const result = options.queryResult
           ? options.queryResult(state.queryCalls)
           : queryResult({ fusedQueryDurationMs: 4 + state.queryCalls });
@@ -318,6 +328,67 @@ const createHarness = (options = {}) => {
 };
 
 describe("C20 构建门禁的部署组合", () => {
+  it("reads an uncommitted building generation through the caller transaction only", async () => {
+    const fixture = await startRetrievalFixture();
+    try {
+      const { gate, state, input } = createHarness({
+        overrides: { generationStore: fixture.adapter },
+      });
+      const command = {
+        projectId: PROJECT_ID,
+        commandKind: "retrieval-quality-fixture",
+        commandId: "retrieval-quality-command",
+        idempotencyKey: "retrieval-quality-command",
+        payload: { generationRef },
+        actorRef: ACTOR_ID,
+        authorizationContextRef,
+        issuedAt: TIMESTAMP,
+      };
+      await fixture.transactionUnit.execute(command, async (context) => {
+        await fixture.adapter.ensureBuildingGeneration({
+          generation,
+          transitionRef: {
+            kind: "retrieval-generation-transition",
+            reference: { entityId: "retrieval-quality-building", versionId: "1" },
+          },
+          actorRef: ACTOR_ID,
+          authorizationContextRef,
+          occurredAt: TIMESTAMP,
+          context,
+        });
+        expect(await fixture.adapter.readGeneration(generationRef)).toBeUndefined();
+        await expect(gate.evaluate(input())).resolves.toMatchObject({
+          passed: false,
+          detailCode: "generation-not-found",
+        });
+        await expect(gate.evaluate(input(), context)).resolves.toMatchObject({ passed: true });
+        expect(state.reports).toHaveLength(1);
+        expect(await fixture.adapter.readGenerationStatus(generationRef, context)).toBe("building");
+        return {
+          resultRef: authorizationContextRef,
+          audit: {
+            auditEntryId: "retrieval-quality-audit",
+            projectId: PROJECT_ID,
+            action: command.commandKind,
+            targetRef: authorizationContextRef,
+            actorRef: ACTOR_ID,
+            authorizationContextRef,
+            occurredAt: TIMESTAMP,
+            recordedAt: TIMESTAMP,
+            version: authorizationContextRef.reference,
+            commandId: command.commandId,
+            idempotencyKey: command.idempotencyKey,
+          },
+          events: [],
+        };
+      });
+      expect(await fixture.adapter.readGeneration(generationRef)).toEqual(generation);
+      expect(await fixture.adapter.readActivation(generationRef)).toBeUndefined();
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("按数据集真实计算三路指标并经 onReport 耐久保存报告后才通过", async () => {
     const { gate, state, input } = createHarness();
 
@@ -331,7 +402,7 @@ describe("C20 构建门禁的部署组合", () => {
     expect(state.verifyCalls[0]).toMatchObject({
       authorizationContextRef,
       actorId: ACTOR_ID,
-      requiredCapability: "knowledge-modeling.read",
+      requiredCapability: "knowledge-modeling.retrieve",
       requestedSpatialScopeRefs: [],
       requestedSourceVersionRefs: [],
     });
@@ -339,6 +410,11 @@ describe("C20 构建门禁的部署组合", () => {
     expect(state.embedCalls[0].signal).toBeDefined();
     // 两次查询各一轮指标，加探针查询的 1 次预热与 3 次测量。
     expect(state.queryCalls).toBe(6);
+    // 每次查询（含探针）都以本代清单实际成员收窄可见范围（D-05），不得省略该过滤。
+    expect(state.queryFilters).toHaveLength(6);
+    for (const filter of state.queryFilters) {
+      expect(filter.visiblePointIds).toEqual(MEMBERS.map((member) => member.pointId));
+    }
 
     const report = state.reports[0];
     expect(report.overall).toBe("passed");
@@ -428,6 +504,17 @@ describe("C20 构建门禁的部署组合", () => {
   });
 
   it("授权被拒或摘要不是本代际时在 Embedding 前失败", async () => {
+    const readOnly = createHarness({
+      verify: () => ({
+        context: { ...authorization, grantedCapabilities: ["knowledge-modeling.read"] },
+      }),
+    });
+    await expect(readOnly.gate.evaluate(readOnly.input())).resolves.toMatchObject({
+      passed: false,
+      detailCode: "authorization-capability-missing",
+    });
+    expect(readOnly.state.embedCalls).toHaveLength(0);
+
     const denied = createHarness({
       verify: () => {
         throw new Error("AUTHORIZATION_DENIED");
@@ -652,6 +739,36 @@ describe("C20 构建门禁的部署组合", () => {
         },
       }),
     ).toThrow(/DEPLOYMENT_QUALITY_GATE_MEASURED_RUNS_EXCEEDED/);
+  });
+
+  it("策略声明查询指令时只渲染查询 Embedding 文本，BM25 查询仍用原文本", async () => {
+    const instruction =
+      "Given a Chinese engineering risk query, retrieve the applicable standard clauses";
+    const { gate, state, input } = createHarness();
+
+    await expect(
+      gate.evaluate(input({ policy: { ...policy, queryInstruction: instruction } })),
+    ).resolves.toEqual({ passed: true, detailCode: "acceptance-gates-passed" });
+
+    expect(state.embedCalls.map((call) => call.request.texts)).toEqual(
+      dataset.queries.map((query) => [`Instruct: ${instruction}\nQuery:${query.queryText}`]),
+    );
+    expect(new Set(state.queryTexts)).toEqual(
+      new Set(dataset.queries.map((query) => query.queryText)),
+    );
+  });
+
+  it("独立质量测量不得复用前一次查询的模型工件身份", async () => {
+    const { gate, state, input } = createHarness();
+    await expect(gate.evaluate(input())).resolves.toMatchObject({ passed: true });
+    await expect(
+      gate.evaluate(
+        input({ policy: { ...policy, queryInstruction: "Retrieve engineering standards" } }),
+      ),
+    ).resolves.toMatchObject({ passed: true });
+    const keys = state.embedCalls.map((call) => call.request.idempotencyKey);
+    expect(keys).toHaveLength(dataset.queries.length * 2);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 
   it("缺必需依赖与耐久回调时拒绝装配", () => {

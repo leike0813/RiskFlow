@@ -32,6 +32,7 @@ import {
   createCalibrationSuggestionTaskDefinition,
 } from "../../../packages/core/dist/calibration/index.js";
 import { CALIBRATION_TARGET_DEFINITION_TYPES_V1 } from "../../../packages/core/dist/calibration/index.js";
+import { failWarningLifecycle } from "../../../packages/core/dist/warning/index.js";
 import { AssessmentBasisReleaseSetReadResultV1Schema } from "../../../packages/core/dist/scoring-rules/index.js";
 import {
   AgentTaskRefV1Schema,
@@ -89,9 +90,13 @@ export const createAssessmentRuntimePolicyProviderV1 = (projects) => ({
 export const createWarningRuntimePolicyProviderV1 = (projects) => ({
   read: async (input) => {
     const policies = policiesOf(projects, input.authorization.projectId)["warning-runtime"];
+    if (policies === undefined)
+      failWarningLifecycle("policy-unavailable", input.authorization.authorizationContextRef);
     if (
-      !sameRef(input.warningAggregationPolicyRef, policies.warningAggregationPolicy.policyRef) ||
-      !sameRef(input.notificationPolicyRef, policies.notificationPolicy.policyRef)
+      (input.warningAggregationPolicyRef !== undefined &&
+        !sameRef(input.warningAggregationPolicyRef, policies.warningAggregationPolicy.policyRef)) ||
+      (input.notificationPolicyRef !== undefined &&
+        !sameRef(input.notificationPolicyRef, policies.notificationPolicy.policyRef))
     ) {
       throw new TypeError("DEPLOYMENT_WARNING_RUNTIME_POLICY_MEMBER_MISMATCH");
     }
@@ -103,6 +108,7 @@ export const createWarningRuntimePolicyProviderV1 = (projects) => ({
 export const createDeploymentAssessmentGraphPoliciesV1 = ({
   projects,
   basis,
+  configuration,
   authorizeDownstream,
 }) => {
   requiredMethod(basis, "basis", "readAssessmentBasisReleaseSet");
@@ -147,6 +153,26 @@ export const createDeploymentAssessmentGraphPoliciesV1 = ({
       return undefined;
     }
 
+    if (actionType === "forecast-policy" && configuration !== undefined) {
+      const result = await configuration.resolveConfigurationSet({
+        requestId,
+        idempotencyKey: requestId,
+        projectId: input.projectId,
+        actorId: authorization.actorId,
+        requestedAt: authorization.decidedAt,
+        authorization,
+        requiredAt: input.requiredAt,
+        asOfRecordedAt: authorization.decidedAt,
+        purpose: "forecast",
+      });
+      if (result.kind !== "succeeded") return undefined;
+      const member = result.configurationSet.members.find(
+        (member) =>
+          member.definitionType === "forecast-policy" &&
+          sameRef(member.releaseRef.reference, releaseRef.reference),
+      );
+      return member === undefined ? undefined : { member, releaseRef };
+    }
     const result = await basis.readAssessmentBasisReleaseSet({
       requestId,
       idempotencyKey: requestId,
@@ -278,11 +304,22 @@ export const createDeploymentMeasureReleaseReaderV1 = ({ basis, authorizeDownstr
  * C27 处置策略：三项策略按请求给出的精确 ref 解析；现场正文只经部署注入的 C04 绑定读取。
  * 三类策略正文自带 policyRef，引用不符即非本工程批准正文。
  */
-export const createRecommendationPolicyProviderV1 = (projects, siteContextReader) => {
+export const createRecommendationPolicyProviderV1 = (
+  projects,
+  siteContextReader,
+  policyCatalog,
+) => {
   const exact = (input, policyType, requestedRef) => {
     const policies = policiesOf(projects, input.authorization.projectId);
-    const policy = policies[policyType];
-    if (!sameRef(requestedRef, policy.policyRef)) {
+    const policy =
+      policyCatalog === undefined
+        ? policies[policyType]
+        : policyCatalog.resolve({
+            projectId: input.authorization.projectId,
+            policyType,
+            policyRef: requestedRef,
+          });
+    if (policy === undefined || !sameRef(requestedRef, policy.policyRef)) {
       throw new TypeError(`DEPLOYMENT_RECOMMENDATION_POLICY_REF_MISMATCH:${policyType}`);
     }
     return policy;
@@ -480,6 +517,8 @@ export const createDeploymentRecommendationAgentV1 = ({
   authorizeDownstream,
   siteBindings,
   siteContextReader,
+  readCandidateSet,
+  policyCatalog,
 }) => {
   const tasks = requireTaskPorts(taskPort);
   requiredMethod({ resolveProject }, "resolveProject", "resolveProject");
@@ -525,14 +564,42 @@ export const createDeploymentRecommendationAgentV1 = ({
         return { kind: "failed", reasonCode: "recommendation-agent-input-invalid" };
       }
       const project = projectOf(resolveProject, input.run.projectId);
-      const policy = ResponseAgentPolicyV1Schema.parse(project.policies["response-agent"]);
+      let policyRef = input.responseAgentPolicyRef;
+      let generationRef = input.responseGenerationPolicyRef;
+      if (readCandidateSet !== undefined) {
+        const authorization = await authorizeDownstream({
+          projectId: input.run.projectId,
+          actorId: input.run.actorId,
+          branch: "warning-response.read",
+          invocationId: `${input.actionId}:candidate-set`,
+        });
+        const frozen = await readCandidateSet({
+          projectId: input.run.projectId,
+          actorId: input.run.actorId,
+          requestedAt: input.run.issuedAt,
+          invocationId: `${input.actionId}:candidate-set`,
+          authorization,
+          knowledgeQueryResultRef: input.queryResultRef,
+        });
+        if (frozen.kind !== "succeeded")
+          return { kind: "failed", reasonCode: "measure-candidates-unavailable" };
+        policyRef = frozen.candidateSet.agentPolicyRef;
+        generationRef = frozen.candidateSet.generationPolicyRef;
+      }
+      const policy = ResponseAgentPolicyV1Schema.parse(
+        policyCatalog === undefined
+          ? project.policies["response-agent"]
+          : policyCatalog.resolve({
+              projectId: input.run.projectId,
+              policyType: "response-agent",
+              policyRef,
+            }),
+      );
       if (
         policy.projectId !== input.run.projectId ||
-        !sameRef(policy.policyRef, input.responseAgentPolicyRef) ||
-        !sameRef(
-          project.policies["response-generation"]?.policyRef,
-          input.responseGenerationPolicyRef,
-        )
+        !sameRef(policy.policyRef, policyRef) ||
+        (readCandidateSet === undefined &&
+          !sameRef(project.policies["response-generation"]?.policyRef, generationRef))
       ) {
         return { kind: "failed", reasonCode: "recommendation-agent-policy-mismatch" };
       }
@@ -578,7 +645,9 @@ export const createDeploymentCalibrationAgentV1 = ({
         return { kind: "failed", reasonCode: "calibration-agent-input-invalid" };
       }
       const project = projectOf(resolveProject, input.run.projectId);
-      const policy = CalibrationValidationPolicyV1Schema.parse(project.policies.calibration);
+      const policy = CalibrationValidationPolicyV1Schema.parse(
+        input.agentPolicy ?? project.policies.calibration,
+      );
       if (
         policy.projectId !== input.run.projectId ||
         !sameRef(policy.validationPolicyRef, input.calibrationValidationPolicyRef)
@@ -648,7 +717,6 @@ export const createDeploymentAssessmentV1 = (options) => {
     "resolveProject",
   );
   const registry = requiredMethod(options.registry, "registry", "register");
-  requiredMethod(registry, "registry", "assertComplete");
   const checkpointer = requiredMethod(options.checkpointer, "checkpointer", "getTuple");
   const basis = requiredMethod(options.basis, "basis", "readAssessmentBasisReleaseSet");
   const review = requiredMethod(options.review, "review", "requestReview");
@@ -726,7 +794,12 @@ export const createDeploymentAssessmentV1 = (options) => {
     projects.set(binding.projectId, project);
   }
   // C27/C29 任务定义按同实例共享策略注册；跨工程定义正文不一致时由策略解析器先行拒绝。
-  const commonPolicies = [...projects.values()][0].policies;
+  const responseAgentPolicy = [...projects.values()].find(
+    (project) => project.policies["response-agent"] !== undefined,
+  )?.policies["response-agent"];
+  const calibrationPolicy = [...projects.values()].find(
+    (project) => project.policies.calibration !== undefined,
+  )?.policies.calibration;
 
   const siteContextReader = createDeploymentSiteContextReaderV1({
     artifactStore,
@@ -744,36 +817,38 @@ export const createDeploymentAssessmentV1 = (options) => {
   // C27 任务定义的增量端口回指 C27 适配器自身（C27 既是定义所有者也是确定性校验者），
   // 这里只延迟解析引用，不预造候选；绑定在推荐适配器构造后一次完成。
   const recommendationAdapterRef = { current: undefined };
-  registry.register(
-    createResponseRecommendationTaskDefinition({
-      policy: commonPolicies["response-agent"],
-      port: {
-        validateIncrement: (input) =>
-          authorizationScope.runTask(input.task, () =>
-            recommendationAdapterRef.current.validateIncrement(input),
-          ),
-        finalizeIncrement: (input) =>
-          authorizationScope.runTask(input.task, () =>
-            recommendationAdapterRef.current.finalizeIncrement(input),
-          ),
-      },
-    }),
-  );
-  registry.register(
-    createCalibrationSuggestionTaskDefinition({
-      policy: commonPolicies.calibration,
-      port: {
-        validateIncrement: (input) =>
-          authorizationScope.runTask(input.task, () =>
-            calibrationTaskPort.validateIncrement(input),
-          ),
-        finalizeIncrement: (input) =>
-          authorizationScope.runTask(input.task, () =>
-            calibrationTaskPort.finalizeIncrement(input),
-          ),
-      },
-    }),
-  );
+  if (responseAgentPolicy !== undefined)
+    registry.register(
+      createResponseRecommendationTaskDefinition({
+        policy: responseAgentPolicy,
+        port: {
+          validateIncrement: (input) =>
+            authorizationScope.runTask(input.task, () =>
+              recommendationAdapterRef.current.validateIncrement(input),
+            ),
+          finalizeIncrement: (input) =>
+            authorizationScope.runTask(input.task, () =>
+              recommendationAdapterRef.current.finalizeIncrement(input),
+            ),
+        },
+      }),
+    );
+  if (calibrationPolicy !== undefined)
+    registry.register(
+      createCalibrationSuggestionTaskDefinition({
+        policy: calibrationPolicy,
+        port: {
+          validateIncrement: (input) =>
+            authorizationScope.runTask(input.task, () =>
+              calibrationTaskPort.validateIncrement(input),
+            ),
+          finalizeIncrement: (input) =>
+            authorizationScope.runTask(input.task, () =>
+              calibrationTaskPort.finalizeIncrement(input),
+            ),
+        },
+      }),
+    );
 
   const riskAssessment = createPostgresRiskAssessmentEngine({
     db,
@@ -783,10 +858,10 @@ export const createDeploymentAssessmentV1 = (options) => {
     preparationContext: engineeringData,
     riskInputFacts,
     basisReader: basis,
-    runtimePolicies: createAssessmentRuntimePolicyProviderV1(projects),
     monitoring: monitoringStore,
     authorizeDownstream,
     entryContext: createAssessmentEntryContextReadPort(engineeringData),
+    configuration: options.configuration,
     runRead: workflowAdapter.runRead,
     entriesRead: workflowAdapter.entriesRead,
     recordCatalog: identificationRead,
@@ -802,8 +877,29 @@ export const createDeploymentAssessmentV1 = (options) => {
       artifactStore,
       basis,
       authorizeDownstream,
+      configuration: options.configuration,
+      runtimePolicies: (projectId) => {
+        const all = policiesOf(projects, projectId);
+        const policies = all["assessment-runtime"];
+        if (
+          all["response-generation"] === undefined ||
+          all["response-validation"] === undefined ||
+          all["response-agent"] === undefined
+        )
+          return undefined;
+        return {
+          generationPolicyRef: all["response-generation"].policyRef,
+          validationPolicyRef: all["response-validation"].policyRef,
+          agentPolicyRef: all["response-agent"].policyRef,
+          reviewPolicyRef: policies.reviewPolicyRef,
+        };
+      },
     }),
-    policies: createRecommendationPolicyProviderV1(projects, siteContextReader),
+    policies: createRecommendationPolicyProviderV1(
+      projects,
+      siteContextReader,
+      resolveDeploymentPolicies.reader,
+    ),
     agentTasks,
     taskAuthorization,
     reviewAuthorization,
@@ -817,6 +913,11 @@ export const createDeploymentAssessmentV1 = (options) => {
     monitoring: monitoringStore,
     measureReleases: measureReleaseReader,
     authorizeDownstream,
+    ...(options.configuration === undefined
+      ? {}
+      : {
+          readStagePolicy: (input) => options.configuration.readPublishedConfigurationMember(input),
+        }),
   });
   const responseLifecycle = createPostgresResponseLifecycleAdapter({
     db,
@@ -912,9 +1013,7 @@ export const createDeploymentAssessmentV1 = (options) => {
       warning: warning,
       calibration,
     },
-    /** 五类 Agent 任务定义齐备才允许监听/claim：与识别组合共用同一 registry。 */
     assertReady() {
-      registry.assertComplete();
       return result;
     },
   };

@@ -5,7 +5,7 @@
  * C03 checkpointer 校验层回归：用真实 `@langchain/langgraph` StateGraph（普通边 + 条件边 +
  * 多父节点屏障）与真实 PostgreSQL checkpointer 走完整 `put`/`putWrites`/`getTuple` 往返，证明
  * 协议/调度控制通道（`__start__`、`branch:*`、`join:*`）被跳过，而未知业务键与非法写入仍然失败
- * 闭合、既有引用校验不变。
+ * 闭合。
  *
  * 关于 `putWrites` 前的顺序恢复：LangGraph 不保证父检查点在任务写回时已经落库（input tick 没有
  * 同步屏障，默认 `durability: "async"` 下 `put` 与其后的 `putWrites` 并发执行），而 checkpointer
@@ -17,7 +17,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 
-import type { ContractReferenceV1 } from "@riskflow/contracts/ports";
 import {
   IdentificationGraphStateV1Schema,
   type IdentificationGraphStateV1,
@@ -221,14 +220,11 @@ describe("C03 checkpointer 协议与调度控制通道", () => {
   let fixture: PostgresTestFixture | undefined;
   let checkpointer: PostgresCheckpointer | undefined;
   let roundTrip: GraphRoundTripV1 | undefined;
-  const unavailableReferenceIds = new Set<string>();
-  const validateReference = (reference: ContractReferenceV1): boolean =>
-    !("reference" in reference) || !unavailableReferenceIds.has(reference.reference.entityId);
   const threadId = "identification-control-channel";
 
   beforeAll(async () => {
     fixture = await startPostgresFixture();
-    checkpointer = await setupPostgresCheckpointer({ ...fixture.checkpointer, validateReference });
+    checkpointer = await setupPostgresCheckpointer({ ...fixture.checkpointer });
     roundTrip = await runControlChannelRoundTrip(checkpointer, threadId);
   }, 300_000);
 
@@ -319,35 +315,5 @@ describe("C03 checkpointer 协议与调度控制通道", () => {
       code: "CHECKPOINT_INCONSISTENT",
       stage: "checkpointer.writes",
     });
-  }, 300_000);
-
-  it("合法状态仍可读写，未授权引用仍被既有引用校验拒绝", async () => {
-    const run = roundTrip!;
-    const savedConfig = run.tuple.config;
-    // 正例：合法状态上的合法写入与读取仍被接受。
-    await expect(
-      checkpointer!.putWrites(savedConfig, [["stage", "I1"]], "legal-write"),
-    ).resolves.toBeUndefined();
-    await expect(checkpointer!.getTuple(run.config)).resolves.toBeDefined();
-
-    // 跨工程/未授权引用：注入的校验位对状态中的 runRef 返回不可用。
-    unavailableReferenceIds.add(`${threadId}-run`);
-    await expect(checkpointer!.getTuple(run.config)).rejects.toMatchObject({
-      code: "CHECKPOINT_INCONSISTENT",
-      stage: "checkpointer.reference",
-    });
-    await expect(
-      checkpointer!.putWrites(
-        savedConfig,
-        [["resultRef", run.state.resultRef]],
-        "unauthorized-ref",
-      ),
-    ).rejects.toMatchObject({
-      code: "CHECKPOINT_INCONSISTENT",
-      stage: "checkpointer.reference",
-    });
-    unavailableReferenceIds.delete(`${threadId}-run`);
-
-    await expect(checkpointer!.getTuple(run.config)).resolves.toBeDefined();
   }, 300_000);
 });

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -10,6 +11,7 @@ import {
 } from "@riskflow/core/access";
 import {
   ProjectionQueryV1Schema,
+  SourceOriginalQueryV1Schema,
   RunSubscriptionRequestV1Schema,
   WorkflowRunRefV1Schema,
   type AuthorizationContextV1,
@@ -82,6 +84,7 @@ export interface BuildApiOptionsV1 {
   readonly accessLog?: HttpAccessLogV1;
   /** 宿主可选注入的请求作用域：整条 handler 在其中运行，并发请求相互隔离；未注入时行为不变。 */
   readonly runRequest?: <T>(operation: () => T) => T;
+  readonly sourceOriginalTimeoutMs?: number;
 }
 
 const singleHeader = (request: FastifyRequest, name: string): string | undefined => {
@@ -675,6 +678,102 @@ export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {
     responseFailure(reply, notFound(requestIdFor(request, generateId), requestNow(clock))),
   );
 
+  if (ports.sourceOriginal !== undefined)
+    app.get(
+      "/api/v1/projects/:projectId/sources/:sourceId/versions/:versionId/original",
+      { exposeHeadRoute: false },
+      async (request, reply) => {
+        const requestId = requestIdFor(request, generateId);
+        const now = requestNow(clock);
+        const token = cookieToken(request);
+        const error = sessionFailure(reply, token, requestId, now);
+        if (error !== undefined) return error;
+        let opened:
+          Awaited<ReturnType<NonNullable<ApiPortsV1["sourceOriginal"]>["open"]>> | undefined;
+        const controller = new AbortController();
+        const timeout = setTimeout(
+          () => controller.abort(),
+          options.sourceOriginalTimeoutMs ?? 120_000,
+        );
+        const cleanup = (): void => {
+          clearTimeout(timeout);
+          request.raw.off("aborted", abort);
+          reply.raw.off("close", abort);
+          void opened?.close().catch(() => undefined);
+        };
+        const abort = (): void => controller.abort();
+        request.raw.on("aborted", abort);
+        reply.raw.on("close", abort);
+        try {
+          if (
+            singleHeader(request, "sec-fetch-site") === "cross-site" ||
+            (headerPresent(request, "origin") && !sameOrigin(request, publicOrigin)) ||
+            headerPresent(request, "range")
+          )
+            throw new HttpTransportError(invalidRequest(requestId, now));
+          const params = z
+            .strictObject({
+              projectId: IdentifierSchema,
+              sourceId: IdentifierSchema,
+              versionId: IdentifierSchema,
+            })
+            .parse(request.params);
+          const query = z
+            .strictObject({ disposition: z.enum(["inline", "attachment"]).optional() })
+            .parse(request.query);
+          const sourceVersionRef = {
+            kind: "source-version" as const,
+            reference: { entityId: params.sourceId, versionId: params.versionId },
+          };
+          const decision = await authorize({
+            access: options.access,
+            invocationId: requestId,
+            projectId: params.projectId,
+            branch: "engineering-data.source-original-read",
+            sessionToken: token as string,
+            requestedSpatialScopeRefs: [],
+            requestedSourceVersionRefs: [sourceVersionRef],
+            requestedAt: now.toISOString(),
+          });
+          opened = await ports.sourceOriginal!.open(
+            SourceOriginalQueryV1Schema.parse({
+              kind: "source-original",
+              queryId: requestId,
+              projectId: params.projectId,
+              actorId: decision.context.actorId,
+              requestedAt: now.toISOString(),
+              authorization: decision.context,
+              payload: { sourceVersionRef },
+            }),
+            controller.signal,
+          );
+          const disposition =
+            query.disposition === "attachment" || opened.info.previewKind === "download"
+              ? "attachment"
+              : "inline";
+          reply
+            .header("cache-control", "no-store")
+            .header("x-content-type-options", "nosniff")
+            .header("content-length", opened.info.byteLength)
+            .header(
+              "content-disposition",
+              `${disposition}; filename="document"; filename*=UTF-8''${encodeURIComponent(opened.info.fileName).replace(/[!'()*]/gu, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)}`,
+            )
+            .type(opened.info.mediaType);
+          const handle = opened;
+          const stream = Readable.from(handle.content);
+          stream.on("error", cleanup);
+          reply.raw.on("finish", cleanup);
+          reply.raw.on("close", cleanup);
+          controller.signal.addEventListener("abort", () => stream.destroy(), { once: true });
+          return reply.send(stream);
+        } catch (cause) {
+          cleanup();
+          return responseFailure(reply, mapHttpError({ error: cause, requestId, now }));
+        }
+      },
+    );
+
   app.post("/api/v1/session/login", async (request, reply) => {
     const requestId = requestIdFor(request, generateId);
     const now = requestNow(clock);
@@ -753,7 +852,8 @@ export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {
 
   // 会话、自省与 openapi 已有各自的专用处理；这里只注册 C35 新增的四条系统面路由。
   for (const entry of activeHttpSystemRouteCatalog(ports).filter(
-    (candidate) => candidate.activationPortKeys !== undefined,
+    (candidate) =>
+      candidate.activationPortKeys !== undefined && candidate.kind !== "source-original",
   )) {
     const handler = (request: FastifyRequest, reply: FastifyReply) =>
       runSystem({

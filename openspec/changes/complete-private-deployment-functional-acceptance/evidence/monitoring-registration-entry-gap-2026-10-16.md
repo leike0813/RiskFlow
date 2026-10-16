@@ -1,0 +1,19 @@
+# 监测初始化入口核对
+
+为后续评估验收提前进行只读调查，不计功能通过，不修改实例。
+
+现有正式HTTP只提供register-monitoring-batch、monitoring-snapshot和monitoring-snapshot-query。PostgresMonitoringStore的reviseSeries和registerAvailabilityPolicy已有类型、权限、事务及审计，但生产HTTP、部署provision和组合白名单均未调用。registerBatch先要求精确序列修订，freezeSnapshot同时要求序列修订和可用性策略，因而不能仅提交现有静态监测包完成初始化。
+
+事实位置：apps/api/src/http.ts的HTTP_ROUTE_CATALOG_V1；packages/core/src/engineering-data/monitoring/service.ts的MonitoringRegistryV1；packages/adapters/src/engineering-data/monitoring/postgres-monitoring-store.ts的reviseSeries、registerAvailabilityPolicy、registerBatch和freezeSnapshot；scripts/deployment/composition/api-ports.mjs对monitoringStore仅装配resolveSnapshotQuery。验收包monitoring.json已有seriesRevisions和batches，但没有availability policy。
+
+实例只读诊断报告为monitoring-registration-d88.json及logs/monitoring-registration-d88.log：synthetic-station-tunnel-project的monitoring_series_revisions和monitoring_availability_policies均为0。查询仅计数，无秘密、业务正文或写入。该结果不作为正式业务证据。
+
+已按D-89闭合设计及施工图：扩现有provision两种步骤，复用既有命令Schema、store权限和C03审计；实现限provision.mjs及既有测试，未进行实例业务登记。不可直接写表或把测试夹具当作生产入口。用户对验收必要修正已有持续授权，无需逐项再次请求批准。
+
+实施及主线程复核：provision.test.mjs为20/20通过（/tmp/riskflow-d89-parent-provision.log），覆盖两步当前宿主信封、正确引用投影、覆盖宿主字段/未知领域字段拒绝、领域失败停止和恢复不重写；eslint/prettier/全仓strict通过。序列优先投影自身引用，策略保存原裸VersionReference，未自造ContractRef.kind。原批次/快照HTTP和监测store内部算法不变。新入口随v95制品冻结，实际预置及正式回执尚未执行。
+
+原静态包含12条序列、12个批次及132个样本；它的Schema自检不等于逐批登记语义校验。DEV地表沉降的12个不同case样本都标为2026-03-02T08:30:00+08:00，不能直接合成同一序列同一时间的12个值。实际预置前须按原case/监测对象核对分组和指标映射，保持原值、时间及来源；不能靠改时间、丢弃冲突值、推测测点或放宽批次唯一性通过。该分组尚未决，不作正式监测输入就绪声明。
+
+进一步只读抽取：samples仅有键、时间、数值/单位和资料段证据，无显式series/batch成员清单。样本可按LEDGER段与scenarios.json的case对应；case编号表达工况，不能解释成同一测点的时间序号，也未声明独立物理测点。132样本仅四个时刻，不能拼成纵向时序。指标映射按indicator+parameterCode+metric寻址，不固定series，因此按明确工况建立独立监测对象无需改原指标映射，但须先补真实对象/来源绑定。
+
+抽查scenarios.json#/cases/1及monitoring.json#/samples/12：DEV-002的场景指标是支护结构变形，场景样本时间08:45；原documents/SYN-DEV/monitoring-lining-deformation.csv首行时间08:30。TRIAL从013开始，JSON地表沉降时间08:52，原CSV为08:30。原件与静态派生输入存在时间漂移，后续必须选定明确的资料事实源并保留差异，不把派生JSON当成原件或混合来源证明。未据此改写、删除或登记任何样本。

@@ -858,7 +858,7 @@ const readArtifactBody = async (
   );
   const chunks: Uint8Array[] = [];
   for await (const chunk of handle.content) chunks.push(chunk);
-  await handle.verified;
+  await handle.completed;
   return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
 };
 

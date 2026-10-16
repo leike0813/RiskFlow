@@ -13,6 +13,7 @@ import type {
   SessionMetadataV1,
   SessionResultV1,
 } from "./schema.js";
+import type { AuthorizationContextV1, SourceVersionRefV1 } from "@riskflow/contracts/ports";
 
 export type {
   AccessCommandResultV1,
@@ -41,6 +42,10 @@ export class AccessServiceError extends Error {
 }
 
 export interface LocalIdentityAccessV1 {
+  filterVisibleSources?(input: {
+    readonly authorization: AuthorizationContextV1;
+    readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+  }): Promise<readonly SourceVersionRefV1[]>;
   administerIdentity(command: IdentityAdministrationCommandV1): Promise<AccessCommandResultV1>;
   administerProject(command: ProjectAccessCommandV1): Promise<AccessCommandResultV1>;
   login(command: LoginCommandV1): Promise<SessionResultV1>;

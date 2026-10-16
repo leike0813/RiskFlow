@@ -7,6 +7,7 @@ import type { AuthorizationContextV1 } from "@riskflow/contracts/ports";
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import { ArtifactPutCommandV1Schema, type ArtifactPutCommandV1 } from "@riskflow/core/artifacts";
 import {
+  CANDIDATE_VALIDATION_REASON_CODES_V1,
   RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1,
   type RiskCandidateEmbeddingRequestV1,
   type RiskCandidateModelRequestV1,
@@ -18,6 +19,7 @@ import {
   type ModelContextPayloadV1,
 } from "@riskflow/core/identification/context";
 import {
+  EmbeddingRequestV1Schema,
   makeModelGatewayError,
   type EmbeddingRequestV1,
   type ModelGatewayPortV1,
@@ -231,9 +233,9 @@ const modelRequest = (
   ...overrides,
 });
 
-/** 运行时只读候选身份对；完整候选构造由 core 测试覆盖。 */
+/** 运行时仅投影身份与六字段输出；完整候选构造由 core 测试覆盖。 */
 const parentCandidate = (candidateId: string, candidateVersion: number) =>
-  ({ candidateId, candidateVersion }) as unknown as RiskCandidateV1;
+  ({ candidateId, candidateVersion, output: modelOutput() }) as unknown as RiskCandidateV1;
 
 const repairFeedback = (): RiskCandidateRepairFeedbackV1 => ({
   attempt: 1,
@@ -309,6 +311,32 @@ const setup = (options: {
 };
 
 describe("C22 RI-S57 model runtime", () => {
+  it.each([1, 4])("模型输入与输出Schema使用冻结候选数量上限 %s", async (maxCandidates) => {
+    const observations: { visibleLimit: unknown; atLimit: boolean; overLimit: boolean }[] = [];
+    const { runtime } = setup({
+      completeStructured: (async (
+        request,
+        schema: { safeParse: (value: unknown) => { success: boolean } },
+      ) => {
+        const candidates = Array.from({ length: maxCandidates }, () => modelOutput());
+        observations.push({
+          visibleLimit: JSON.parse(request.messages[1]!.content).maxCandidates,
+          atLimit: schema.safeParse({ candidates }).success,
+          overLimit: schema.safeParse({ candidates: [...candidates, modelOutput()] }).success,
+        });
+        return structuredResult(request, { candidates: [modelOutput()] }) as never;
+      }) as ModelGatewayPortV1["completeStructured"],
+    });
+    const input = modelRequest();
+    expect(
+      (await runtime.generateCandidates({ ...input, budget: { ...input.budget, maxCandidates } }))
+        .kind,
+    ).toBe("succeeded");
+    expect(observations).toEqual([
+      { visibleLimit: maxCandidates, atLimit: true, overLimit: false },
+    ]);
+  });
+
   it("sends only the frozen request references and the five-part frozen context", async () => {
     const calls: StructuredCompletionRequestV1[] = [];
     const outputs = [modelOutput(), modelOutput(0.9)];
@@ -338,23 +366,17 @@ describe("C22 RI-S57 model runtime", () => {
     expect(Date.parse(request.deadlineAt)).toBeGreaterThan(Date.parse(request.issuedAt));
     expect(request.idempotencyKey).toBe(`${INVOCATION}:generate`);
 
-    // 消息只有固定指令与五项投影：上下文里的发布/授权引用不进模型请求。
+    // 冻结数量约束与五项投影同行，发布/授权引用不进模型请求。
     expect(request.messages).toHaveLength(2);
     expect(request.messages[0]!.role).toBe("system");
     expect(request.messages[1]!.role).toBe("user");
-    expect(Object.keys(JSON.parse(request.messages[1]!.content)).sort()).toEqual([
-      "forceDependencies",
-      "mechanisms",
-      "processNode",
-      "retrievalEvidence",
-      "stateParameters",
-    ]);
     expect(JSON.parse(request.messages[1]!.content)).toEqual({
       processNode: context.processNode,
       stateParameters: context.stateParameters,
       forceDependencies: context.forceDependencies,
       mechanisms: context.mechanisms,
       retrievalEvidence: context.retrievalEvidence,
+      maxCandidates: 8,
     });
 
     // 成功结果原样带回六字段内容：模型置信度不被任何排序分数替换。
@@ -390,16 +412,39 @@ describe("C22 RI-S57 model runtime", () => {
     expect(outcome.rawResponseRef).toEqual(RAW_RESPONSE);
   });
 
-  it("carries only structured repair feedback and parent candidate identities", async () => {
+  it.each([1, 2])("仅投影 %s 个待修候选并约束精确替换数量", async (count) => {
     const calls: StructuredCompletionRequestV1[] = [];
+    const cardinalities: boolean[] = [];
     const { runtime } = setup({
-      completeStructured: (async (request) => {
+      completeStructured: (async (request, schema) => {
         calls.push(request);
-        return structuredResult(request, { candidates: [modelOutput()] }) as never;
+        for (const length of [count - 1, count, count + 1]) {
+          cardinalities.push(
+            schema.safeParse({ candidates: Array.from({ length }, () => modelOutput()) }).success,
+          );
+        }
+        return structuredResult(request, {
+          candidates: Array.from({ length: count }, () => modelOutput()),
+        }) as never;
       }) as ModelGatewayPortV1["completeStructured"],
     });
 
-    const repair = repairFeedback();
+    const parents = Array.from({ length: count }, (_, i) =>
+      parentCandidate(`candidate-${i + 1}`, 1),
+    );
+    const repair = {
+      ...repairFeedback(),
+      parentCandidates: [
+        parentCandidate("accepted", 1),
+        parentCandidate("candidate-1", 0),
+        ...parents,
+      ],
+      failures: [...parents].reverse().map((candidate) => ({
+        ...repairFeedback().failures[0]!,
+        candidateId: candidate.candidateId,
+        candidateVersion: candidate.candidateVersion,
+      })),
+    };
     await runtime.generateCandidates(modelRequest({ repair }));
 
     const request = calls[0]!;
@@ -407,10 +452,15 @@ describe("C22 RI-S57 model runtime", () => {
     const repairMessage = JSON.parse(request.messages[2]!.content);
     expect(repairMessage.attempt).toBe(1);
     expect(repairMessage.failures).toEqual(repair.failures);
-    expect(repairMessage.parentCandidates).toEqual([
-      { candidateId: "candidate-1", candidateVersion: 1 },
-    ]);
-    expect(Object.keys(repairMessage).sort()).toEqual(["attempt", "failures", "parentCandidates"]);
+    expect(repairMessage.requiredCandidateCount).toBe(count);
+    expect(repairMessage.parentCandidates).toEqual(
+      parents.map(({ candidateId, candidateVersion, output }) => ({
+        candidateId,
+        candidateVersion,
+        output,
+      })),
+    );
+    expect(cardinalities).toEqual([false, true, false]);
   });
 
   it("maps a gateway error to a structured module error with the raw-response diagnostic", async () => {
@@ -443,7 +493,7 @@ describe("C22 RI-S57 model runtime", () => {
     });
   });
 
-  it("surfaces an output-shape violation as a terminal failure instead of fewer candidates", async () => {
+  it("surfaces an output-shape violation as a repairable result with the real usage and raw response", async () => {
     const { runtime } = setup({
       completeStructured: (async () => {
         throw new ModelGatewayError(
@@ -455,20 +505,87 @@ describe("C22 RI-S57 model runtime", () => {
             invocationId: INVOCATION,
             modelDeploymentRef: MODEL_DEPLOYMENT,
             rawResponseRef: RAW_RESPONSE,
+            counts: { inputTokens: 11, outputTokens: 7, responseBytes: 120 },
           }),
         );
       }) as ModelGatewayPortV1["completeStructured"],
     });
 
     const outcome = await runtime.generateCandidates(modelRequest());
-    expect(outcome.kind).toBe("failed");
-    if (outcome.kind !== "failed") throw new Error("shape violation must close the run");
+    expect(outcome.kind).toBe("output-schema-invalid");
+    if (outcome.kind !== "output-schema-invalid") {
+      throw new Error("shape violation must stay repairable");
+    }
     expect(outcome).not.toHaveProperty("outputs");
-    expect(outcome.error).toMatchObject({
-      code: "TERMINAL_FAILURE",
-      retryable: false,
-      stageCode: "model.structured.output-schema",
-      diagnosticRef: RAW_RESPONSE,
+    expect(outcome.invocationId).toBe(INVOCATION);
+    expect(outcome.rawResponseRef).toEqual(RAW_RESPONSE);
+    expect(outcome.usage).toEqual({
+      inputTokens: 11,
+      outputTokens: 7,
+      totalTokens: 18,
+      outputBytes: 120,
+    });
+    expect(outcome.elapsedMs).toBe(0);
+  });
+
+  it.each(["MODEL_SCHEMA_UNSUPPORTED", "MODEL_AUTHORIZATION_DENIED"] as const)(
+    "keeps %s closed instead of repairable",
+    async (code) => {
+      const { runtime } = setup({
+        completeStructured: (async () => {
+          throw new ModelGatewayError(
+            makeModelGatewayError({
+              code,
+              retryable: false,
+              stage: "model.structured.output-schema",
+              occurredAt: TIMESTAMP,
+              invocationId: INVOCATION,
+              modelDeploymentRef: MODEL_DEPLOYMENT,
+              rawResponseRef: RAW_RESPONSE,
+            }),
+          );
+        }) as ModelGatewayPortV1["completeStructured"],
+      });
+
+      const outcome = await runtime.generateCandidates(modelRequest());
+      expect(outcome.kind).toBe("failed");
+      if (outcome.kind !== "failed") throw new Error("closed failure must close the run");
+      expect(outcome.error).toMatchObject({
+        code: code === "MODEL_AUTHORIZATION_DENIED" ? "AUTHORIZATION_DENIED" : "TERMINAL_FAILURE",
+        retryable: false,
+      });
+    },
+  );
+
+  it("projects a response-level output error without constraining the replacement count", async () => {
+    const calls: StructuredCompletionRequestV1[] = [];
+    const { runtime } = setup({
+      completeStructured: (async (request) => {
+        calls.push(request);
+        return structuredResult(request, { candidates: [modelOutput()] }) as never;
+      }) as ModelGatewayPortV1["completeStructured"],
+    });
+
+    const outcome = await runtime.generateCandidates(
+      modelRequest({
+        repair: {
+          attempt: 2,
+          parentCandidates: [],
+          failures: [],
+          outputError: {
+            reasonCode: CANDIDATE_VALIDATION_REASON_CODES_V1.schemaInvalid,
+          },
+          previousRawResponseRefs: [RAW_RESPONSE],
+        },
+      }),
+    );
+
+    expect(outcome.kind).toBe("succeeded");
+    expect(JSON.parse(calls[0]!.messages[2]!.content)).toEqual({
+      attempt: 2,
+      failures: [],
+      parentCandidates: [],
+      outputError: { reasonCode: CANDIDATE_VALIDATION_REASON_CODES_V1.schemaInvalid },
     });
   });
 
@@ -484,6 +601,7 @@ describe("C22 RI-S57 model runtime", () => {
         throw new Error("generation is not part of this scenario");
       }) as ModelGatewayPortV1["completeStructured"],
       embed: (async (request) => {
+        EmbeddingRequestV1Schema.parse(request);
         requests.push(request);
         return {
           schemaVersion: "1" as const,
@@ -509,14 +627,18 @@ describe("C22 RI-S57 model runtime", () => {
       embeddingDeploymentRef: EMBEDDING_DEPLOYMENT,
       budgetPolicyRef: versionRef("embedding-budget-policy"),
       texts,
-      authorization: authorization(),
+      authorization: { ...authorization(), grantedCapabilities: ["risk-identification.finalize"] },
     };
     const outcome = await runtime.embedRiskEvents(embeddingRequest);
 
     expect(requests).toHaveLength(1);
     expect(requests[0]!.texts).toEqual(texts);
     expect(requests[0]!.modelDeploymentRef).toEqual(EMBEDDING_DEPLOYMENT);
-    expect(requests[0]!.requiredCapability).toBe("risk-identification.run");
+    expect(requests[0]!.requiredCapability).toBe("risk-identification.finalize");
+    expect(
+      EmbeddingRequestV1Schema.safeParse({ ...requests[0]!, authorization: authorization() })
+        .success,
+    ).toBe(false);
     expect(requests[0]!.maxBatchItems).toBeLessThanOrEqual(4096);
     expect(requests[0]!.maxInputBytes).toBeGreaterThan(0);
 
@@ -534,7 +656,7 @@ describe("C22 RI-S57 model runtime", () => {
     );
     expect(put.command.artifactKind).toBe("content");
     expect(put.command.mediaType).toBe("application/json");
-    expect(put.command.requiredCapability).toBe("risk-identification.run");
+    expect(put.command.requiredCapability).toBe("risk-identification.finalize");
     expect(put.command.artifactId).toBe(
       `${embeddingRequest.invocationId}:risk-candidate-risk-event-vector`,
     );
@@ -542,44 +664,53 @@ describe("C22 RI-S57 model runtime", () => {
     expect(outcome.embeddingArtifactRef.kind).toBe("content-artifact");
   });
 
-  it("maps an embedding gateway error to a structured module error", async () => {
-    const { runtime, artifactStore } = setup({
-      completeStructured: vi.fn() as never,
-      embed: (async () => {
-        throw new ModelGatewayError(
-          makeModelGatewayError({
-            code: "MODEL_EMBEDDING_INVALID",
-            retryable: false,
-            stage: "model.embedding.dimensions",
-            occurredAt: TIMESTAMP,
-            invocationId: "identification-run-1:embed",
-            modelDeploymentRef: EMBEDDING_DEPLOYMENT,
-            rawResponseRef: RAW_RESPONSE,
-          }),
-        );
-      }) as ModelGatewayPortV1["embed"],
-    });
+  it.each(["MODEL_EMBEDDING_INVALID", "MODEL_AUTHORIZATION_DENIED"] as const)(
+    "maps embedding %s to a structured module error",
+    async (code) => {
+      const { runtime, artifactStore } = setup({
+        completeStructured: vi.fn() as never,
+        embed: (async (request) => {
+          EmbeddingRequestV1Schema.parse(request);
+          throw new ModelGatewayError(
+            makeModelGatewayError({
+              code,
+              retryable: false,
+              stage: "model.embedding.dimensions",
+              occurredAt: TIMESTAMP,
+              invocationId: "identification-run-1:embed",
+              modelDeploymentRef: EMBEDDING_DEPLOYMENT,
+              rawResponseRef: RAW_RESPONSE,
+            }),
+          );
+        }) as ModelGatewayPortV1["embed"],
+      });
 
-    const outcome = await runtime.embedRiskEvents({
-      projectId: PROJECT,
-      actorId: ACTOR,
-      invocationId: "identification-run-1:embed",
-      requestedAt: TIMESTAMP,
-      deadlineAt: DEADLINE,
-      projectWorkPlanEntityId: "work-plan-1",
-      embeddingDeploymentRef: EMBEDDING_DEPLOYMENT,
-      budgetPolicyRef: versionRef("embedding-budget-policy"),
-      texts: ["扩径期间掌子面失稳"],
-      authorization: authorization(),
-    });
+      const outcome = await runtime.embedRiskEvents({
+        projectId: PROJECT,
+        actorId: ACTOR,
+        invocationId: "identification-run-1:embed",
+        requestedAt: TIMESTAMP,
+        deadlineAt: DEADLINE,
+        projectWorkPlanEntityId: "work-plan-1",
+        embeddingDeploymentRef: EMBEDDING_DEPLOYMENT,
+        budgetPolicyRef: versionRef("embedding-budget-policy"),
+        texts: ["扩径期间掌子面失稳"],
+        authorization: {
+          ...authorization(),
+          grantedCapabilities: ["risk-identification.finalize"],
+        },
+      });
 
-    expect(outcome.kind).toBe("failed");
-    if (outcome.kind !== "failed") throw new Error("embedding failure must close the run");
-    expect(outcome.error).toMatchObject({
-      code: "TERMINAL_FAILURE",
-      stageCode: "model.embedding.dimensions",
-      diagnosticRef: RAW_RESPONSE,
-    });
-    expect(artifactStore.puts).toHaveLength(0);
-  });
+      expect(outcome.kind).toBe("failed");
+      if (outcome.kind !== "failed") throw new Error("embedding failure must close the run");
+      expect(outcome.error).toMatchObject({
+        code: code === "MODEL_AUTHORIZATION_DENIED" ? "AUTHORIZATION_DENIED" : "TERMINAL_FAILURE",
+        stageCode: "model.embedding.dimensions",
+        ...(code === "MODEL_AUTHORIZATION_DENIED"
+          ? { requiredCapability: "risk-identification.finalize" }
+          : { diagnosticRef: RAW_RESPONSE }),
+      });
+      expect(artifactStore.puts).toHaveLength(0);
+    },
+  );
 });

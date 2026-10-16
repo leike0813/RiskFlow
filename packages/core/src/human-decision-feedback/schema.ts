@@ -171,6 +171,7 @@ export const HUMAN_DECISION_FEEDBACK_FAILURE_CODES_V1 = [
   "human-decision-feedback-pre-action-snapshot-unavailable",
   "human-decision-feedback-actual-assessment-required",
   "human-decision-feedback-actual-assessment-mismatch",
+  "human-decision-feedback-policy-unavailable",
   "human-decision-feedback-frozen-input-unavailable",
   "human-decision-feedback-frozen-input-conflict",
   "human-decision-feedback-downstream-unavailable",

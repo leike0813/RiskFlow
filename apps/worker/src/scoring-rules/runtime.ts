@@ -206,12 +206,12 @@ export const withScoringRuleAuthoringModelStep = (
       if (inner === undefined) throw invalidStep(task, "worker.scoring-rule.render");
       return inner(task, definition, context);
     },
-    interpretModelStep: (response, task, definition) => {
+    interpretModelStep: (response, task, definition, context) => {
       if (isScoringRuleAuthoringStep(step.policy, task, definition))
         return interpretScoringRuleAuthoringModelStep(step, response, task);
       const inner = options.inner?.interpretModelStep;
       if (inner === undefined) throw invalidStep(task, "worker.scoring-rule.interpret");
-      return inner(response, task, definition);
+      return inner(response, task, definition, context);
     },
   };
 };

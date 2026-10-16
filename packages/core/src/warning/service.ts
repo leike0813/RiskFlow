@@ -42,7 +42,9 @@ export interface WarningAssessmentContextReaderV1 {
     readonly requestedAt: string;
     readonly authorization: AuthorizationContextV1;
     readonly assessmentRecordRef: RiskAssessmentRecordRefV1;
-  }): Promise<WarningAssessmentContextV1>;
+  }): Promise<
+    Omit<WarningAssessmentContextV1, "warningAggregationPolicyRef" | "notificationPolicyRef">
+  >;
 }
 
 export interface WarningRuntimePolicyProviderV1 {
@@ -50,8 +52,8 @@ export interface WarningRuntimePolicyProviderV1 {
     readonly requestId: string;
     readonly requestedAt: string;
     readonly authorization: AuthorizationContextV1;
-    readonly warningAggregationPolicyRef: VersionReference;
-    readonly notificationPolicyRef: VersionReference;
+    readonly warningAggregationPolicyRef?: VersionReference;
+    readonly notificationPolicyRef?: VersionReference;
   }): Promise<WarningRuntimePolicySetV1>;
 }
 

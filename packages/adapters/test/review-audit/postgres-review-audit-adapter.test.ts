@@ -1494,7 +1494,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
     });
   });
 
-  it("enforces C06 reviewer, manager, project, branch, and expiry boundaries", async () => {
+  it("enforces current C06 reviewer, manager, project and branch permissions across elapsed TTL", async () => {
     const clock = mutableClock();
     const adminPassword = "c07-admin-password-v1";
     const adminChangedPassword = "c07-admin-password-changed-v1";
@@ -1845,7 +1845,7 @@ describe.sequential("PostgreSQL review-audit adapter", () => {
             includeEvidenceSummary: false,
           },
         }),
-      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      ).toMatchObject({ kind: "succeeded" });
     } finally {
       await access.close();
     }

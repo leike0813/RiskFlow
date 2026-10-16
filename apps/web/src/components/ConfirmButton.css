@@ -59,7 +59,9 @@
 }
 
 .confirm-dialog {
-  width: 460px;
+  width: min(460px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
   background: var(--card);
   border-radius: var(--card-radius);
   box-shadow: 0 12px 40px rgba(14, 34, 56, 0.2);

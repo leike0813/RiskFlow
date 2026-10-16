@@ -1,8 +1,11 @@
 import { Buffer } from "node:buffer";
 
 import { z, type ZodType } from "zod";
+import { ArtifactStoreError } from "@riskflow/core/artifacts";
 
 import {
+  ApplicableRuleSetAssemblyCommandV1Schema,
+  ApplicableRuleSetAssemblyResultV1Schema,
   AssessmentEvaluationCommandV1Schema,
   AssessmentEvaluationResultV1Schema,
   AssessmentPreparationCommandV1Schema,
@@ -22,6 +25,10 @@ import {
   EngineeringDataCommandV1Schema,
   EngineeringDataQueryV1Schema,
   EngineeringDataReadResultV1Schema,
+  SourceOriginalQueryV1Schema,
+  SourceOriginalReadResultV1Schema,
+  type SourceOriginalReadPortV1,
+  type SourceOriginalQueryV1,
   EngineeringFreezeCommandV1Schema,
   EngineeringFreezeResultV1Schema,
   IdentificationAnalysisCommandV1Schema,
@@ -84,6 +91,8 @@ import {
   WarningResponseRecordResultV1Schema,
   WorkflowRunRefV1Schema,
   type AgentTaskPortV1,
+  type ApplicableRuleSetAssemblyCommandV1,
+  type ApplicableRuleSetAssemblyPortV1,
   type AssessmentEvaluationCommandV1,
   type AssessmentPreparationCommandV1,
   type CancelAgentTaskCommandV1,
@@ -454,8 +463,11 @@ export type QualityProjectionCandidateSelectionV1 =
   | Readonly<{ kind: "rejected"; result: ProjectionQueryResultV1 }>;
 
 export interface ApiPortsV1 {
+  readonly sourceOriginal?: SourceOriginalReadPortV1;
   readonly engineeringData?: EngineeringDataPortV1;
   readonly knowledgeModeling?: KnowledgeModelingPortV1;
+  /** C19 组装窄端口：独立注入位，未注入时对应命令分支不激活。 */
+  readonly applicableRuleSetAssembly?: ApplicableRuleSetAssemblyPortV1;
   readonly riskIdentification?: RiskIdentificationPortV1;
   readonly riskAssessment?: RiskAssessmentPortV1;
   readonly warningResponse?: WarningResponsePortV1;
@@ -685,6 +697,9 @@ const invokeKnowledgeResolve: HttpInvokerV1 = (ports, request) =>
 const invokeKnowledgeRetrieve: HttpInvokerV1 = (ports, request) =>
   ports.knowledgeModeling?.retrieve(request as KnowledgeRetrievalQueryV1) ??
   missingPort("knowledgeModeling");
+const invokeApplicableRuleSetAssembly: HttpInvokerV1 = (ports, request) =>
+  ports.applicableRuleSetAssembly?.assemble(request as ApplicableRuleSetAssemblyCommandV1) ??
+  missingPort("applicableRuleSetAssembly");
 const invokeIdentificationPlan: HttpInvokerV1 = (ports, request) =>
   ports.riskIdentification?.plan(request as IdentificationPlanCommandV1) ??
   missingPort("riskIdentification");
@@ -800,6 +815,17 @@ const invokeCalibrationGovernance: HttpInvokerV1 = (ports, request) => {
 };
 
 export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze([
+  route({
+    branch: "engineering-data.source-original-read",
+    domainKind: "source-original",
+    mode: "query",
+    moduleRequestSchema: SourceOriginalQueryV1Schema,
+    resultSchema: SourceOriginalReadResultV1Schema,
+    portKey: "sourceOriginal",
+    activationPortKeys: [],
+    invoke: (ports, request) =>
+      ports.sourceOriginal?.read(request as SourceOriginalQueryV1) ?? missingPort("sourceOriginal"),
+  }),
   ...commandRoutes(
     EngineeringDataCommandV1Schema,
     EngineeringDataApplyResultV1Schema,
@@ -818,6 +844,10 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
     invokeEngineeringFreeze,
     [
       ["engineering-data.identification-preparation", "identification-preparation"],
+      [
+        "engineering-data.complete-identification-preparation",
+        "complete-identification-preparation",
+      ],
       ["engineering-data.assessment-preparation", "assessment-preparation"],
       ["engineering-data.monitoring-snapshot", "monitoring-snapshot"],
     ],
@@ -855,6 +885,14 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
       ["knowledge-modeling.identification-basis", "identification-basis"],
       ["knowledge-modeling.assessment-basis", "assessment-basis"],
     ],
+  ),
+  // C19 正式组装入口：单分支窄命令与窄端口；未注入端口时不激活（design D-39）。
+  ...commandRoutes(
+    ApplicableRuleSetAssemblyCommandV1Schema,
+    ApplicableRuleSetAssemblyResultV1Schema,
+    "applicableRuleSetAssembly",
+    invokeApplicableRuleSetAssembly,
+    [["knowledge-modeling.assemble-applicable-rule-set", "assemble-applicable-rule-set"]],
   ),
   ...queryRoutes(
     KnowledgeRetrievalQueryV1Schema,
@@ -1508,6 +1546,18 @@ export const mapHttpError = (input: {
   readonly now: Date;
 }): HttpFailureV1 => {
   if (input.error instanceof HttpTransportError) return input.error.failure;
+  if (input.error instanceof ArtifactStoreError) {
+    if (
+      [
+        "ARTIFACT_ACCESS_DENIED",
+        "ARTIFACT_REFERENCE_NOT_FOUND",
+        "ARTIFACT_INHERITANCE_CONFLICT",
+      ].includes(input.error.code)
+    )
+      return notFound(input.requestId, input.now);
+    if (input.error.code === "ARTIFACT_TOO_LARGE")
+      return requestTooLarge(input.requestId, input.now);
+  }
   if (input.error instanceof AccessServiceError)
     return mapAccessError(input.error.details, input.requestId, input.now);
   const details =
@@ -1710,16 +1760,25 @@ export type HttpSystemRouteKindV1 =
 export type HttpSystemRouteEntryV1 = Readonly<{
   method: "POST" | "GET";
   path: string;
-  kind: HttpSessionRouteKindV1 | HttpSystemRouteKindV1 | "sse";
+  kind: HttpSessionRouteKindV1 | HttpSystemRouteKindV1 | "sse" | "source-original";
   requestSchema?: ZodType;
   resultSchema?: ZodType;
   requiresSession: boolean;
-  mediaType: typeof HTTP_JSON_MEDIA_TYPE_V1 | typeof HTTP_SSE_MEDIA_TYPE_V1;
+  mediaType:
+    typeof HTTP_JSON_MEDIA_TYPE_V1 | typeof HTTP_SSE_MEDIA_TYPE_V1 | "application/octet-stream";
   /** C35 系统面激活所需的注入位；缺任一项该路由不注册、也不出现在 OpenAPI。 */
   activationPortKeys?: readonly ApiPortKeyV1[];
 }>;
 
 export const HTTP_SYSTEM_ROUTE_CATALOG_V1: readonly HttpSystemRouteEntryV1[] = Object.freeze([
+  Object.freeze({
+    method: "GET" as const,
+    path: "/api/v1/projects/:projectId/sources/:sourceId/versions/:versionId/original",
+    kind: "source-original" as const,
+    requiresSession: true,
+    mediaType: "application/octet-stream" as const,
+    activationPortKeys: ["sourceOriginal"] as const,
+  }),
   Object.freeze({
     method: "POST" as const,
     path: "/api/v1/session/login",
@@ -1872,6 +1931,13 @@ const operationFor = (entry: HttpRouteEntryV1 | HttpSystemRouteEntryV1): OpenApi
   const systemKind = "kind" in entry ? entry.kind : undefined;
   const isSse = systemKind === "sse";
   const parameters = pathParameters(entry.path);
+  if (systemKind === "source-original")
+    parameters.push({
+      name: "disposition",
+      in: "query",
+      required: false,
+      schema: { type: "string", enum: ["inline", "attachment"] },
+    });
   if (isSse)
     parameters.push(
       {
@@ -1909,13 +1975,21 @@ const operationFor = (entry: HttpRouteEntryV1 | HttpSystemRouteEntryV1): OpenApi
           : {
               "200": {
                 description: "成功",
-                ...(entry.resultSchema === undefined
-                  ? {}
-                  : {
+                ...(systemKind === "source-original"
+                  ? {
                       content: {
-                        [HTTP_JSON_MEDIA_TYPE_V1]: { schema: asJsonSchema(entry.resultSchema) },
+                        "application/octet-stream": {
+                          schema: { type: "string", format: "binary" },
+                        },
                       },
-                    }),
+                    }
+                  : entry.resultSchema === undefined
+                    ? {}
+                    : {
+                        content: {
+                          [HTTP_JSON_MEDIA_TYPE_V1]: { schema: asJsonSchema(entry.resultSchema) },
+                        },
+                      }),
               },
             }),
       ...(systemKind !== "sse" && "mode" in entry && entry.mode === "command"

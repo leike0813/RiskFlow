@@ -48,6 +48,8 @@
 
 ### 3.1 大型实现编排
 
+涉及授权、工件读取、检索、续办、阶段配置或确定性组合发布的减负工作，先读 `reduce-defensive-design-overhead` 的 design、implementation-plan 和 handoff（归档后读对应 archive）。该 change 负责减负实现，`complete-private-deployment-functional-acceptance` 保留实机验收责任；按实际代码区分规划目标和已实施行为，串行完成减负后接续原资料、结果和任务证据。
+
 - 执行 39-change 路线前必须先读根目录 `IMPLEMENTATION-ORCHESTRATION-HANDBOOK.md` 和 `IMPLEMENTATION-ORCHESTRATION-RUNBOOK.md`；前者规定稳定责任与状态转换，后者规定 worktree 信任、Agent 启动、等待、同步、故障恢复和回收操作。当前起点只读取 `pnpm orchestration:status --json` 的 `resumeQueue`。
 - 大型实现的阶段、角色、模型与强度以 `config/orchestration/execution-graph.json` 为唯一事实源。规划由 Planning Agent 承担；首轮实现由 Implementation Agent 承担；进入 `FINALIZING` 后由 Finalizer 对核验、已批准范围内修复、回归和 verification 负责，普通实现缺陷不得回派首轮实现角色；触发限定审计时，由 Targeted Auditor 将最终结论补入同一工件。**每个独立 Task 必须使用新的 Agent session**，已结束、失败、暂停、释放或长时间闲置的 terminal、Run、Dispatch 和上下文不得用于后续 Task；只有同一仍活动 Task 内的修复与回归可以连续执行。**同一收尾轮次最多一次限定审计**：Auditor 必须在自己的活动 Task 内修复其发现的已批准范围内普通缺陷并完成回归；禁止为同一收尾重复派发新的 Finalizer 或第二次审计，无法在当前 Task 内闭合时必须升级给用户。
 - 主调度的编排写操作必须通过 `riskflow_*` 受控工具执行，并携带当前状态 `revision` 和幂等键；历史日志、聊天记录和手册示例不得替代实时状态。

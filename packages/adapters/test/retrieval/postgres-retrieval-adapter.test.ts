@@ -614,14 +614,15 @@ describe("PostgreSQL versioned hybrid retrieval facts", () => {
 
     expect(await fixture!.adapter.readGenerationStatus(generation.generationRef)).toBe("failed");
     expect(await countRows(fixture!, "retrieval_generation_transitions", "status")).toBe(3);
-    expect(
-      await fixture!.adapter.readActiveGeneration({
-        projectId: PROJECT_ID,
-        evidenceBaseReleaseRef: generation.identity.evidenceBaseReleaseRef,
-        policyRef: generation.identity.policyRef,
-        authorizationScopeDigest: generation.authorizationScopeDigest,
-      }),
-    ).toBeUndefined();
+    const active = await fixture!.adapter.readActiveGeneration({
+      projectId: PROJECT_ID,
+      evidenceBaseReleaseRef: generation.identity.evidenceBaseReleaseRef,
+      policyRef: generation.identity.policyRef,
+      authorizationScopeDigest: generation.authorizationScopeDigest,
+    });
+    expect(active?.generationRef).not.toEqual(generation.generationRef);
+    if (active !== undefined)
+      expect(await fixture!.adapter.readGenerationStatus(active.generationRef)).toBe("active");
   }, 60_000);
 
   it("serializes concurrent activations by compare-and-swap", async () => {
@@ -808,11 +809,13 @@ describe("PostgreSQL versioned hybrid retrieval facts", () => {
       }),
     ).toBeUndefined();
     expect(
-      await fixture!.adapter.readActiveGeneration({
-        ...base,
-        authorizationScopeDigest: sha("other-scope"),
-      }),
-    ).toBeUndefined();
+      (
+        await fixture!.adapter.readActiveGeneration({
+          ...base,
+          authorizationScopeDigest: sha("other-scope"),
+        })
+      )?.generationRef,
+    ).toEqual(generation.generationRef);
     expect(
       await fixture!.adapter.readActiveGeneration({
         ...base,

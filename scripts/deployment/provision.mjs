@@ -22,6 +22,10 @@ import {
   RegisterSourceSegmentSetCommandV1Schema,
 } from "../../packages/core/dist/engineering-data/context-source/index.js";
 import {
+  RegisterMonitoringAvailabilityPolicyCommandV1Schema,
+  ReviseMonitoringSeriesCommandV1Schema,
+} from "../../packages/core/dist/engineering-data/monitoring/index.js";
+import {
   EngineeringDataCommandV1Schema,
   StructuredDocumentConversionCommandV1Schema,
   SpatialScopeRefV1Schema,
@@ -95,6 +99,16 @@ const steps = z.discriminatedUnion("op", [
     op: z.literal("source-segments"),
     payload: z.record(z.string(), z.unknown()),
   }),
+  z.strictObject({
+    ...stepBase,
+    op: z.literal("monitoring-series-revision"),
+    payload: z.record(z.string(), z.unknown()),
+  }),
+  z.strictObject({
+    ...stepBase,
+    op: z.literal("monitoring-availability-policy"),
+    payload: z.record(z.string(), z.unknown()),
+  }),
 ]);
 export const ProvisionConfigV1Schema = z
   .strictObject({
@@ -159,10 +173,15 @@ const publicResultRef = (result) => {
     return result.result.conversionRef;
   if (result?.kind === "succeeded" && result.result?.sourceDeliveryRef)
     return result.result.sourceDeliveryRef;
+  // 序列修订回执同时含空间引用：序列引用必须优先投影。
+  if (result?.kind === "succeeded" && result.result?.revision?.monitoringSeriesRef)
+    return result.result.revision.monitoringSeriesRef;
   if (result?.kind === "succeeded" && result.result?.revision?.spatialScopeRef)
     return result.result.revision.spatialScopeRef;
   if (result?.kind === "succeeded" && result.result?.revision?.projectRevisionRef)
     return result.result.revision.projectRevisionRef;
+  if (result?.kind === "succeeded" && result.result?.policy?.availabilityPolicyRef)
+    return result.result.policy.availabilityPolicyRef;
   return undefined;
 };
 
@@ -224,7 +243,10 @@ const executeStep = async ({ step, config, foundation, sessionToken, now, previo
     invocation: { kind: "human-session", sessionToken },
     invocationId: id,
     projectId: config.projectId,
-    branch: "engineering-data.register-source-delivery",
+    branch:
+      step.op === "monitoring-series-revision" || step.op === "monitoring-availability-policy"
+        ? "engineering-data.register-monitoring-batch"
+        : "engineering-data.register-source-delivery",
     requestedSpatialScopeRefs,
     requestedSourceVersionRefs,
   });
@@ -278,6 +300,12 @@ const executeStep = async ({ step, config, foundation, sessionToken, now, previo
     )
       throw new ProvisionBlockedError("MINERU_NOT_CONFIGURED");
     result = await foundation.documentConverter.convert(validated);
+  } else if (step.op === "monitoring-series-revision") {
+    const validated = ReviseMonitoringSeriesCommandV1Schema.parse(command);
+    result = await foundation.monitoringStore.reviseSeries(validated);
+  } else if (step.op === "monitoring-availability-policy") {
+    const validated = RegisterMonitoringAvailabilityPolicyCommandV1Schema.parse(command);
+    result = await foundation.monitoringStore.registerAvailabilityPolicy(validated);
   } else {
     const validated = RegisterSourceSegmentSetCommandV1Schema.parse(command);
     result = await foundation.contextSource.registerSegments(validated);

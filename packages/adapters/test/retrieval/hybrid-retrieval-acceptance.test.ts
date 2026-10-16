@@ -145,6 +145,7 @@ describe("hybrid retrieval acceptance against real Qdrant 1.19.0", () => {
           projectId: query.projectId,
           generationRef: manifest.generationRef,
           authorizationScopeDigest: generationScopeDigest,
+          visiblePointIds: manifest.manifest.members.map((member) => member.pointId),
         },
       });
       const rrfIds = memberIdsOf(result.fused.map((hit) => hit.pointId));
@@ -213,6 +214,7 @@ describe("hybrid retrieval acceptance against real Qdrant 1.19.0", () => {
           projectId: interference.projectId,
           generationRef: manifest.generationRef,
           authorizationScopeDigest: generationScopeDigest,
+          visiblePointIds: manifest.manifest.members.map((member) => member.pointId),
         },
       });
       quality.leakage += result.fused.length;
@@ -232,6 +234,7 @@ describe("hybrid retrieval acceptance against real Qdrant 1.19.0", () => {
           projectId: probe.projectId,
           generationRef: manifest.generationRef,
           authorizationScopeDigest: generationScopeDigest,
+          visiblePointIds: manifest.manifest.members.map((member) => member.pointId),
         },
       });
       if (run >= acceptancePolicy.warmupRuns) samples.push(result.fusedQueryDurationMs);
@@ -348,6 +351,7 @@ describe("hybrid retrieval acceptance against real Qdrant 1.19.0", () => {
           projectId: query.projectId,
           generationRef: manifest.generationRef,
           authorizationScopeDigest: generationScopeDigest,
+          visiblePointIds: manifest.manifest.members.map((member) => member.pointId),
         },
       });
       const rebuildIds = memberIdsOf(result.fused.map((hit) => hit.pointId));

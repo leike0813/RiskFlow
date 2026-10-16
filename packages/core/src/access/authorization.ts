@@ -1,7 +1,11 @@
 import {
   AuthorizationContextV1Schema,
   type AuthorizationContextV1,
+  type AuthorizationContextRefV1,
   type ModuleBranchV1,
+  type ModuleCapabilityV1,
+  type WorkflowRunRefV1,
+  type AgentTaskRefV1,
   type SpatialScopeRefV1,
   type SourceAccessGrantRefV1,
   type SourceVersionRefV1,
@@ -9,6 +13,20 @@ import {
 
 import { isBranchAllowed } from "./policy.js";
 import type { PresetRoleV1, SourceVisibilityV1 } from "./schema.js";
+
+/** 服务端业务入口的当前权限检查；任务范围来自已登记事实。 */
+export interface BusinessActionAuthorizationInputV1 {
+  readonly actorId: string;
+  readonly projectId: string;
+  readonly capability: ModuleCapabilityV1;
+  readonly branch?: ModuleBranchV1;
+  readonly invocationId: string;
+  readonly requestedSpatialScopeRefs: readonly SpatialScopeRefV1[];
+  readonly requestedSourceVersionRefs: readonly SourceVersionRefV1[];
+  readonly taskRef?: AgentTaskRefV1;
+  readonly causalRunRef?: WorkflowRunRefV1;
+  readonly authorizationContextRef?: AuthorizationContextRefV1;
+}
 
 export interface SpatialScopeNodeV1 {
   readonly projectId: string;
@@ -200,9 +218,7 @@ export const evaluateSourceAccess = (
 const sameRef = (
   left: { reference: { entityId: string; versionId: string } },
   right: typeof left,
-): boolean =>
-  left.reference.entityId === right.reference.entityId &&
-  left.reference.versionId === right.reference.versionId;
+): boolean => left.reference.entityId === right.reference.entityId;
 
 export interface AuthorizationSubsetOptionsV1 {
   readonly scopeNodes?: readonly SpatialScopeNodeV1[];
@@ -215,11 +231,6 @@ export const isAuthorizationSubset = (
   options: AuthorizationSubsetOptionsV1 = {},
 ): boolean => {
   if (parent.projectId !== child.projectId || parent.actorId !== child.actorId) return false;
-  if (
-    parent.authorizationPolicyRef.entityId !== child.authorizationPolicyRef.entityId ||
-    parent.authorizationPolicyRef.versionId !== child.authorizationPolicyRef.versionId
-  )
-    return false;
   if (
     !child.grantedCapabilities.every((capability) =>
       parent.grantedCapabilities.includes(capability),

@@ -1,0 +1,1352 @@
+{
+  "schemaVersion": 1,
+  "catalogRef": {
+    "entityId": "physical-policy-catalog-20261014",
+    "versionId": "1"
+  },
+  "purpose": "synthetic-acceptance",
+  "downstreamAuthorization": {
+    "policyRef": {
+      "entityId": "physical-downstream-authorization",
+      "versionId": "physical-20261014-v1"
+    },
+    "bindings": [
+      {
+        "rootBranch": "engineering-data.identification-preparation",
+        "downstreamBranches": [
+          "knowledge-modeling.identification-basis",
+          "knowledge-modeling.relationship-context",
+          "engineering-data.evidence-access",
+          "agent-task.start-task",
+          "knowledge-modeling.submit-revision",
+          "knowledge-modeling.request-review",
+          "agent-task.read-failure-evidence",
+          "risk-identification.run-read",
+          "risk-identification.plan"
+        ]
+      },
+      {
+        "rootBranch": "engineering-data.assessment-preparation",
+        "downstreamBranches": [
+          "engineering-data.assessment-preparation",
+          "engineering-data.evidence-access",
+          "engineering-data.monitoring-snapshot-query",
+          "knowledge-modeling.assessment-basis",
+          "knowledge-modeling.measure-candidates",
+          "risk-assessment.initial",
+          "risk-assessment.reassessment",
+          "risk-assessment.historical-backfill",
+          "risk-assessment.evaluate",
+          "risk-assessment.read-input-snapshot",
+          "risk-identification.record-catalog",
+          "warning-response.read",
+          "warning-response.open",
+          "warning-response.create-candidate",
+          "warning-response.validate-and-record",
+          "warning-response.calculate-deviation",
+          "warning-response.create-calibration-suggestion",
+          "warning-response.adopt-recommendation",
+          "agent-task.start-task"
+        ]
+      },
+      {
+        "rootBranch": "workflow.start-run",
+        "downstreamBranches": [
+          "knowledge-modeling.identification-basis",
+          "knowledge-modeling.relationship-context",
+          "engineering-data.evidence-access",
+          "agent-task.start-task",
+          "knowledge-modeling.submit-revision",
+          "knowledge-modeling.request-review",
+          "agent-task.read-failure-evidence",
+          "risk-identification.run-read",
+          "risk-identification.plan",
+          "engineering-data.assessment-preparation",
+          "engineering-data.monitoring-snapshot-query",
+          "knowledge-modeling.assessment-basis",
+          "knowledge-modeling.measure-candidates",
+          "risk-assessment.initial",
+          "risk-assessment.reassessment",
+          "risk-assessment.historical-backfill",
+          "risk-assessment.evaluate",
+          "risk-assessment.read-input-snapshot",
+          "risk-identification.record-catalog",
+          "warning-response.read",
+          "warning-response.open",
+          "warning-response.create-candidate",
+          "warning-response.validate-and-record",
+          "warning-response.calculate-deviation",
+          "warning-response.create-calibration-suggestion",
+          "warning-response.adopt-recommendation"
+        ]
+      },
+      {
+        "rootBranch": "workflow.resume-run",
+        "downstreamBranches": [
+          "knowledge-modeling.identification-basis",
+          "knowledge-modeling.relationship-context",
+          "engineering-data.evidence-access",
+          "agent-task.start-task",
+          "knowledge-modeling.submit-revision",
+          "knowledge-modeling.request-review",
+          "agent-task.read-failure-evidence",
+          "risk-identification.run-read",
+          "risk-identification.plan",
+          "engineering-data.assessment-preparation",
+          "engineering-data.monitoring-snapshot-query",
+          "knowledge-modeling.assessment-basis",
+          "knowledge-modeling.measure-candidates",
+          "risk-assessment.initial",
+          "risk-assessment.reassessment",
+          "risk-assessment.historical-backfill",
+          "risk-assessment.evaluate",
+          "risk-assessment.read-input-snapshot",
+          "risk-identification.record-catalog",
+          "warning-response.read",
+          "warning-response.open",
+          "warning-response.create-candidate",
+          "warning-response.validate-and-record",
+          "warning-response.calculate-deviation",
+          "warning-response.create-calibration-suggestion",
+          "warning-response.adopt-recommendation"
+        ]
+      },
+      {
+        "rootBranch": "agent-task.start-task",
+        "downstreamBranches": [
+          "engineering-data.evidence-access",
+          "knowledge-modeling.submit-revision",
+          "knowledge-modeling.request-review",
+          "agent-task.read-failure-evidence",
+          "knowledge-modeling.relationship-context",
+          "warning-response.read",
+          "warning-response.calculate-deviation"
+        ]
+      },
+      {
+        "rootBranch": "projection.result-read",
+        "downstreamBranches": [
+          "projection.result-read"
+        ]
+      },
+      {
+        "rootBranch": "projection.query",
+        "downstreamBranches": [
+          "workflow.resume-run",
+          "workflow.cancel-run",
+          "risk-assessment.initial",
+          "risk-assessment.reassessment"
+        ]
+      },
+      {
+        "rootBranch": "risk-assessment.read",
+        "downstreamBranches": [
+          "workflow.resume-run",
+          "workflow.cancel-run",
+          "risk-assessment.reassessment"
+        ]
+      },
+      {
+        "rootBranch": "risk-assessment.initial",
+        "downstreamBranches": [
+          "risk-identification.record-catalog",
+          "risk-assessment.initial"
+        ]
+      },
+      {
+        "rootBranch": "warning-response.read",
+        "downstreamBranches": [
+          "workflow.resume-run",
+          "workflow.cancel-run",
+          "warning-response.create-candidate",
+          "warning-response.record-feedback"
+        ]
+      },
+      {
+        "rootBranch": "knowledge-modeling.governance-read",
+        "downstreamBranches": [
+          "knowledge-modeling.governance-read"
+        ]
+      },
+      {
+        "rootBranch": "warning-response.create-candidate",
+        "downstreamBranches": [
+          "knowledge-modeling.assessment-basis",
+          "knowledge-modeling.measure-candidates",
+          "agent-task.start-task"
+        ]
+      },
+      {
+        "rootBranch": "warning-response.create-calibration-suggestion",
+        "downstreamBranches": [
+          "knowledge-modeling.assessment-basis",
+          "warning-response.calculate-deviation",
+          "agent-task.start-task"
+        ]
+      }
+    ]
+  },
+  "entries": [
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "cleaning",
+      "policyRef": {
+        "entityId": "physical-cleaning-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policyRef": {
+          "entityId": "physical-cleaning-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "allowedConversionPolicyRefs": [
+          {
+            "entityId": "document-conversion-policy",
+            "versionId": "2030-01"
+          }
+        ],
+        "allowedQualityPolicyRefs": [
+          {
+            "entityId": "mineru-synthetic-quality",
+            "versionId": "2026-10-11"
+          }
+        ],
+        "allowedConverterDeploymentRefs": [
+          {
+            "entityId": "mineru-official-functional",
+            "versionId": "2026-10-11"
+          }
+        ],
+        "allowedExclusionReasonCodes": [
+          "duplicate-segment",
+          "invalid-sample"
+        ],
+        "protectedSegmentKinds": [
+          "chapter",
+          "table",
+          "monitoring-window"
+        ],
+        "requiredSegmentKinds": [
+          "chapter"
+        ],
+        "protectedMonitoringSelectionReasons": [
+          "latest-valid",
+          "correction",
+          "supplement",
+          "original"
+        ],
+        "minimumRetainedSegmentRatio": 1,
+        "minimumRetainedSampleRatio": 1,
+        "minimumDocumentCoverageRatio": 1,
+        "tools": {
+          "documentSegmentToolRef": {
+            "entityId": "cleaning-document-segment",
+            "versionId": "physical-20261014-v1"
+          },
+          "monitoringSnapshotToolRef": {
+            "entityId": "cleaning-monitoring-snapshot",
+            "versionId": "physical-20261014-v1"
+          },
+          "maxSegmentsPerRead": 32,
+          "maxMonitoringItemsPerRead": 64
+        },
+        "agent": {
+          "definitionRef": {
+            "entityId": "cleaning-definition",
+            "versionId": "physical-20261014-v1"
+          },
+          "modelDeploymentRef": {
+            "entityId": "minimax-chat-acceptance",
+            "versionId": "v1"
+          },
+          "promptTemplateRef": {
+            "entityId": "cleaning-prompt",
+            "versionId": "physical-20261014-v1"
+          },
+          "toolPolicyRef": {
+            "entityId": "cleaning-tools",
+            "versionId": "physical-20261014-v1"
+          },
+          "budgetPolicyRef": {
+            "entityId": "cleaning-budget",
+            "versionId": "physical-20261014-v1"
+          },
+          "incrementSchemaRef": {
+            "entityId": "cleaning-increment",
+            "versionId": "physical-20261014-v1"
+          },
+          "validationPolicyRef": {
+            "entityId": "cleaning-validation",
+            "versionId": "physical-20261014-v1"
+          },
+          "budgetPolicy": {
+            "schemaVersion": "1",
+            "policyRef": {
+              "entityId": "cleaning-budget",
+              "versionId": "physical-20261014-v1"
+            },
+            "modelDeploymentRef": {
+              "entityId": "minimax-chat-acceptance",
+              "versionId": "v1"
+            },
+            "promptTemplateRef": {
+              "entityId": "cleaning-prompt",
+              "versionId": "physical-20261014-v1"
+            },
+            "toolPolicyRef": {
+              "entityId": "cleaning-tools",
+              "versionId": "physical-20261014-v1"
+            },
+            "maxModelInvocations": 4,
+            "maxToolInvocations": 8,
+            "maxContextTokens": 16384,
+            "maxInputTokens": 12288,
+            "maxOutputTokens": 4096,
+            "maxInputBytes": 65536,
+            "maxOutputBytes": 131072,
+            "maxCandidates": 4,
+            "maxObjects": 64,
+            "maxSupplementarySearches": 0,
+            "maxCorrections": 1,
+            "maxTransientRetries": 1,
+            "maxConcurrentActions": 1,
+            "maxWallClockMs": 600000
+          }
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "knowledge-validation",
+      "policyRef": {
+        "entityId": "physical-knowledge-validation-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policyRef": {
+          "entityId": "physical-knowledge-validation-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "criticalProcessKinds": [
+          "扩径准备",
+          "变径空间扩挖",
+          "刀盘扩径",
+          "盾体扩径",
+          "缩径转换"
+        ],
+        "coverage": [
+          {
+            "processKind": "扩径准备",
+            "minimumMechanisms": 1,
+            "minimumEvidence": 1
+          },
+          {
+            "processKind": "变径空间扩挖",
+            "minimumMechanisms": 1,
+            "minimumEvidence": 1
+          },
+          {
+            "processKind": "刀盘扩径",
+            "minimumMechanisms": 1,
+            "minimumEvidence": 1
+          },
+          {
+            "processKind": "盾体扩径",
+            "minimumMechanisms": 1,
+            "minimumEvidence": 1
+          },
+          {
+            "processKind": "缩径转换",
+            "minimumMechanisms": 1,
+            "minimumEvidence": 1
+          }
+        ],
+        "allowedStandardLevels": [
+          "national",
+          "industry",
+          "enterprise"
+        ],
+        "allowedCaseConstructionMethods": [
+          "原位变径盾构"
+        ],
+        "maxEntriesPerPackage": 128,
+        "tools": {
+          "segmentSliceToolRef": {
+            "entityId": "knowledge-segment-slice",
+            "versionId": "physical-20261014-v1"
+          },
+          "baselineKnowledgeToolRef": {
+            "entityId": "knowledge-baseline-read",
+            "versionId": "physical-20261014-v1"
+          }
+        },
+        "agent": {
+          "definitionRef": {
+            "entityId": "knowledge-definition",
+            "versionId": "physical-20261014-v1"
+          },
+          "modelDeploymentRef": {
+            "entityId": "minimax-chat-acceptance",
+            "versionId": "v1"
+          },
+          "promptTemplateRef": {
+            "entityId": "knowledge-prompt",
+            "versionId": "physical-20261014-v1"
+          },
+          "toolPolicyRef": {
+            "entityId": "knowledge-tools",
+            "versionId": "physical-20261014-v1"
+          },
+          "budgetPolicyRef": {
+            "entityId": "knowledge-budget",
+            "versionId": "physical-20261014-v1"
+          },
+          "incrementSchemaRef": {
+            "entityId": "knowledge-increment",
+            "versionId": "physical-20261014-v1"
+          },
+          "validationPolicyRef": {
+            "entityId": "knowledge-validation",
+            "versionId": "physical-20261014-v1"
+          },
+          "budgetPolicy": {
+            "schemaVersion": "1",
+            "policyRef": {
+              "entityId": "knowledge-budget",
+              "versionId": "physical-20261014-v1"
+            },
+            "modelDeploymentRef": {
+              "entityId": "minimax-chat-acceptance",
+              "versionId": "v1"
+            },
+            "promptTemplateRef": {
+              "entityId": "knowledge-prompt",
+              "versionId": "physical-20261014-v1"
+            },
+            "toolPolicyRef": {
+              "entityId": "knowledge-tools",
+              "versionId": "physical-20261014-v1"
+            },
+            "maxModelInvocations": 4,
+            "maxToolInvocations": 8,
+            "maxContextTokens": 16384,
+            "maxInputTokens": 12288,
+            "maxOutputTokens": 4096,
+            "maxInputBytes": 65536,
+            "maxOutputBytes": 131072,
+            "maxCandidates": 4,
+            "maxObjects": 64,
+            "maxSupplementarySearches": 0,
+            "maxCorrections": 1,
+            "maxTransientRetries": 1,
+            "maxConcurrentActions": 1,
+            "maxWallClockMs": 600000
+          }
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "hybrid-retrieval",
+      "policyRef": {
+        "entityId": "physical-hybrid-retrieval-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policyRef": {
+          "entityId": "physical-hybrid-retrieval-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "evidenceBaseDefinitionType": "retrieval-evidence-base",
+        "modelDeploymentRef": {
+          "entityId": "ollama-embedding-acceptance",
+          "versionId": "2026-10-14-0.40.3"
+        },
+        "dense": {
+          "vectorName": "dense",
+          "dimensions": 2560,
+          "distance": "cosine"
+        },
+        "bm25": {
+          "vectorName": "bm25",
+          "model": "qdrant/bm25",
+          "tokenizer": "multilingual",
+          "language": "chinese",
+          "stemmer": "none",
+          "stopwords": []
+        },
+        "densePrefetchLimit": 20,
+        "bm25PrefetchLimit": 20,
+        "topK": 5,
+        "rrf": {
+          "k": 60,
+          "denseWeight": 1,
+          "bm25Weight": 1
+        },
+        "memberBatchLimit": 2,
+        "memberByteLimit": 8192,
+        "memberLimit": 512,
+        "embeddingTimeoutMs": 120000,
+        "projectionTimeoutMs": 30000,
+        "acceptancePolicyRef": {
+          "entityId": "physical-retrieval-acceptance-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "projectionCompatibilityRef": {
+          "entityId": "physical-qdrant-bm25-dense-compatibility",
+          "versionId": "physical-20261014-v1"
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "retrieval-acceptance",
+      "policyRef": {
+        "entityId": "physical-retrieval-acceptance-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "acceptancePolicyRef": {
+          "entityId": "physical-retrieval-acceptance-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "datasetRef": {
+          "entityId": "retrieval-dataset-synthetic-v1",
+          "versionId": "1"
+        },
+        "syntheticSample": true,
+        "topK": 5,
+        "denseRecallAt5Min": 0.8,
+        "bm25RecallAt5Min": 0.8,
+        "rrfRecallAt5Min": 0.9,
+        "rrfNdcgAt5Min": 0.8,
+        "reconciliationRatioMin": 1,
+        "authorizationLeakageMax": 0,
+        "qdrantQueryP95MsMax": 2000,
+        "warmupRuns": 1,
+        "measuredRuns": 3
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "retrieval-review",
+      "policyRef": {
+        "entityId": "physical-retrieval-review-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policyRef": {
+          "entityId": "physical-retrieval-review-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "definitionRef": {
+          "entityId": "retrieval-review-definition",
+          "versionId": "physical-20261014-v1"
+        },
+        "toolPolicyRef": {
+          "entityId": "retrieval-review-tools",
+          "versionId": "physical-20261014-v1"
+        },
+        "incrementSchemaRef": {
+          "entityId": "retrieval-review-increment",
+          "versionId": "physical-20261014-v1"
+        },
+        "validationPolicyRef": {
+          "entityId": "retrieval-review-validation",
+          "versionId": "physical-20261014-v1"
+        },
+        "readFrozenResultToolRef": {
+          "entityId": "retrieval-read-frozen",
+          "versionId": "physical-20261014-v1"
+        },
+        "resupplementToolRef": {
+          "entityId": "retrieval-resupplement",
+          "versionId": "physical-20261014-v1"
+        },
+        "budgetPolicyRef": {
+          "entityId": "retrieval-review-budget",
+          "versionId": "physical-20261014-v1"
+        },
+        "modelDeploymentRef": {
+          "entityId": "minimax-chat-acceptance",
+          "versionId": "v1"
+        },
+        "promptTemplateRef": {
+          "entityId": "retrieval-review-prompt",
+          "versionId": "physical-20261014-v1"
+        },
+        "maxCandidateMembers": 32,
+        "maxResupplements": 1,
+        "allowedSupplementIntentCodes": [
+          "missing-mechanism-evidence"
+        ],
+        "modelMaxOutputTokens": 4096
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "risk-candidate",
+      "policyRef": {
+        "entityId": "physical-risk-candidate-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "generation": {
+          "schemaVersion": "1",
+          "policyRef": {
+            "entityId": "candidate-generation",
+            "versionId": "physical-20261014-v1"
+          },
+          "policySetRef": {
+            "kind": "identification-policy-set",
+            "reference": {
+              "entityId": "physical-identification-graph-policy",
+              "versionId": "physical-20261014-v1"
+            }
+          },
+          "outputSchemaRef": {
+            "entityId": "candidate-output",
+            "versionId": "physical-20261014-v1"
+          },
+          "budgetPolicyRef": {
+            "entityId": "candidate-generation-budget",
+            "versionId": "physical-20261014-v1"
+          },
+          "budget": {
+            "maxCandidates": 4,
+            "maxOutputBytes": 131072,
+            "maxTotalTokens": 4096,
+            "maxWallClockMs": 600000,
+            "maxRepairRounds": 1
+          }
+        },
+        "validation": {
+          "schemaVersion": "1",
+          "policyRef": {
+            "entityId": "candidate-validation",
+            "versionId": "physical-20261014-v1"
+          },
+          "policySetRef": {
+            "kind": "identification-policy-set",
+            "reference": {
+              "entityId": "physical-identification-graph-policy",
+              "versionId": "physical-20261014-v1"
+            }
+          },
+          "ruleValidationPolicyRef": {
+            "entityId": "candidate-rule-validation",
+            "versionId": "physical-20261014-v1"
+          },
+          "allowedMechanismTypes": [
+            "掌子面稳定性失效",
+            "支护结构失效",
+            "渗流突涌",
+            "过挖与地表沉降",
+            "施工装备故障",
+            "装配连接失效"
+          ],
+          "requiredMechanismTypes": [],
+          "requiredRelationTypes": [],
+          "repairableReasonCodes": [
+            "candidate-schema-invalid",
+            "candidate-node-mismatch",
+            "candidate-relation-endpoint-missing",
+            "candidate-evidence-not-frozen",
+            "candidate-mechanism-not-applicable"
+          ]
+        },
+        "merge": {
+          "schemaVersion": "1",
+          "policyRef": {
+            "entityId": "candidate-merge",
+            "versionId": "physical-20261014-v1"
+          },
+          "policySetRef": {
+            "kind": "identification-policy-set",
+            "reference": {
+              "entityId": "physical-identification-graph-policy",
+              "versionId": "physical-20261014-v1"
+            }
+          },
+          "embeddingDeploymentRef": {
+            "entityId": "ollama-embedding-acceptance",
+            "versionId": "2026-10-14-0.40.3"
+          },
+          "embeddingBudgetPolicyRef": {
+            "entityId": "candidate-embedding-budget",
+            "versionId": "physical-20261014-v1"
+          },
+          "relatedNodeIds": [],
+          "riskEventCosineThreshold": 0.9,
+          "evidenceSetSimilarityThreshold": 0.8,
+          "weights": {
+            "processNode": 0.4,
+            "riskEvent": 0.4,
+            "evidence": 0.2
+          },
+          "groupThreshold": 0.9,
+          "maxGroupMembers": 8,
+          "memberOrder": "candidate-ref-ascending",
+          "tieBreak": "lexicographically-smallest-candidate-ref"
+        },
+        "confidence": {
+          "schemaVersion": "1",
+          "policyRef": {
+            "entityId": "candidate-confidence",
+            "versionId": "physical-20261014-v1"
+          },
+          "policySetRef": {
+            "kind": "identification-policy-set",
+            "reference": {
+              "entityId": "physical-identification-graph-policy",
+              "versionId": "physical-20261014-v1"
+            }
+          },
+          "weights": {
+            "modelConfidence": 0.3,
+            "ruleConsistency": 0.4,
+            "simulationConstraint": 0,
+            "multiSourceMerge": 0.3
+          },
+          "requiredBasis": [
+            "model-confidence",
+            "rule-consistency",
+            "multi-source-merge"
+          ],
+          "missingBasisBehavior": "block",
+          "roundingDecimals": 4
+        },
+        "forcedReview": {
+          "schemaVersion": "1",
+          "policyRef": {
+            "entityId": "candidate-forced-review",
+            "versionId": "physical-20261014-v1"
+          },
+          "policySetRef": {
+            "kind": "identification-policy-set",
+            "reference": {
+              "entityId": "physical-identification-graph-policy",
+              "versionId": "physical-20261014-v1"
+            }
+          },
+          "autoAcceptanceThreshold": 1,
+          "forcedReviewReasonCodes": [
+            "forced-review-policy-flag",
+            "merge-ambiguity"
+          ],
+          "reviewPolicyRef": {
+            "entityId": "physical-identification-human-review",
+            "versionId": "physical-20261014-v1"
+          }
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "identification-graph",
+      "policyRef": {
+        "entityId": "physical-identification-graph-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policySetRef": {
+          "kind": "identification-policy-set",
+          "reference": {
+            "entityId": "physical-identification-graph-policy",
+            "versionId": "physical-20261014-v1"
+          }
+        },
+        "retrievalPolicyRef": {
+          "entityId": "physical-hybrid-retrieval-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "retrievalReviewAgentPolicyRef": {
+          "entityId": "physical-retrieval-review-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "repairPolicyRef": {
+          "entityId": "candidate-validation",
+          "versionId": "physical-20261014-v1"
+        },
+        "confidencePolicyRef": {
+          "entityId": "candidate-confidence",
+          "versionId": "physical-20261014-v1"
+        },
+        "forcedReviewPolicyRef": {
+          "entityId": "candidate-forced-review",
+          "versionId": "physical-20261014-v1"
+        },
+        "mergePolicyRef": {
+          "entityId": "candidate-merge",
+          "versionId": "physical-20261014-v1"
+        },
+        "ruleValidationPolicyRef": {
+          "entityId": "candidate-rule-validation",
+          "versionId": "physical-20261014-v1"
+        },
+        "retryPolicyRef": {
+          "entityId": "physical-retry-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "modelDeploymentRef": {
+          "entityId": "minimax-chat-acceptance",
+          "versionId": "v1"
+        },
+        "promptTemplateRef": {
+          "entityId": "candidate-generation-prompt",
+          "versionId": "physical-20261014-v1"
+        },
+        "retryPolicy": {
+          "schemaVersion": "1",
+          "policyRef": {
+            "entityId": "physical-retry-policy",
+            "versionId": "physical-20261014-v1"
+          },
+          "maxAttempts": 2,
+          "backoffMs": 1000
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "retry",
+      "policyRef": {
+        "entityId": "physical-retry-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policyRef": {
+          "entityId": "physical-retry-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "maxAttempts": 2,
+        "backoffMs": 1000
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "assessment-runtime",
+      "policyRef": {
+        "entityId": "physical-assessment-runtime-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "projectId": "synthetic-station-tunnel-project",
+        "warningAggregationPolicyRef": {
+          "entityId": "warning-aggregation",
+          "versionId": "physical-20261014-v1"
+        },
+        "notificationPolicyRef": {
+          "entityId": "warning-notification",
+          "versionId": "physical-20261014-v1"
+        },
+        "responseGenerationPolicyRef": {
+          "entityId": "physical-response-generation-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "responseValidationPolicyRef": {
+          "entityId": "physical-response-validation-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "responseAgentPolicyRef": {
+          "entityId": "physical-response-agent-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "calibrationAgentPolicyRef": {
+          "entityId": "physical-calibration-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "retryPolicyRef": {
+          "entityId": "physical-retry-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "reviewPolicyRef": {
+          "entityId": "physical-assessment-human-review",
+          "versionId": "physical-20261014-v1"
+        },
+        "modelDeploymentRef": {
+          "entityId": "minimax-chat-acceptance",
+          "versionId": "v1"
+        },
+        "promptTemplateRef": {
+          "entityId": "assessment-prompt",
+          "versionId": "physical-20261014-v1"
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "warning-runtime",
+      "policyRef": {
+        "entityId": "physical-warning-runtime-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "projectId": "synthetic-station-tunnel-project",
+        "warningAggregationPolicy": {
+          "schemaVersion": "1",
+          "policyRef": {
+            "entityId": "warning-aggregation",
+            "versionId": "physical-20261014-v1"
+          },
+          "projectId": "synthetic-station-tunnel-project",
+          "responseDirectionByTriggerType": {
+            "风险等级超过风险可接受阈值": "复核触发指标与现场条件并提交处置建议",
+            "监测指标越限": "复核触发指标与现场条件并提交处置建议",
+            "趋势/加速度/异常评分越限": "复核触发指标与现场条件并提交处置建议",
+            "多指标联合规则命中": "复核触发指标与现场条件并提交处置建议"
+          }
+        },
+        "notificationPolicy": {
+          "schemaVersion": "1",
+          "policyRef": {
+            "entityId": "warning-notification",
+            "versionId": "physical-20261014-v1"
+          },
+          "projectId": "synthetic-station-tunnel-project",
+          "channel": "in-app",
+          "recipientActorIds": [
+            "account-9616718d-a935-46b5-abb9-e27ce774549d"
+          ]
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "response-generation",
+      "policyRef": {
+        "entityId": "physical-response-generation-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policyRef": {
+          "entityId": "physical-response-generation-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "projectId": "synthetic-station-tunnel-project",
+        "bindings": []
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "response-validation",
+      "policyRef": {
+        "entityId": "physical-response-validation-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policyRef": {
+          "entityId": "physical-response-validation-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "projectId": "synthetic-station-tunnel-project",
+        "targetIndicators": [
+          {
+            "indicatorItem": "indicator-consequence-settlement",
+            "targetValue": "0"
+          },
+          {
+            "indicatorItem": "indicator-possibility-excavation",
+            "targetValue": "0"
+          },
+          {
+            "indicatorItem": "indicator-possibility-stratum",
+            "targetValue": "1"
+          }
+        ],
+        "reviewedStandardEvidence": [],
+        "contraindicationRules": [
+          {
+            "contraindicationId": "unverified-trigger-indicator",
+            "triggerTypes": [
+              "风险等级超过风险可接受阈值",
+              "监测指标越限",
+              "趋势/加速度/异常评分越限",
+              "多指标联合规则命中"
+            ]
+          }
+        ],
+        "executableProcessStatuses": [
+          "扩径准备-资源齐备",
+          "变径空间扩挖-资源齐备",
+          "刀盘扩径-资源齐备",
+          "盾体扩径-资源齐备",
+          "缩径转换-资源齐备"
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "response-agent",
+      "policyRef": {
+        "entityId": "physical-response-agent-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policyRef": {
+          "entityId": "physical-response-agent-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "projectId": "synthetic-station-tunnel-project",
+        "definitionRef": {
+          "entityId": "response-definition",
+          "versionId": "physical-20261014-v1"
+        },
+        "toolPolicyRef": {
+          "entityId": "response-tools",
+          "versionId": "physical-20261014-v1"
+        },
+        "incrementSchemaRef": {
+          "entityId": "response-increment",
+          "versionId": "physical-20261014-v1"
+        },
+        "validationPolicyRef": {
+          "entityId": "response-validation",
+          "versionId": "physical-20261014-v1"
+        },
+        "budgetPolicy": {
+          "schemaVersion": "1",
+          "policyRef": {
+            "entityId": "response-budget",
+            "versionId": "physical-20261014-v1"
+          },
+          "modelDeploymentRef": {
+            "entityId": "minimax-chat-acceptance",
+            "versionId": "v1"
+          },
+          "promptTemplateRef": {
+            "entityId": "response-prompt",
+            "versionId": "physical-20261014-v1"
+          },
+          "toolPolicyRef": {
+            "entityId": "response-tools",
+            "versionId": "physical-20261014-v1"
+          },
+          "maxModelInvocations": 4,
+          "maxToolInvocations": 8,
+          "maxContextTokens": 16384,
+          "maxInputTokens": 12288,
+          "maxOutputTokens": 4096,
+          "maxInputBytes": 65536,
+          "maxOutputBytes": 131072,
+          "maxCandidates": 4,
+          "maxObjects": 64,
+          "maxSupplementarySearches": 0,
+          "maxCorrections": 1,
+          "maxTransientRetries": 1,
+          "maxConcurrentActions": 1,
+          "maxWallClockMs": 600000
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "calibration",
+      "policyRef": {
+        "entityId": "physical-calibration-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policyRef": {
+          "entityId": "physical-calibration-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "projectId": "synthetic-station-tunnel-project",
+        "definitionRef": {
+          "entityId": "calibration-definition",
+          "versionId": "physical-20261014-v1"
+        },
+        "toolPolicyRef": {
+          "entityId": "calibration-tools",
+          "versionId": "physical-20261014-v1"
+        },
+        "incrementSchemaRef": {
+          "entityId": "calibration-increment",
+          "versionId": "physical-20261014-v1"
+        },
+        "validationPolicyRef": {
+          "entityId": "calibration-validation",
+          "versionId": "physical-20261014-v1"
+        },
+        "budgetPolicy": {
+          "schemaVersion": "1",
+          "policyRef": {
+            "entityId": "calibration-budget",
+            "versionId": "physical-20261014-v1"
+          },
+          "modelDeploymentRef": {
+            "entityId": "minimax-chat-acceptance",
+            "versionId": "v1"
+          },
+          "promptTemplateRef": {
+            "entityId": "calibration-prompt",
+            "versionId": "physical-20261014-v1"
+          },
+          "toolPolicyRef": {
+            "entityId": "calibration-tools",
+            "versionId": "physical-20261014-v1"
+          },
+          "maxModelInvocations": 4,
+          "maxToolInvocations": 8,
+          "maxContextTokens": 16384,
+          "maxInputTokens": 12288,
+          "maxOutputTokens": 4096,
+          "maxInputBytes": 65536,
+          "maxOutputBytes": 131072,
+          "maxCandidates": 4,
+          "maxObjects": 64,
+          "maxSupplementarySearches": 0,
+          "maxCorrections": 1,
+          "maxTransientRetries": 1,
+          "maxConcurrentActions": 1,
+          "maxWallClockMs": 600000
+        },
+        "evidenceRequirementCount": 1,
+        "maxOperations": 4
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "scoring-rules",
+      "policyRef": {
+        "entityId": "physical-scoring-rules-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policyRef": {
+          "entityId": "physical-scoring-rules-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "compatibilityRef": {
+          "entityId": "scoring-compatibility",
+          "versionId": "physical-20261014-v1"
+        },
+        "assemblyPolicyRef": {
+          "entityId": "scoring-assembly",
+          "versionId": "physical-20261014-v1"
+        },
+        "conflictPriorityPolicyRef": {
+          "entityId": "scoring-conflict-priority",
+          "versionId": "physical-20261014-v1"
+        },
+        "allowedSourceStandardKinds": [
+          "national",
+          "industry",
+          "enterprise"
+        ],
+        "tools": {
+          "standardSegmentToolRef": {
+            "entityId": "scoring-standard-segment",
+            "versionId": "physical-20261014-v1"
+          },
+          "indicatorCatalogToolRef": {
+            "entityId": "scoring-indicator-catalog",
+            "versionId": "physical-20261014-v1"
+          },
+          "maxSegmentsPerRead": 32,
+          "maxIndicatorsPerRead": 32
+        },
+        "agent": {
+          "definitionRef": {
+            "entityId": "scoring-definition",
+            "versionId": "physical-20261014-v1"
+          },
+          "modelDeploymentRef": {
+            "entityId": "minimax-chat-acceptance",
+            "versionId": "v1"
+          },
+          "promptTemplateRef": {
+            "entityId": "scoring-prompt",
+            "versionId": "physical-20261014-v1"
+          },
+          "toolPolicyRef": {
+            "entityId": "scoring-tools",
+            "versionId": "physical-20261014-v1"
+          },
+          "budgetPolicyRef": {
+            "entityId": "scoring-budget",
+            "versionId": "physical-20261014-v1"
+          },
+          "incrementSchemaRef": {
+            "entityId": "scoring-increment",
+            "versionId": "physical-20261014-v1"
+          },
+          "validationPolicyRef": {
+            "entityId": "scoring-validation",
+            "versionId": "physical-20261014-v1"
+          },
+          "budgetPolicy": {
+            "schemaVersion": "1",
+            "policyRef": {
+              "entityId": "scoring-budget",
+              "versionId": "physical-20261014-v1"
+            },
+            "modelDeploymentRef": {
+              "entityId": "minimax-chat-acceptance",
+              "versionId": "v1"
+            },
+            "promptTemplateRef": {
+              "entityId": "scoring-prompt",
+              "versionId": "physical-20261014-v1"
+            },
+            "toolPolicyRef": {
+              "entityId": "scoring-tools",
+              "versionId": "physical-20261014-v1"
+            },
+            "maxModelInvocations": 4,
+            "maxToolInvocations": 8,
+            "maxContextTokens": 16384,
+            "maxInputTokens": 12288,
+            "maxOutputTokens": 4096,
+            "maxInputBytes": 65536,
+            "maxOutputBytes": 131072,
+            "maxCandidates": 4,
+            "maxObjects": 64,
+            "maxSupplementarySearches": 0,
+            "maxCorrections": 1,
+            "maxTransientRetries": 1,
+            "maxConcurrentActions": 1,
+            "maxWallClockMs": 600000
+          }
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "projectId": "synthetic-station-tunnel-project",
+      "policyType": "report-export",
+      "policyRef": {
+        "entityId": "physical-report-export-policy",
+        "versionId": "physical-20261014-v1"
+      },
+      "approval": {
+        "approvedBy": "joshua-session-authorized-synthetic-config",
+        "approvedAt": "2026-10-14T11:33:30.042Z",
+        "releaseId": "functional-workspace-20261014"
+      },
+      "body": {
+        "schemaVersion": "1",
+        "policyRef": {
+          "entityId": "physical-report-export-policy",
+          "versionId": "physical-20261014-v1"
+        },
+        "format": "json",
+        "queryTypes": [
+          "risk-overview"
+        ],
+        "sections": [
+          "run-summary",
+          "report-fact",
+          "report-absence"
+        ],
+        "maxPages": 20,
+        "maxItems": 1000,
+        "maxBytes": 8388608
+      }
+    }
+  ]
+}

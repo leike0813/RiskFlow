@@ -78,7 +78,6 @@ const ACTOR_ID = "actor-c20";
 const TIMESTAMP = "2026-09-21T00:00:00.000Z";
 const HEX_ZERO = "0".repeat(64);
 const HEX_LOW = "1".repeat(64);
-const HEX_HIGH = "9".repeat(64);
 const EMBEDDING_DIMENSIONS = 4;
 
 const POLICY_REF = { entityId: "retrieval-policy", versionId: "1" };
@@ -210,6 +209,8 @@ const INPUT_REFS = {
 
 const QUERY_ID = "query-1";
 const QUERY_TEXT = "盾构扩径施工掌子面稳定性失效机理";
+const QUERY_INSTRUCTION =
+  "Given a Chinese engineering risk query, retrieve the applicable standard clauses";
 
 const makeQuery = (queryId: string = QUERY_ID): KnowledgeRetrievalQueryV1 =>
   KnowledgeRetrievalQueryV1Schema.parse({
@@ -456,6 +457,7 @@ const MEMBERS = [
   buildMember("standard-library"),
   buildMember("case-library"),
 ];
+const memberScopeDigest = sha256CanonicalJson(MEMBERS.map((member) => member.pointId).sort());
 
 const memberOf = (sourceKind: RetrievalSourceKindV1): MemberFixtureV1 => {
   const member = MEMBERS.find((candidate) => candidate.sourceKind === sourceKind);
@@ -672,6 +674,30 @@ class StubSourceFacts implements IdentificationKnowledgeReleaseReaderV1 {
 
   override(entityId: string, read: IdentificationKnowledgeExactReadV1): void {
     this.reads.set(entityId, read);
+  }
+
+  async readVisibleEntries(input: {
+    releaseRefs: readonly KnowledgeReleaseRefV1[];
+    authorization: AuthorizationContextV1;
+  }) {
+    return input.releaseRefs.flatMap((ref) => {
+      this.calls.push({ releaseRef: ref, authorization: input.authorization });
+      if (this.denied.has(ref.reference.entityId)) return [];
+      const value = this.reads.get(ref.reference.entityId)?.package;
+      if (
+        value === undefined ||
+        value.definitionType === "process-model" ||
+        value.definitionType === "retrieval-evidence-base"
+      )
+        return [];
+      const entries = value.definitionType === "risk-mechanism" ? value.mechanisms : value.entries;
+      return entries.map((entry) => ({
+        sourceKind: value.definitionType,
+        sourceReleaseRef: ref,
+        sourceEntryId: "mechanismId" in entry ? entry.mechanismId : entry.entryId,
+        entry,
+      }));
+    });
   }
 
   async readExact(input: ReadExactInput) {
@@ -918,7 +944,8 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
     expect(harness.projection.queries[0]?.filter).toEqual({
       projectId: PROJECT_ID,
       generationRef: generation.generationRef,
-      authorizationScopeDigest: scopeDigest,
+      authorizationScopeDigest: memberScopeDigest,
+      visiblePointIds: MEMBERS.map((member) => member.pointId).sort(),
     });
     const knowledgeQueryResultRef = result.result.knowledgeQueryResultRef;
 
@@ -947,7 +974,7 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
     });
     expect(payload.rrf).toEqual(policy.rrf);
     expect(payload.topK).toBe(policy.topK);
-    expect(payload.authorizationScopeDigest).toBe(scopeDigest);
+    expect(payload.authorizationScopeDigest).toBe(memberScopeDigest);
     expect(payload.authorizationContextRef).toEqual(AUTHORIZATION_CONTEXT_REF);
     expect(payload.knowledgeQueryResultRef).toEqual(knowledgeQueryResultRef);
     expect(payload.scoreSemantics).toBe("ranking-signal-not-confidence");
@@ -1000,7 +1027,7 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
     expect(registered?.knowledgeQueryResultRef).toEqual(knowledgeQueryResultRef);
     expect(registered?.generationRef).toEqual(generationRef);
     expect(registered?.policyRef).toEqual(policy.policyRef);
-    expect(registered?.authorizationScopeDigest).toBe(scopeDigest);
+    expect(registered?.authorizationScopeDigest).toBe(memberScopeDigest);
     expect(registered?.resultArtifactRef).toEqual(harness.artifacts.results[0]?.artifactRef);
 
     // 正式命中必须经 C17 逐发布回查，且读取的发布恰为补齐的互补成员集合。
@@ -1026,7 +1053,7 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
     ]);
   });
 
-  it("请求授权与冻结输入的授权摘要不一致时封闭失败", async () => {
+  it("增加无关授权后仍使用原代际和实际可见条目", async () => {
     const harness = createHarness();
     const otherAuthorization = makeAuthorization("spatial-scope-other");
     harness.inputReader.input = makeFrozenInput({
@@ -1035,11 +1062,27 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
     });
     const result = await harness.service.retrieve(makeQuery());
 
-    expectAuthorizationDenied(result);
-    expectNoPublishedResult(harness);
-    expect(harness.projection.queryCalls).toBe(0);
-    expect(harness.failures[0]?.detailCode).toBe("authorization-scope-digest-mismatch");
-    expect(harness.failures[0]?.stage).toBe("authorization");
+    expect(result.kind).toBe("succeeded");
+    expect(harness.projection.queries[0]?.filter.visiblePointIds).toEqual(
+      MEMBERS.map((member) => member.pointId).sort(),
+    );
+  });
+
+  it("策略声明查询指令时只渲染查询 Embedding 文本，BM25 查询仍用原查询", async () => {
+    const harness = createHarness();
+    harness.inputReader.input = makeFrozenInput({
+      policy: HybridRetrievalPolicyV1Schema.parse({
+        ...policy,
+        queryInstruction: QUERY_INSTRUCTION,
+      }),
+    });
+    const result = await harness.service.retrieve(makeQuery());
+
+    expect(result.kind).toBe("succeeded");
+    expect(harness.gateway.calls[0]?.texts).toEqual([
+      `Instruct: ${QUERY_INSTRUCTION}\nQuery:${QUERY_TEXT}`,
+    ]);
+    expect(harness.projection.queries[0]?.queryText).toBe(QUERY_TEXT);
   });
 
   it("rejects a policy body that differs from the requested policy reference", async () => {
@@ -1055,7 +1098,7 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
     expectNoPublishedResult(harness);
   });
 
-  it("冻结输入携带过期授权上下文时封闭失败", async () => {
+  it("旧授权引用不影响当前可见成员查询", async () => {
     const harness = createHarness();
     harness.inputReader.input = makeFrozenInput({
       authorizationContextRef: {
@@ -1065,9 +1108,7 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
     });
     const result = await harness.service.retrieve(makeQuery());
 
-    expectAuthorizationDenied(result);
-    expectNoPublishedResult(harness);
-    expect(harness.failures[0]?.detailCode).toBe("stale-authorization-context");
+    expect(result.kind).toBe("succeeded");
   });
 
   it("无匹配活动 ready 代际时以 GENERATION_NOT_READY 失败且不借用其他代际", async () => {
@@ -1099,7 +1140,7 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
       readonly expectedStage: string;
     }[] = [
       {
-        name: "候选权限摘要不一致",
+        name: "候选跨工程",
         assertError: expectAuthorizationDenied,
         expectedDetailCode: "candidate-scope-mismatch",
         expectedStage: "authorization",
@@ -1109,7 +1150,7 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
               ? {
                   ...hit,
                   payload: payloadFor(memberOf("risk-mechanism"), {
-                    authorizationScopeDigest: HEX_HIGH,
+                    projectId: "foreign-project",
                   }),
                 }
               : hit,
@@ -1142,9 +1183,9 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
       },
       {
         name: "C17 对单个命中拒绝访问",
-        assertError: expectAuthorizationDenied,
-        expectedDetailCode: "fact-read-authorization-denied",
-        expectedStage: "authorization",
+        assertError: (result) => expectBlocked(result, "SOURCE_FACT_DRIFT"),
+        expectedDetailCode: "source-entry-missing",
+        expectedStage: "source-read",
         apply: (harness) => {
           harness.facts.denied.add(STANDARD_LIBRARY_RELEASE_REF.reference.entityId);
         },
@@ -1175,6 +1216,30 @@ describe("HybridRetrievalService：查询必须精确绑定输入并在当前权
             STANDARD_LIBRARY_RELEASE_REF.reference.entityId,
             buildMember("standard-library", "standard-1", driftedEntry).exactRead,
           );
+        },
+      },
+      {
+        name: "规范正文漂移",
+        assertError: (result) => expectBlocked(result, "SOURCE_FACT_DRIFT"),
+        expectedDetailCode: "content-digest-drift",
+        expectedStage: "reconciliation",
+        apply: (harness) => {
+          // C17 校验后补齐的规范正文同属成员投影：清单未登记即为事实漂移。
+          const read = buildMember("standard-library", "standard-1").exactRead;
+          if (read.package.definitionType !== "standard-library") {
+            throw new Error("standard-library fixture must carry a standard-library package");
+          }
+          const entries = read.package.entries.map(
+            (entry) =>
+              ({
+                ...entry,
+                retrievalText: "clause-3.2 盾构始发前应完成端头加固。",
+              }) as typeof entry,
+          );
+          harness.facts.override(STANDARD_LIBRARY_RELEASE_REF.reference.entityId, {
+            ...read,
+            package: { ...read.package, entries },
+          });
         },
       },
     ];

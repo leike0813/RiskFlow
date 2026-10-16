@@ -229,11 +229,11 @@ export const createDeploymentResponseModelStepV1 = ({
         };
       });
     },
-    async interpretModelStep(response, task, definition) {
+    async interpretModelStep(response, task, definition, context) {
       if (!supported(task)) {
         if (inner?.interpretModelStep === undefined)
           throw invalid(task, "deployment.response-model.unsupported");
-        return inner.interpretModelStep(response, task, definition);
+        return inner.interpretModelStep(response, task, definition, context);
       }
       return authorizationScope.runTask(task, async () => {
         assertBinding(task, definition);

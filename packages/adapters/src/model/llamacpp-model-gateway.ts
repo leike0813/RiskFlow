@@ -50,8 +50,11 @@ import {
   PersistedResponseLimitError,
   persistRawModelResponse,
   preflightParentArtifacts,
+  rawUsageCounts,
   readBoundedBytes,
   ResponseBodyLimitError,
+  structuredTokenLimits,
+  usageCounts,
   usageFromWire,
   type ParentArtifactPreflightV1,
 } from "./model-gateway-runtime.js";
@@ -357,6 +360,7 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     let control: CallControl | undefined;
     try {
       config = this.#deploymentFor(request, "completeStructured");
+      const limits = structuredTokenLimits(request, config.contextWindowTokens);
       this.#assertBudget(request, config, inputBytesForMessages(request.messages));
       const jsonSchema = this.#toJsonSchema(request, outputSchema);
       await this.#preflightParentArtifacts(request);
@@ -365,7 +369,11 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
         throw this.#error(request, "MODEL_ABORTED", "request.cancelled", false);
       await this.#ensureReady(request, config, control);
       const inputTokens = await this.#preflightTokens(request, config, control);
-      if (inputTokens > config.contextWindowTokens - request.maxOutputTokens) {
+      if (limits.maxInputTokens !== undefined && inputTokens > limits.maxInputTokens)
+        throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "chat.input-quota", false, {
+          counts: { inputTokens },
+        });
+      if (inputTokens > limits.maxContextTokens - request.maxOutputTokens) {
         throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "chat.context", false, {
           counts: { inputTokens },
         });
@@ -412,17 +420,20 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
       if (!response.ok)
         throw this.#httpError(request, response.status, "chat.http", raw.ref, raw.bytes.byteLength);
       const parsed = this.#parseChatResponse(request, raw.bytes, raw.ref, "chat.complete");
+      this.#assertUsageBudget(request, limits, parsed.usage, raw.ref);
       if (parsed.finishReason !== "stop") {
         throw this.#error(request, "MODEL_STRUCTURE_INVALID", "chat.finish", false, {
           rawResponseRef: raw.ref,
+          counts: usageCounts(parsed.usage),
         });
       }
       let jsonValue: unknown;
       try {
         jsonValue = JSON.parse(parsed.content);
       } catch {
-        throw this.#error(request, "MODEL_STRUCTURE_INVALID", "chat.output-json", false, {
+        throw this.#error(request, "MODEL_OUTPUT_SCHEMA_INVALID", "chat.output-json", false, {
           rawResponseRef: raw.ref,
+          counts: usageCounts(parsed.usage),
         });
       }
       let value: T;
@@ -431,6 +442,7 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
       } catch {
         throw this.#error(request, "MODEL_OUTPUT_SCHEMA_INVALID", "chat.output-schema", false, {
           rawResponseRef: raw.ref,
+          counts: usageCounts(parsed.usage),
         });
       }
       const result = structuredCompletionResultSchema(outputSchema).parse({
@@ -1046,6 +1058,29 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     );
   }
 
+  #assertUsageBudget(
+    request: RequestValue,
+    limits: {
+      readonly maxInputTokens: number | undefined;
+      readonly maxContextTokens: number;
+    },
+    usage: ModelUsageV1,
+    rawResponseRef: DiagnosticArtifactRefV1,
+  ): void {
+    if (!usage.available) return;
+    const inputTokens = usage.inputTokens ?? 0;
+    const outputTokens = usage.outputTokens ?? 0;
+    if (
+      inputTokens + outputTokens <= limits.maxContextTokens &&
+      (limits.maxInputTokens === undefined || inputTokens <= limits.maxInputTokens)
+    )
+      return;
+    throw this.#error(request, "MODEL_CONTEXT_EXCEEDED", "chat.usage-budget", false, {
+      rawResponseRef,
+      counts: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens },
+    });
+  }
+
   async #preflightParentArtifacts(request: RequestValue): Promise<void> {
     try {
       await preflightParentArtifacts(request, this.#parentArtifactPreflight);
@@ -1413,11 +1448,13 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     } catch {
       throw this.#error(request, "MODEL_PROTOCOL_ERROR", `${stage}.protocol`, false, {
         rawResponseRef,
+        counts: rawUsageCounts(bytes),
       });
     }
     if (parsed.choices.length !== 1) {
       throw this.#error(request, "MODEL_STRUCTURE_INVALID", `${stage}.choice-count`, false, {
         rawResponseRef,
+        counts: usageCounts(usageFromWire(parsed.usage)),
       });
     }
     const choice = parsed.choices[0]!;
@@ -1429,6 +1466,7 @@ export class LlamaCppModelGateway implements ModelGatewayPortV1 {
     ) {
       throw this.#error(request, "MODEL_STRUCTURE_INVALID", `${stage}.choice`, false, {
         rawResponseRef,
+        counts: usageCounts(usageFromWire(parsed.usage)),
       });
     }
     return {

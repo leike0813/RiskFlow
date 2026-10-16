@@ -318,6 +318,8 @@ export const ResponseFeedbackRecordV1Schema = z.strictObject({
   feedbackArtifactRef: ContentArtifactRefV1Schema,
   actualAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
   forecast: ResponseForecastAvailabilityV1Schema,
+  deviationPolicyRef: VersionReferenceSchema.optional(),
+  calibrationAgentPolicyRef: VersionReferenceSchema.optional(),
   spatialScopeRef: SpatialScopeRefV1Schema,
   occurredAt: IsoDateTimeSchema,
   recordedAt: IsoDateTimeSchema,

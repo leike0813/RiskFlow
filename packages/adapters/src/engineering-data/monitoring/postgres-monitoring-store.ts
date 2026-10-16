@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
 
 import { sql, type InsertObject, type Kysely, type Transaction } from "kysely";
@@ -416,6 +417,9 @@ const evidenceKey = (value: EvidenceReference): string =>
   `${value.sourceVersion.entityId}/${value.sourceVersion.versionId}/${value.locator.sourceSegmentId}`;
 
 const auditEntryIdFor = (commandId: string): string => `audit:${commandId}`;
+
+/** 普通系列读取的审计动作码：只描述访问事实，不构成业务回执。 */
+const SERIES_READ_ACTION = "engineering-data.monitoring-series-read";
 
 const moduleError = (
   code: ModuleErrorV1["code"],
@@ -907,6 +911,8 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
         sourceVersionRefs,
       );
       const verified = { ...valid, actorId: decision.context.actorId };
+      // 物化登记的业务内容只有正式快照引用：请求时间与授权上下文不参与去重，
+      // 主体身份已由 AtomicCommand 元数据承载。
       const atomic = atomicCommand(
         {
           commandId: verified.queryId,
@@ -917,7 +923,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
           authorization: verified.authorization,
         },
         "engineering-data.monitoring-snapshot-query.v1",
-        verified,
+        { kind: verified.kind, payload: verified.payload },
       );
       await this.#transactionUnit.execute(atomic, async (context) =>
         this.#registerQueryInTransaction(context, verified, snapshot),
@@ -1034,7 +1040,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
         return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", valid.queryId) };
       }
       // 固定顺序：先按本次调用方授权上下文完成 C06 verify（授权与不可枚举拒绝优先），
-      // 通过后才进入 C03 幂等；同键异载荷在授权通过后返回既有 IDEMPOTENCY_CONFLICT。
+      // 通过后只追加一次独立访问审计：普通读取不占用 C03 命令去重键，也没有业务回执。
       const decision = await this.#verify(
         { ...valid, commandId: valid.queryId },
         "engineering-data.read",
@@ -1049,21 +1055,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
       );
       if (status === undefined)
         return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", verified.queryId) };
-      const atomic = atomicCommand(
-        {
-          commandId: verified.queryId,
-          idempotencyKey: verified.queryId,
-          projectId: verified.projectId,
-          actorId: verified.actorId,
-          issuedAt: verified.requestedAt,
-          authorization: verified.authorization,
-        },
-        "engineering-data.monitoring-series-read.v1",
-        verified,
-      );
-      await this.#transactionUnit.execute(atomic, async () =>
-        this.#registerSeriesReadInTransaction(verified, verified.actorId),
-      );
+      await this.#appendSeriesReadAccessAudit(verified);
       return {
         kind: "succeeded",
         result: MonitoringSeriesRevisionReadV1Schema.parse({
@@ -1945,25 +1937,29 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
     );
   }
 
-  async #registerSeriesReadInTransaction(
-    query: ReadMonitoringSeriesRevisionQueryV1,
-    actorId: string,
-  ): Promise<AtomicCommitV1> {
-    const recordedAt = nowIso(this.#now);
-    return commit(
-      {
-        commandId: query.queryId,
-        idempotencyKey: query.queryId,
-        projectId: query.projectId,
-        actorId,
-        issuedAt: query.requestedAt,
-        authorization: query.authorization,
-      },
-      "engineering-data.monitoring-series-read",
-      query.monitoringSeriesRef,
-      query.monitoringSeriesRef.reference,
-      recordedAt,
-    );
+  /** D-03：普通系列读取只追加自己的访问审计，queryId 仅作为关联 command_id。 */
+  async #appendSeriesReadAccessAudit(query: ReadMonitoringSeriesRevisionQueryV1): Promise<void> {
+    const accessId = randomUUID();
+    await this.#db
+      .insertInto("audit.entries")
+      .values({
+        audit_entry_id: accessId,
+        project_id: query.projectId,
+        action: SERIES_READ_ACTION,
+        target_ref: jsonValue(query.monitoringSeriesRef),
+        actor_ref: query.actorId,
+        authorization_context_ref: jsonValue(query.authorization.authorizationContextRef),
+        version_ref: jsonValue(query.monitoringSeriesRef.reference),
+        occurred_at: query.requestedAt,
+        recorded_at: nowIso(this.#now),
+        persisted_at: sql`clock_timestamp()`,
+        command_id: query.queryId,
+        idempotency_key: accessId,
+        run_id: null,
+        thread_id: null,
+        reason_ref: null,
+      })
+      .execute();
   }
 
   async #readSampleArtifact(
@@ -2065,7 +2061,7 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
     }
     buffer += decoder.decode();
     if (buffer.length > 0) parseLine(buffer, encoder.encode(buffer).byteLength);
-    await handle.verified;
+    await handle.completed;
     if (envelope === undefined || envelope.sampleCount !== samples.length)
       throw new RangeError("monitoring sample count mismatch");
     const fingerprint = sha256CanonicalJson({

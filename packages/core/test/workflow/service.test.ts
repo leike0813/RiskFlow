@@ -592,6 +592,20 @@ describe("C30 registration rows", () => {
     );
   });
 
+  it("keeps explicit identification batches distinct and preserves the default identity", () => {
+    const base = {
+      projectId: "batch-project",
+      entryMode: "identify-and-assess" as const,
+      frozenRefs: [projectRevisionRef, spatialA],
+    };
+    const original = workflowEntryIdentityFor(base);
+    expect(workflowEntryIdentityFor({ ...base, executionBatchId: undefined })).toEqual(original);
+    const batch = workflowEntryIdentityFor({ ...base, executionBatchId: "batch-a" });
+    expect(batch).not.toEqual(original);
+    expect(workflowEntryIdentityFor({ ...base, executionBatchId: "batch-a" })).toEqual(batch);
+    expect(workflowEntryIdentityFor({ ...base, executionBatchId: "batch-b" })).not.toEqual(batch);
+  });
+
   it("extracts the reassessment entry only from a reassess start payload", () => {
     const payload = reassess({ reason: "weight-strategy", changedInputRefs: [monitoringB] });
     expect(reassessmentEntryFromStartPayloadV1(payload)).toEqual({

@@ -190,7 +190,7 @@ const logBudget = z.strictObject({
 const businessPolicyBinding = z.strictObject({
   projectId: IdentifierSchema,
   policyCatalogRef: VersionReferenceSchema,
-  policyRefs: z.record(DeploymentPolicyTypeV1Schema, VersionReferenceSchema),
+  policyRefs: z.partialRecord(DeploymentPolicyTypeV1Schema, VersionReferenceSchema),
   graphVersions: z.strictObject({
     riskFlow: VersionReferenceSchema,
     identification: VersionReferenceSchema,
@@ -252,6 +252,15 @@ export const DeploymentConfigV1Schema = z
     api: z.strictObject({ host: z.string().min(1), port: positiveSafeInteger.max(65_535) }),
     models: z.array(ModelGatewayDeploymentConfigV1Schema).min(1),
     artifacts: ArtifactStorePolicyV1Schema,
+    sourceOriginal: z
+      .strictObject({
+        temporaryRoot: absolutePath,
+        maxBytes: positiveSafeInteger.max(104_857_600),
+        maxConcurrentReads: positiveSafeInteger.max(2),
+        maxTemporaryBytes: positiveSafeInteger.max(209_715_200),
+        timeoutMs: positiveSafeInteger.max(120_000),
+      })
+      .optional(),
     outbox: OutboxDeliveryPolicyV1Schema,
     qdrant: z.strictObject({
       baseUrl: z
@@ -344,10 +353,12 @@ export const DeploymentConfigV1Schema = z
     const requiredSecretIds = [
       config.auth.hmacSecretId,
       ...Object.values(config.database.rolePasswordSecretIds),
-      ...config.models.flatMap((model) =>
-        model.backend === "network-api" && model.config.protocol === "openai-chat"
-          ? [model.config.credentialRef]
-          : [],
+      ...new Set(
+        config.models.flatMap((model) =>
+          model.backend === "network-api" && model.config.protocol === "openai-chat"
+            ? [model.config.credentialRef]
+            : [],
+        ),
       ),
       ...(mineru?.credentialRef ? [mineru.credentialRef] : []),
     ];

@@ -162,21 +162,30 @@ describe("checkpoint content proof", () => {
     const fixture = await startArtifactFixture();
     try {
       const result = await fixture.store.put(putCommand("checkpoint-proof"), textChunks("proof"));
-      const counts = async () => (await fixture.postgres.adminPool.query(`SELECT
+      const counts = async () =>
+        (
+          await fixture.postgres.adminPool.query(`SELECT
         (SELECT count(*) FROM audit.entries) AS audits,
         (SELECT count(*) FROM business.command_receipts) AS receipts,
         (SELECT count(*) FROM business.artifact_manifests) AS manifests,
-        (SELECT count(*) FROM business.artifact_access_records) AS accesses`)).rows[0];
+        (SELECT count(*) FROM business.artifact_access_records) AS accesses`)
+        ).rows[0];
       const before = await counts();
       const request = readRequest("checkpoint-proof", result.artifactRef);
-      expect(await fixture.store.verifyContent(request, 16, (bytes) =>
-        new TextDecoder().decode(bytes) === "proof")).toBe(true);
+      expect(
+        await fixture.store.verifyContent(
+          request,
+          16,
+          (bytes) => new TextDecoder().decode(bytes) === "proof",
+        ),
+      ).toBe(true);
       expect(await fixture.store.verifyContent(request, 16, () => false)).toBe(false);
       await expect(fixture.store.verifyContent(request, 1, () => true)).rejects.toMatchObject({
         code: "ARTIFACT_INTEGRITY_FAILURE",
       });
-      await expect(fixture.store.verifyContent({ ...request, purposeCode: "other-purpose" },
-        16, () => true)).rejects.toMatchObject({ code: "ARTIFACT_ACCESS_DENIED" });
+      await expect(
+        fixture.store.verifyContent({ ...request, purposeCode: "other-purpose" }, 16, () => true),
+      ).rejects.toMatchObject({ code: "ARTIFACT_ACCESS_DENIED" });
       const narrowed = readRequest("checkpoint-narrowed", result.artifactRef, {
         authorization: authorization("actor-artifacts", { scopes: [], grants: [] }),
       });
@@ -883,6 +892,65 @@ describe("content-addressed artifact store", () => {
     }
   }, 180_000);
 
+  it("handle readManifest resolves precise local manifest metadata", async () => {
+    const handle = await createContentAddressedArtifactStore({
+      ...fixture.postgres.app,
+      rootDirectory: fixture.rootDirectory,
+      policy: artifactPolicy(),
+    });
+    try {
+      const result = await handle.put(
+        putCommand("handle-manifest", {
+          artifactId: "artifact-handle-manifest",
+          purposeCode: "agent-model-input",
+        }),
+        textChunks("manifest metadata only"),
+      );
+      const exact = result.artifactRef;
+      const cases: ReadonlyArray<{
+        readonly name: string;
+        readonly projectId: string;
+        readonly ref: typeof exact;
+        readonly match: boolean;
+      }> = [
+        { name: "exact identity", projectId, ref: exact, match: true },
+        { name: "other project", projectId: "project-other", ref: exact, match: false },
+        {
+          name: "wrong version",
+          projectId,
+          ref: {
+            ...exact,
+            reference: { ...exact.reference, versionId: `sha256:${"0".repeat(64)}` },
+          },
+          match: false,
+        },
+        {
+          name: "wrong kind",
+          projectId,
+          ref: { kind: "diagnostic-artifact", reference: exact.reference },
+          match: false,
+        },
+        {
+          name: "missing entity",
+          projectId,
+          ref: { ...exact, reference: { ...exact.reference, entityId: "artifact-absent" } },
+          match: false,
+        },
+      ];
+      for (const item of cases) {
+        const manifest = await handle.readManifest(item.projectId, item.ref);
+        if (!item.match) {
+          expect(manifest, item.name).toBeUndefined();
+          continue;
+        }
+        expect(manifest?.artifactRef, item.name).toEqual(exact);
+        expect(manifest?.purposeCode, item.name).toBe("agent-model-input");
+      }
+    } finally {
+      await handle.close();
+    }
+  }, 120_000);
+
   it("closes quarantines after real SIGKILLs at maintenance boundaries", async () => {
     const phases = ["quarantine.rename", "audit", "audit.commit", "response"] as const;
     for (const phase of phases) {
@@ -928,45 +996,72 @@ describe("content-addressed artifact store", () => {
         stat(join(fixture.rootDirectory, "quarantine", command.runId, hash)),
       ).rejects.toBeDefined();
     }
-  }, 180_000);
+  });
 
-  it("read only resolves verified after complete streaming reads", async () => {
-    const content = encoder.encode("readable content");
+  it("重复读取独立记账，消费完成与取消均记录真实终态", async () => {
+    const content = new Uint8Array(2 * 1024 * 1024 + 17);
+    content.fill(17, 0, 1024 * 1024);
+    content.fill(33, 1024 * 1024, 2 * 1024 * 1024);
+    content.fill(55, 2 * 1024 * 1024);
     const result = await fixture.store.put(
       putCommand("read", { artifactId: "artifact-read" }),
-      chunks(content, 3),
+      chunks(content),
     );
-    const handle = await fixture.store.open(readRequest("read", result.artifactRef));
-    expect(await collect(handle.content)).toEqual(content);
-    const receipt = await handle.verified;
-    expect(receipt.artifactRef).toEqual(result.artifactRef);
-
-    const replay = await fixture.store.open(readRequest("read", result.artifactRef));
-    expect(await collect(replay.content)).toEqual(content);
-    await expect(replay.verified).resolves.toMatchObject({ artifactRef: result.artifactRef });
-
+    const before = await fixture.postgres.adminPool.query(
+      "SELECT count(*)::int AS count FROM business.command_receipts",
+    );
+    const receipts = [];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const currentAuthorization = authorization();
+      if (attempt === 1) {
+        currentAuthorization.sourceAccessGrantRefs = currentAuthorization.sourceAccessGrantRefs.map(
+          (ref) => ({ ...ref, reference: { ...ref.reference, versionId: "current" } }),
+        );
+        currentAuthorization.authorizationPolicyRef = {
+          entityId: "current-policy",
+          versionId: "2",
+        };
+      }
+      const handle = await fixture.store.open(
+        readRequest("read", result.artifactRef, {
+          authorization: currentAuthorization,
+        }),
+      );
+      expect(Buffer.compare(await collect(handle.content), content)).toBe(0);
+      receipts.push(await handle.completed);
+    }
+    expect(receipts[0]!.requestId).not.toBe(receipts[1]!.requestId);
     const second = await fixture.store.open(readRequest("read-cancel", result.artifactRef));
     await second.content[Symbol.asyncIterator]().return?.();
-    await expect(second.verified).rejects.toMatchObject({ code: "ARTIFACT_INTEGRITY_FAILURE" });
-    const accessRows = await fixture.postgres.adminPool.query<{
-      request_id: string;
-      outcome: string;
-      diagnostic_ref: unknown;
-    }>(
-      `SELECT request_id, outcome, diagnostic_ref
-       FROM business.artifact_access_records
-       WHERE request_id IN ('request-read', 'request-read-cancel')
-       ORDER BY request_id, outcome`,
+    await expect(second.completed).rejects.toMatchObject({ code: "ARTIFACT_INTEGRITY_FAILURE" });
+    const records = await fixture.postgres.adminPool.query<{ request_id: string; outcome: string }>(
+      `SELECT access.request_id, access.outcome
+       FROM business.artifact_access_records access JOIN audit.entries audit USING (audit_entry_id)
+       WHERE audit.target_ref = $1::jsonb`,
+      [JSON.stringify(result.artifactRef)],
     );
-    expect(accessRows.rows).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ request_id: "request-read", outcome: "authorized" }),
-        expect.objectContaining({ request_id: "request-read", outcome: "succeeded" }),
-        expect.objectContaining({ request_id: "request-read-cancel", outcome: "authorized" }),
-        expect.objectContaining({ request_id: "request-read-cancel", outcome: "cancelled" }),
-      ]),
+    expect(records.rows.filter(({ outcome }) => outcome === "authorized")).toHaveLength(3);
+    expect(records.rows.filter(({ outcome }) => outcome === "succeeded")).toHaveLength(2);
+    expect(records.rows.filter(({ outcome }) => outcome === "cancelled")).toHaveLength(1);
+    expect(new Set(records.rows.map(({ request_id }) => request_id)).size).toBe(3);
+    const after = await fixture.postgres.adminPool.query(
+      "SELECT count(*)::int AS count FROM business.command_receipts",
     );
-    expect(accessRows.rows.filter((row) => row.request_id === "request-read")).toHaveLength(2);
+    expect(after.rows).toEqual(before.rows);
+    const refreshed = authorization();
+    refreshed.authorizationContextRef = {
+      kind: "authorization-context",
+      reference: { entityId: "auth-current-session", versionId: "v2" },
+    };
+    const replay = await fixture.store.put(
+      putCommand("read", {
+        artifactId: "artifact-read",
+        authorization: refreshed,
+      }),
+      chunks(content),
+    );
+    expect(replay.replayed).toBe(true);
+    expect(replay.artifactRef).toEqual(result.artifactRef);
   });
 
   it("access inheritance preserves parent evidence without widening it", async () => {
@@ -1016,9 +1111,10 @@ describe("content-addressed artifact store", () => {
       "ARTIFACT_ACCESS_DENIED",
     );
     const denied = await fixture.postgres.adminPool.query<{ outcome: string }>(
-      `SELECT outcome
-       FROM business.artifact_access_records
-       WHERE request_id = 'request-child-denied'`,
+      `SELECT access.outcome
+       FROM business.artifact_access_records access JOIN audit.entries audit USING (audit_entry_id)
+       WHERE audit.target_ref = $1::jsonb`,
+      [JSON.stringify(child.artifactRef)],
     );
     expect(denied.rows).toEqual([{ outcome: "denied" }]);
   });
@@ -1740,9 +1836,10 @@ describe("content-addressed artifact store", () => {
       outcome: string;
       diagnostic_ref: unknown;
     }>(
-      `SELECT outcome, diagnostic_ref
-       FROM business.artifact_access_records
-       WHERE request_id = 'request-symlink' AND outcome = 'integrity-failed'`,
+      `SELECT access.outcome, access.diagnostic_ref
+       FROM business.artifact_access_records access JOIN audit.entries audit USING (audit_entry_id)
+       WHERE audit.target_ref = $1::jsonb AND access.outcome = 'integrity-failed'`,
+      [JSON.stringify(result.artifactRef)],
     );
     expect(integrity.rows).toEqual([
       expect.objectContaining({ outcome: "integrity-failed", diagnostic_ref: expect.anything() }),
@@ -1826,9 +1923,10 @@ describe("content-addressed artifact store", () => {
       outcome: string;
       diagnostic_ref: unknown;
     }>(
-      `SELECT outcome, diagnostic_ref
-       FROM business.artifact_access_records
-       WHERE request_id = 'request-truncated' AND outcome = 'integrity-failed'`,
+      `SELECT access.outcome, access.diagnostic_ref
+       FROM business.artifact_access_records access JOIN audit.entries audit USING (audit_entry_id)
+       WHERE audit.target_ref = $1::jsonb AND access.outcome = 'integrity-failed'`,
+      [JSON.stringify(result.artifactRef)],
     );
     expect(records.rows).toEqual([
       expect.objectContaining({ outcome: "integrity-failed", diagnostic_ref: expect.anything() }),
@@ -1857,16 +1955,18 @@ describe("content-addressed artifact store", () => {
       })(),
     );
     const coldWriteMs = performance.now() - coldWriteStarted;
+    const hotReadStarted = performance.now();
     const read = await fixture.store.open(readRequest("large", large.artifactRef));
     const readHash = createHash("sha256");
     let readLength = 0;
-    const hotReadStarted = performance.now();
+    let firstByteMs = 0;
     for await (const part of read.content) {
+      if (readLength === 0) firstByteMs = performance.now() - hotReadStarted;
       expect(part.byteLength).toBeLessThanOrEqual(1024 * 1024);
       readHash.update(part);
       readLength += part.byteLength;
     }
-    await read.verified;
+    await read.completed;
     const hotReadMs = performance.now() - hotReadStarted;
     expect(readLength).toBe(largeByteLength);
     expect(readHash.digest("hex")).toBe(large.manifest.content.hash.value);
@@ -1900,6 +2000,9 @@ describe("content-addressed artifact store", () => {
       JSON.stringify({
         node: process.version,
         os: `${process.platform}/${process.arch}`,
+        sampleBytes: largeByteLength,
+        chunkBytes: chunk.byteLength,
+        concurrentRequests: 16,
         storage: {
           type: storageBefore.type,
           blockSize: storageBefore.bsize,
@@ -1909,6 +2012,7 @@ describe("content-addressed artifact store", () => {
         coldWriteMs,
         coldWriteMiBPerSecond: largeByteLength / 1024 / 1024 / (coldWriteMs / 1000),
         hotReadMs,
+        firstByteMs,
         hotReadMiBPerSecond: largeByteLength / 1024 / 1024 / (hotReadMs / 1000),
         concurrentWriteMs,
         concurrentWriteMiBPerSecond:

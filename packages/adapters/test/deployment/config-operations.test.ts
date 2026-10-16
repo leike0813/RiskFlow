@@ -28,7 +28,14 @@ import {
   type DeploymentConfigV1,
 } from "../../src/deployment/schema.js";
 import { startPostgresFixture, type PostgresTestFixture } from "../postgres/fixture.js";
-import { DEPLOYMENT_POLICY_TYPE_V1_VALUES } from "../../src/deployment/policies.js";
+import {
+  DEPLOYMENT_POLICY_ERROR_V1,
+  DEPLOYMENT_POLICY_TYPE_V1_VALUES,
+  DeploymentPolicyCatalogV1Schema,
+  DeploymentPolicyError,
+  createDeploymentPolicyCatalogReaderV1,
+  createDeploymentPolicyResolversV1,
+} from "../../src/deployment/policies.js";
 import { makeConfig } from "../engineering-data/document-conversion/mineru/fixture.js";
 
 /** 不同输入必须得到不同摘要，否则“异载荷冲突”用例无法真正触发。 */
@@ -269,6 +276,53 @@ const withRelativeDataRoot = (): unknown => ({
 });
 
 describe("部署 strict Schema", () => {
+  it("allows versioned model deployments to share one declared model credential", () => {
+    const config = baseConfig();
+    const model = config.models[0]!;
+    if (model.backend !== "network-api" || model.config.protocol !== "openai-chat")
+      throw new TypeError("chat fixture required");
+    const alias = {
+      ...model,
+      config: {
+        ...model.config,
+        deploymentRef: { ...model.config.deploymentRef, versionId: "function-v2" },
+        structuredOutputMode: "function-call" as const,
+      },
+    };
+    expect(
+      DeploymentConfigV1Schema.safeParse({ ...config, models: [...config.models, alias] }).success,
+    ).toBe(true);
+    for (const credentialRef of [
+      config.auth.hmacSecretId,
+      config.database.rolePasswordSecretIds.appRoleName,
+      "missing-model-key",
+    ])
+      expect(
+        DeploymentConfigV1Schema.safeParse({
+          ...config,
+          models: [
+            ...config.models,
+            {
+              ...alias,
+              config: { ...alias.config, credentialRef },
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    expect(
+      DeploymentConfigV1Schema.safeParse({
+        ...config,
+        database: {
+          ...config.database,
+          rolePasswordSecretIds: {
+            ...config.database.rolePasswordSecretIds,
+            workerRoleName: config.database.rolePasswordSecretIds.appRoleName,
+          },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it("requires matching MinerU references and its credential before assembly", () => {
     const config = baseConfig();
     const mineru = makeConfig("official-v4", {
@@ -479,7 +533,7 @@ describe("部署 strict Schema", () => {
       },
       artifacts: [artifact],
       configTemplateRefs: ["config-template-primary"],
-      finalMigrationVersion: "000058",
+      finalMigrationVersion: "000059",
       operationsManualRef: "manual-operations",
     };
     expect(() => ReleaseManifestV1Schema.parse(manifest)).toThrow();
@@ -498,6 +552,317 @@ describe("部署 strict Schema", () => {
         ],
       }),
     ).toThrow();
+  });
+});
+
+describe("运行清单预算唯一引用", () => {
+  const projectId = "project-rail-01";
+  const approval = { approvedBy: "operator-01", approvedAt: "2030-01-01T00:00:00.000Z" };
+
+  /** 唯一预算成员：模型、提示、工具引用与全部数值预算只在这里登记一次。 */
+  const budgetBody = (entityId: string) => ({
+    schemaVersion: "1",
+    policyRef: { entityId, versionId: "v1" },
+    modelDeploymentRef: { entityId: "agent-chat-model", versionId: "v1" },
+    promptTemplateRef: { entityId: `${entityId}-prompt`, versionId: "v1" },
+    toolPolicyRef: { entityId: `${entityId}-tools`, versionId: "v1" },
+    maxModelInvocations: 4,
+    maxToolInvocations: 8,
+    maxContextTokens: 16_384,
+    maxOutputTokens: 4096,
+    maxInputBytes: 65_536,
+    maxOutputBytes: 131_072,
+    maxCandidates: 4,
+    maxObjects: 64,
+    maxSupplementarySearches: 2,
+    maxCorrections: 1,
+    maxTransientRetries: 1,
+    maxConcurrentActions: 1,
+    maxWallClockMs: 600_000,
+  });
+
+  const cleaningBudget = budgetBody("cleaning-budget");
+  const knowledgeBudget = budgetBody("knowledge-budget");
+  const responseBudget = budgetBody("response-budget");
+  const calibrationBudget = budgetBody("calibration-budget");
+
+  /** 清洗策略 V3：业务规则与 V2 一致，Agent 引用只留唯一预算。 */
+  const cleaningPolicyV3 = {
+    schemaVersion: "3",
+    policyRef: { entityId: "cleaning-policy", versionId: "v3" },
+    allowedExclusionReasonCodes: ["duplicate-segment"],
+    protectedSegmentKinds: ["chapter", "table"],
+    protectedMonitoringSelectionReasons: ["latest-valid"],
+    minimumRetainedSampleRatio: 1,
+    minimumDocumentCoverageRatio: 1,
+    tools: {
+      documentSegmentToolRef: { entityId: "cleaning-document-segment", versionId: "v1" },
+      monitoringSnapshotToolRef: { entityId: "cleaning-monitoring-snapshot", versionId: "v1" },
+      maxSegmentsPerRead: 32,
+      maxMonitoringItemsPerRead: 64,
+    },
+    documentRules: [{ inputKind: "csv", requiredSegmentKinds: ["table"] }],
+    agent: {
+      definitionRef: { entityId: "cleaning-definition", versionId: "v1" },
+      incrementSchemaRef: { entityId: "cleaning-increment", versionId: "v1" },
+      validationPolicyRef: { entityId: "cleaning-validation", versionId: "v1" },
+      budgetPolicyRef: cleaningBudget.policyRef,
+    },
+  };
+
+  /** 归一结果仍是原 V2 运行正文：模型、提示、工具引用与预算正文都来自被引用成员。 */
+  const cleaningPolicyRuntime = {
+    schemaVersion: "2",
+    policyRef: cleaningPolicyV3.policyRef,
+    allowedExclusionReasonCodes: cleaningPolicyV3.allowedExclusionReasonCodes,
+    protectedSegmentKinds: cleaningPolicyV3.protectedSegmentKinds,
+    protectedMonitoringSelectionReasons: cleaningPolicyV3.protectedMonitoringSelectionReasons,
+    minimumRetainedSampleRatio: cleaningPolicyV3.minimumRetainedSampleRatio,
+    minimumDocumentCoverageRatio: cleaningPolicyV3.minimumDocumentCoverageRatio,
+    tools: cleaningPolicyV3.tools,
+    documentRules: cleaningPolicyV3.documentRules,
+    agent: {
+      definitionRef: cleaningPolicyV3.agent.definitionRef,
+      incrementSchemaRef: cleaningPolicyV3.agent.incrementSchemaRef,
+      validationPolicyRef: cleaningPolicyV3.agent.validationPolicyRef,
+      budgetPolicyRef: cleaningBudget.policyRef,
+      modelDeploymentRef: cleaningBudget.modelDeploymentRef,
+      promptTemplateRef: cleaningBudget.promptTemplateRef,
+      toolPolicyRef: cleaningBudget.toolPolicyRef,
+      budgetPolicy: cleaningBudget,
+    },
+  };
+
+  /** 知识校验策略 V2：覆盖、层级与方法规则保留，Agent 引用只留唯一预算。 */
+  const knowledgePolicyV2 = {
+    schemaVersion: "2",
+    policyRef: { entityId: "knowledge-validation-policy", versionId: "v2" },
+    criticalProcessKinds: ["扩径准备", "刀盘扩径"],
+    coverage: [
+      { processKind: "扩径准备", minimumMechanisms: 1, minimumEvidence: 1 },
+      { processKind: "刀盘扩径", minimumMechanisms: 1, minimumEvidence: 1 },
+    ],
+    allowedStandardLevels: ["national", "industry"],
+    allowedCaseConstructionMethods: ["原位变径盾构"],
+    maxEntriesPerPackage: 128,
+    tools: {
+      segmentSliceToolRef: { entityId: "knowledge-segment-slice", versionId: "v1" },
+      baselineKnowledgeToolRef: { entityId: "knowledge-baseline-read", versionId: "v1" },
+    },
+    agent: {
+      definitionRef: { entityId: "knowledge-definition", versionId: "v1" },
+      incrementSchemaRef: { entityId: "knowledge-increment", versionId: "v1" },
+      validationPolicyRef: { entityId: "knowledge-validation", versionId: "v1" },
+      budgetPolicyRef: knowledgeBudget.policyRef,
+    },
+  };
+  const knowledgePolicyRuntime = {
+    schemaVersion: "1",
+    policyRef: knowledgePolicyV2.policyRef,
+    criticalProcessKinds: knowledgePolicyV2.criticalProcessKinds,
+    coverage: knowledgePolicyV2.coverage,
+    allowedStandardLevels: knowledgePolicyV2.allowedStandardLevels,
+    allowedCaseConstructionMethods: knowledgePolicyV2.allowedCaseConstructionMethods,
+    maxEntriesPerPackage: knowledgePolicyV2.maxEntriesPerPackage,
+    tools: knowledgePolicyV2.tools,
+    agent: {
+      definitionRef: knowledgePolicyV2.agent.definitionRef,
+      incrementSchemaRef: knowledgePolicyV2.agent.incrementSchemaRef,
+      validationPolicyRef: knowledgePolicyV2.agent.validationPolicyRef,
+      budgetPolicyRef: knowledgeBudget.policyRef,
+      modelDeploymentRef: knowledgeBudget.modelDeploymentRef,
+      promptTemplateRef: knowledgeBudget.promptTemplateRef,
+      toolPolicyRef: knowledgeBudget.toolPolicyRef,
+      budgetPolicy: knowledgeBudget,
+    },
+  };
+
+  /** 处置 Agent 策略 V2：内联预算与重复工具引用都被唯一预算引用取代。 */
+  const responseAgentPolicyV2 = {
+    schemaVersion: "2",
+    policyRef: { entityId: "response-agent-policy", versionId: "v2" },
+    projectId,
+    definitionRef: { entityId: "response-definition", versionId: "v1" },
+    incrementSchemaRef: { entityId: "response-increment", versionId: "v1" },
+    validationPolicyRef: { entityId: "response-validation", versionId: "v1" },
+    budgetPolicyRef: responseBudget.policyRef,
+  };
+  const responseAgentPolicyRuntime = {
+    schemaVersion: "1",
+    policyRef: responseAgentPolicyV2.policyRef,
+    projectId,
+    definitionRef: responseAgentPolicyV2.definitionRef,
+    incrementSchemaRef: responseAgentPolicyV2.incrementSchemaRef,
+    validationPolicyRef: responseAgentPolicyV2.validationPolicyRef,
+    toolPolicyRef: responseBudget.toolPolicyRef,
+    budgetPolicy: responseBudget,
+  };
+
+  /** 校准策略 V2：证据与操作上限业务规则保留，工具引用与预算正文来自成员。 */
+  const calibrationPolicyV2 = {
+    schemaVersion: "2",
+    policyRef: { entityId: "calibration-policy", versionId: "v2" },
+    projectId,
+    definitionRef: { entityId: "calibration-definition", versionId: "v1" },
+    incrementSchemaRef: { entityId: "calibration-increment", versionId: "v1" },
+    validationPolicyRef: { entityId: "calibration-validation", versionId: "v1" },
+    evidenceRequirementCount: 1,
+    maxOperations: 4,
+    budgetPolicyRef: calibrationBudget.policyRef,
+  };
+  const calibrationPolicyRuntime = {
+    schemaVersion: "1",
+    policyRef: calibrationPolicyV2.policyRef,
+    projectId,
+    definitionRef: calibrationPolicyV2.definitionRef,
+    incrementSchemaRef: calibrationPolicyV2.incrementSchemaRef,
+    validationPolicyRef: calibrationPolicyV2.validationPolicyRef,
+    toolPolicyRef: calibrationBudget.toolPolicyRef,
+    budgetPolicy: calibrationBudget,
+    evidenceRequirementCount: calibrationPolicyV2.evidenceRequirementCount,
+    maxOperations: calibrationPolicyV2.maxOperations,
+  };
+
+  const cases = [
+    {
+      policyType: "cleaning" as const,
+      budget: cleaningBudget,
+      persisted: cleaningPolicyV3,
+      runtime: cleaningPolicyRuntime,
+    },
+    {
+      policyType: "knowledge-validation" as const,
+      budget: knowledgeBudget,
+      persisted: knowledgePolicyV2,
+      runtime: knowledgePolicyRuntime,
+    },
+    {
+      policyType: "response-agent" as const,
+      budget: responseBudget,
+      persisted: responseAgentPolicyV2,
+      runtime: responseAgentPolicyRuntime,
+    },
+    {
+      policyType: "calibration" as const,
+      budget: calibrationBudget,
+      persisted: calibrationPolicyV2,
+      runtime: calibrationPolicyRuntime,
+    },
+  ];
+
+  const catalogOf = (entries: readonly unknown[], budgetPolicies?: readonly unknown[]) =>
+    DeploymentPolicyCatalogV1Schema.parse({
+      schemaVersion: 1,
+      catalogRef: { entityId: "policy-catalog", versionId: "v1" },
+      purpose: "production",
+      downstreamAuthorization: {
+        policyRef: { entityId: "downstream-authorization", versionId: "1" },
+        bindings: [
+          { rootBranch: "workflow.start-run", downstreamBranches: ["agent-task.start-task"] },
+        ],
+      },
+      entries,
+      ...(budgetPolicies === undefined ? {} : { budgetPolicies }),
+    });
+
+  const policyEntry = (policyType: string, body: { readonly policyRef: unknown }) => ({
+    schemaVersion: 1,
+    projectId,
+    policyType,
+    policyRef: body.policyRef,
+    approval,
+    body,
+  });
+
+  const budgetEntry = (
+    body: { readonly policyRef: unknown },
+    budgetProjectId: string = projectId,
+  ) => ({
+    schemaVersion: 1,
+    projectId: budgetProjectId,
+    policyType: "agent-task-budget",
+    policyRef: body.policyRef,
+    approval,
+    body,
+  });
+
+  const resolveCase = (
+    reader: ReturnType<typeof createDeploymentPolicyCatalogReaderV1>,
+    policyType: (typeof cases)[number]["policyType"],
+    policyRef: { readonly entityId: string; readonly versionId: string },
+  ) => {
+    const resolvers = createDeploymentPolicyResolversV1(reader);
+    return {
+      cleaning: resolvers.cleaningPolicy,
+      "knowledge-validation": resolvers.knowledgeValidationPolicy,
+      "response-agent": resolvers.responseAgentPolicy,
+      calibration: resolvers.calibrationValidationPolicy,
+    }[policyType]({ projectId, policyRef });
+  };
+
+  const errorOf = (run: () => unknown): DeploymentPolicyError => {
+    try {
+      run();
+    } catch (error) {
+      return error as DeploymentPolicyError;
+    }
+    throw new Error("预期配置错误，但解析成功");
+  };
+
+  it.each(cases)("$policyType 只引用唯一预算并归一为原运行正文", (item) => {
+    const reader = createDeploymentPolicyCatalogReaderV1(
+      catalogOf([policyEntry(item.policyType, item.persisted)], [budgetEntry(item.budget)]),
+    );
+    const resolved = resolveCase(reader, item.policyType, item.persisted.policyRef);
+    expect(resolved).toEqual(item.runtime);
+    expect(Object.isFrozen(resolved)).toBe(true);
+  });
+
+  it.each(cases)("$policyType 缺预算成员或预算属于其它工程时明确失败", (item) => {
+    const withoutBudget = errorOf(() =>
+      createDeploymentPolicyCatalogReaderV1(
+        catalogOf([policyEntry(item.policyType, item.persisted)]),
+      ),
+    );
+    expect(withoutBudget).toBeInstanceOf(DeploymentPolicyError);
+    expect(withoutBudget).toMatchObject({
+      code: DEPLOYMENT_POLICY_ERROR_V1.missing,
+      policyType: "agent-task-budget",
+      policyRef: `${item.budget.policyRef.entityId}/${item.budget.policyRef.versionId}`,
+    });
+
+    const foreignBudget = errorOf(() =>
+      createDeploymentPolicyCatalogReaderV1(
+        catalogOf(
+          [policyEntry(item.policyType, item.persisted)],
+          [budgetEntry(item.budget, "project-other")],
+        ),
+      ),
+    );
+    expect(foreignBudget.code).toBe(DEPLOYMENT_POLICY_ERROR_V1.missing);
+  });
+
+  it("超出被引用预算的业务上限被拒绝，旧内联正文不要求预算集合", () => {
+    const overrun = {
+      ...calibrationPolicyV2,
+      maxOperations: calibrationBudget.maxObjects + 1,
+    };
+    const drift = errorOf(() =>
+      createDeploymentPolicyCatalogReaderV1(
+        catalogOf([policyEntry("calibration", overrun)], [budgetEntry(calibrationBudget)]),
+      ),
+    );
+    expect(drift).toMatchObject({
+      code: DEPLOYMENT_POLICY_ERROR_V1.refMismatch,
+      policyType: "calibration",
+    });
+
+    // 历史 V1 内联正文（模型、提示、工具与预算都在策略内）继续原样解析。
+    const legacy = createDeploymentPolicyCatalogReaderV1(
+      catalogOf(cases.map((item) => policyEntry(item.policyType, item.runtime))),
+    );
+    for (const item of cases)
+      expect(resolveCase(legacy, item.policyType, item.runtime.policyRef)).toEqual(item.runtime);
   });
 });
 
@@ -727,7 +1092,7 @@ describe("显式初始化", () => {
           config: withoutKey(baseConfig(), "purpose"),
           migrationConnection: postgres.admin,
           migrationRoot: postgres.productionMigrationRoot,
-          finalMigrationVersion: "000058",
+          finalMigrationVersion: "000059",
           loginPasswords,
           checkpointerConnection,
         } as never),
@@ -738,12 +1103,12 @@ describe("显式初始化", () => {
         // 初始化是显式部署动作，使用高权限连接；运行主体不得复用。
         migrationConnection: postgres.admin,
         migrationRoot: postgres.productionMigrationRoot,
-        finalMigrationVersion: "000058",
+        finalMigrationVersion: "000059",
         loginPasswords,
         checkpointerConnection,
         initialAdministrator,
       });
-      expect(first.currentMigrationVersion).toBe("000058");
+      expect(first.currentMigrationVersion).toBe("000059");
       expect(first.initialAdministratorCreated).toBe(true);
       expect(first.createdLoginRoles).toEqual([
         "ip02_migrator_login",
@@ -764,8 +1129,8 @@ describe("显式初始化", () => {
         );
         try {
           await expect(
-            assertCompatibleMigrationVersion(runtime.db as unknown as Kysely<unknown>, "000058"),
-          ).resolves.toBe("000058");
+            assertCompatibleMigrationVersion(runtime.db as unknown as Kysely<unknown>, "000059"),
+          ).resolves.toBe("000059");
           const privileges = await sql<{ canWrite: boolean; canReadLock: boolean }>`SELECT
             has_table_privilege(current_user, 'business._riskflow_migration', 'INSERT,UPDATE,DELETE') AS "canWrite",
             has_table_privilege(current_user, 'business._riskflow_migration_lock', 'SELECT') AS "canReadLock"`.execute(
@@ -806,7 +1171,7 @@ describe("显式初始化", () => {
         config,
         migrationConnection: postgres.admin,
         migrationRoot: postgres.productionMigrationRoot,
-        finalMigrationVersion: "000058",
+        finalMigrationVersion: "000059",
         loginPasswords: { ...loginPasswords, checkpointerRoleName: "changed-secret" },
         checkpointerConnection,
         initialAdministrator: {
@@ -815,7 +1180,7 @@ describe("显式初始化", () => {
         },
       });
       expect(replay.appliedMigrations).toEqual([]);
-      expect(replay.currentMigrationVersion).toBe("000058");
+      expect(replay.currentMigrationVersion).toBe("000059");
       expect(replay.initialAdministratorCreated).toBe(false);
       const accounts = await postgres.adminPool.query<{ count: string }>(
         "SELECT count(*)::text AS count FROM business.local_accounts",

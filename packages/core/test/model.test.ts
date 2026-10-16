@@ -58,6 +58,21 @@ const structuredRequest = () =>
   });
 
 describe("model gateway core contract", () => {
+  it("validates per-action structured token limits", () => {
+    expect(
+      StructuredCompletionRequestV1Schema.parse({
+        ...structuredRequest(),
+        maxInputTokens: 10,
+        maxContextTokens: 20,
+      }),
+    ).toMatchObject({ maxInputTokens: 10, maxContextTokens: 20 });
+    for (const key of ["maxInputTokens", "maxContextTokens"])
+      for (const value of [0, -1, 1.5])
+        expect(
+          StructuredCompletionRequestV1Schema.safeParse({ ...structuredRequest(), [key]: value })
+            .success,
+        ).toBe(false);
+  });
   it("accepts all three strict request shapes", () => {
     const structured = structuredRequest();
     expect(structured.invocationId).toBe("invocation-model");

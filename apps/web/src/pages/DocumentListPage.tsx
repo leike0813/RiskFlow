@@ -44,6 +44,11 @@ const CLEANING_LABEL: Record<CleaningAvailability, string> = {
 
 const columns: DataTableColumn[] = [
   {
+    key: "sourceName",
+    title: "资料名称",
+    render: (row) => (row.sourceName as string | undefined) ?? (row.sourceId as string),
+  },
+  {
     key: "sourceId",
     title: "资料标识",
     width: 180,
@@ -159,7 +164,7 @@ export default function DocumentListPage() {
                         `/projects/documents/${encodeURIComponent(
                           (row.sourceVersionRef as { reference: { entityId: string } }).reference
                             .entityId,
-                        )}`,
+                        )}?version=${encodeURIComponent((row.sourceVersionRef as { reference: { versionId: string } }).reference.versionId)}`,
                       ),
                     )
                   }

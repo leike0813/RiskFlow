@@ -21,6 +21,8 @@ import {
   type MonitoringSeriesCatalogItemV1,
   type SourceCatalogItemV1,
   type SourceVersionRefV1,
+  SourceVersionRefV1Schema,
+  SourceAccessGrantRefV1Schema,
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 import { ApplicabilityMetadataSchema } from "@riskflow/contracts/records";
@@ -84,6 +86,7 @@ interface SourceVersionRow {
   source_version_id: string;
   version_id: string;
   source_id: string;
+  source_item_id: string;
   project_id: string;
   source_delivery_id: string;
   source_version_ref: unknown;
@@ -97,6 +100,12 @@ interface SourceDeliveryRow {
   project_id: string;
   source_metadata: unknown;
   descriptor: unknown;
+}
+
+interface SourceItemRow {
+  source_item_id: string;
+  project_id: string;
+  name: string;
 }
 
 interface ConversionRow {
@@ -168,6 +177,7 @@ type CatalogDatabase = PostgresDatabase & {
   "business.engineering_spatial_segment_revisions": SpatialRevisionRow;
   "business.source_versions": SourceVersionRow;
   "business.source_deliveries": SourceDeliveryRow;
+  "business.source_items": SourceItemRow;
   "business.structured_document_conversions": ConversionRow;
   "business.source_segment_sets": SegmentSetRow;
   "business.identification_preparation_snapshots": PreparationSnapshotRow;
@@ -569,13 +579,26 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
       .orderBy("recorded_at", "desc")
       .orderBy("source_version_id", "desc")
       .execute();
+    // C11 的登记修订与 C06 当前授权修订不同；当前复验后按稳定授予身份关联精确资料。
     const grantedSources = new Set(
-      decision.context.sourceAccessGrantRefs.map((grant) => refKey(grant)),
+      decision.context.sourceAccessGrantRefs.map((grant) => grant.reference.entityId),
     );
+    const seenGrants = new Set<string>();
     const visible = rows.filter((row) => {
       if (grantedSources.size === 0) return true;
-      const grant = asVersionedRef(row.source_access_grant_ref);
-      return grant !== undefined && grantedSources.has(refKey(grant));
+      const grant = SourceAccessGrantRefV1Schema.safeParse(row.source_access_grant_ref);
+      if (!grant.success || !grantedSources.has(grant.data.reference.entityId)) return false;
+      const source = SourceVersionRefV1Schema.safeParse(row.source_version_ref);
+      if (
+        !source.success ||
+        source.data.reference.entityId !== row.source_version_id ||
+        source.data.reference.versionId !== row.version_id ||
+        seenGrants.has(grant.data.reference.entityId)
+      ) {
+        throw new Error("catalog source grant identity mismatch");
+      }
+      seenGrants.add(grant.data.reference.entityId);
+      return true;
     });
     const deliveries = await this.#db
       .selectFrom("business.source_deliveries")
@@ -630,16 +653,6 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
             ];
       }),
     );
-    const cleaning = await this.#cleaningSummaries(
-      query,
-      decision,
-      rows
-        .map((row) => row.source_version_ref)
-        .flatMap((value) => {
-          const parsed = asVersionedRef(value);
-          return parsed === undefined ? [] : [parsed];
-        }),
-    );
     const items: SourceCatalogItemV1[] = [];
     for (const row of visible) {
       const sourceRef = asVersionedRef(row.source_version_ref);
@@ -655,7 +668,6 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
       }
       const conversion = conversionBySource.get(refKey(sourceRef));
       const segmentSetRef = segmentSetBySourceVersionId.get(row.source_version_id);
-      const cleaningSummary = cleaning.get(refKey(sourceRef));
       const descriptor = descriptorByDelivery.get(row.source_delivery_id);
       // file-upload 的登记 descriptor 本身不持有连接定义引用，缺席即「未登记连接」。
       const connectionDefinitionRef =
@@ -682,12 +694,6 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
             : conversion.status === "succeeded"
               ? "parsed"
               : "failed",
-        ...(cleaningSummary === undefined
-          ? {}
-          : {
-              cleaningAvailability: cleaningSummary.availability,
-              cleaningExclusionCount: cleaningSummary.exclusionCount,
-            }),
         ...(segmentSetRef === undefined ? {} : { sourceSegmentSetRef: segmentSetRef }),
         ...(descriptor === undefined ? {} : { deliveryKind: descriptor.kind }),
         ...(connectionDefinitionRef === undefined ? {} : { connectionDefinitionRef }),
@@ -695,10 +701,45 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
     }
     const from = cursor ?? 0;
     const page = items.slice(from, from + pageSize);
+    const cleaning = await this.#cleaningSummaries(
+      query,
+      decision,
+      page.map((item) => item.sourceVersionRef),
+    );
     const next = from + pageSize < items.length ? encodeCursor(from + pageSize) : undefined;
+    const sourceNames =
+      page.length === 0
+        ? []
+        : await this.#db
+            .selectFrom("business.source_versions as version")
+            .innerJoin("business.source_items as item", (join) =>
+              join
+                .onRef("item.source_item_id", "=", "version.source_item_id")
+                .onRef("item.project_id", "=", "version.project_id"),
+            )
+            .select(["version.source_version_id", "item.name"])
+            .where("version.project_id", "=", query.projectId)
+            .where(
+              "version.source_version_id",
+              "in",
+              page.map((item) => item.sourceVersionRef.reference.entityId),
+            )
+            .execute();
+    const names = new Map(sourceNames.map((row) => [row.source_version_id, row.name]));
     return succeeded({
       kind: "source-catalog",
-      items: page,
+      items: page.map((item) => {
+        const sourceName = names.get(item.sourceVersionRef.reference.entityId);
+        item = { ...item, ...(sourceName === undefined ? {} : { sourceName }) };
+        const summary = cleaning.get(refKey(item.sourceVersionRef));
+        return summary === undefined
+          ? item
+          : {
+              ...item,
+              cleaningAvailability: summary.availability,
+              cleaningExclusionCount: summary.exclusionCount,
+            };
+      }),
       totalCount: items.length,
       ...(next === undefined ? {} : { nextCursor: next }),
     });
@@ -715,7 +756,8 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
       string,
       { availability: CleaningAvailabilityV1; exclusionCount: number }
     >();
-    if (sourceRefs.length === 0) return result;
+    if (sourceRefs.length === 0 || decision.context.sourceAccessGrantRefs.length === 0)
+      return result;
     const snapshots = await this.#db
       .selectFrom("business.identification_preparation_snapshots")
       .select(["project_id", "snapshot_payload", "cleaning_result_artifact_ref"])
@@ -784,7 +826,7 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
           projectId: query.projectId,
           actorId: decision.context.actorId,
           requestedAt: query.requestedAt,
-          purposeCode: "engineering-data.source-catalog",
+          purposeCode: "engineering-data.data-cleaning-result",
           requiredCapability: "engineering-data.read",
           authorization: decision.context,
         }),
@@ -796,7 +838,7 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
         if (size > 4 * 1024 * 1024) throw new RangeError("cleaning artifact exceeds read bound");
         chunks.push(chunk);
       }
-      await handle.verified;
+      await handle.completed;
       const buffer = new Uint8Array(size);
       let offset = 0;
       for (const chunk of chunks) {

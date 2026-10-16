@@ -485,7 +485,7 @@ describe("C30 workflow registration adapter", () => {
         audit: {
           auditEntryId: "event-start:audit",
           projectId: PROJECT_ID,
-          action: "workflow.start-run",
+          action: "workflow.start-run-bound",
           targetRef: parent,
           actorRef: ACTOR_ID,
           authorizationContextRef: AUTHORIZATION.authorizationContextRef,
@@ -2769,7 +2769,7 @@ describe("C30 workflow registration adapter", () => {
     }
   });
 
-  it("rejects missing source grants even when the row digest equals the reader digest", async () => {
+  it("requires an artifact-covering source grant without comparing grant versions", async () => {
     const grant = {
       kind: "source-access-grant" as const,
       reference: { entityId: "source-grant-c30", versionId: "v1" },
@@ -2805,6 +2805,7 @@ describe("C30 workflow registration adapter", () => {
           authorization: reader,
         }),
       ).toMatchObject({ kind: "succeeded" });
+      // design D-05：来源授予不再按完整授权摘要（含版本）全等比较；实体级覆盖成立即可读。
       fixture.access.setAuthorization(
         authorizationFor({
           sourceAccessGrantRefs: [
@@ -2813,7 +2814,7 @@ describe("C30 workflow registration adapter", () => {
         }),
       );
       expect(await fixture.adapter.bindingProof.verifyResponseWorkflowBinding(query)).toMatchObject(
-        { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } },
+        { kind: "succeeded" },
       );
     } finally {
       fixture.access.setAuthorization(undefined);

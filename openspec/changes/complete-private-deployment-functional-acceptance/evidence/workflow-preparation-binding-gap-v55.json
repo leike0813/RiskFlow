@@ -1,0 +1,72 @@
+{
+  "at": "2026-10-15T11:45:07.398Z",
+  "runRef": {
+    "kind": "workflow-run",
+    "reference": {
+      "entityId": "risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9",
+      "versionId": "035157af5173eb1e3025be0da1894fa9e5722fd386597b6193bea4ab0a53fde6"
+    }
+  },
+  "preparationSnapshotRef": {
+    "kind": "identification-preparation-snapshot",
+    "reference": {
+      "entityId": "identification-preparation-50efff5ad17336023281c241aba94e153465e03a",
+      "versionId": "1"
+    }
+  },
+  "preparationRead": "ok",
+  "snapshotKeys": [
+    "schemaVersion",
+    "projectRevisionRef",
+    "spatialScopeRefs",
+    "sourceVersionRefs",
+    "includedSourceSegmentSetRefs",
+    "excludedSegmentDecisionRefs",
+    "dataProcessingPolicyRef",
+    "dataProcessingToolRef",
+    "dataProcessingModelRef",
+    "coverageDecisionRef",
+    "authorizationContextRef",
+    "auditTrailRef",
+    "createdBy",
+    "createdAt"
+  ],
+  "agentTaskRef": {
+    "kind": "agent-task",
+    "reference": {
+      "entityId": "agent-task:synthetic-station-tunnel-project:data-cleaning-task-50efff5ad17336023281c241aba94e153465e03a",
+      "versionId": "1"
+    },
+    "taskType": "data-cleaning",
+    "triggerMode": "embedded",
+    "modelDeploymentRef": {
+      "entityId": "minimax-chat-acceptance",
+      "versionId": "v1"
+    },
+    "promptTemplateRef": {
+      "entityId": "cleaning-prompt",
+      "versionId": "physical-20261014-v1"
+    },
+    "toolPolicyRef": {
+      "entityId": "cleaning-tools",
+      "versionId": "physical-20261014-v1"
+    },
+    "budgetPolicyRef": {
+      "entityId": "cleaning-budget",
+      "versionId": "physical-20261014-v1"
+    },
+    "incrementSchemaRef": {
+      "entityId": "cleaning-increment",
+      "versionId": "physical-20261014-v1"
+    },
+    "validationPolicyRef": {
+      "entityId": "cleaning-validation",
+      "versionId": "physical-20261014-v1"
+    }
+  },
+  "existingKnowledgeReadyRejectsSnapshot": true,
+  "publicPreparationReadyCauseAbsent": true,
+  "callerCannotCreateParentCausality": true,
+  "noWorkflowAdvance": true,
+  "noNewModelOrCleaningTask": true
+}

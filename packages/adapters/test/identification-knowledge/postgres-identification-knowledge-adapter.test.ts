@@ -25,11 +25,18 @@ import type {
   AgentTaskFailureEvidenceReadRequestV1,
   AgentTaskFailureEvidenceReaderV1,
 } from "@riskflow/core/agent-runtime";
+import { ArtifactReadRequestV1Schema } from "@riskflow/core/artifacts";
+import { CleaningPreparationManifestV1Schema } from "@riskflow/core/engineering-data/cleaning";
+import {
+  STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1,
+  StructuredDocumentJsonLdV1Schema,
+} from "@riskflow/core/engineering-data/document-conversion";
 
 import { governedReleaseResolutionInvocationId } from "../../src/knowledge-governance/index.js";
 import {
   IDENTIFICATION_KNOWLEDGE_CANDIDATE_PURPOSE_V1,
   PostgresIdentificationKnowledgeAdapter,
+  PostgresIdentificationPreparationKnowledgeReader,
 } from "../../src/identification-knowledge/index.js";
 import {
   IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP,
@@ -120,6 +127,212 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     readonly releasePolicyFault?: "before-binding" | "after-binding";
   }): PostgresIdentificationKnowledgeAdapter =>
     fixture.createIdentificationKnowledgeAdapter(options).adapter;
+
+  it("accepts only exact authorized standard evidence text and refuses unreadable content", async () => {
+    const world = await fixture.createPreparationWorld("standard-text");
+    const actorId = world.readAuthorization.actorId;
+    const requestedAt = IDENTIFICATION_KNOWLEDGE_TEST_TIMESTAMP;
+    const preparation = await fixture.preparationReader.readExactPreparation({
+      projectId: world.projectId,
+      preparationSnapshotRef: world.snapshotRef,
+      actorId,
+      requestedAt,
+      requestId: nextId("text-preparation"),
+    });
+    if (preparation.kind !== "ok") throw new Error("exact preparation unavailable");
+    const read = async (artifactRef: unknown, purposeCode: string) => {
+      const requestId = nextId("text-fixture-read");
+      const handle = await fixture.cleaning.artifactStore.open(
+        ArtifactReadRequestV1Schema.parse({
+          schemaVersion: "1",
+          requestId,
+          idempotencyKey: requestId,
+          artifactRef,
+          projectId: world.projectId,
+          actorId,
+          requestedAt,
+          purposeCode,
+          authorization: world.readAuthorization,
+          requiredCapability: "engineering-data.read",
+        }),
+      );
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of handle.content) chunks.push(chunk);
+      await handle.completed;
+      return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+    };
+    const manifest = CleaningPreparationManifestV1Schema.parse(
+      await read(
+        preparation.result.manifestArtifactRef,
+        "engineering-data.data-cleaning-preparation-manifest",
+      ),
+    );
+    const document = StructuredDocumentJsonLdV1Schema.parse(
+      await read(
+        manifest.documents[0]!.jsonLdArtifactRef,
+        "engineering-data.structured-document-conversion",
+      ),
+    );
+    const evidence = [world.evidence[0]!];
+    const fragment = document.evidenceFragments.find(
+      (item) => item.sourceSegmentId === evidence[0]!.locator.sourceSegmentId,
+    )!;
+    const text = fragment.textBlockIds
+      .map((id) => document.textBlocks.find((block) => block.blockId === id)!.text)
+      .join("\n");
+    const packageValue = standardLibraryPackage({
+      ...fixture.builderInput(),
+      projectId: world.projectId,
+      preparationSnapshotRef: world.snapshotRef,
+      evidence,
+    });
+    const entry = { ...packageValue.entries[0]!, retrievalText: text };
+    const check = (overrides: Record<string, unknown> = {}) =>
+      fixture.preparationReader.checkStandardRetrievalText({
+        projectId: world.projectId,
+        preparationSnapshotRef: world.snapshotRef,
+        actorId,
+        requestedAt,
+        requestId: nextId("check-standard-text"),
+        entry: entry as never,
+        ...overrides,
+      });
+    expect(await check()).toBe(true);
+    for (const [targetBytes, accepted] of [
+      [5 * 1024 * 1024, true],
+      [STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1, false],
+      [STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1 + 1, false],
+    ] as const) {
+      const padded = StructuredDocumentJsonLdV1Schema.parse({
+        ...document,
+        tableFields: [
+          ...(document.tableFields ?? []),
+          {
+            fieldId: "padding",
+            tableId: "padding",
+            sheet: "padding",
+            row: 1,
+            column: 1,
+            value: "",
+          },
+        ],
+      });
+      padded.tableFields!.at(-1)!.value = "x".repeat(
+        targetBytes - Buffer.byteLength(JSON.stringify(padded)),
+      );
+      const bytes = Buffer.from(JSON.stringify(StructuredDocumentJsonLdV1Schema.parse(padded)));
+      expect(bytes.byteLength).toBe(targetBytes);
+      const reader = new PostgresIdentificationPreparationKnowledgeReader({
+        narrowRead: {
+          preparationRead: fixture.cleaning.store,
+          engineeringData: fixture.cleaning.registry,
+        },
+        authorize: async (input) =>
+          fixture.authorizationFor(input.invocationId, input.branch, input.projectId),
+        artifactStore: {
+          put: fixture.cleaning.artifactStore.put.bind(fixture.cleaning.artifactStore),
+          open: async (request) => {
+            const handle = await fixture.cleaning.artifactStore.open(request);
+            if (
+              request.artifactRef.reference.entityId !==
+              manifest.documents[0]!.jsonLdArtifactRef.reference.entityId
+            )
+              return handle;
+            for await (const chunk of handle.content) void chunk;
+            await handle.completed;
+            return {
+              ...handle,
+              content: (async function* () {
+                yield bytes;
+              })(),
+            };
+          },
+        },
+      });
+      // 文档恰为16MiB时，清单加正文的累计读取已经越界。
+      expect(
+        await reader.checkStandardRetrievalText({
+          projectId: world.projectId,
+          preparationSnapshotRef: world.snapshotRef,
+          actorId,
+          requestedAt,
+          requestId: nextId("bounded-standard-text"),
+          entry,
+        }),
+      ).toBe(accepted);
+    }
+    expect(await check({ entry: { ...entry, retrievalText: `${text}\nextra` } })).toBe(false);
+    expect(await check({ preparationSnapshotRef: fixture.world.snapshotRef })).toBe(false);
+    expect(
+      await check({
+        entry: {
+          ...entry,
+          evidence: [
+            {
+              ...evidence[0],
+              sourceVersion: { ...evidence[0]!.sourceVersion, versionId: "wrong" },
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+    const submitted = await submitPackage(
+      adapterFor(),
+      "standard-library",
+      { ...packageValue, entries: [entry] },
+      { projectId: world.projectId, evidence },
+    );
+    revisionOf(submitted, "verified standard text");
+    expect(
+      await submitPackage(
+        adapterFor(),
+        "standard-library",
+        {
+          ...packageValue,
+          entries: [{ ...packageValue.entries[0]!, standardIdentity: "x".repeat(4 * 1024 * 1024) }],
+        },
+        { projectId: world.projectId, evidence },
+      ),
+    ).toMatchObject({ kind: "failed" });
+    const denied = fixture.createIdentificationKnowledgeAdapter({
+      authorizeDenial: (input) => input.branch === "engineering-data.source-segments",
+    }).adapter;
+    expect(
+      await submitPackage(
+        denied,
+        "standard-library",
+        { ...packageValue, entries: [entry] },
+        { projectId: world.projectId, evidence },
+      ),
+    ).toMatchObject({ kind: "failed" });
+    let corruptReadReached = false;
+    const corrupted = new PostgresIdentificationPreparationKnowledgeReader({
+      narrowRead: {
+        preparationRead: fixture.cleaning.store,
+        engineeringData: fixture.cleaning.registry,
+      },
+      authorize: async (input) =>
+        fixture.authorizationFor(input.invocationId, input.branch, input.projectId),
+      artifactStore: {
+        ...fixture.cleaning.artifactStore,
+        open: async () => {
+          corruptReadReached = true;
+          throw new Error("corrupt content");
+        },
+      },
+    });
+    expect(
+      await corrupted.checkStandardRetrievalText({
+        projectId: world.projectId,
+        preparationSnapshotRef: world.snapshotRef,
+        actorId,
+        requestedAt,
+        requestId: nextId("corrupt-standard-text"),
+        entry: entry as never,
+      }),
+    ).toBe(false);
+    expect(corruptReadReached).toBe(true);
+  }, 300_000);
 
   /** 编制入口的成功前置：任何未达成功的准备都必须让测试失败，而不是让后续断言静默跳过。 */
   const prepareAuthoring = async (
@@ -230,6 +443,8 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       readonly evidence?: readonly unknown[];
       readonly projectId?: string;
       readonly replay?: boolean;
+      /** 身份隔离场景需要同一包正文：保持调用方内容不变，使 C04 摘要与首次提交一致。 */
+      readonly samePackage?: boolean;
     },
   ): Promise<KnowledgeGovernanceResultV1> => {
     const projectId = options?.projectId ?? fixture.world.projectId;
@@ -240,10 +455,15 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       projectId,
     );
     // 每个提交必须是新的内容工件，否则 C16 会正确拒绝同一工件形成第二个修订。
-    const unique = {
-      ...(value as Record<string, unknown>),
-      generatedAt: new Date(Date.parse("2030-01-01T00:00:00.000Z") + sequence * 1000).toISOString(),
-    };
+    const unique =
+      options?.samePackage === true
+        ? value
+        : {
+            ...(value as Record<string, unknown>),
+            generatedAt: new Date(
+              Date.parse("2030-01-01T00:00:00.000Z") + sequence * 1000,
+            ).toISOString(),
+          };
     // 已有发布时必须显式给出当前生效基线发布，C16 才允许形成下一个修订。
     const baseReleaseRef =
       options?.projectId === undefined || projectId === fixture.world.projectId
@@ -549,6 +769,101 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     }
   }, 300_000);
 
+  it("reads distinct evidence groups of one package under their own identity", async () => {
+    const adapter = adapterFor();
+    const world = await fixture.createPreparationWorld("evidence-group-identity");
+    const evidence = world.evidence[0];
+    if (evidence === undefined) {
+      throw new Error("the preparation world has no readable evidence segment");
+    }
+    const base = processModelPackage({
+      ...fixture.builderInput(),
+      projectId: world.projectId,
+      preparationSnapshotRef: world.snapshotRef,
+      evidence: [evidence],
+    });
+    // 同一包内的不同证据组必须各自持有可重放读取身份：第二组沿用第一组身份时，C11 会把它
+    // 当作同键改载荷整组拒绝；重复出现的组仍按原身份幂等重放。夹具世界只保留一个可读段，
+    // 第二组由同一段的重复引用构成不同的读取载荷。
+    const grouped = {
+      ...base,
+      nodes: base.nodes.map((node, index) => ({
+        ...node,
+        evidence: index === 1 ? [evidence, evidence] : [evidence],
+      })),
+    };
+    const submitted = await submitPackage(adapter, "process-model", grouped, {
+      projectId: world.projectId,
+      evidence: [evidence],
+    });
+    const revisionRef = revisionOf(submitted, "grouped process-model submit");
+    const validations = await fixture.cleaning.postgres.adminPool.query<{ disposition: string }>(
+      `SELECT disposition FROM business.identification_knowledge_validations
+        WHERE project_id = $1 AND definition_type = 'process-model'`,
+      [world.projectId],
+    );
+    expect(validations.rows).toHaveLength(1);
+    expect(validations.rows[0]).toMatchObject({ disposition: "accepted" });
+    expect(
+      await countBinding(
+        "business.identification_knowledge_revision_bindings",
+        `project_id = $1 AND revision_id = $2 AND binding_kind = 'validated'`,
+        [world.projectId, revisionRef.reference.entityId],
+      ),
+    ).toBe("1");
+  }, 300_000);
+
+  it("isolates the validation artifact per submit command on a repeated package", async () => {
+    const adapter = adapterFor();
+    const world = await fixture.createPreparationWorld("validation-artifact-identity");
+    const sourceVersionRef = world.snapshot.sourceVersionRefs[0];
+    if (sourceVersionRef === undefined) {
+      throw new Error("the preparation world has no frozen source version");
+    }
+    const unreachable = {
+      locator: { sourceSegmentId: "source-unknown-chapter-1-segment-1" },
+      sourceVersion: sourceVersionRef.reference,
+    };
+    const value = processModelPackage({
+      ...fixture.builderInput(),
+      projectId: world.projectId,
+      preparationSnapshotRef: world.snapshotRef,
+      evidence: [unreachable],
+    });
+    const submission = {
+      projectId: world.projectId,
+      evidence: [unreachable],
+      samePackage: true,
+    };
+    // 第一次提交因证据不可达被判 repairable 拒绝，但已经按该命令写下验证工件与验证行。
+    const rejected = await submitPackage(adapter, "process-model", value, {
+      ...submission,
+      replay: true,
+    });
+    expect(rejected).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    // 新命令提交同一包（相同内容摘要、不同 issuedAt/授权）：验证工件的 put 身份按提交命令
+    // 隔离，第二次提交不能被第一次提交的 C04 幂等身份挡住，必须照旧得到 C17 领域结论。
+    const resubmitted = await submitPackage(adapter, "process-model", value, submission);
+    expect(resubmitted).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+
+    const validations = await fixture.cleaning.postgres.adminPool.query<{
+      validation_artifact_ref: { reference: { entityId: string } };
+      package_digest: string;
+    }>(
+      `SELECT validation_artifact_ref, package_digest
+         FROM business.identification_knowledge_validations
+        WHERE project_id = $1
+        ORDER BY occurred_at, validation_id`,
+      [world.projectId],
+    );
+    expect(validations.rows).toHaveLength(2);
+    // 逐命令隔离验证工件身份，同时保留包摘要。
+    expect(
+      new Set(validations.rows.map((row) => row.validation_artifact_ref.reference.entityId)).size,
+    ).toBe(2);
+    expect(new Set(validations.rows.map((row) => row.package_digest)).size).toBe(1);
+  }, 300_000);
+
   it("rejects unknown fields, wrong project and unreachable evidence before any revision", async () => {
     const adapter = adapterFor();
     const input = fixture.builderInput();
@@ -835,6 +1150,266 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       expect(await identificationBasisEvents()).toHaveLength(eventsBefore);
     }
   }, 600_000);
+
+  it("assembles approved retrieval members without a second review and reuses the release", async () => {
+    const world = await fixture.createPreparationWorld("derived-composite");
+    const adapter = adapterFor();
+    const input = {
+      ...fixture.builderInput(),
+      projectId: world.projectId,
+      preparationSnapshotRef: world.snapshotRef,
+      evidence: world.evidence,
+    };
+    const publish = async (definitionType: Parameters<typeof submitPackage>[1], value: unknown) => {
+      const revision = revisionOf(
+        await submitPackage(adapter, definitionType, value, {
+          projectId: world.projectId,
+          evidence: world.evidence,
+        }),
+        definitionType,
+      );
+      return (await publishRevision(adapter, revision, world.projectId)).releaseRef;
+    };
+    const processModel = await publish("process-model", processModelPackage(input));
+    const parents = [
+      await publish(
+        "risk-mechanism",
+        riskMechanismPackage({ ...input, processModelReleaseRef: processModel.reference }),
+      ),
+      await publish("standard-library", standardLibraryPackage(input)),
+      await publish("case-library", caseLibraryPackage(input)),
+    ];
+    const resolve = async () => {
+      const commandId = nextId("derive-composite");
+      const authorization = await fixture.authorizationFor(
+        commandId,
+        "knowledge-modeling.identification-basis",
+        world.projectId,
+      );
+      return adapter.resolve(
+        KnowledgeResolutionCommandV1Schema.parse({
+          kind: "identification-basis",
+          commandId,
+          idempotencyKey: commandId,
+          projectId: world.projectId,
+          actorId: authorization.actorId,
+          issuedAt: tick(),
+          authorization,
+          payload: { preparationSnapshotRef: world.snapshotRef, requiredAt: tick() },
+        }),
+      );
+    };
+    const first = await resolve();
+    expect(first).toMatchObject({ kind: "succeeded", result: { kind: "identification-basis" } });
+    const replay = await resolve();
+    expect(replay).toEqual(first);
+    const rows = await fixture.cleaning.postgres.adminPool.query<{
+      publication_origin: { kind: string; parentReleaseRefs: unknown[] };
+      review_task_ref: unknown;
+      review_decision_ref: unknown;
+    }>(
+      `SELECT publication_origin, review_task_ref, review_decision_ref
+        FROM business.knowledge_releases WHERE project_id = $1 AND definition_type = 'retrieval-evidence-base'`,
+      [world.projectId],
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]).toMatchObject({
+      publication_origin: {
+        kind: "derived-approved",
+        parentReleaseRefs: parents,
+      },
+      review_task_ref: null,
+      review_decision_ref: null,
+    });
+    expect(
+      await countBinding(
+        "outbox.events",
+        "project_id = $1 AND event_type = 'knowledge.identification-basis-published.v1'",
+        [world.projectId],
+      ),
+    ).toBe("1");
+  }, 240_000);
+
+  it("reads the approved entries of an exact release and the legal empty set", async () => {
+    const world = await fixture.createPreparationWorld("visible-entries");
+    const adapter = adapterFor();
+    const base = standardLibraryPackage({
+      ...fixture.builderInput(),
+      projectId: world.projectId,
+      preparationSnapshotRef: world.snapshotRef,
+      evidence: world.evidence,
+    });
+    // 同一发布内的多条登记条目必须逐条返回；只返回首条会让后续按成员检索悄悄丢事实。
+    const value = {
+      ...base,
+      entries: [
+        ...base.entries,
+        { ...base.entries[0]!, entryId: "standard-2", clauseRefs: ["clause-4.1"] },
+      ],
+    };
+    const revisionRef = revisionOf(
+      await submitPackage(adapter, "standard-library", value, {
+        projectId: world.projectId,
+        evidence: world.evidence,
+      }),
+      "standard-library submit",
+    );
+    const { releaseRef } = await publishRevision(adapter, revisionRef, world.projectId);
+    const authorization = await fixture.authorizationFor(
+      nextId("c17-visible-entries"),
+      "knowledge-modeling.hybrid-evidence",
+      world.projectId,
+    );
+    const entries = await adapter.readVisibleEntries({
+      projectId: world.projectId,
+      releaseRefs: [releaseRef],
+      authorization,
+    });
+    const byEntryId = new Map(entries.map((entry) => [entry.sourceEntryId, entry]));
+    expect([...byEntryId.keys()].sort()).toEqual(["standard-1", "standard-2"]);
+    // 条目正文就是发布时登记的批准正文：不重读候选工件，也不回落到 Qdrant 载荷。
+    expect(byEntryId.get("standard-1")).toEqual({
+      sourceKind: "standard-library",
+      sourceReleaseRef: releaseRef,
+      sourceEntryId: "standard-1",
+      entry: value.entries[0],
+    });
+    expect(byEntryId.get("standard-2")).toEqual({
+      sourceKind: "standard-library",
+      sourceReleaseRef: releaseRef,
+      sourceEntryId: "standard-2",
+      entry: value.entries[1],
+    });
+    const unregistered = {
+      kind: "knowledge-release" as const,
+      reference: { entityId: "c17-unknown-release", versionId: "1" },
+    };
+    // 未登记的发布引用是合法空集：不扩读其他发布，也不抛错。
+    expect(
+      await adapter.readVisibleEntries({
+        projectId: world.projectId,
+        releaseRefs: [unregistered],
+        authorization,
+      }),
+    ).toEqual([]);
+    // 同一调用里混入未登记的发布引用不会连坐吞掉合法条目。
+    expect(
+      [
+        ...new Set(
+          (
+            await adapter.readVisibleEntries({
+              projectId: world.projectId,
+              releaseRefs: [unregistered, releaseRef],
+              authorization,
+            })
+          ).map((entry) => entry.sourceEntryId),
+        ),
+      ].sort(),
+    ).toEqual(["standard-1", "standard-2"]);
+  }, 300_000);
+
+  it("stops returning entries once their source visibility is withdrawn", async () => {
+    const world = await fixture.createPreparationWorld("visible-withdrawn", ["csv", "xlsx"]);
+    const adapter = adapterFor();
+    const base = standardLibraryPackage({
+      ...fixture.builderInput(),
+      projectId: world.projectId,
+      preparationSnapshotRef: world.snapshotRef,
+      evidence: world.evidence,
+    });
+    expect(world.sourceVersionRefs).toHaveLength(2);
+    const value = {
+      ...base,
+      entries: world.sourceVersionRefs.map((source, index) => ({
+        ...base.entries[0]!,
+        entryId: `standard-${index + 1}`,
+        evidence: world.evidence.filter(
+          (evidence) =>
+            evidence.sourceVersion.entityId === source.reference.entityId &&
+            evidence.sourceVersion.versionId === source.reference.versionId,
+        ),
+      })),
+    };
+    const revisionRef = revisionOf(
+      await submitPackage(adapter, "standard-library", value, {
+        projectId: world.projectId,
+        evidence: world.evidence,
+      }),
+      "standard-library submit",
+    );
+    const { releaseRef } = await publishRevision(adapter, revisionRef, world.projectId);
+    const authorization = await fixture.authorizationFor(
+      nextId("c17-visible-withdrawn"),
+      "knowledge-modeling.hybrid-evidence",
+      world.projectId,
+    );
+    const visible = async () =>
+      await adapter.readVisibleEntries({
+        projectId: world.projectId,
+        releaseRefs: [releaseRef],
+        authorization,
+      });
+    expect((await visible()).map((entry) => entry.sourceEntryId).sort()).toEqual([
+      "standard-1",
+      "standard-2",
+    ]);
+
+    const sourceVersionRef = world.sourceVersionRefs[0]!;
+    // 可见范围变更仍由真实 C02 命令执行；这里只读取当前授权版本号与另一个在册成员身份。
+    const policies = await fixture.cleaning.postgres.adminPool.query<{
+      source_access_grant_id: string;
+      revision_no: number;
+    }>(
+      `SELECT policy.source_access_grant_id, revision.revision_no
+         FROM business.source_access_policies AS policy
+         JOIN business.source_access_policy_revisions AS revision
+           ON revision.revision_id = policy.current_revision_id
+        WHERE policy.project_id = $1
+          AND policy.source_entity_id = $2
+          AND policy.source_version_id = $3`,
+      [world.projectId, sourceVersionRef.reference.entityId, sourceVersionRef.reference.versionId],
+    );
+    const otherMembers = await fixture.cleaning.postgres.adminPool.query<{ account_id: string }>(
+      `SELECT account_id FROM business.project_memberships
+        WHERE project_id = $1 AND account_id <> $2 ORDER BY account_id LIMIT 1`,
+      [world.projectId, authorization.actorId],
+    );
+    expect(policies.rows).toHaveLength(1);
+    expect(otherMembers.rows).toHaveLength(1);
+    const commandId = nextId("c17-withdraw-source-access");
+    const withdrawn = await fixture.cleaning.access.administerProject({
+      kind: "revise-source-access",
+      projectId: world.projectId,
+      commandId,
+      idempotencyKey: commandId,
+      expectedVersion: {
+        entityId: policies.rows[0]!.source_access_grant_id,
+        versionId: String(policies.rows[0]!.revision_no),
+      },
+      authorizationContextRef: (
+        await fixture.authorizationFor(
+          commandId,
+          "engineering-data.register-source-delivery",
+          world.projectId,
+        )
+      ).authorizationContextRef,
+      sourceVersionRef,
+      visibility: "restricted",
+      allowedAccountIds: [otherMembers.rows[0]!.account_id],
+      spatialScopeRefs: [],
+      registeredByAccountId: otherMembers.rows[0]!.account_id,
+    });
+    expect(withdrawn).toMatchObject({ kind: "source-access" });
+    // 登记条目仍在原表里：读面只是按当前来源权限过滤，没有删除或改写已批准内容。
+    expect(
+      await countBinding(
+        "business.identification_knowledge_entries",
+        "project_id = $1 AND release_id = $2",
+        [world.projectId, releaseRef.reference.entityId],
+      ),
+    ).toBe("2");
+    expect((await visible()).map((entry) => entry.sourceEntryId)).toEqual(["standard-2"]);
+  }, 300_000);
 
   it("resolves the exact identification basis from three main releases, composite members and policy set", async () => {
     const { adapter, assessmentBasisCommands } = fixture.createIdentificationKnowledgeAdapter();

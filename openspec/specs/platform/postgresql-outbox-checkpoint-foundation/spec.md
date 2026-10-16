@@ -5,7 +5,6 @@
 为 RiskFlow 提供可独立验收的 PostgreSQL 业务事实、审计、事务 Outbox、幂等消费与 LangGraph 检查点基础，使后续领域模块在最小权限和至少一次执行条件下仍能原子、可追溯且可恢复地形成事实。
 
 ## Requirements
-
 ### Requirement: PostgreSQL schema 与角色保持事实和权限边界
 
 系统 MUST 在同一 PostgreSQL 实例中隔离业务事实、只追加审计、Outbox 与 LangGraph 检查点，并为迁移、业务运行、Outbox Worker 和 checkpointer 提供不同的最小权限角色。业务运行角色不得更新或删除审计，不得管理 checkpointer 内部表；checkpointer 角色不得读取或写入业务、审计或 Outbox；PUBLIC 不得在这些 schema 中创建对象。部署秘密、LOGIN 主体及角色成员关系不属于本能力保存的业务数据。（RI-S14、RI-S44、RI-S62～RI-S65；RA-S4～RA-S7）
@@ -137,27 +136,46 @@
 
 ### Requirement: LangGraph checkpointer 与业务事实完全隔离
 
-系统 MUST 使用官方 PostgreSQL checkpointer 的独立 schema、连接角色和受控 setup 入口保存小型图状态，并以 C02 的 `runId/threadId/commandId/eventId` 引用关联业务运行。checkpointer 写入、清理、失败和恢复 MUST 与业务事务分离；检查点不得作为业务查询或业务记录来源，不能补造缺失的标准化风险记录、评估记录、预警、处置、复核决定或审计。（RI-S61～RI-S65；RA-S5～RA-S7）
+系统 MUST 使用官方 PostgreSQL checkpointer 独立 schema 和角色保存小型图进度；官方协议与内部元数据由官方库处理，自有检查仅覆盖业务状态结构、线程和工程运行归属。保存、读取和历史枚举不得递归证明业务正文、权限链或文件摘要。业务结果属于原模块；续办时读取最近已提交阶段结果并沿原幂等身份继续，不从检查点补造事实。
 
 #### Scenario: 检查点可以独立保存和恢复
+
 - **WHEN** 工作流以稳定 `threadId` 写入多个检查点并重新创建运行进程
 - **THEN** checkpointer 能读取线程最新状态与历史
 - **AND** 保存的图状态只包含 C02 允许的小型版本化引用和路由结果
 
 #### Scenario: 检查点不能补造业务事实
+
 - **WHEN** 检查点引用一个不存在或已回滚的业务提交
 - **THEN** 恢复方得到结构化不一致错误
 - **AND** 不从检查点内容创建业务事实、审计或 Outbox 行
 
 #### Scenario: 检查点失败不回滚已入库事实
+
 - **WHEN** 业务事务已提交而后续 checkpointer 写入失败
 - **THEN** 已提交事实、审计和事件保持有效
 - **AND** 恢复流程使用原业务幂等键核对既有提交后继续或终止
 
 #### Scenario: 清理检查点不删除业务记录
+
 - **WHEN** 获授权运维动作清理一个线程的检查点或重建 checkpointer schema
 - **THEN** 业务事实、审计、命令收据、Outbox 和消费者收据保持不变
 - **AND** checkpointer 角色仍无法直接读取这些记录
+
+#### Scenario: 业务领先进度可续办
+
+- **WHEN** 阶段结果已提交而随后检查点写入失败
+- **THEN** 续办读取原阶段结果继续，不重复模型和已提交业务效果
+
+#### Scenario: 列历史不触发业务举证
+
+- **WHEN** 用户读取或列出正常任务进度
+- **THEN** 返回小型进度，不逐引用读取业务正文或重新授权
+
+#### Scenario: 官方元数据兼容
+
+- **WHEN** 所用官方库产生附加内部元数据
+- **THEN** 只要业务状态和归属有效即可保存读取，不因自建全字段白名单失败
 
 ### Requirement: 基础设施失败、时间与审计保持结构化可追溯
 

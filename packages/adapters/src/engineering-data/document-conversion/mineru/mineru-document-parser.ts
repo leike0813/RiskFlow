@@ -1,5 +1,6 @@
 import { ArtifactRefV1Schema, type ArtifactRefV1 } from "@riskflow/core/artifacts";
 import type { JsonValue } from "@riskflow/core/persistence";
+import { UnrecognizedTableImageRefV1Schema } from "@riskflow/core/engineering-data/document-conversion";
 
 import {
   DocumentServiceParserError,
@@ -8,7 +9,7 @@ import {
 } from "../structured-document-converter.js";
 import { readDocumentPackage } from "../parsers.js";
 import { preflightMineruSource } from "./source.js";
-import { normalizeMineruMiddle } from "./normalization.js";
+import { normalizeMineruMiddle, type TableImageResolver } from "./normalization.js";
 import { normalizeOfficialMineruLayout } from "./official-normalization.js";
 import {
   MINERU_ERROR_CODES_V1,
@@ -327,6 +328,7 @@ export const createMineruDocumentParser = (
       };
 
       let middle: unknown;
+      let resolveTableImage: TableImageResolver | undefined;
       let taskIdentity: string;
       if (isOfficial) {
         const base = new URL(config.endpoint);
@@ -443,6 +445,65 @@ export const createMineruDocumentParser = (
           throw failure("protocolInvalid", { stage: "official.result.zip-layout" });
         }
         middle = parseJson(entries["layout.json"]!);
+        const sources = new Set<string>();
+        const pending: unknown[] = [middle];
+        while (pending.length > 0) {
+          const item = pending.pop();
+          if (Array.isArray(item)) for (const child of item) pending.push(child);
+          else if (item !== null && typeof item === "object") {
+            for (const [key, value] of Object.entries(item)) {
+              if (key === "html" && typeof value === "string")
+                for (const match of value.matchAll(
+                  /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/gu,
+                ))
+                  sources.add(match[1] ?? match[2]!);
+              else if (typeof value === "object") pending.push(value);
+            }
+          }
+        }
+        const images = new Map<string, ReturnType<TableImageResolver>>();
+        if (
+          sources.size >
+          Math.min(request.resourcePolicy.maxCells, request.resourcePolicy.maxOutputBlocks)
+        )
+          throw failure("protocolInvalid", { stage: "official.table-image-limit" });
+        for (const src of sources) {
+          if (
+            src.length === 0 ||
+            src.length > 512 ||
+            /[\\:%?#]/u.test(src) ||
+            [...src].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ||
+            src.split("/").some((part) => part === "" || part === "." || part === "..")
+          )
+            throw failure("protocolInvalid", { stage: "official.table-image-path" });
+          const matches = Object.keys(entries).filter(
+            (name) =>
+              name === src || (!src.includes("/") && name.slice(name.lastIndexOf("/") + 1) === src),
+          );
+          const name = matches[0];
+          if (matches.length !== 1 || name === undefined || !/\.(?:png|jpe?g)$/iu.test(name))
+            throw failure("protocolInvalid", { stage: "official.table-image-entry" });
+          const mediaType = /\.png$/iu.test(name) ? "image/png" : "image/jpeg";
+          await preflightMineruSource({
+            ...request,
+            bytes: entries[name]!,
+            command: { ...command, mediaType },
+          });
+          images.set(
+            src,
+            UnrecognizedTableImageRefV1Schema.parse({
+              kind: "unrecognized-image",
+              rawResponseArtifactRef: zip.artifactRef,
+              packageEntryPath: name,
+            }),
+          );
+        }
+        resolveTableImage = (src) => {
+          const image = images.get(src);
+          if (image === undefined)
+            throw failure("protocolInvalid", { stage: "official.table-image-reference" });
+          return image;
+        };
       } else {
         const base = new URL(config.endpoint);
         const fileName = `${command.conversionId}.${file.extension}`;
@@ -521,7 +582,7 @@ export const createMineruDocumentParser = (
 
       if (control.signal.aborted) throw controlFailure(control);
       const normalized = isOfficial
-        ? normalizeOfficialMineruLayout(middle, request, config, sourceInfo)
+        ? normalizeOfficialMineruLayout(middle, request, config, sourceInfo, resolveTableImage)
         : normalizeMineruMiddle(middle, request, config, sourceInfo);
       if (control.signal.aborted) throw controlFailure(control);
       return {

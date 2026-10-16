@@ -42,11 +42,14 @@ import {
 } from "@riskflow/core/recommendation";
 import {
   AuthorizationContextV1Schema,
+  KnowledgeGovernanceCommandV1Schema,
+  KnowledgeReleaseRefV1Schema,
   KnowledgeRetrievalQueryV1Schema,
   KnowledgeRetrievalResultV1Schema,
   ModuleErrorV1Schema,
   RecommendationCommandV1Schema,
   RecommendationResultV1Schema,
+  ReviewDecisionCommandV1Schema,
   StartAgentTaskCommandV1Schema,
   type AuthorizationContextV1,
   type KnowledgeQueryResultRefV1,
@@ -59,10 +62,15 @@ import {
 } from "@riskflow/contracts/ports";
 
 import { PostgresAgentTaskAdapter } from "../../src/agent-runtime/index.js";
+import { PostgresAssessmentConfigurationAdapter } from "../../src/assessment-config/index.js";
+import {
+  governedReleaseResolutionInvocationId,
+  PostgresKnowledgeGovernanceAdapter,
+} from "../../src/knowledge-governance/index.js";
 import { PostgresReviewAuditAdapter } from "../../src/review-audit/index.js";
 import {
   createPostgresRecommendationAdapter,
-  createPostgresRecommendationContextReader,
+  PostgresRecommendationContextReader,
   type PostgresRecommendationAdapter,
   type RecommendationReviewAuthorizationProviderV1,
 } from "../../src/recommendation/index.js";
@@ -77,7 +85,8 @@ import {
   c25Version,
 } from "../../../core/test/risk-assessment/fixture.js";
 import {
-  ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1,
+  ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE,
+  AssessmentConfigurationDocumentV1Schema,
   IndicatorFieldMappingDocumentV1Schema,
   MeasureLibraryDocumentV1Schema,
   MonitoringWarningThresholdDocumentV1Schema,
@@ -169,7 +178,7 @@ export interface RecommendationPostgresFixtureV1 {
       readonly kind: "risk-assessment-record";
       readonly reference: { readonly entityId: string; readonly versionId: string };
     };
-    readonly measureLibraryReleaseRef: MeasureLibraryReleaseRefV1;
+    readonly measureLibraryReleaseRef?: MeasureLibraryReleaseRefV1;
     readonly spatialScope?: "root" | "restricted";
   }): Promise<KnowledgeRetrievalResultV1>;
   /** 未获准工程的身份声明查询：服务端必须在读取目标前失败闭合。 */
@@ -202,13 +211,15 @@ export interface RecommendationPostgresFixtureV1 {
     readonly warningResponseTaskRef: WarningResponseTaskRefV1;
     readonly measureCandidateQueryResultRef: KnowledgeQueryResultRefV1;
     readonly agentTaskResultRef: AgentTaskResultRefV1;
-    readonly responseGenerationPolicyRef: { readonly entityId: string; readonly versionId: string };
+    readonly responseGenerationPolicyRef?:
+      { readonly entityId: string; readonly versionId: string } | undefined;
   }): Promise<RecommendationResultV1>;
   validateAndRecord(input: {
     readonly commandId: string;
     readonly spatialScope?: "root" | "restricted";
     readonly recommendationCandidateRef: RecommendationCandidateRefV1;
-    readonly responseValidationPolicyRef: { readonly entityId: string; readonly versionId: string };
+    readonly responseValidationPolicyRef?:
+      { readonly entityId: string; readonly versionId: string } | undefined;
     readonly siteContextRef: { readonly entityId: string; readonly versionId: string };
   }): Promise<RecommendationResultV1>;
   candidatePayload(candidateRef: RecommendationCandidateRefV1): Promise<RecommendationCandidateV1>;
@@ -422,7 +433,7 @@ export const startRecommendationFixture = async (
     return { kind: "content-artifact", reference: result.artifactRef.reference };
   };
 
-  // C18 措施库正文：夹具按 C18 公共文档形态发布，C27 adapter 经 C04 授权读取并 strict 解析。
+  // C18 处置用途九类配置正文：含措施库，按公共文档形态发布，C27 adapter 经 C04 授权读取并 strict 解析。
   const configurationMembers: {
     definitionType: string;
     releaseRef: unknown;
@@ -431,10 +442,13 @@ export const startRecommendationFixture = async (
     contentDigest: string;
   }[] = [];
   let measureArtifactRef: ContentArtifactRef | undefined;
-  for (const definitionType of ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1) {
-    const document = c25ConfigurationDocument(
-      definitionType,
-      (configurationDocuments[definitionType] as { readonly content: unknown }).content,
+  const responseDefinitionTypes = ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE.response;
+  for (const definitionType of responseDefinitionTypes) {
+    const document = AssessmentConfigurationDocumentV1Schema.parse(
+      c25ConfigurationDocument(
+        definitionType,
+        (configurationDocuments[definitionType] as { readonly content: unknown }).content,
+      ),
     );
     const artifactRef = await publishArtifact({
       commandId: `c27-configuration-${definitionType}`,
@@ -627,10 +641,138 @@ export const startRecommendationFixture = async (
         : Promise.reject(new Error("c27-review-disabled")),
   };
 
-  const contextReader = createPostgresRecommendationContextReader({
+  // C18 治理链：夹具用 C27 自己的真实会话把处置用途的九类配置经 C16 提交 → C07 人工批准 →
+  // C16 发布，再由 C18 按 purpose=response 解析已发布成员，不使用内存投影或兜底。
+  const configuration = new PostgresAssessmentConfigurationAdapter({
+    db,
+    transactionUnit,
+    artifactStore,
+    now: () => new Date(C27_FIXTURE_TIME),
+    governedReleases: {
+      resolveGovernedReleases: async (request) => {
+        const authorization = await authorizeFor({
+          branch: "knowledge-modeling.assessment-basis",
+          invocationId: governedReleaseResolutionInvocationId({
+            requiredDefinitionTypes: request.requiredDefinitionTypes,
+            requiredAt: request.requiredAt,
+            asOfRecordedAt: request.asOfRecordedAt,
+          }),
+          requestedAt: C27_FIXTURE_TIME,
+        });
+        return governance.resolveGovernedReleases({ ...request, authorization });
+      },
+    },
+  });
+  const governance = new PostgresKnowledgeGovernanceAdapter({
+    db,
+    transactionUnit,
+    access,
+    reviewAudit,
+    now: () => new Date(C27_FIXTURE_TIME),
+    assessmentConfigurationPolicy: configuration,
+    reviewAuthorizationProvider: {
+      authorize: async (input) =>
+        authorizeFor({
+          branch: input.branch,
+          invocationId: input.invocationId,
+          requestedAt: input.requestedAt,
+        }),
+    },
+  });
+  for (const member of configurationMembers) {
+    const govern = async (
+      kind: "submit-revision" | "request-review" | "publish-approved-release",
+      payload: unknown,
+    ) => {
+      const commandId = `c27-govern:${member.definitionType}:${kind}`;
+      const result = await governance.govern(
+        KnowledgeGovernanceCommandV1Schema.parse({
+          kind,
+          commandId,
+          idempotencyKey: commandId,
+          projectId,
+          actorId: managerId,
+          issuedAt: C27_FIXTURE_TIME,
+          authorization: await authorizeFor({
+            branch: `knowledge-modeling.${kind}`,
+            invocationId: commandId,
+          }),
+          payload,
+        }),
+      );
+      if (result.kind !== "succeeded")
+        throw new Error(`C27 configuration ${kind}: ${JSON.stringify(result)}`);
+      return result.result;
+    };
+    const revision = await govern("submit-revision", {
+      definitionType: member.definitionType,
+      candidateArtifactRef: member.artifactRef,
+      evidenceReferences: [c25Evidence(`c27-${member.definitionType}`)],
+    });
+    if (revision.kind !== "revision") throw new Error("C27 configuration revision missing");
+    const review = await govern("request-review", {
+      revisionRef: revision.knowledgeRevisionRef,
+      reviewPolicyRef: c25Version("review-policy"),
+    });
+    if (review.kind !== "review-task") throw new Error("C27 configuration review missing");
+    const commandId = `c27-govern:${member.definitionType}:decide`;
+    const decision = await reviewAudit.decideReview(
+      ReviewDecisionCommandV1Schema.parse({
+        kind: "decide-review",
+        commandId,
+        idempotencyKey: commandId,
+        projectId,
+        actorId: managerId,
+        issuedAt: C27_FIXTURE_TIME,
+        authorization: await authorizeFor({
+          branch: "review-audit.decide-review",
+          invocationId: commandId,
+        }),
+        payload: {
+          reviewTaskRef: review.reviewTaskRef,
+          targetRef: review.reviewTaskRef.targetRef,
+          decision: { reviewType: "knowledge-revision", kind: "approve-publication" },
+          reasonCode: "synthetic-client-reviewed",
+        },
+      }),
+    );
+    if (decision.kind !== "succeeded")
+      throw new Error(`C27 configuration approval: ${JSON.stringify(decision)}`);
+    const published = await govern("publish-approved-release", {
+      revisionRef: revision.knowledgeRevisionRef,
+      reviewDecisionRef: decision.result.reviewDecisionRef,
+      effectiveFrom: C27_FIXTURE_TIME,
+    });
+    if (published.kind !== "release") throw new Error("C27 configuration release missing");
+    member.releaseRef = published.knowledgeReleaseRef;
+    member.revisionRef = revision.knowledgeRevisionRef;
+  }
+  const publishedMeasure = configurationMembers.find(
+    (member) => member.definitionType === "measure-library",
+  )!;
+  const measureLibraryReleaseRef = {
+    kind: "measure-library-release" as const,
+    reference: KnowledgeReleaseRefV1Schema.parse(publishedMeasure.releaseRef).reference,
+  };
+  configurationMembers.splice(configurationMembers.indexOf(publishedMeasure), 1);
+  // 读者直接构造：接缝需要 configuration 与 runtimePolicies，二者不得被丢弃。
+  const contextReader = new PostgresRecommendationContextReader({
     db,
     artifactStore,
     basis: basisReader,
+    configuration,
+    runtimePolicies: () => ({
+      generationPolicyRef: c25Version("response-generation-policy"),
+      validationPolicyRef: c25Version("response-validation-policy"),
+      agentPolicyRef: c25Version("response-agent-policy"),
+      reviewPolicyRef: c25Version("review-policy"),
+    }),
+    authorizeDownstream: async (request) =>
+      authorizeFor({
+        branch: request.branch,
+        invocationId: request.invocationId,
+        requestedAt: request.requestedAt,
+      }),
   });
   const adapterRef: { current?: PostgresRecommendationAdapter } = {};
   const definition = createResponseRecommendationTaskDefinition({
@@ -777,10 +919,7 @@ export const startRecommendationFixture = async (
     managerId,
     agentPolicy,
     measureArtifactRef,
-    measureLibraryReleaseRef: {
-      kind: "measure-library-release",
-      reference: c25ReleaseRef("measure-library").reference,
-    },
+    measureLibraryReleaseRef,
     generationPolicyRef: c25Version("response-generation-policy"),
     validationPolicyRef: c25Version("response-validation-policy"),
     siteContextRef: c25Version("site-context-c27"),
@@ -882,7 +1021,9 @@ export const startRecommendationFixture = async (
         payload: {
           assessmentRecordRef: input.assessmentRecordRef,
           warningResponseTaskRef: input.warningResponseTaskRef,
-          measureLibraryReleaseRef: input.measureLibraryReleaseRef,
+          ...(input.measureLibraryReleaseRef === undefined
+            ? {}
+            : { measureLibraryReleaseRef: input.measureLibraryReleaseRef }),
         },
       });
       return KnowledgeRetrievalResultV1Schema.parse(await adapter.measureCandidates(query));

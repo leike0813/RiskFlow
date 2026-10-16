@@ -81,6 +81,7 @@ describe("C21 identification context composition", () => {
 
     // 共享 C08 registry 里只注册一个 `retrieval-review` 定义，且工具白名单固定两项。
     const definition = registry.get(RETRIEVAL_REVIEW_TASK_TYPE);
+    expect(composition.modelContextReader.readExact).toBeTypeOf("function");
     expect(definition.metadata.taskType).toBe(RETRIEVAL_REVIEW_TASK_TYPE);
     expect(definition.metadata.allowedToolRefs).toEqual([
       versionRef("tool-read-frozen"),

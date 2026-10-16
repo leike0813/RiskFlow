@@ -8,8 +8,13 @@ import {
 } from "@riskflow/contracts/common";
 import { ModuleBranchV1Schema } from "@riskflow/contracts/ports";
 import {
-  DataCleaningPolicyV1Schema,
-  type DataCleaningPolicyV1,
+  AgentTaskBudgetPolicyV1Schema,
+  type AgentTaskBudgetPolicyV1,
+} from "@riskflow/core/agent-runtime";
+import {
+  DataCleaningPolicySchema,
+  DataCleaningPolicyV2Schema,
+  type DataCleaningPolicy,
 } from "@riskflow/core/engineering-data/cleaning";
 import {
   IdentificationKnowledgeValidationPolicyV1Schema,
@@ -23,6 +28,7 @@ import {
 } from "@riskflow/core/retrieval";
 import {
   RetrievalReviewPolicyV1Schema,
+  RetrievalReviewPolicyV2Schema,
   type RetrievalReviewPolicyV1,
 } from "@riskflow/core/identification/context";
 import {
@@ -33,6 +39,8 @@ import {
 } from "@riskflow/core/identification/graph";
 import {
   RiskCandidatePolicyBundleV1Schema,
+  RiskCandidateGenerationPolicyV1Schema,
+  RiskCandidateGenerationBudgetV1Schema,
   type RiskCandidatePolicyBundleV1,
 } from "@riskflow/core/identification/candidate-finalization";
 import {
@@ -68,6 +76,9 @@ import { ReportExportPolicyV1Schema, type ReportExportPolicyV1 } from "@riskflow
  * 正文一律由所属 core Schema 校验，catalog 不复制业务阈值、不内建默认值，
  * 也不替代 C16/C18/C19 的已发布业务定义。合成或 demo 常量不得进入生产 catalog。
  *
+ * D-08：V2/V3 持久策略只引用 `budgetPolicies` 中的唯一预算成员，解析入口补回
+ * 模型、提示、工具引用与数值预算，调用方收到的仍是原运行接口对象。
+ *
  * 缺项、冲突、错版本与未批准条目一律失败，不回退到“最近版本”。
  */
 
@@ -96,8 +107,9 @@ export const DEPLOYMENT_POLICY_PURPOSE_V1_VALUES = ["production", "synthetic-acc
 export const DeploymentPolicyPurposeV1Schema = z.enum(DEPLOYMENT_POLICY_PURPOSE_V1_VALUES);
 export type DeploymentPolicyPurposeV1 = z.infer<typeof DeploymentPolicyPurposeV1Schema>;
 
+/** 解析入口返回的运行接口正文；预算引用版持久正文在解析时归一为这里的类型。 */
 export interface DeploymentPolicyBodyByTypeV1 {
-  readonly cleaning: DataCleaningPolicyV1;
+  readonly cleaning: DataCleaningPolicy;
   readonly "knowledge-validation": IdentificationKnowledgeValidationPolicyV1;
   readonly "hybrid-retrieval": HybridRetrievalPolicyV1;
   readonly "retrieval-acceptance": HybridRetrievalAcceptancePolicyV1;
@@ -115,12 +127,17 @@ export interface DeploymentPolicyBodyByTypeV1 {
   readonly "report-export": ReportExportPolicyV1;
 }
 
-/** 批准元数据：绑定批准者、批准时间与介质身份，缺一不可。 */
-const approvalMetadata = z.strictObject({
-  approvedBy: IdentifierSchema,
-  approvedAt: IsoDateTimeSchema,
-  releaseId: IdentifierSchema,
-});
+/**
+ * 批准元数据：批准者与批准时间缺一不可（D-08）。
+ * 旧配置的 approval.releaseId 继续可读，加载时归一丢弃：策略批准不与软件 release 绑定。
+ */
+const approvalMetadata = z
+  .strictObject({
+    approvedBy: IdentifierSchema,
+    approvedAt: IsoDateTimeSchema,
+    releaseId: IdentifierSchema.optional(),
+  })
+  .transform(({ approvedBy, approvedAt }) => ({ approvedBy, approvedAt }));
 
 const catalogEntryBase = z.strictObject({
   schemaVersion: z.literal(1),
@@ -176,9 +193,10 @@ const validateProjectIds = (
   }
 };
 
-const catalogEntrySchema = <T extends DeploymentPolicyTypeV1>(
+/** 目录正文允许历史内联版本与该类型的唯一预算引用版本；运行接口类型由归一函数收口。 */
+const catalogEntrySchema = <T extends DeploymentPolicyTypeV1, B>(
   policyType: T,
-  bodySchema: z.ZodType<DeploymentPolicyBodyByTypeV1[T]>,
+  bodySchema: z.ZodType<B>,
 ) =>
   catalogEntryBase
     .extend({ policyType: z.literal(policyType), body: bodySchema })
@@ -197,22 +215,118 @@ const catalogEntrySchema = <T extends DeploymentPolicyTypeV1>(
 const sameRef = (left: VersionReference, right: VersionReference): boolean =>
   left.entityId === right.entityId && left.versionId === right.versionId;
 
+/** D-08：预算正文按身份唯一登记，供各阶段 V2/V3 策略引用，不再随策略内联复制。 */
+export const DEPLOYMENT_POLICY_BUDGET_TYPE_V1 = "agent-task-budget" as const;
+
+export const DeploymentPolicyBudgetEntryV1Schema = catalogEntryBase
+  .extend({
+    policyType: z.literal(DEPLOYMENT_POLICY_BUDGET_TYPE_V1),
+    body: AgentTaskBudgetPolicyV1Schema,
+  })
+  .superRefine((entry, context) => {
+    if (!sameRef(entry.body.policyRef, entry.policyRef))
+      context.addIssue({
+        code: "custom",
+        path: ["body"],
+        message: "agent-task-budget body reference does not match the catalog reference",
+      });
+  });
+export type DeploymentPolicyBudgetEntryV1 = z.infer<typeof DeploymentPolicyBudgetEntryV1Schema>;
+const candidateBudgetEntrySchema = catalogEntryBase.extend({
+  policyType: z.literal("risk-candidate-budget"),
+  body: RiskCandidateGenerationBudgetV1Schema,
+});
+const riskCandidatePolicyBundleV2Schema = RiskCandidatePolicyBundleV1Schema.extend({
+  generation: RiskCandidateGenerationPolicyV1Schema.omit({ budget: true }).extend({
+    schemaVersion: z.literal("2"),
+  }),
+});
+
+/**
+ * D-08 单份运行清单：V2/V3 持久正文只保留业务参数与唯一预算引用，
+ * 模型、提示、工具引用与数值预算一律由被引用的预算成员解析，不在策略中重复抄写。
+ */
+const agentBudgetRefSchema = z.strictObject({
+  definitionRef: VersionReferenceSchema,
+  incrementSchemaRef: VersionReferenceSchema,
+  validationPolicyRef: VersionReferenceSchema,
+  budgetPolicyRef: VersionReferenceSchema,
+});
+const scoringRulesPolicyV2Schema = z.strictObject({
+  ...ScoringRulesPolicyV1Schema.shape,
+  schemaVersion: z.literal("2"),
+  agent: agentBudgetRefSchema,
+});
+
+/** 清洗策略 V3 = 现行 V2 业务规则 + 唯一预算引用；V2 版本号已由 documentRules 正文占用。 */
+export const DataCleaningPolicyV3Schema = z.strictObject({
+  ...DataCleaningPolicyV2Schema.shape,
+  schemaVersion: z.literal("3"),
+  agent: agentBudgetRefSchema,
+});
+export type DataCleaningPolicyV3 = z.infer<typeof DataCleaningPolicyV3Schema>;
+
+/** 知识校验策略 V2 保留覆盖、层级与方法业务规则，Agent 引用只留唯一预算。 */
+export const IdentificationKnowledgeValidationPolicyV2Schema = z.strictObject({
+  ...IdentificationKnowledgeValidationPolicyV1Schema.shape,
+  schemaVersion: z.literal("2"),
+  agent: agentBudgetRefSchema,
+});
+export type IdentificationKnowledgeValidationPolicyV2 = z.infer<
+  typeof IdentificationKnowledgeValidationPolicyV2Schema
+>;
+
+/** 处置 Agent 策略 V2 去掉内联预算与重复工具引用，只留业务定义与唯一预算引用。 */
+export const ResponseAgentPolicyV2Schema = z
+  .strictObject(ResponseAgentPolicyV1Schema.shape)
+  .omit({ schemaVersion: true, toolPolicyRef: true, budgetPolicy: true })
+  .extend({ schemaVersion: z.literal("2"), budgetPolicyRef: VersionReferenceSchema });
+export type ResponseAgentPolicyV2 = z.infer<typeof ResponseAgentPolicyV2Schema>;
+
+/** 校准策略 V2 保留证据与操作上限业务规则，预算正文同样只从目录引用解析。 */
+export const CalibrationValidationPolicyV2Schema = z
+  .strictObject(CalibrationValidationPolicyV1Schema.shape)
+  .omit({ schemaVersion: true, toolPolicyRef: true, budgetPolicy: true })
+  .extend({ schemaVersion: z.literal("2"), budgetPolicyRef: VersionReferenceSchema });
+export type CalibrationValidationPolicyV2 = z.infer<typeof CalibrationValidationPolicyV2Schema>;
+
 const entrySchemas = [
-  catalogEntrySchema("cleaning", DataCleaningPolicyV1Schema),
-  catalogEntrySchema("knowledge-validation", IdentificationKnowledgeValidationPolicyV1Schema),
+  catalogEntrySchema("cleaning", z.union([DataCleaningPolicySchema, DataCleaningPolicyV3Schema])),
+  catalogEntrySchema(
+    "knowledge-validation",
+    z.union([
+      IdentificationKnowledgeValidationPolicyV1Schema,
+      IdentificationKnowledgeValidationPolicyV2Schema,
+    ]),
+  ),
   catalogEntrySchema("hybrid-retrieval", HybridRetrievalPolicyV1Schema),
   catalogEntrySchema("retrieval-acceptance", HybridRetrievalAcceptancePolicyV1Schema),
-  catalogEntrySchema("retrieval-review", RetrievalReviewPolicyV1Schema),
-  catalogEntrySchema("risk-candidate", RiskCandidatePolicyBundleV1Schema),
+  catalogEntrySchema(
+    "retrieval-review",
+    z.union([RetrievalReviewPolicyV1Schema, RetrievalReviewPolicyV2Schema]),
+  ),
+  catalogEntrySchema(
+    "risk-candidate",
+    z.union([RiskCandidatePolicyBundleV1Schema, riskCandidatePolicyBundleV2Schema]),
+  ),
   catalogEntrySchema("identification-graph", IdentificationGraphPolicySetV1Schema),
   catalogEntrySchema("retry", IdentificationGraphRetryPolicyV1Schema),
   catalogEntrySchema("assessment-runtime", AssessmentRuntimePolicySetV1Schema),
   catalogEntrySchema("warning-runtime", WarningRuntimePolicySetV1Schema),
   catalogEntrySchema("response-generation", ResponseGenerationPolicyV1Schema),
   catalogEntrySchema("response-validation", ResponseValidationPolicyV1Schema),
-  catalogEntrySchema("response-agent", ResponseAgentPolicyV1Schema),
-  catalogEntrySchema("calibration", CalibrationValidationPolicyV1Schema),
-  catalogEntrySchema("scoring-rules", ScoringRulesPolicyV1Schema),
+  catalogEntrySchema(
+    "response-agent",
+    z.union([ResponseAgentPolicyV1Schema, ResponseAgentPolicyV2Schema]),
+  ),
+  catalogEntrySchema(
+    "calibration",
+    z.union([CalibrationValidationPolicyV1Schema, CalibrationValidationPolicyV2Schema]),
+  ),
+  catalogEntrySchema(
+    "scoring-rules",
+    z.union([ScoringRulesPolicyV1Schema, scoringRulesPolicyV2Schema]),
+  ),
   catalogEntrySchema("report-export", ReportExportPolicyV1Schema),
 ] as const;
 
@@ -261,6 +375,10 @@ export const DeploymentPolicyCatalogV1Schema = z.strictObject({
   catalogRef: VersionReferenceSchema,
   purpose: DeploymentPolicyPurposeV1Schema,
   downstreamAuthorization: DeploymentDownstreamAuthorizationPolicyV1Schema,
+  /** D-08：各阶段复用预算正文的唯一集合，按 (projectId, policyRef) 身份登记。 */
+  budgetPolicies: z
+    .array(z.union([DeploymentPolicyBudgetEntryV1Schema, candidateBudgetEntrySchema]))
+    .optional(),
   /** 同一工程与类型可保留多个精确版本。 */
   entries: z.array(DeploymentPolicyCatalogEntryV1).min(1),
 });
@@ -314,13 +432,9 @@ export interface DeploymentPolicyCatalogReaderV1 {
 const refKey = (reference: VersionReference): string =>
   `${reference.entityId}/${reference.versionId}`;
 
-const entryKey = (entry: DeploymentPolicyCatalogEntryV1): string =>
-  JSON.stringify([
-    entry.projectId,
-    entry.policyType,
-    entry.policyRef.entityId,
-    entry.policyRef.versionId,
-  ]);
+/** 目录身份键：projectId + 成员类型 + 精确版本引用三者缺一不可。 */
+const policyKey = (projectId: string, policyType: string, reference: VersionReference): string =>
+  JSON.stringify([projectId, policyType, reference.entityId, reference.versionId]);
 
 const deepFreeze = <T>(value: T): T => {
   if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
@@ -333,9 +447,174 @@ export const createDeploymentPolicyCatalogReaderV1 = (
   catalog: DeploymentPolicyCatalogV1,
 ): DeploymentPolicyCatalogReaderV1 => {
   const parsed = deepFreeze(DeploymentPolicyCatalogV1Schema.parse(catalog));
+  const budgets = new Map<
+    string,
+    NonNullable<DeploymentPolicyCatalogV1["budgetPolicies"]>[number]
+  >();
+  for (const entry of parsed.budgetPolicies ?? []) {
+    const key = policyKey(entry.projectId, entry.policyType, entry.policyRef);
+    if (budgets.has(key)) {
+      throw new DeploymentPolicyError(
+        DEPLOYMENT_POLICY_ERROR_V1.duplicate,
+        entry.policyType,
+        refKey(entry.policyRef),
+      );
+    }
+    budgets.set(key, entry);
+  }
+
+  /** D-08：预算正文按 (projectId, 预算引用) 精确解析；缺失即配置错误，不取其它版本。 */
+  const requireBudget = (
+    projectId: string,
+    budgetPolicyRef: VersionReference,
+  ): AgentTaskBudgetPolicyV1 => {
+    const budget = budgets.get(
+      policyKey(projectId, DEPLOYMENT_POLICY_BUDGET_TYPE_V1, budgetPolicyRef),
+    );
+    if (budget === undefined || budget.policyType !== DEPLOYMENT_POLICY_BUDGET_TYPE_V1) {
+      throw new DeploymentPolicyError(
+        DEPLOYMENT_POLICY_ERROR_V1.missing,
+        DEPLOYMENT_POLICY_BUDGET_TYPE_V1,
+        refKey(budgetPolicyRef),
+      );
+    }
+    return budget.body;
+  };
+
+  /** 复用原 V1 约束复核：归一正文超出被引用预算或违反原契约即引用漂移，不静默截断。 */
+  const normalizeOrThrow = <T>(
+    entry: DeploymentPolicyCatalogEntryV1,
+    schema: z.ZodType<T>,
+    candidate: unknown,
+  ): T => {
+    const normalized = schema.safeParse(candidate);
+    if (!normalized.success) {
+      throw new DeploymentPolicyError(
+        DEPLOYMENT_POLICY_ERROR_V1.refMismatch,
+        entry.policyType,
+        refKey(entry.policyRef),
+      );
+    }
+    return normalized.data;
+  };
+
+  /** 归一后的 Agent 引用：模型、提示、工具引用与完整预算正文都取自被引用预算成员。 */
+  const agentWithBudget = (
+    agent: z.infer<typeof agentBudgetRefSchema>,
+    budget: AgentTaskBudgetPolicyV1,
+  ) => ({
+    definitionRef: agent.definitionRef,
+    incrementSchemaRef: agent.incrementSchemaRef,
+    validationPolicyRef: agent.validationPolicyRef,
+    budgetPolicyRef: agent.budgetPolicyRef,
+    modelDeploymentRef: budget.modelDeploymentRef,
+    promptTemplateRef: budget.promptTemplateRef,
+    toolPolicyRef: budget.toolPolicyRef,
+    budgetPolicy: budget,
+  });
+
+  /** V2/V3 归一：补回被引用预算的模型、提示、工具引用与数值预算，返回原运行接口对象。 */
+  const normalizeBody = (
+    entry: DeploymentPolicyCatalogEntryV1,
+  ): DeploymentPolicyCatalogEntryV1["body"] => {
+    switch (entry.policyType) {
+      case "risk-candidate": {
+        if (entry.body.generation.schemaVersion === "1") return entry.body;
+        const budgetRef = entry.body.generation.budgetPolicyRef;
+        const budget = budgets.get(policyKey(entry.projectId, "risk-candidate-budget", budgetRef));
+        if (budget === undefined || budget.policyType !== "risk-candidate-budget")
+          throw new DeploymentPolicyError(
+            DEPLOYMENT_POLICY_ERROR_V1.missing,
+            "risk-candidate-budget",
+            refKey(budgetRef),
+          );
+        return normalizeOrThrow(entry, RiskCandidatePolicyBundleV1Schema, {
+          ...entry.body,
+          generation: { ...entry.body.generation, schemaVersion: "1", budget: budget.body },
+        });
+      }
+      case "retrieval-review": {
+        if (entry.body.schemaVersion === "1") return entry.body;
+        const budget = requireBudget(entry.projectId, entry.body.budgetPolicyRef);
+        return normalizeOrThrow(entry, RetrievalReviewPolicyV1Schema, {
+          ...entry.body,
+          schemaVersion: "1",
+          budgetPolicy: budget,
+          modelDeploymentRef: budget.modelDeploymentRef,
+          promptTemplateRef: budget.promptTemplateRef,
+          toolPolicyRef: budget.toolPolicyRef,
+        });
+      }
+      case "cleaning": {
+        if (entry.body.schemaVersion !== "3") return entry.body;
+        return normalizeOrThrow(entry, DataCleaningPolicyV2Schema, {
+          ...entry.body,
+          schemaVersion: "2",
+          agent: agentWithBudget(
+            entry.body.agent,
+            requireBudget(entry.projectId, entry.body.agent.budgetPolicyRef),
+          ),
+        });
+      }
+      case "knowledge-validation": {
+        if (entry.body.schemaVersion === "1") return entry.body;
+        return normalizeOrThrow(entry, IdentificationKnowledgeValidationPolicyV1Schema, {
+          ...entry.body,
+          schemaVersion: "1",
+          agent: agentWithBudget(
+            entry.body.agent,
+            requireBudget(entry.projectId, entry.body.agent.budgetPolicyRef),
+          ),
+        });
+      }
+      case "scoring-rules": {
+        if (entry.body.schemaVersion === "1") return entry.body;
+        return normalizeOrThrow(entry, ScoringRulesPolicyV1Schema, {
+          ...entry.body,
+          schemaVersion: "1",
+          agent: agentWithBudget(
+            entry.body.agent,
+            requireBudget(entry.projectId, entry.body.agent.budgetPolicyRef),
+          ),
+        });
+      }
+      case "response-agent": {
+        if (entry.body.schemaVersion === "1") return entry.body;
+        const budget = requireBudget(entry.projectId, entry.body.budgetPolicyRef);
+        return normalizeOrThrow(entry, ResponseAgentPolicyV1Schema, {
+          schemaVersion: "1",
+          policyRef: entry.body.policyRef,
+          projectId: entry.body.projectId,
+          definitionRef: entry.body.definitionRef,
+          incrementSchemaRef: entry.body.incrementSchemaRef,
+          validationPolicyRef: entry.body.validationPolicyRef,
+          toolPolicyRef: budget.toolPolicyRef,
+          budgetPolicy: budget,
+        });
+      }
+      case "calibration": {
+        if (entry.body.schemaVersion === "1") return entry.body;
+        const budget = requireBudget(entry.projectId, entry.body.budgetPolicyRef);
+        return normalizeOrThrow(entry, CalibrationValidationPolicyV1Schema, {
+          schemaVersion: "1",
+          policyRef: entry.body.policyRef,
+          projectId: entry.body.projectId,
+          definitionRef: entry.body.definitionRef,
+          incrementSchemaRef: entry.body.incrementSchemaRef,
+          validationPolicyRef: entry.body.validationPolicyRef,
+          evidenceRequirementCount: entry.body.evidenceRequirementCount,
+          maxOperations: entry.body.maxOperations,
+          toolPolicyRef: budget.toolPolicyRef,
+          budgetPolicy: budget,
+        });
+      }
+      default:
+        return entry.body;
+    }
+  };
   const index = new Map<string, DeploymentPolicyCatalogEntryV1>();
   for (const entry of parsed.entries) {
-    const key = entryKey(entry);
+    const key = policyKey(entry.projectId, entry.policyType, entry.policyRef);
     if (index.has(key)) {
       throw new DeploymentPolicyError(
         DEPLOYMENT_POLICY_ERROR_V1.duplicate,
@@ -343,23 +622,20 @@ export const createDeploymentPolicyCatalogReaderV1 = (
         refKey(entry.policyRef),
       );
     }
-    index.set(key, entry);
+    const body = normalizeBody(entry);
+    // 归一后的正文仍以原条目身份登记；历史内联与其他类型正文原样复用。
+    index.set(
+      key,
+      body === entry.body
+        ? entry
+        : deepFreeze({ ...entry, body } as DeploymentPolicyCatalogEntryV1),
+    );
   }
 
   const lookup = (
     selector: DeploymentPolicySelectorV1,
   ): DeploymentPolicyCatalogEntryV1 | undefined => {
-    const entry = index.get(
-      JSON.stringify([
-        selector.projectId,
-        selector.policyType,
-        selector.policyRef.entityId,
-        selector.policyRef.versionId,
-      ]),
-    );
-    if (entry === undefined) return undefined;
-    if (entry.approval.releaseId.length === 0) return undefined;
-    return entry;
+    return index.get(policyKey(selector.projectId, selector.policyType, selector.policyRef));
   };
 
   return {
@@ -397,7 +673,7 @@ export interface DeploymentPolicyRefInputV1 {
 
 /** 每个入口的返回类型由固定 policyType 决定。 */
 export interface DeploymentPolicyResolversV1 {
-  cleaningPolicy(input: DeploymentPolicyRefInputV1): DataCleaningPolicyV1;
+  cleaningPolicy(input: DeploymentPolicyRefInputV1): DataCleaningPolicy;
   knowledgeValidationPolicy(
     input: DeploymentPolicyRefInputV1,
   ): IdentificationKnowledgeValidationPolicyV1;

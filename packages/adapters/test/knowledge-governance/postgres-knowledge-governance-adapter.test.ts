@@ -9,6 +9,7 @@ import {
   ReviewDecisionCommandV1Schema,
   type AuthorizationContextV1,
   type KnowledgeGovernanceCommandV1,
+  type KnowledgeReleaseRefV1,
   type ReviewDecisionRefV1,
   type ReviewTaskRefV1,
 } from "@riskflow/contracts/ports";
@@ -18,6 +19,7 @@ import {
 } from "../../src/auth/index.js";
 import {
   PostgresKnowledgeGovernanceAdapter,
+  type DerivedKnowledgeReleaseInput,
   type KnowledgeGovernanceReviewAuthorizationProviderV1,
   type KnowledgeGovernanceReviewAuthorizationRequestV1,
 } from "../../src/knowledge-governance/index.js";
@@ -26,6 +28,7 @@ import { createPostgresRuntime } from "../../src/postgres/pool.js";
 import * as governanceMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-governed-definition-lifecycle/000007_governed_definition_lifecycle.js";
 import * as assessmentConfigurationMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-assessment-configuration-and-measure-governance/000012_assessment_configuration.js";
 import * as structuredScoringRulesMigration from "../../src/postgres/migrations/knowledge-modeling/deliver-structured-scoring-rules-and-applicable-rule-sets/000028_structured_scoring_rules.js";
+import * as derivedKnowledgeReleaseOriginMigration from "../../src/postgres/migrations/knowledge-modeling/reduce-defensive-design-overhead/000059_derived_knowledge_release_origin.js";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
 import { sha256CanonicalJson, type TransactionContextV1 } from "@riskflow/core/persistence";
 import {
@@ -43,6 +46,10 @@ import {
 } from "@riskflow/core/scoring-rules";
 import { vi } from "vitest";
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
+import {
+  agentAuthorizationBoundaryFromContext,
+  type AgentTaskSnapshotV1,
+} from "@riskflow/core/agent-runtime";
 import { KnowledgeLifecycleError } from "@riskflow/core/knowledge-governance";
 import type {
   IdentificationKnowledgeGovernancePolicyV1,
@@ -240,12 +247,14 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
     const migrator = createPostgresRuntime(fixture!.postgres.migrator, "riskflow_migrator");
     try {
       // 逆依赖顺序：C19 关系事实外键绑定 C16 revision，必须先于 C16 迁移回退。
+      await derivedKnowledgeReleaseOriginMigration.down(migrator.db);
       await structuredScoringRulesMigration.down(migrator.db);
       await assessmentConfigurationMigration.down(migrator.db);
       await governanceMigration.down(migrator.db);
       await governanceMigration.up(migrator.db);
       await assessmentConfigurationMigration.up(migrator.db);
       await structuredScoringRulesMigration.up(migrator.db);
+      await derivedKnowledgeReleaseOriginMigration.up(migrator.db);
       const restored = await fixture!.postgres.adminPool.query<{ name: string | null }>(
         "SELECT to_regclass('business.assessment_config_revision_metadata') AS name",
       );
@@ -516,10 +525,12 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
 
   it("uses real C06 human and agent verification contexts", async () => {
     const projectId = "governance-real-c06-authority";
+    const tasks = new Map<string, AgentTaskSnapshotV1>();
     const actualAccess = createPostgresLocalIdentityAccess({
       ...fixture!.postgres.app,
       hmacKey: new Uint8Array(32).fill(9),
       keyVersion: "c16-real-c06-key",
+      registeredTaskReader: async (ref) => tasks.get(ref.reference.entityId),
       now: () => new Date("2030-01-01T00:00:01.000Z"),
     });
     try {
@@ -622,6 +633,18 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
           requestedSpatialScopeRefs: [],
           requestedSourceVersionRefs: [],
         });
+        tasks.set(agentTaskRefFor(suffix).reference.entityId, {
+          envelope: {
+            agentTaskRef: agentTaskRefFor(suffix),
+            projectId,
+            actorId: agent.context.actorId,
+            authorization: agent.context,
+            frozenAuthorization: agentAuthorizationBoundaryFromContext(
+              agent.context,
+              agent.context.decidedAt,
+            ),
+          },
+        } as AgentTaskSnapshotV1);
         const verifiedAgent = await actualAccess.verify({
           authorizationContextRef: agent.context.authorizationContextRef,
           invocationId: agentInvocationId,
@@ -749,7 +772,7 @@ describe.sequential("PostgreSQL knowledge-governance adapter", () => {
       });
       expect(await resolveWith(identificationTypes, crossAuthorized.context)).toMatchObject({
         kind: "failed",
-        error: { code: "AUTHORIZATION_DENIED" },
+        error: { code: "BUSINESS_BLOCKED" },
       });
     } finally {
       await actualAccess.close();
@@ -1923,3 +1946,396 @@ describe.sequential(
     });
   },
 );
+
+describe.sequential("C16 派生知识发布来源与 000059 迁移约束", () => {
+  const projectId = "governance-derived-origin";
+  const authorization = governanceAuthorizationFor(projectId);
+  const reviewAuthorization = reviewAuthorizationFor(projectId);
+  const retrievalContextRef = {
+    kind: "identification-preparation-snapshot" as const,
+    reference: { entityId: "preparation-identification-1", versionId: "1" },
+  };
+  const ruleSetContextRef = {
+    kind: "assessment-preparation-snapshot" as const,
+    reference: { entityId: "preparation-assessment-1", versionId: "1" },
+  };
+
+  let fixture: KnowledgeGovernancePostgresFixture | undefined;
+  let humanReleaseRef: KnowledgeReleaseRefV1;
+  const appendAuditEntryIds: string[] = [];
+
+  /**
+   * D-13/D-14：唯一派生发布入口。append 在发布事务内被调用，用刚写入的 release 行证明
+   * 发布、审计与回执同事务；两类派生定义共用同一入口。
+   */
+  const derivedInput = (
+    definitionType: "retrieval-evidence-base" | "applicable-rule-set",
+    suffix: string,
+    options: {
+      readonly parentReleaseRefs?: readonly KnowledgeReleaseRefV1[];
+      readonly derivationScopeKey?: string;
+      readonly contextRef?: typeof retrievalContextRef | typeof ruleSetContextRef;
+    } = {},
+  ): DerivedKnowledgeReleaseInput => ({
+    projectId,
+    actorId: authorization.actorId,
+    commandId: nextId("derived-" + suffix),
+    idempotencyKey: nextId("derived-" + suffix + "-key"),
+    issuedAt: GOVERNANCE_TEST_TIMESTAMP,
+    effectiveFrom: GOVERNANCE_TEST_TIMESTAMP,
+    authorization,
+    definitionType,
+    candidateArtifactRef: artifactFor("derived-" + suffix),
+    evidenceReferences: [
+      {
+        locator: { sourceSegmentId: "segment-" + suffix },
+        sourceVersion: { entityId: "source-" + suffix, versionId: "1" },
+      },
+    ],
+    parentReleaseRefs: options.parentReleaseRefs ?? [humanReleaseRef],
+    derivationPolicyRef: { entityId: "derivation-policy", versionId: "1" },
+    contextRef:
+      options.contextRef ??
+      (definitionType === "applicable-rule-set" ? ruleSetContextRef : retrievalContextRef),
+    ...(options.derivationScopeKey === undefined
+      ? {}
+      : { derivationScopeKey: options.derivationScopeKey }),
+    append: async (context, input) => {
+      const visible = await getPostgresTransaction(context)
+        .selectFrom("business.knowledge_releases")
+        .select("release_id")
+        .where("release_id", "=", input.releaseRef.reference.entityId)
+        .where("version_id", "=", input.releaseRef.reference.versionId)
+        .executeTakeFirst();
+      if (visible === undefined) {
+        throw new KnowledgeLifecycleError({
+          code: "BUSINESS_BLOCKED",
+          reasonCode: "c16-derived-release-not-visible-in-append-transaction",
+          targetRef: input.releaseRef,
+        });
+      }
+      appendAuditEntryIds.push(input.audit.auditEntryId);
+      return [];
+    },
+  });
+
+  const releaseRowFor = async (releaseId: string) =>
+    (
+      await fixture!.postgres.adminPool.query<{
+        release_id: string;
+        definition_id: string;
+        definition_type: string;
+        publication_origin: Record<string, unknown> | null;
+        derivation_scope_key: string | null;
+        review_task_ref: unknown;
+        review_decision_ref: unknown;
+      }>(
+        "SELECT release_id, definition_id, definition_type, publication_origin, derivation_scope_key, review_task_ref, review_decision_ref FROM business.knowledge_releases WHERE release_id = $1",
+        [releaseId],
+      )
+    ).rows[0]!;
+
+  /** 迁移约束用例：复用同工程既有发布行的合法外键字段，只重写来源列并补对应回执与审计。 */
+  const insertSyntheticRelease = async (input: {
+    readonly templateDefinitionType: string;
+    readonly releaseId: string;
+    readonly suffix: string;
+    readonly definitionType?: string;
+    readonly publicationOrigin?: unknown;
+    readonly reviewTaskRef?: unknown;
+    readonly reviewDecisionRef?: unknown;
+    readonly derivationScopeKey?: string | null;
+    readonly effectiveFrom?: string;
+  }) => {
+    const template = (
+      await fixture!.postgres.adminPool.query<{
+        definition_id: string;
+        definition_version_id: string;
+        definition_type: string;
+        revision_id: string;
+        revision_version_id: string;
+      }>(
+        "SELECT definition_id, definition_version_id, definition_type, revision_id, revision_version_id FROM business.knowledge_releases WHERE project_id = $1 AND definition_type = $2 ORDER BY persisted_at LIMIT 1",
+        [projectId, input.templateDefinitionType],
+      )
+    ).rows[0]!;
+    const effectiveFrom = input.effectiveFrom ?? GOVERNANCE_TEST_TIMESTAMP;
+    const commandId = "cmd-" + input.suffix;
+    const auditEntryId = "audit-" + input.suffix;
+    const idempotencyKey = "key-" + input.suffix;
+    const authorizationContextRef = JSON.stringify(authorization.authorizationContextRef);
+    const releaseRef = JSON.stringify({
+      kind: "knowledge-release",
+      reference: { entityId: input.releaseId, versionId: "1" },
+    });
+    await fixture!.postgres.adminPool.query(
+      "INSERT INTO audit.entries (audit_entry_id, project_id, action, target_ref, actor_ref, authorization_context_ref, version_ref, occurred_at, recorded_at, command_id, idempotency_key) VALUES ($1, $2, 'knowledge.publish-derived-release', $3::jsonb, $4, $5::jsonb, $3::jsonb, $6, $6, $7, $8)",
+      [
+        auditEntryId,
+        projectId,
+        releaseRef,
+        authorization.actorId,
+        authorizationContextRef,
+        effectiveFrom,
+        commandId,
+        idempotencyKey,
+      ],
+    );
+    await fixture!.postgres.adminPool.query(
+      "INSERT INTO business.command_receipts (project_id, command_kind, idempotency_key, command_id, payload_sha256, result_ref, audit_entry_id, actor_ref, authorization_context_ref, completed_at, created_at) VALUES ($1, 'knowledge.publish-derived-release.v2', $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $9)",
+      [
+        projectId,
+        idempotencyKey,
+        commandId,
+        "b".repeat(64),
+        releaseRef,
+        auditEntryId,
+        authorization.actorId,
+        authorizationContextRef,
+        effectiveFrom,
+      ],
+    );
+    return fixture!.postgres.adminPool.query(
+      "INSERT INTO business.knowledge_releases (release_id, version_id, definition_id, definition_version_id, project_id, definition_type, revision_id, revision_version_id, revision_ref, review_task_ref, review_decision_ref, publication_origin, derivation_scope_key, effective_from, restored_from_release_ref, reason_code, command_id, actor_ref, authorization_context_ref, audit_entry_id, occurred_at, recorded_at) VALUES ($1, '1', $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, NULL, NULL, $14, $15, $16::jsonb, $17, $13, $13)",
+      [
+        input.releaseId,
+        template.definition_id,
+        template.definition_version_id,
+        projectId,
+        input.definitionType ?? template.definition_type,
+        template.revision_id,
+        template.revision_version_id,
+        JSON.stringify({
+          kind: "knowledge-revision",
+          reference: { entityId: template.revision_id, versionId: "1" },
+        }),
+        input.reviewTaskRef === undefined ? null : JSON.stringify(input.reviewTaskRef),
+        input.reviewDecisionRef === undefined ? null : JSON.stringify(input.reviewDecisionRef),
+        input.publicationOrigin === undefined ? null : JSON.stringify(input.publicationOrigin),
+        input.derivationScopeKey ?? null,
+        effectiveFrom,
+        commandId,
+        authorization.actorId,
+        authorizationContextRef,
+        auditEntryId,
+      ],
+    );
+  };
+
+  beforeAll(async () => {
+    fixture = await startKnowledgeGovernanceFixture({
+      identificationKnowledgePolicy: { appendRelease: async () => [] },
+    });
+    const submitted = await fixture.adapter.govern(
+      submitFor(projectId, authorization, "derived-parent"),
+    );
+    if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision")
+      throw new Error("derived parent submit failed");
+    const requested = await fixture.adapter.govern(
+      requestReviewFor(projectId, authorization, submitted.result.knowledgeRevisionRef),
+    );
+    if (requested.kind !== "succeeded" || requested.result.kind !== "review-task")
+      throw new Error("derived parent review request failed");
+    const decision = await fixture.reviewAudit.decideReview(
+      decideApproval(projectId, reviewAuthorization, requested.result.reviewTaskRef),
+    );
+    if (decision.kind !== "succeeded") throw new Error("derived parent approval failed");
+    const published = await fixture.adapter.govern(
+      publishFor(
+        projectId,
+        authorization,
+        submitted.result.knowledgeRevisionRef,
+        decision.result.reviewDecisionRef,
+      ),
+    );
+    if (published.kind !== "succeeded" || published.result.kind !== "release")
+      throw new Error("derived parent publish failed");
+    humanReleaseRef = published.result.knowledgeReleaseRef;
+  }, 180_000);
+
+  afterAll(async () => {
+    await fixture?.close().catch(() => undefined);
+  }, 60_000);
+
+  it("旧形态人工发布保持可读，并可作父发布生成 V2 派生来源", async () => {
+    const columns = await fixture!.postgres.adminPool.query<{ column_name: string }>(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = 'business' AND table_name = 'knowledge_releases' AND column_name IN ('publication_origin', 'derivation_scope_key') ORDER BY column_name",
+    );
+    expect(columns.rows.map((row) => row.column_name)).toEqual([
+      "derivation_scope_key",
+      "publication_origin",
+    ]);
+
+    const humanRow = await releaseRowFor(humanReleaseRef.reference.entityId);
+    expect(humanRow.publication_origin).toBeNull();
+    expect(humanRow.derivation_scope_key).toBeNull();
+    expect(humanRow.review_task_ref).not.toBeNull();
+    expect(humanRow.review_decision_ref).not.toBeNull();
+
+    const derived = await fixture!.adapter.publishDerivedRelease(
+      derivedInput("retrieval-evidence-base", "retrieval"),
+    );
+    const auditEntryId = appendAuditEntryIds.at(-1);
+    expect(auditEntryId).toBeDefined();
+    const audit = await fixture!.postgres.adminPool.query<{ action: string }>(
+      "SELECT action FROM audit.entries WHERE audit_entry_id = $1",
+      [auditEntryId],
+    );
+    expect(audit.rows[0]?.action).toBe("knowledge.publish-derived-release");
+
+    const row = await releaseRowFor(derived.releaseRef.reference.entityId);
+    expect(row.definition_type).toBe("retrieval-evidence-base");
+    expect(row.review_task_ref).toBeNull();
+    expect(row.review_decision_ref).toBeNull();
+    expect(row.derivation_scope_key).toBeNull();
+    expect(row.publication_origin).toMatchObject({
+      kind: "derived-approved",
+      parentReleaseRefs: [humanReleaseRef],
+      derivationPolicyRef: { entityId: "derivation-policy", versionId: "1" },
+      contextRef: retrievalContextRef,
+    });
+
+    // 复放同 identity：生产 reader 必须能重新解析已存在的派生行，且不重复落库、不重复 append。
+    const appended = appendAuditEntryIds.length;
+    const replay = await fixture!.adapter.publishDerivedRelease(
+      derivedInput("retrieval-evidence-base", "retrieval"),
+    );
+    expect(replay.releaseRef).toEqual(derived.releaseRef);
+    expect(appendAuditEntryIds.length).toBe(appended);
+    const count = await fixture!.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.knowledge_releases WHERE release_id = $1",
+      [derived.releaseRef.reference.entityId],
+    );
+    expect(count.rows[0]?.count).toBe("1");
+  });
+
+  it("两类派生定义按准备上下文读取，且不同 derivation_scope_key 同 effectiveFrom 并存", async () => {
+    const ruleSet = await fixture!.adapter.publishDerivedRelease(
+      derivedInput("applicable-rule-set", "ruleset-a", { derivationScopeKey: "scope-a" }),
+    );
+    const row = await releaseRowFor(ruleSet.releaseRef.reference.entityId);
+    expect(row.definition_type).toBe("applicable-rule-set");
+    expect(row.derivation_scope_key).toBe("scope-a");
+    expect(row.review_task_ref).toBeNull();
+    expect(row.publication_origin).toMatchObject({
+      kind: "derived-approved",
+      contextRef: ruleSetContextRef,
+    });
+
+    const replay = await fixture!.adapter.publishDerivedRelease(
+      derivedInput("applicable-rule-set", "ruleset-a", { derivationScopeKey: "scope-a" }),
+    );
+    expect(replay.releaseRef).toEqual(ruleSet.releaseRef);
+
+    const otherScope = await fixture!.adapter.publishDerivedRelease(
+      derivedInput("applicable-rule-set", "ruleset-b", { derivationScopeKey: "scope-b" }),
+    );
+    expect(otherScope.releaseRef).not.toEqual(ruleSet.releaseRef);
+    const coexist = await fixture!.postgres.adminPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM business.knowledge_releases WHERE definition_id = $1 AND effective_from = $2",
+      [row.definition_id, GOVERNANCE_TEST_TIMESTAMP],
+    );
+    expect(coexist.rows[0]?.count).toBe("2");
+
+    // 派生定义必须匹配对应准备引用：applicable-rule-set 不接受识别准备上下文。
+    await expect(
+      fixture!.adapter.publishDerivedRelease(
+        derivedInput("applicable-rule-set", "ruleset-mismatch", {
+          derivationScopeKey: "scope-c",
+          contextRef: retrievalContextRef,
+        }),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("000059 CHECK 只接受人工来源或两类合法派生来源", async () => {
+    const derivedRetrievalOrigin = {
+      kind: "derived-approved",
+      parentReleaseRefs: [humanReleaseRef],
+      derivationPolicyRef: { entityId: "derivation-policy", versionId: "1" },
+      contextRef: retrievalContextRef,
+    };
+    const derivedRuleSetOrigin = { ...derivedRetrievalOrigin, contextRef: ruleSetContextRef };
+    const humanReviewTaskRef = {
+      kind: "review-task",
+      reference: { entityId: "review-task-synthetic", versionId: "1" },
+    };
+    const humanReviewDecisionRef = {
+      kind: "review-decision",
+      reference: { entityId: "review-decision-synthetic", versionId: "1" },
+    };
+    const later = "2030-01-02T00:00:00.000Z";
+
+    // 派生来源必须无人工审核引用。
+    await expect(
+      insertSyntheticRelease({
+        templateDefinitionType: "retrieval-evidence-base",
+        releaseId: "synthetic-derived-with-review",
+        suffix: "derived-with-review",
+        definitionType: "retrieval-evidence-base",
+        publicationOrigin: derivedRetrievalOrigin,
+        reviewTaskRef: humanReviewTaskRef,
+        reviewDecisionRef: humanReviewDecisionRef,
+        effectiveFrom: later,
+      }),
+    ).rejects.toThrow(/knowledge_releases_json_ck/);
+
+    // 其它定义类型不可派生。
+    await expect(
+      insertSyntheticRelease({
+        templateDefinitionType: "process-model",
+        releaseId: "synthetic-derived-process-model",
+        suffix: "derived-process-model",
+        definitionType: "process-model",
+        publicationOrigin: derivedRetrievalOrigin,
+        effectiveFrom: later,
+      }),
+    ).rejects.toThrow(/knowledge_releases_json_ck/);
+
+    // 来源 JSON 只表达两类来源，行内 human-reviewed 标注非法。
+    await expect(
+      insertSyntheticRelease({
+        templateDefinitionType: "process-model",
+        releaseId: "synthetic-human-origin",
+        suffix: "human-origin",
+        publicationOrigin: {
+          kind: "human-reviewed",
+          reviewTaskRef: humanReviewTaskRef,
+          reviewDecisionRef: humanReviewDecisionRef,
+        },
+        reviewTaskRef: humanReviewTaskRef,
+        reviewDecisionRef: humanReviewDecisionRef,
+        effectiveFrom: later,
+      }),
+    ).rejects.toThrow(/knowledge_releases_json_ck/);
+
+    // applicable-rule-set 派生必须带非空 derivation_scope_key。
+    await expect(
+      insertSyntheticRelease({
+        templateDefinitionType: "applicable-rule-set",
+        releaseId: "synthetic-ruleset-no-scope",
+        suffix: "ruleset-no-scope",
+        definitionType: "applicable-rule-set",
+        publicationOrigin: derivedRuleSetOrigin,
+        effectiveFrom: later,
+      }),
+    ).rejects.toThrow(/knowledge_releases_json_ck/);
+
+    // 同 definition + derivation_scope_key 的同一生效时间仍唯一。
+    await fixture!.adapter.publishDerivedRelease(
+      derivedInput("applicable-rule-set", "ruleset-constraint", {
+        derivationScopeKey: "constraint-scope",
+      }),
+    );
+    await expect(
+      insertSyntheticRelease({
+        templateDefinitionType: "applicable-rule-set",
+        releaseId: "synthetic-ruleset-scope-conflict",
+        suffix: "ruleset-scope-conflict",
+        definitionType: "applicable-rule-set",
+        publicationOrigin: derivedRuleSetOrigin,
+        derivationScopeKey: "constraint-scope",
+      }),
+    ).rejects.toThrow(/knowledge_releases_derived_effective_uidx/);
+  });
+});

@@ -38,7 +38,6 @@ import {
   type TransactionContextV1,
   type TransactionUnitV1,
 } from "@riskflow/core/persistence";
-import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import type {
   AuthorizationContextRefV1,
   AuthorizationContextV1,
@@ -53,6 +52,7 @@ import type {
   StageResultRefV1,
   ValidatedCandidateSetRefV1,
   WorkflowRunRefV1,
+  WorkflowErrorRefV1,
   WaitingRefV1,
 } from "@riskflow/contracts/ports";
 import { IdentificationPlanCommandV1Schema, WaitingRefV1Schema } from "@riskflow/contracts/ports";
@@ -329,6 +329,14 @@ export interface PostgresIdentificationGraphAdapterOptionsV1 {
   readonly artifactStore: ArtifactStoreV1;
   /** C05 当前授权复验端口：每次受保护读写前按当前 actor/工程/空间/资料范围复验。 */
   readonly authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly issueReadContext?: (input: {
+    readonly authorization: AuthorizationContextV1;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly invocationId: string;
+    readonly branch: ModuleBranchV1;
+    readonly requestedAt: string;
+  }) => Promise<{ readonly authorization: AuthorizationContextV1; readonly invocationId: string }>;
   readonly now?: () => Date;
 }
 
@@ -450,12 +458,14 @@ class IdentificationGraphPersistence {
   readonly #db: IdentificationGraphQueryExecutorV1;
   readonly #artifactStore: ArtifactStoreV1;
   readonly #authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly #issueReadContext: PostgresIdentificationGraphAdapterOptionsV1["issueReadContext"];
   readonly #now: () => Date;
 
   constructor(options: PostgresIdentificationGraphAdapterOptionsV1) {
     this.#db = options.db as unknown as IdentificationGraphQueryExecutorV1;
     this.#artifactStore = options.artifactStore;
     this.#authorization = options.authorization;
+    this.#issueReadContext = options.issueReadContext;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -484,13 +494,35 @@ class IdentificationGraphPersistence {
     if (capability === undefined) return undefined;
     const branch = BRANCH_BY_CAPABILITY_V1[capability];
     if (branch === undefined) return undefined;
+    let authorization = input.authorization;
+    let invocationId = input.invocationId;
+    if (this.#issueReadContext !== undefined) {
+      try {
+        const issued = await this.#issueReadContext({
+          ...input,
+          branch,
+          requestedAt: input.requestedAt ?? this.#now().toISOString(),
+        });
+        authorization = issued.authorization;
+        invocationId = issued.invocationId;
+      } catch {
+        return undefined;
+      }
+      if (
+        authorization.projectId !== input.projectId ||
+        authorization.actorId !== input.actorId ||
+        authorization.grantedCapabilities.length !== 1 ||
+        authorization.grantedCapabilities[0] !== capability
+      )
+        return undefined;
+    }
     return this.#verifyRef({
-      authorizationContextRef: input.authorization.authorizationContextRef,
+      authorizationContextRef: authorization.authorizationContextRef,
       capability,
       branch,
       projectId: input.projectId,
       actorId: input.actorId,
-      invocationId: input.invocationId,
+      invocationId,
       requestedAt: input.requestedAt ?? this.#now().toISOString(),
       rejectRedacted,
     });
@@ -522,6 +554,7 @@ class IdentificationGraphPersistence {
         (input.rejectRedacted === true && decision.redacted === true) ||
         verified.projectId !== input.projectId ||
         verified.actorId !== input.actorId ||
+        verified.spatialScopeRefs.length === 0 ||
         verified.grantedCapabilities.length !== 1 ||
         verified.grantedCapabilities[0] !== input.capability
       ) {
@@ -618,7 +651,6 @@ class IdentificationGraphPersistence {
       .where("run_id", "=", input.runRef.reference.entityId)
       .where("result_kind", "=", "waiting")
       .where("actor_ref", "=", input.actorId)
-      .where("authorization_scope_digest", "=", authorizationScopeDigest(verified))
       .where("waiting_ref", "=", sql<JsonValue>`${JSON.stringify(waitingRef)}::jsonb`)
       .limit(1)
       .executeTakeFirst();
@@ -644,6 +676,27 @@ class IdentificationGraphPersistence {
     readonly runId: string;
   }): Promise<readonly IdentificationGraphResultRowV1[]> {
     return this.listRowsOfKind({ projectId: input.projectId, runId: input.runId });
+  }
+
+  async readWorkflowErrorRow(input: {
+    readonly projectId: string;
+    readonly runId: string;
+    readonly reference: WorkflowErrorRefV1;
+  }): Promise<IdentificationGraphResultRowV1 | undefined> {
+    try {
+      const rows = await this.#db
+        .selectFrom(RESULTS_TABLE)
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("run_id", "=", input.runId)
+        .where("result_kind", "=", "workflow-error")
+        .where("workflow_error_ref", "=", jsonValue(input.reference))
+        .limit(2)
+        .execute();
+      return rows.length === 1 ? resultRowFromDbRow(rows[0]!) : undefined;
+    } catch (error) {
+      throw mapPostgresError(error, "identification-graph.error-reference-read");
+    }
   }
 
   /** 按工程 + 种类（+ 可选运行）枚举登记行，只用于精确回读前的候选收窄，不做跨工程回退。 */
@@ -714,11 +767,17 @@ class IdentificationGraphPersistence {
     if (requiredCapability === undefined) {
       throw new IdentificationGraphDeniedError("body-write-capability-not-granted");
     }
+    // C04 预写可跨越已回滚的业务事务；新正文或当前授权不能复用旧物理写入的键。
+    const storageCommandId = `${command.commandId}:${sha256CanonicalJson({
+      ...command,
+      body,
+      authorization: verified,
+    })}`;
     const result = await this.#artifactStore.put(
       ArtifactPutCommandV1Schema.parse({
         schemaVersion: "1",
-        commandId: command.commandId,
-        idempotencyKey: command.commandId,
+        commandId: storageCommandId,
+        idempotencyKey: storageCommandId,
         projectId: command.projectId,
         actorId: command.actorId,
         issuedAt: command.issuedAt,
@@ -742,7 +801,7 @@ class IdentificationGraphPersistence {
 
   /**
    * 读 C04 正文（design D-04/D-07）：先读登记行，再按该行的精确 `artifactRef` 打开正文；
-   * `handle.verified` 保证字节与引用摘要一致，核心正文 Schema 保证判别种类与形状一致。
+   * `handle.completed` 保证字节与引用摘要一致，核心正文 Schema 保证判别种类与形状一致。
    * 任何不一致都抛错，由调用方按同形失败收口。
    */
   async readBody(input: {
@@ -773,7 +832,7 @@ class IdentificationGraphPersistence {
     );
     const bytes = await boundedContent(handle.content, MAX_BODY_BYTES_V1);
     // C04 摘要核对：字节、长度或对象摘要不符都在此失败，不做部分接受。
-    await handle.verified;
+    await handle.completed;
     const decoded: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     const parsed = IdentificationGraphArtifactBodyV1Schema.safeParse(decoded);
     if (!parsed.success || parsed.data.bodyKind !== input.bodyKind) {
@@ -955,7 +1014,7 @@ class IdentificationGraphRegistrationStore implements IdentificationGraphRegistr
     });
     if (verified === undefined) return undefined;
     const row = await this.#persistence.readRow(input);
-    return row?.authorizationScopeDigest === authorizationScopeDigest(verified) ? row : undefined;
+    return row;
   }
 
   async listRunRows(input: {
@@ -977,10 +1036,7 @@ class IdentificationGraphRegistrationStore implements IdentificationGraphRegistr
       }),
     });
     if (verified === undefined) return [];
-    const scopeDigest = authorizationScopeDigest(verified);
-    return (await this.#persistence.listRowsOfKind(input)).filter(
-      (row) => row.authorizationScopeDigest === scopeDigest,
-    );
+    return this.#persistence.listRowsOfKind(input);
   }
 
   async readLatestRunState(input: {
@@ -1010,7 +1066,6 @@ class IdentificationGraphRegistrationStore implements IdentificationGraphRegistr
     if (verified === undefined) return undefined;
     const row = await this.#persistence.readLatestRunStateRow(input);
     if (row === undefined) return undefined;
-    if (row.authorizationScopeDigest !== authorizationScopeDigest(verified)) return undefined;
     try {
       const body = await this.#persistence.readBody({
         row,
@@ -1078,18 +1133,11 @@ class IdentificationGraphRegistrationStore implements IdentificationGraphRegistr
     ) {
       return { kind: "unavailable" };
     }
-    if (row.authorizationScopeDigest !== authorizationScopeDigest(verified)) {
-      return { kind: "unavailable" };
-    }
     const latest = await this.#persistence.readLatestRunStateRow({
       projectId: input.projectId,
       runId: row.runId,
     });
-    if (
-      latest === undefined ||
-      latest.runVersionId !== row.runVersionId ||
-      latest.authorizationScopeDigest !== authorizationScopeDigest(verified)
-    ) {
+    if (latest === undefined || latest.runVersionId !== row.runVersionId) {
       return { kind: "unavailable" };
     }
     let latestBody: IdentificationGraphArtifactBodyV1;
@@ -1448,18 +1496,20 @@ class PostgresIdentificationGraphAdapter implements PostgresIdentificationGraphA
     const targetRef =
       input.reference.kind === "identification-work-item" ? input.workPlanRef : input.reference;
     if (targetRef === undefined) return false;
-    const row = await this.#persistence.readRow({
-      projectId: input.projectId,
-      resultKind,
-      resultId: targetRef.reference.entityId,
-      resultVersionId: targetRef.reference.versionId,
-    });
-    if (
-      row === undefined ||
-      row.runId !== input.runRef.reference.entityId ||
-      row.authorizationScopeDigest !== authorizationScopeDigest(verified)
-    )
-      return false;
+    const row =
+      input.reference.kind === "workflow-error"
+        ? await this.#persistence.readWorkflowErrorRow({
+            projectId: input.projectId,
+            runId: input.runRef.reference.entityId,
+            reference: input.reference,
+          })
+        : await this.#persistence.readRow({
+            projectId: input.projectId,
+            resultKind,
+            resultId: targetRef.reference.entityId,
+            resultVersionId: targetRef.reference.versionId,
+          });
+    if (row === undefined || row.runId !== input.runRef.reference.entityId) return false;
     const rowRef =
       row.resultKind === "input-snapshot"
         ? row.inputSnapshotRef

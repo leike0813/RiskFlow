@@ -163,7 +163,7 @@ export type RiskCandidateGenerationBudgetV1 = z.infer<typeof RiskCandidateGenera
 export const RiskCandidateGenerationPolicyV1Schema = z.strictObject({
   schemaVersion: z.literal(RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1),
   policyRef: VersionReferenceSchema,
-  policySetRef: IdentificationPolicySetRefV1Schema,
+  policySetRef: IdentificationPolicySetRefV1Schema.optional(),
   outputSchemaRef: VersionReferenceSchema,
   budgetPolicyRef: VersionReferenceSchema,
   budget: RiskCandidateGenerationBudgetV1Schema,
@@ -175,7 +175,7 @@ export const RiskCandidateValidationPolicyV1Schema = z
   .strictObject({
     schemaVersion: z.literal(RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1),
     policyRef: VersionReferenceSchema,
-    policySetRef: IdentificationPolicySetRefV1Schema,
+    policySetRef: IdentificationPolicySetRefV1Schema.optional(),
     ruleValidationPolicyRef: VersionReferenceSchema,
     /** 可选仿真/试验约束：声明时必须能由候选可达证据满足，否则该候选终止。 */
     simulationConstraint: z
@@ -399,7 +399,7 @@ export type CandidateValidationSetV1 = z.infer<typeof CandidateValidationSetV1Sc
 export const RiskCandidateMergePolicyV1Schema = z.strictObject({
   schemaVersion: z.literal(RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1),
   policyRef: VersionReferenceSchema,
-  policySetRef: IdentificationPolicySetRefV1Schema,
+  policySetRef: IdentificationPolicySetRefV1Schema.optional(),
   embeddingDeploymentRef: VersionReferenceSchema,
   embeddingBudgetPolicyRef: VersionReferenceSchema,
   /** 工序一致性只允许同节点，或显式列出的相关节点。 */
@@ -595,7 +595,7 @@ export type CompositeConfidenceBasisV1 = z.infer<typeof CompositeConfidenceBasis
 export const CompositeConfidencePolicyV1Schema = z.strictObject({
   schemaVersion: z.literal(RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1),
   policyRef: VersionReferenceSchema,
-  policySetRef: IdentificationPolicySetRefV1Schema,
+  policySetRef: IdentificationPolicySetRefV1Schema.optional(),
   weights: z.strictObject({
     modelConfidence: unitInterval,
     ruleConsistency: unitInterval,
@@ -638,7 +638,7 @@ export type GroupCompositeConfidenceV1 = z.infer<typeof GroupCompositeConfidence
 export const ForcedReviewPolicyV1Schema = z.strictObject({
   schemaVersion: z.literal(RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1),
   policyRef: VersionReferenceSchema,
-  policySetRef: IdentificationPolicySetRefV1Schema,
+  policySetRef: IdentificationPolicySetRefV1Schema.optional(),
   autoAcceptanceThreshold: unitInterval,
   forcedReviewReasonCodes: z.array(IdentifierSchema),
   reviewPolicyRef: VersionReferenceSchema,
@@ -912,7 +912,6 @@ export type RiskCandidatePolicyBundleV1 = z.infer<typeof RiskCandidatePolicyBund
 
 // ------------------------------------------------------------- 稳定身份派生
 
-const MAX_ARTIFACT_VERSION_ID_LENGTH_V1 = 200;
 /** 中间正文的 artifact id 前缀；不参与任何公共契约。 */
 export const RISK_CANDIDATE_FINALIZATION_ARTIFACT_PREFIX_V1 =
   "risk-candidate-finalization" as const;
@@ -928,26 +927,6 @@ export const RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1 = Object.freeze({
   acceptanceRouteSet: "identification-acceptance-route-set",
   riskEventVector: "risk-candidate-risk-event-vector",
 });
-export const RETRIEVAL_ARTIFACT_SET_ENTITY_PREFIX_V1 = "retrieval-review:" as const;
-
-/**
- * C21 把 `model-context` 结果行的 `resultId` 固定为
- * `identification-model-context:<projectId>:<workItemEntityId>:<taskEntityId>`，而 C02 命令只携带
- * `retrievalArtifactSetRef`（`retrieval-review:<taskEntityId>`）。这里只做这一处确定性反解，
- * 反解失败即拒绝，不扫描其它登记行、不使用 latest。
- */
-export const modelContextResultIdFor = (input: {
-  readonly projectId: string;
-  readonly workItemEntityId: string;
-  readonly retrievalArtifactSetEntityId: string;
-}): string | undefined => {
-  const prefix = RETRIEVAL_ARTIFACT_SET_ENTITY_PREFIX_V1;
-  if (!input.retrievalArtifactSetEntityId.startsWith(prefix)) return undefined;
-  const taskEntityId = input.retrievalArtifactSetEntityId.slice(prefix.length);
-  if (taskEntityId.length === 0) return undefined;
-  const resultId = `identification-model-context:${input.projectId}:${input.workItemEntityId}:${taskEntityId}`;
-  return resultId.length > MAX_ARTIFACT_VERSION_ID_LENGTH_V1 ? undefined : resultId;
-};
 
 /** 候选集登记身份：同一工作项一个候选集身份，版本由请求摘要决定。 */
 export const candidateSetEntityIdFor = (input: {

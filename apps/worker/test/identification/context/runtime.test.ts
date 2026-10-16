@@ -225,6 +225,8 @@ const setup = async (options: {
   const definition = harness.service.createTaskDefinition();
   const modelStep = withRetrievalReviewModelStep({
     policy: harness.service.reviewPolicy,
+    loadModelInput: (task, previousObservationArtifactRef) =>
+      harness.service.readReviewModelInput(task, previousObservationArtifactRef),
     persistArtifact,
     now: () => TIMESTAMP,
   });
@@ -246,20 +248,40 @@ const setup = async (options: {
 };
 
 describe("C21 retrieval review model step", () => {
-  it("renders only the frozen candidate set reference and routes tool intents to frozen tools", async () => {
+  it("renders the frozen candidate set reference, policy boundary and authorized model input, and routes tool intents to frozen tools", async () => {
     const policy = reviewPolicy();
     const persistArtifact = vi.fn();
     const task = taskSnapshot();
-    const step = renderRetrievalReviewModelStep(
-      { policy, persistArtifact: persistArtifact as never },
-      task,
-      {},
-    );
+    const modelInput = { candidateSet: candidateSetValue(), observationText: "上一轮观察" };
+    const loadModelInput = vi.fn(async () => modelInput);
+    const stepOptions = { policy, loadModelInput, persistArtifact: persistArtifact as never };
+    const step = await renderRetrievalReviewModelStep(stepOptions, task, {});
     expect(step.maxOutputTokens).toBe(policy.modelMaxOutputTokens);
     expect(step.domainTool).toBeUndefined();
     expect(step.messages).toHaveLength(2);
+    expect(step.messages[0]).toMatchObject({ role: "system" });
+    expect(loadModelInput).toHaveBeenCalledWith(task, undefined);
     expect(JSON.parse(step.messages[1]!.content)).toEqual({
       frozenCandidateSetRef: task.envelope.frozenInputRef,
+      reviewPolicy: {
+        allowedSupplementIntentCodes: policy.allowedSupplementIntentCodes,
+        maxResupplements: policy.maxResupplements,
+        maxCandidateMembers: policy.maxCandidateMembers,
+      },
+      modelInput,
+    });
+
+    const observationRef: ArtifactRefV1 = {
+      kind: "content-artifact",
+      reference: { entityId: "observation-1", versionId: `sha256:${"e".repeat(64)}` },
+    };
+    const withObservation = await renderRetrievalReviewModelStep(stepOptions, task, {
+      previousObservationArtifactRef: observationRef,
+    });
+    expect(loadModelInput).toHaveBeenCalledWith(task, observationRef);
+    expect(JSON.parse(withObservation.messages[1]!.content)).toMatchObject({
+      previousObservationArtifactRef: observationRef,
+      modelInput,
     });
 
     const readAction = {
@@ -269,7 +291,7 @@ describe("C21 retrieval review model step", () => {
       maxMembers: 4,
     };
     const readOutcome = await interpretRetrievalReviewModelStep(
-      { policy, persistArtifact: persistArtifact as never },
+      stepOptions,
       {
         schemaVersion: "1",
         invocationId: "action-1",
@@ -294,7 +316,7 @@ describe("C21 retrieval review model step", () => {
     });
 
     const resupplementOutcome = await interpretRetrievalReviewModelStep(
-      { policy, persistArtifact: persistArtifact as never },
+      stepOptions,
       {
         schemaVersion: "1",
         invocationId: "action-2",
@@ -325,7 +347,7 @@ describe("C21 retrieval review model step", () => {
 
     await expect(
       interpretRetrievalReviewModelStep(
-        { policy, persistArtifact: persistArtifact as never },
+        stepOptions,
         {
           schemaVersion: "1",
           invocationId: "action-3",
@@ -373,7 +395,7 @@ describe("C21 retrieval review model step", () => {
     expect(reviewed).toHaveLength(1);
     expect(reviewed[0]!["retrievalArtifactSetRef"]).toMatchObject({
       kind: "retrieval-artifact-set",
-      reference: { entityId: `retrieval-review:${taskRef().reference.entityId}` },
+      reference: { entityId: expect.stringMatching(/^[0-9a-f-]{36}$/) },
     });
     expect(harness.auditRows).toHaveLength(1);
     expect(SYNTHETIC_SAMPLE_NOTICE).toBe("合成样本、待甲方复核");
@@ -392,13 +414,15 @@ describe("C21 retrieval review model step", () => {
     expect(harness.auditRows).toHaveLength(0);
   });
 
-  it("does not fabricate a formal result when authorization is revoked before finalization", async () => {
-    const { harness, store, runner } = await setup({
+  it("fails closed on revoked authorization without invoking the model or fabricating a formal result", async () => {
+    const { harness, store, runner, gateway } = await setup({
       script: (candidateSetRef) => [submission(candidateSetRef)],
       verifyCurrent: async () => undefined as never,
     });
     expect(await runner.runOnce()).toBe(1);
-    expect(store.actionFailures).toEqual(["AGENT_VALIDATION_REJECTED"]);
+    // 撤权在受权模型输入读取处终止：既不调用模型，也不进入候选校验或正式工件集。
+    expect(gateway.completeStructured).not.toHaveBeenCalled();
+    expect(store.calls).toContain("fail-task");
     expect(
       [...harness.rows.values()].filter((row) => row["resultKind"] === "reviewed-retrieval"),
     ).toHaveLength(0);

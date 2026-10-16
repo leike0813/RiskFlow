@@ -123,6 +123,13 @@
     "registrationTimeoutMs": 30000,
     "maintenanceBatchSize": 1000
   },
+  "sourceOriginal": {
+    "temporaryRoot": "/var/lib/riskflow/source-original-temporary",
+    "maxBytes": 104857600,
+    "maxConcurrentReads": 2,
+    "maxTemporaryBytes": 209715200,
+    "timeoutMs": 120000
+  },
   "outbox": {
     "policyRef": { "entityId": "outbox-policy", "versionId": "2030-01" },
     "batchSize": 100,

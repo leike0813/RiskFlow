@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CONTROLLED_JSON_LD_CONTEXT_V1,
   StructuredDocumentJsonLdV1Schema,
+  UnrecognizedTableImageRefV1Schema,
   convertParsedDocument,
   validateNormalizedDocument,
   type ParsedDocumentV1,
@@ -45,6 +46,75 @@ const parsed = (text: string): ParsedDocumentV1 => ({
   ],
   inputBytes: new TextEncoder().encode(text).byteLength,
 });
+
+const tableImage = (packageEntryPath: string, entityId = "mineru_raw_1") => ({
+  kind: "unrecognized-image" as const,
+  rawResponseArtifactRef: {
+    kind: "diagnostic-artifact" as const,
+    reference: { entityId, versionId: `sha256:${"b".repeat(64)}` },
+  },
+  packageEntryPath,
+});
+
+type CellInput = {
+  blockId: string;
+  row: number;
+  column: number;
+  text: string;
+  value?: number | null;
+  unrecognizedImages?: ReturnType<typeof tableImage>[];
+};
+
+const tableParsed = (cells: readonly CellInput[]): ParsedDocumentV1 => {
+  const tableLocator = (row: number, column: number) => ({
+    kind: "table" as const,
+    sheet: "sheet_1",
+    table: "table_1",
+    rowRange: { start: row, end: row },
+    columnRange: { start: column, end: column },
+  });
+  return {
+    ...parsed("表格"),
+    blocks: [
+      {
+        blockId: "table_1",
+        kind: "table",
+        text: "",
+        chapterId: "table_1",
+        segmentId: "table_1",
+        headingPath: ["table_1"],
+        locator: {
+          kind: "table",
+          sheet: "sheet_1",
+          table: "table_1",
+          rowRange: { start: 1, end: 2 },
+          columnRange: { start: 1, end: 3 },
+        },
+        tableId: "table_1",
+        sheet: "sheet_1",
+      },
+      ...cells.map((cell) => ({
+        blockId: cell.blockId,
+        kind: "cell" as const,
+        text: cell.text,
+        ...(cell.value === undefined ? {} : { value: cell.value }),
+        chapterId: "table_1",
+        segmentId: "table_1",
+        headingPath: ["table_1"],
+        locator: tableLocator(cell.row, cell.column),
+        tableId: "table_1",
+        sheet: "sheet_1",
+        row: cell.row,
+        column: cell.column,
+        rowSpan: 1,
+        columnSpan: 1,
+        ...(cell.unrecognizedImages === undefined
+          ? {}
+          : { unrecognizedImages: cell.unrecognizedImages }),
+      })),
+    ],
+  };
+};
 
 describe("structured document conversion core", () => {
   it("chunks Unicode code points deterministically and closes adjacent pointers", () => {
@@ -224,6 +294,156 @@ describe("structured document conversion core", () => {
       rowRange: { start: 1, end: 2 },
       columnRange: { start: 1, end: 3 },
     });
+  });
+
+  it("carries unrecognized table images without polluting cell text or inventing values", () => {
+    const imageA = tableImage("images/symbol-a.jpg");
+    const imageB = tableImage("images/symbol-b.jpg");
+    const result = convertParsedDocument(
+      tableParsed([
+        { blockId: "cell_mixed", row: 1, column: 1, text: "围岩", unrecognizedImages: [imageA] },
+        {
+          blockId: "cell_image",
+          row: 1,
+          column: 2,
+          text: "",
+          value: null,
+          unrecognizedImages: [imageB],
+        },
+        { blockId: "cell_empty", row: 1, column: 3, text: "" },
+      ]),
+      { strategyVersion: "strategy-v1" },
+    );
+
+    const fields = result.document.tableFields ?? [];
+    const mixed = fields.find((field) => field.fieldId === "field-cell_mixed");
+    const imageOnly = fields.find((field) => field.fieldId === "field-cell_image");
+    const empty = fields.find((field) => field.fieldId === "field-cell_empty");
+
+    expect(mixed?.value).toBe("围岩");
+    expect(mixed?.unrecognizedImages).toEqual([imageA]);
+    expect(imageOnly?.value).toBeNull();
+    expect(imageOnly?.unrecognizedImages).toEqual([imageB]);
+    expect(empty?.value).toBe("");
+    expect(empty?.unrecognizedImages).toBeUndefined();
+    expect(imageOnly?.mergedRange).toEqual({
+      startRow: 1,
+      endRow: 1,
+      startColumn: 2,
+      endColumn: 2,
+    });
+
+    // Table identity, coordinates and order survive untouched.
+    expect(fields.map((field) => [field.tableId, field.row, field.column])).toEqual([
+      ["table_1", 1, 1],
+      ["table_1", 1, 2],
+      ["table_1", 1, 3],
+    ]);
+
+    // The image is a structured reference, never inlined into searchable text.
+    expect(result.document.textBlocks.map((block) => block.text).join("")).not.toContain("symbol");
+  });
+
+  it("round-trips unrecognized image refs through the controlled JSON-LD", () => {
+    const image = tableImage("images/symbol-a.jpg");
+    const result = convertParsedDocument(
+      tableParsed([
+        { blockId: "cell_text", row: 1, column: 1, text: "42", value: 42 },
+        {
+          blockId: "cell_image",
+          row: 1,
+          column: 2,
+          text: "",
+          value: null,
+          unrecognizedImages: [image],
+        },
+      ]),
+      { strategyVersion: "strategy-v1" },
+    );
+    expect(result.compliance.passed).toBe(true);
+    expect(result.jsonLd.tableFields?.[1]?.unrecognizedImages).toEqual([image]);
+    expect(StructuredDocumentJsonLdV1Schema.safeParse(result.jsonLd).success).toBe(true);
+    expect(
+      UnrecognizedTableImageRefV1Schema.safeParse(
+        result.jsonLd.tableFields?.[1]?.unrecognizedImages?.[0],
+      ).success,
+    ).toBe(true);
+  });
+
+  it("rejects unsafe or ambiguous package entry paths", () => {
+    for (const path of [
+      "/etc/passwd",
+      "C:/images/symbol.jpg",
+      "images/../../secret.jpg",
+      "images/./symbol.jpg",
+      "images//symbol.jpg",
+      "https://example.invalid/symbol.jpg",
+      "data:image/png;base64,AAAA",
+      "images\\symbol.jpg",
+      "",
+    ]) {
+      expect(UnrecognizedTableImageRefV1Schema.safeParse(tableImage(path)).success).toBe(false);
+    }
+    const accepted = UnrecognizedTableImageRefV1Schema.safeParse({
+      ...tableImage("images/symbol-a.jpg"),
+      rawResponseArtifactRef: {
+        kind: "content-artifact",
+        reference: { entityId: "x", versionId: `sha256:${"b".repeat(64)}` },
+      },
+    });
+    expect(accepted.success).toBe(true);
+  });
+
+  it("only cell blocks carry unrecognized images and the array stays non-empty", () => {
+    const image = tableImage("images/symbol-a.jpg");
+    const withImages = tableParsed([
+      { blockId: "cell_text", row: 1, column: 1, text: "42", value: 42 },
+      {
+        blockId: "cell_image",
+        row: 1,
+        column: 2,
+        text: "",
+        value: null,
+        unrecognizedImages: [image],
+      },
+    ]);
+    expect(
+      convertParsedDocument(withImages, { strategyVersion: "strategy-v1" }).compliance.passed,
+    ).toBe(true);
+
+    expect(() =>
+      convertParsedDocument(
+        {
+          ...withImages,
+          blocks: withImages.blocks.map((block) =>
+            block.blockId === "table_1" ? { ...block, unrecognizedImages: [image] } : block,
+          ),
+        },
+        { strategyVersion: "strategy-v1" },
+      ),
+    ).toThrow();
+
+    expect(() =>
+      convertParsedDocument(
+        {
+          ...withImages,
+          blocks: withImages.blocks.map((block) =>
+            block.blockId === "cell_image" ? { ...block, unrecognizedImages: [] } : block,
+          ),
+        },
+        { strategyVersion: "strategy-v1" },
+      ),
+    ).toThrow();
+
+    const blank = convertParsedDocument(parsed("正文"), { strategyVersion: "strategy-v1" });
+    expect(
+      validateNormalizedDocument({
+        ...blank.document,
+        textBlocks: blank.document.textBlocks.map((block, index) =>
+          index === 0 ? { ...block, unrecognizedImages: [image] } : block,
+        ),
+      }).passed,
+    ).toBe(false);
   });
 
   it("rejects dangling relations and cross-version pointers as one failed batch", () => {

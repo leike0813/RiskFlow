@@ -187,6 +187,7 @@ export type CleaningAvailability = "available" | "partial" | "unavailable";
 export interface SourceCatalogItemView {
   readonly sourceVersionRef: KindRef;
   readonly sourceId: string;
+  readonly sourceName?: string;
   readonly documentType?: string;
   readonly formedAt?: string;
   readonly sourceOrganization?: string;
@@ -205,13 +206,20 @@ export interface SourceCatalogPageView {
 
 export const listSourceCatalog = async (
   projectId: string,
-  options: { readonly cursor?: string; readonly documentType?: string } = {},
+  options: {
+    readonly cursor?: string;
+    readonly documentType?: string;
+    readonly sourceVersionRefs?: readonly KindRef[];
+  } = {},
   signal?: AbortSignal,
 ): Promise<SourceCatalogPageView> => {
   const result = asRecord(
     await submitQuery({
       projectId,
       branch: "engineering-data.source-catalog",
+      ...(options.sourceVersionRefs === undefined
+        ? {}
+        : { sourceVersionRefs: options.sourceVersionRefs }),
       payload: {
         ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
         pageSize: 50,
@@ -221,12 +229,35 @@ export const listSourceCatalog = async (
     }),
   );
   if (result.kind !== "source-catalog") throw drift();
+  const items = asArray(result.items).map(asRecord);
+  if (items.length > 50) throw drift();
+  const summaries = new Map<string, Record<string, unknown>>();
+  if (items.length > 0) {
+    const qualified = asRecord(
+      await submitQuery({
+        projectId,
+        branch: "engineering-data.source-catalog",
+        sourceVersionRefs: items.map((item) => asKindRef(item.sourceVersionRef)),
+        payload: { pageSize: 50 },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    );
+    if (qualified.kind !== "source-catalog") throw drift();
+    for (const item of asArray(qualified.items).map(asRecord)) {
+      const ref = asKindRef(item.sourceVersionRef);
+      summaries.set(JSON.stringify([ref.reference.entityId, ref.reference.versionId]), item);
+    }
+  }
   return {
-    items: asArray(result.items).map((item) => {
-      const record = asRecord(item);
+    items: items.map((record) => {
+      const ref = asKindRef(record.sourceVersionRef);
+      const summary = summaries.get(
+        JSON.stringify([ref.reference.entityId, ref.reference.versionId]),
+      );
       return {
-        sourceVersionRef: asKindRef(record.sourceVersionRef),
+        sourceVersionRef: ref,
         sourceId: asString(record.sourceId),
+        ...(record.sourceName === undefined ? {} : { sourceName: asString(record.sourceName) }),
         ...(record.documentType === undefined
           ? {}
           : { documentType: asString(record.documentType) }),
@@ -238,14 +269,14 @@ export const listSourceCatalog = async (
           ? {}
           : { externalVersion: asString(record.externalVersion) }),
         parseStatus: asString(record.parseStatus) as SourceParseStatus,
-        ...(record.cleaningAvailability === undefined
+        ...(summary?.cleaningAvailability === undefined
           ? {}
           : {
-              cleaningAvailability: asString(record.cleaningAvailability) as CleaningAvailability,
+              cleaningAvailability: asString(summary.cleaningAvailability) as CleaningAvailability,
             }),
-        ...(record.cleaningExclusionCount === undefined
+        ...(summary?.cleaningExclusionCount === undefined
           ? {}
-          : { cleaningExclusionCount: asNumber(record.cleaningExclusionCount) }),
+          : { cleaningExclusionCount: asNumber(summary.cleaningExclusionCount) }),
         ...(record.sourceSegmentSetRef === undefined
           ? {}
           : { sourceSegmentSetRef: asKindRef(record.sourceSegmentSetRef) }),
@@ -417,6 +448,7 @@ export interface SourceSegmentView {
   readonly segmentId: string;
   readonly kind: "chapter" | "table" | "monitoring-window";
   readonly headingPath: string[];
+  readonly pageNumber?: number;
 }
 
 export interface SourceSegmentSetView {
@@ -448,6 +480,10 @@ const asSegment = (value: unknown): SourceSegmentView => {
     segmentId: asString(record.segmentId),
     kind: asString(record.kind) as SourceSegmentView["kind"],
     headingPath: asLocatorHeadingPath(record.locator),
+    ...(asRecord(record.locator).kind === "document" &&
+    typeof asRecord(record.locator).pageNumber === "number"
+      ? { pageNumber: asRecord(record.locator).pageNumber as number }
+      : {}),
   };
 };
 
@@ -1446,12 +1482,19 @@ const asReviewTaskRef = (value: unknown): ReviewTaskRefView => {
 export interface WaitingRefView {
   readonly kind: string;
   readonly ref?: KindRef;
+  readonly missingKinds?: readonly string[];
 }
 
-/** 等待引用只取种类与内嵌引用的身份；未知种类不失败（只读呈现，不据此构造命令）。 */
+/** 等待引用提取精确身份；业务准备续办使用服务端返回的准备引用。 */
 const asWaitingRef = (value: unknown): WaitingRefView => {
   const record = asRecord(value);
   const kind = asString(record.kind);
+  if (kind === "business-preparation")
+    return {
+      kind,
+      ref: asKindRef(record.preparationRef),
+      missingKinds: asArray(record.missingKinds).map(asString),
+    };
   const inner =
     kind === "review"
       ? record.reviewTaskRef
@@ -2349,6 +2392,7 @@ export interface EntryContextView {
   readonly applicabilityNextCursor?: string;
   readonly externalEventNextCursor?: string;
   readonly runPolicy: EntryRunPolicyView;
+  readonly preparationMissingKinds: readonly string[];
   readonly actions: readonly ReadActionView[];
 }
 
@@ -2399,6 +2443,10 @@ export const readAssessmentEntryContext = async (
       ? {}
       : { externalEventNextCursor: asString(result.externalEventNextCursor) }),
     runPolicy: asRunPolicy(result.runPolicy),
+    preparationMissingKinds:
+      result.preparationMissingKinds === undefined
+        ? []
+        : asArray(result.preparationMissingKinds).map(asString),
     actions: asActions(result.actions),
   };
 };
@@ -2602,6 +2650,7 @@ export interface AssessmentRunView {
   readonly runRef: KindRef;
   readonly entryMode: string;
   readonly status: string;
+  readonly waitingRef?: WaitingRefView;
   readonly stage: string;
   readonly graphVersion: VersionRef;
   readonly actorRef: string;
@@ -2620,6 +2669,28 @@ export interface AssessmentRunView {
   readonly nextCursor?: string;
   readonly actions: readonly ReadActionView[];
 }
+
+export const submitAssessmentPreparationResume = async (
+  projectId: string,
+  input: { readonly commandId: string; readonly run: AssessmentRunView },
+): Promise<void> => {
+  const preparationRef = input.run.waitingRef?.ref;
+  if (input.run.waitingRef?.kind !== "business-preparation" || preparationRef === undefined)
+    throw clientError("CONTRACT_INVALID");
+  const response = asRecord(
+    await postCommand({
+      projectId,
+      branch: "workflow.resume-run",
+      commandId: input.commandId,
+      payload: {
+        workflowRunRef: input.run.runRef,
+        expectedStateVersion: input.run.stateVersion.versionId,
+        resumeCause: { kind: "business-preparation-ready", preparationRef },
+      },
+    }),
+  );
+  if (response.kind !== "waiting") unwrapQueryResult(response);
+};
 
 /**
  * P-RA-03 运行精确读：父运行可带精确 `assessmentRunRef` 选择空间子运行，
@@ -2653,6 +2724,7 @@ export const readAssessmentRun = async (
     runRef: asKindRef(result.runRef),
     entryMode: asString(result.entryMode),
     status: asString(result.status),
+    ...(result.waitingRef === undefined ? {} : { waitingRef: asWaitingRef(result.waitingRef) }),
     stage: asString(result.stage),
     graphVersion: asConfigRef(result.graphVersion),
     actorRef: asString(result.actorRef),

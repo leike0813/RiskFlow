@@ -741,8 +741,7 @@ export class PostgresRetrievalAdapter implements RetrievalGenerationStoreV1 {
       if (activation === undefined) return undefined;
       if (
         activation.policy_entity_id !== input.policyRef.entityId ||
-        activation.policy_version_id !== input.policyRef.versionId ||
-        activation.authorization_scope_digest !== input.authorizationScopeDigest
+        activation.policy_version_id !== input.policyRef.versionId
       ) {
         return undefined;
       }
@@ -751,7 +750,6 @@ export class PostgresRetrievalAdapter implements RetrievalGenerationStoreV1 {
       if (row === undefined) {
         throw makePersistenceError("TRANSACTION_FAILED", "retrieval.active-generation-missing");
       }
-      if (row.authorization_scope_digest !== input.authorizationScopeDigest) return undefined;
       const status = await this.#selectLatestTransitionRow(db, ref);
       if (status === undefined) {
         throw makePersistenceError("TRANSACTION_FAILED", "retrieval.active-generation-status");

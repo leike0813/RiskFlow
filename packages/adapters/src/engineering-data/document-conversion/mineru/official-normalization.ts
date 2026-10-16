@@ -6,14 +6,14 @@ import {
   DocumentServiceParserError,
   type DocumentServiceParserRequestV1,
 } from "../structured-document-converter.js";
-import { normalizeMineruMiddle } from "./normalization.js";
+import { normalizeMineruMiddle, type TableImageResolver } from "./normalization.js";
 import type { MineruConfigV1 } from "./schema.js";
 import type { MineruSourceInfoV1 } from "./source.js";
 
 const number = z.number().finite();
 const box = z.tuple([number, number, number, number]);
 const span = z.object({
-  type: z.enum(["text", "table", "image", "inline_equation", "interline_equation"]),
+  type: z.enum(["text", "table", "image", "chart", "inline_equation", "interline_equation"]),
   content: z.string().max(200_000).optional(),
   html: z.string().max(200_000).optional(),
   bbox: box.optional(),
@@ -52,6 +52,10 @@ const block: z.ZodType<OfficialBlock> = z.lazy(() =>
       "image_body",
       "image_caption",
       "image_footnote",
+      "chart",
+      "chart_body",
+      "chart_caption",
+      "chart_footnote",
     ]),
     index: z.number().int().nonnegative().safe(),
     bbox: box.optional(),
@@ -95,6 +99,7 @@ export const normalizeOfficialMineruLayout = (
   request: DocumentServiceParserRequestV1,
   config: MineruConfigV1,
   source: MineruSourceInfoV1,
+  resolveImage?: TableImageResolver,
 ): { parsedDocument: ParsedDocumentV1; diagnostic: JsonValue } => {
   const parsed = layout.safeParse(value);
   if (!parsed.success) return invalid("layout-schema");
@@ -186,7 +191,7 @@ export const normalizeOfficialMineruLayout = (
         bbox = [left / size[0], top / size[1], right / size[0], bottom / size[1]];
       }
       const common = { index: current.index, ...(bbox === undefined ? {} : { bbox }) };
-      if (current.type === "table" || current.type === "image") {
+      if (current.type === "table" || current.type === "image" || current.type === "chart") {
         if (current.blocks === undefined || current.blocks.length === 0)
           return invalid("container-empty");
         return {
@@ -200,10 +205,11 @@ export const normalizeOfficialMineruLayout = (
           return invalid("table-html");
         return { ...common, type: "table_body", content: spans[0].html };
       }
-      if (current.type === "image_body") {
-        if (spans.length === 0 || spans.some((item) => item.type !== "image"))
+      if (current.type === "image_body" || current.type === "chart_body") {
+        const spanType = current.type === "image_body" ? "image" : "chart";
+        if (spans.length === 0 || spans.some((item) => item.type !== spanType))
           return invalid("image-body");
-        return { ...common, type: "image_body", content: "" };
+        return { ...common, type: current.type, content: "" };
       }
       const content = (current.lines ?? []).flatMap((line, lineIndex) => [
         ...(lineIndex === 0 ? [] : [{ type: "text", content: "\n" }]),
@@ -258,6 +264,7 @@ export const normalizeOfficialMineruLayout = (
     request,
     config,
     source,
+    resolveImage,
   );
   return {
     parsedDocument: normalized.parsedDocument,

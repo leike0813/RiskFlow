@@ -199,7 +199,13 @@ export default function StartAssessmentPage() {
     entry.state.kind === "ready" && entry.state.value.runPolicy.kind === "available"
       ? entry.state.value.runPolicy
       : null;
-  const runnable = availability === "allowed" && !missing && runPolicy !== null;
+  const preparationMissingKinds =
+    entry.state.kind === "ready" ? entry.state.value.preparationMissingKinds : [];
+  const runnable =
+    availability === "allowed" &&
+    !missing &&
+    runPolicy !== null &&
+    preparationMissingKinds.length === 0;
 
   // D-07：同一输入组合重试复用同一身份；任一引用/版本/策略变化即换新身份，不刷新时间蒙混。
   const identity = JSON.stringify({
@@ -544,6 +550,14 @@ export default function StartAssessmentPage() {
             </Card>
 
             <Card title="提交" style={{ marginTop: 16 }}>
+              {preparationMissingKinds.includes("scoring-configuration") && (
+                <p className="ar-note">评分配置待准备。发布本工程的评分配置后可重新检查。</p>
+              )}
+              {preparationMissingKinds.length > 0 && (
+                <button type="button" className="ar-chip" onClick={entry.retry}>
+                  重新检查准备情况
+                </button>
+              )}
               {availability !== null && availability !== "allowed" && (
                 <p className="ar-note">当前不可启动运行（{availability}）。</p>
               )}
@@ -558,9 +572,11 @@ export default function StartAssessmentPage() {
                     ? entryMode === "reassess"
                       ? "缺少工程修订、空间范围、风险输入、适用性快照、前驱记录或 1～64 项合法变化引用"
                       : "缺少工程修订、空间范围、风险输入或适用性快照"
-                    : runPolicy === null
-                      ? "部署未注入合格的运行策略"
-                      : "当前角色无启动评估的权限"
+                    : preparationMissingKinds.length > 0
+                      ? "请先准备评分配置"
+                      : runPolicy === null
+                        ? "部署未注入合格的运行策略"
+                        : "当前角色无启动评估的权限"
                 }
                 summary={[
                   `工程：${selector.projectId ?? "—"}`,

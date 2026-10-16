@@ -50,6 +50,7 @@ sbom.json
 test-results/
 playwright-report/
 playwright/.cache/
+.playwright-mcp/
 
 # ---- IDE / 编辑器 ----------------------------------------------------------
 # VS Code: 个人设置忽略,推荐将 .vscode/{extensions,settings}.*.json 通过

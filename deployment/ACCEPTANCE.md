@@ -6,13 +6,25 @@
 
 ## 当前接入
 
-聊天使用中国区 MiniMax M Plan：`https://api.minimax.cn/v1`、`MiniMax-M3.1-Flash-Preview`。部署显式选择 `schema-prompt` 和 `reasoningEffort=low`，由调用方的同一 Zod Schema 生成 JSON Schema 提示，再严格验证完整输出。非法 JSON、额外字段、截断或验证失败均拒绝，不修补、不重试生成。当前服务不声明服务端 strict JSON Schema 能力。
+当前减负实现与回归记录见 [reduce-defensive-design-overhead](../openspec/changes/reduce-defensive-design-overhead/handoff.md)。运行清单按阶段准备配置，资料访问独立记账，检索按当前可见条目筛选，确定性组装复用已批准来源。切换现场前按运维说明备份、执行000059并部署兼容版本，再接续原工程的已完成成果。下文带日期的工程核验保留当时记录，当前运行约束以该change及其实际实现为准。
+
+资料原件与Agent入口修正的当前平台实跑见[2026-10-15取证](../openspec/changes/complete-private-deployment-functional-acceptance/evidence/original-and-agent-ui-2026-10-15.md)。资料详情默认原件：PDF/图片在应用内查看，文本严格解码，DOCX/XLSX保存原文件后用本机软件打开。解析失败不阻止受权原件读取。正常业务页从“打开停靠区”进入Agent，任务详情可续页查看行动、候选校验和预算。该修正不代表整个RI/RA及桌面场景已经通过。
+
+聊天使用中国区 MiniMax M Plan：`https://api.minimax.cn/v1`、`MiniMax-M3.1-Flash-Preview`、`reasoningEffort=low`。结构化模式由精确部署显式指定：`schema-prompt`把同一Zod生成的JSON Schema加入固定提示；`function-call`将其作为唯一`emit_result`函数参数，仅接收正常`tool_calls`或`stop`终止的单次函数调用并按原Zod严格复验。函数只承载结果，不执行工具，不发送未声明的`tool_choice`/`strict`。非法JSON、额外字段、正文混入、多调用、截断或验证失败均拒绝，不修补、自动重试或换模式。新模式须先保存真实协议及原响应证据；当前服务不声明服务端strict JSON Schema能力。
 
 Embedding 使用 `http://192.168.13.11:11434` 的 `qwen3-embedding:4b`，原生 `/api/embed`、`truncate=false`，无需密钥。启动核验 Ollama 0.40.0、模型摘要、40960 上下文和 2560 维。模型身份变化必须新建部署及检索代际。
 
 [model-gateway-config.example.json](model-gateway-config.example.json) 展示两项部署结构。引用名和预算是配置示例；实际运行必须固定本次批准配置，不能把示例当作协议资格或业务版本的证据。MiniMax 的 1M 上下文及供应商 512Ki 输出上限不等于单项 RiskFlow 任务预算。密钥只经服务端受限文件加载，不能放入公开 JSON、浏览器或命令参数。
 
 ## 运行前置
+
+2026-10-14 的代码准备、工程证据及实机输入清单见 [本次准备记录](../openspec/changes/complete-private-deployment-functional-acceptance/evidence/readiness.md)。桌面验收已定义完整场景；真实模型业务、Electron、可见 Chrome 和故障/恢复仍须实跑取证。
+
+桌面预检读取 `RISKFLOW_DEPLOYMENT_CONFIG`、`RISKFLOW_RELEASE_MANIFEST`、`RISKFLOW_DESKTOP_BUILD_CONFIG` 与 `RISKFLOW_DESKTOP_ACCEPTANCE_CONFIG` 指定的真实文件。验收 JSON 的字段及本次正式回执绑定见准备记录；`functionalReportFile` 必须指向同次 `functional.json`，相邻 `synthetic/run.json` 不得换用历史报告。运行、查询、资料及导出工件须在对应正式回执中成立。管理员测试账号还须具备同一工程的业务读取授权，纯系统管理员不能读取业务报告。
+
+“关窗后任务继续”先执行，要求本次运行已受理且尚未完成；已完成、等待人审、失败或取消不能替代。SSE 样例须有游标后的正式事件；TLS 拒绝目标须真实可达且证书不可信，DNS/连接失败不能替代证书拒绝。撤权场景仅修改隔离工程成员，随后恢复其 active 状态。
+
+`functional-run-config.example.json` 展示运行与五类 Agent 的观察结构。示例步骤名需逐项绑定本次运行计划的真实 `stepId` 与 captures；旧基础 run-config 示例未包含这些任务，不可直接拼接后声称完整配置。正式建议、执行/反馈、审计与 C04 全链另由所属查询补证，三类观察器不接受任意 DTO 的通用 status。
 
 1. 检查合成包：`pnpm acceptance:synthetic check --pack references/acceptance/synthetic-v1`。
 2. 完成显式初始化及迁移，准备真实授权工程、空间、原始资料及元信息工件。正式资料登记消费已存在的工件；当前 HTTP 没有上传/转换入口，不能把登记回执当作资料已完成转换。
@@ -34,13 +46,13 @@ C37 工程 change 已归档，结论 PASS：固定检查点 `9432a3f` 与独立�
 
 ## 证据与命令
 
-| 证据 | 命令或入口 | 能证明什么 |
-| --- | --- | --- |
-| 材料静态检查 | `pnpm acceptance:synthetic check --pack references/acceptance/synthetic-v1` | 材料契约、文件和引用完整性 |
-| 模型协议测试 | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts packages/adapters/test/model/llamacpp-model-gateway.test.ts` | 映射、校验、预算和失败边界 |
-| 真实模型 adapter smoke | `RISKFLOW_NETWORK_API_SMOKE=1 pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.smoke.test.ts` | 真实结构化生成、Embedding、会话流及 C04 响应证据；不等于生产业务验收 |
-| 正式业务终态 | `node scripts/acceptance/functional.mjs --pack references/acceptance/synthetic-v1 --config <functional-config.json> --output <新证据目录> [--resume]` | 同次运行的正式只读终态和必需引用；等待人审、超时或缺引用不能 PASS |
-| 可见浏览器 | 当前桌面 Chrome，连接上述生产 HTTPS | 登录、业务页面、正式人工确认、权限、重试与跨页追溯的实际行为 |
+| 证据                   | 命令或入口                                                                                                                                            | 能证明什么                                                           |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| 材料静态检查           | `pnpm acceptance:synthetic check --pack references/acceptance/synthetic-v1`                                                                           | 材料契约、文件和引用完整性                                           |
+| 模型协议测试           | `pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.test.ts packages/adapters/test/model/llamacpp-model-gateway.test.ts`     | 映射、校验、预算和失败边界                                           |
+| 真实模型 adapter smoke | `RISKFLOW_NETWORK_API_SMOKE=1 pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.smoke.test.ts`                              | 真实结构化生成、Embedding、会话流及 C04 响应证据；不等于生产业务验收 |
+| 正式业务终态           | `node scripts/acceptance/functional.mjs --pack references/acceptance/synthetic-v1 --config <functional-config.json> --output <新证据目录> [--resume]` | 同次运行的正式只读终态和必需引用；等待人审、超时或缺引用不能 PASS    |
+| 可见浏览器             | 当前桌面 Chrome，连接上述生产 HTTPS                                                                                                                   | 登录、业务页面、正式人工确认、权限、重试与跨页追溯的实际行为         |
 
 2026-10-12 的定向工程回归通过 4 个测试文件、95 项测试：
 
@@ -131,7 +143,7 @@ MINERU_REAL_SMOKE=1 MINERU_SMOKE_SUITE=references/acceptance/mineru-v2/manifest.
 ## 最终交付
 
 签名、多平台正式安装包、禁网三 VM、本地模型/MinerU 介质与许可、4090/128GB 加辅助 NVIDIA GPU 的实测由 C38 独立取证。主卡运行 Qwen3.8-27B，辅助卡运行 MinerU 专用模型；embedding 默认保持独立 Ollama 主机。C38 必须比较同一标注样例的云端/本地转换质量、关键字段和后续结果，并测量双服务同时运行时的峰值显存/RAM、吞吐、延迟、排队和取消；官网功能 PASS 不证明本地质量、资源隔离或离线交付通过。后续功能 change 只有全部功能义务和必要审计完成后才可 PASS；原工程任务全勾不表示这些业务缺项通过。
+
 # MinerU change 的验收范围
 
 `adopt-mineru-document-ingestion`以转换器真实功能与受影响回归验收：五格式源字段/记录关联/页码、JSON-LD、质量阻断、权限/幂等/取消及耐久证据。本机CPU/Vulkan GPU基准为补充报告；完整浏览器业务归 complete-private-deployment-functional-acceptance，目标4090/Qwen双卡交付归 C38，不作为本change产品验收前置。全仓16项lint错误已修复。2026-10-11已部署MinerU 4.0.12固定服务并完成CPU/P4 Vulkan实测：两轮五格式的预热及各3次重复全部通过，五页扫描件亦完成各3次暖请求，127字段/60记录/原页/JSON-LD均正确。扫描件GPU加速约2.24–2.48倍，服务进程峰值显存1886 MiB；重启后真实PNG转换通过。GPU服务健康运行于127.0.0.1:18000，CPU实例已停止，模型与证据保留。操作见[服务说明](mineru/README.md)，计量与边界见[本机报告](../references/acceptance/mineru-v2/local-benchmark-report.md)。本change正式独立verification仍待最终Git检查点，未提交或归档。
-

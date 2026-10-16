@@ -711,7 +711,7 @@ export interface RecommendationContextReaderV1 {
     readonly requestedAt: string;
     readonly authorization: AuthorizationContextV1;
     readonly warningResponseTaskRef: WarningResponseTaskRefV1;
-    readonly measureLibraryReleaseRef: MeasureLibraryReleaseRefV1;
+    readonly measureLibraryReleaseRef?: MeasureLibraryReleaseRefV1;
   }): Promise<RecommendationFrozenContextV1>;
 }
 

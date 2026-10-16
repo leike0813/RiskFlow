@@ -78,8 +78,6 @@ export interface WarningLifecyclePostgresFixtureV1 {
     readonly commandId: string;
     readonly idempotencyKey?: string;
     readonly assessmentRecordRef: RiskAssessmentRecordRefV1;
-    readonly aggregationPolicyRef?: VersionReference;
-    readonly notificationPolicyRef?: VersionReference;
   }): Promise<OpenWarningCommandV1>;
   acknowledgeCommand(input: {
     readonly commandId: string;
@@ -318,15 +316,17 @@ export const startWarningLifecycleFixture = async (
         });
       }
       const matchesAggregation =
-        input.warningAggregationPolicyRef.entityId === aggregationPolicy.policyRef.entityId &&
-        input.warningAggregationPolicyRef.versionId === aggregationPolicy.policyRef.versionId;
+        input.warningAggregationPolicyRef === undefined ||
+        (input.warningAggregationPolicyRef.entityId === aggregationPolicy.policyRef.entityId &&
+          input.warningAggregationPolicyRef.versionId === aggregationPolicy.policyRef.versionId);
       const matchesNotification =
-        input.notificationPolicyRef.entityId === notificationPolicy.policyRef.entityId &&
-        input.notificationPolicyRef.versionId === notificationPolicy.policyRef.versionId;
+        input.notificationPolicyRef === undefined ||
+        (input.notificationPolicyRef.entityId === notificationPolicy.policyRef.entityId &&
+          input.notificationPolicyRef.versionId === notificationPolicy.policyRef.versionId);
       if (!matchesAggregation || !matchesNotification) {
         failWarningLifecycle("policy-unavailable", {
           kind: "assessment-input-snapshot",
-          reference: input.warningAggregationPolicyRef,
+          reference: aggregationPolicyRef,
         });
       }
       return {
@@ -482,8 +482,6 @@ export const startWarningLifecycleFixture = async (
     readonly commandId: string;
     readonly idempotencyKey?: string;
     readonly assessmentRecordRef: RiskAssessmentRecordRefV1;
-    readonly aggregationPolicyRef?: VersionReference;
-    readonly notificationPolicyRef?: VersionReference;
   }): Promise<OpenWarningCommandV1> =>
     OpenWarningCommandV1Schema.parse({
       kind: "open",
@@ -498,8 +496,6 @@ export const startWarningLifecycleFixture = async (
       }),
       payload: {
         assessmentRecordRef: input.assessmentRecordRef,
-        warningAggregationPolicyRef: input.aggregationPolicyRef ?? aggregationPolicyRef,
-        notificationPolicyRef: input.notificationPolicyRef ?? notificationPolicyRef,
       },
     }) as OpenWarningCommandV1;
 
@@ -644,8 +640,6 @@ export const startWarningLifecycleFixture = async (
         },
         payload: {
           assessmentRecordRef: input.assessmentRecordRef,
-          warningAggregationPolicyRef: aggregationPolicyRef,
-          notificationPolicyRef,
         },
       }) as OpenWarningCommandV1;
     },
@@ -664,8 +658,6 @@ export const startWarningLifecycleFixture = async (
         }),
         payload: {
           assessmentRecordRef: input.assessmentRecordRef,
-          warningAggregationPolicyRef: aggregationPolicyRef,
-          notificationPolicyRef,
         },
       }) as OpenWarningCommandV1;
     },

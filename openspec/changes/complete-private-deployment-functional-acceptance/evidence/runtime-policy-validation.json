@@ -1,0 +1,35 @@
+{
+  "generatedAt": "2026-10-14T11:33:30.160Z",
+  "scope": "synthetic-acceptance-runtime-policy",
+  "schemaValid": true,
+  "crossPolicyBindingsValid": true,
+  "datasetBindingsValid": true,
+  "policyTypes": [
+    "cleaning",
+    "knowledge-validation",
+    "hybrid-retrieval",
+    "retrieval-acceptance",
+    "retrieval-review",
+    "risk-candidate",
+    "identification-graph",
+    "retry",
+    "assessment-runtime",
+    "warning-runtime",
+    "response-generation",
+    "response-validation",
+    "response-agent",
+    "calibration",
+    "scoring-rules",
+    "report-export"
+  ],
+  "catalogSha256": "921218e0a6ea023c5034bc144bb69ad7d772e6ad5ed2a528faee4b9f16241f7a",
+  "pendingFormalBindings": [
+    "forecastPolicyReleaseRef",
+    "calibrationTargetReleaseRef",
+    "siteContextBindings",
+    "response-generation.bindings",
+    "response-validation.reviewedStandardEvidence",
+    "knowledge/configuration/evidence-base formal releases"
+  ],
+  "businessFunctionalPass": false
+}

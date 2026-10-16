@@ -1,4 +1,4 @@
-import type { ModuleErrorV1 } from "@riskflow/contracts/ports";
+import type { ModuleCapabilityV1, ModuleErrorV1 } from "@riskflow/contracts/ports";
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
 import {
@@ -14,6 +14,7 @@ import {
   asModelGatewayError,
   mapModelGatewayErrorToModuleError,
   type EmbeddingRequestV1,
+  type ModelGatewayErrorV1,
   type ModelGatewayPortV1,
   type ModelUsageV1,
   type StructuredCompletionRequestV1,
@@ -29,8 +30,9 @@ import type { VersionReference } from "@riskflow/contracts/common";
 const RISK_CANDIDATE_MODEL_INSTRUCTION =
   "Generate risk candidates strictly from the frozen five-part identification context in the user message. Return only the structured output defined by the frozen output schema.";
 
-/** 冻结能力：C05 只为本次运行签发该能力；不因授权顺序改用其它能力，也不扩大范围。 */
+/** 能力由操作固定，生成与合并分别使用对应分支授权。 */
 const RISK_CANDIDATE_REQUIRED_CAPABILITY_V1 = "risk-identification.run" as const;
+const RISK_CANDIDATE_EMBEDDING_CAPABILITY_V1 = "risk-identification.finalize" as const;
 
 /** 向量工件 purpose code：来自 C22 冻结常量，本模块不新增 purpose。 */
 const RISK_CANDIDATE_VECTOR_PURPOSE_CODE_V1 =
@@ -56,15 +58,30 @@ const projectModelContext = (
   retrievalEvidence: context.retrievalEvidence,
 });
 
-/** 修正消息只有结构化失败码与父候选身份；没有自由正文，也没有上一轮候选内容。 */
-const projectRepairFeedback = (repair: RiskCandidateRepairFeedbackV1): Record<string, unknown> => ({
-  attempt: repair.attempt,
-  failures: repair.failures,
-  parentCandidates: repair.parentCandidates.map((candidate) => ({
-    candidateId: candidate.candidateId,
-    candidateVersion: candidate.candidateVersion,
-  })),
-});
+/** 只替换失败候选，顺序与领域服务的父候选映射一致。 */
+const projectRepairFeedback = (repair: RiskCandidateRepairFeedbackV1) => {
+  const parentCandidates = repair.parentCandidates
+    .filter((candidate) =>
+      repair.failures.some(
+        (failure) =>
+          failure.candidateId === candidate.candidateId &&
+          failure.candidateVersion === candidate.candidateVersion,
+      ),
+    )
+    .map(({ candidateId, candidateVersion, output }) => ({
+      candidateId,
+      candidateVersion,
+      output,
+    }));
+  return {
+    attempt: repair.attempt,
+    failures: repair.failures,
+    parentCandidates,
+    // 响应级格式错误没有待替换父候选：不约束替换数量，只反馈稳定原因码。
+    requiredCandidateCount: parentCandidates.length === 0 ? undefined : parentCandidates.length,
+    ...(repair.outputError === undefined ? {} : { outputError: repair.outputError }),
+  };
+};
 
 const usageOf = (usage: ModelUsageV1, outputBytes: number): RiskCandidateModelUsageV1 => ({
   inputTokens: usage.inputTokens ?? 0,
@@ -72,6 +89,18 @@ const usageOf = (usage: ModelUsageV1, outputBytes: number): RiskCandidateModelUs
   totalTokens: usage.totalTokens ?? 0,
   outputBytes,
 });
+
+/** D-10：输出错误的真实用量来自网关对已保存响应的实际计量，缺失计量时如实记 0。 */
+const errorUsageOf = (counts: ModelGatewayErrorV1["counts"]): RiskCandidateModelUsageV1 => {
+  const inputTokens = counts?.inputTokens ?? 0;
+  const outputTokens = counts?.outputTokens ?? 0;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    outputBytes: counts?.responseBytes ?? 0,
+  };
+};
 
 /** 由组合根注入的 RI-S57 运行依赖：C10 网关子集、C04 工件入口与时钟。 */
 export interface RiskCandidateModelRuntimeOptionsV1 {
@@ -94,12 +123,13 @@ export const createRiskCandidateModelRuntime = (
     context: {
       readonly causalRunId: string;
       readonly authorizationPolicyRef: VersionReference;
+      readonly requiredCapability: ModuleCapabilityV1;
     },
   ): { readonly kind: "failed"; readonly error: ModuleErrorV1 } => ({
     kind: "failed",
     error: mapModelGatewayErrorToModuleError(asModelGatewayError(error), {
       causalRunId: context.causalRunId,
-      requiredCapability: RISK_CANDIDATE_REQUIRED_CAPABILITY_V1,
+      requiredCapability: context.requiredCapability,
       authorizationPolicyRef: context.authorizationPolicyRef,
     }),
   });
@@ -107,6 +137,7 @@ export const createRiskCandidateModelRuntime = (
   return {
     generateCandidates: async (input: RiskCandidateModelRequestV1) => {
       const startedAt = now().getTime();
+      const repair = input.repair === undefined ? undefined : projectRepairFeedback(input.repair);
       const request: StructuredCompletionRequestV1 = {
         schemaVersion: "1",
         invocationId: input.invocationId,
@@ -125,22 +156,37 @@ export const createRiskCandidateModelRuntime = (
         outputSchemaRef: input.outputSchemaRef,
         messages: [
           { role: "system", content: RISK_CANDIDATE_MODEL_INSTRUCTION },
-          { role: "user", content: JSON.stringify(projectModelContext(input.modelContext)) },
-          ...(input.repair === undefined
+          {
+            role: "user",
+            content: JSON.stringify({
+              ...projectModelContext(input.modelContext),
+              maxCandidates: input.budget.maxCandidates,
+            }),
+          },
+          ...(repair === undefined
             ? []
             : [
                 {
                   role: "user" as const,
-                  content: JSON.stringify(projectRepairFeedback(input.repair)),
+                  content: JSON.stringify(repair),
                 },
               ]),
         ],
         maxOutputTokens: input.maxOutputTokens,
       };
       try {
+        const candidates = RiskCandidateModelOutputV1Schema.shape.candidates.max(
+          input.budget.maxCandidates,
+        );
+        const requiredCandidateCount = repair?.requiredCandidateCount;
         const result = await options.gateway.completeStructured(
           request,
-          RiskCandidateModelOutputV1Schema,
+          RiskCandidateModelOutputV1Schema.extend({
+            candidates:
+              requiredCandidateCount === undefined
+                ? candidates
+                : candidates.length(requiredCandidateCount),
+          }),
         );
         return {
           kind: "succeeded",
@@ -154,9 +200,28 @@ export const createRiskCandidateModelRuntime = (
           elapsedMs: Math.max(0, now().getTime() - startedAt),
         };
       } catch (error: unknown) {
-        return mapGatewayFailure(error, {
+        const failure = asModelGatewayError(error);
+        // D-10：JSON/Schema 输出错误是可修正结构错误，携带原响应引用与真实用量交回原有
+        // 修正循环；传输、授权、来源资格等失败仍按原分类关闭。
+        if (
+          failure.code === "MODEL_OUTPUT_SCHEMA_INVALID" &&
+          failure.rawResponseRef !== undefined
+        ) {
+          return {
+            kind: "output-schema-invalid",
+            invocationId: failure.invocationId,
+            rawResponseRef: {
+              kind: "diagnostic-artifact" as const,
+              reference: failure.rawResponseRef.reference,
+            },
+            usage: errorUsageOf(failure.counts),
+            elapsedMs: Math.max(0, now().getTime() - startedAt),
+          };
+        }
+        return mapGatewayFailure(failure, {
           causalRunId: input.invocationId,
           authorizationPolicyRef: input.modelDeploymentRef,
+          requiredCapability: RISK_CANDIDATE_REQUIRED_CAPABILITY_V1,
         });
       }
     },
@@ -172,7 +237,7 @@ export const createRiskCandidateModelRuntime = (
         projectId: input.projectId,
         actorId: input.actorId,
         authorization: input.authorization,
-        requiredCapability: RISK_CANDIDATE_REQUIRED_CAPABILITY_V1,
+        requiredCapability: RISK_CANDIDATE_EMBEDDING_CAPABILITY_V1,
         modelDeploymentRef: input.embeddingDeploymentRef,
         budgetPolicyRef: input.budgetPolicyRef,
         deadlineAt: input.deadlineAt,
@@ -194,7 +259,7 @@ export const createRiskCandidateModelRuntime = (
             actorId: input.actorId,
             issuedAt: input.requestedAt,
             authorization: input.authorization,
-            requiredCapability: RISK_CANDIDATE_REQUIRED_CAPABILITY_V1,
+            requiredCapability: RISK_CANDIDATE_EMBEDDING_CAPABILITY_V1,
             artifactId,
             artifactKind: "content",
             purposeCode: RISK_CANDIDATE_VECTOR_PURPOSE_CODE_V1,
@@ -231,6 +296,7 @@ export const createRiskCandidateModelRuntime = (
         return mapGatewayFailure(error, {
           causalRunId: input.invocationId,
           authorizationPolicyRef: input.embeddingDeploymentRef,
+          requiredCapability: RISK_CANDIDATE_EMBEDDING_CAPABILITY_V1,
         });
       }
     },

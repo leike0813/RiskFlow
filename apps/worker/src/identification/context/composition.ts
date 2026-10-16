@@ -12,6 +12,7 @@ import {
 } from "@riskflow/core/identification/context";
 import type { IdentificationKnowledgeReleaseReaderV1 } from "@riskflow/core/identification-knowledge";
 import type { TransactionUnitV1 } from "@riskflow/core/persistence";
+import type { ModelContextReaderV1 } from "@riskflow/core/identification/candidate-finalization";
 import type {
   HybridRetrievalInputReaderV1,
   RetrievalGenerationStoreV1,
@@ -63,6 +64,7 @@ export interface IdentificationContextCompositionOptionsV1 {
 export interface IdentificationContextCompositionV1 {
   readonly adapter: PostgresIdentificationContextAdapter;
   readonly service: IdentificationContextService;
+  readonly modelContextReader: ModelContextReaderV1;
   /** 唯一委派 router：`relationship-context` 走 C21，其余分支原样交给 C20。 */
   readonly retrievalDelegate: Pick<KnowledgeModelingPortV1, "retrieve">;
   /** 交给 C20 组合的冻结查询输入窄读；C20 不实现内存回退。 */
@@ -123,6 +125,8 @@ export const createIdentificationContextComposition = (
   options.registry.register(service.createTaskDefinition());
   const modelStep = withRetrievalReviewModelStep({
     policy: options.reviewPolicy,
+    loadModelInput: (task, observationArtifactRef) =>
+      service.readReviewModelInput(task, observationArtifactRef),
     persistArtifact: async ({ task, actionId, purposeCode, value }) => {
       const result = await options.artifactStore.put(
         ArtifactPutCommandV1Schema.parse({
@@ -154,6 +158,7 @@ export const createIdentificationContextComposition = (
       : { now: () => (options.now ?? (() => new Date()))().toISOString() }),
   });
   return {
+    modelContextReader: service.modelContextReader,
     adapter,
     service,
     retrievalDelegate: {

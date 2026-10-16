@@ -7,19 +7,48 @@
 
 ## 1. 拓扑与入口
 
-| VM | 运行内容 | 业务用户可达 |
-| --- | --- | --- |
-| 推理 VM | 主 4090 上的 Qwen3.8-27B；辅助 NVIDIA GPU 上的 MinerU 专用模型（GPU 直通、按服务隔离） | 否 |
-| 应用 VM | Web、API、Worker、Caddy HTTPS | **是（唯一入口）** |
-| 数据 VM | PostgreSQL、Qdrant、不可变工件 | 否 |
+| VM      | 运行内容                                                                               | 业务用户可达       |
+| ------- | -------------------------------------------------------------------------------------- | ------------------ |
+| 推理 VM | 主 4090 上的 Qwen3.8-27B；辅助 NVIDIA GPU 上的 MinerU 专用模型（GPU 直通、按服务隔离） | 否                 |
+| 应用 VM | Web、API、Worker、Caddy HTTPS                                                          | **是（唯一入口）** |
+| 数据 VM | PostgreSQL、Qdrant、不可变工件                                                         | 否                 |
 
 ## 2. 日常启停
+
+启用原件读取时按配置示例提供`sourceOriginal`：专用绝对暂存根、maxBytes=104857600、maxConcurrentReads=2、maxTemporaryBytes=209715200、timeoutMs=120000。暂存不是第二份永久原件或备份；API完整核验C04后才传输，取消/失败清理，请勿让其他服务共用该根。PDF所需worker/CMap/字体资源须随Web构建提供；不依赖CDN。Electron使用系统证书信任链，勿以忽略证书错误替代CA配置。
+
+当前功能实例的准备及取证顺序见 [实机准备记录](../openspec/changes/complete-private-deployment-functional-acceptance/evidence/readiness.md)。部署前按发布清单执行到000059迁移，再核对purpose、配置、模型和受限秘密文件。000059保存派生发布来源及批准知识条目，原人工发布与业务结果继续可读。已有派生发布的实例回退时使用匹配版本的恢复点。工程回归使用隔离容器，现场部署另留记录。
 
 MinerU 使用自托管 4.0.12 V1 tasks；PDF/图片为 Standard，DOCX 为 Flash。通用 Qwen 不能替代专用布局 VLM。设备 UUID、推理 backend、模型制品、显存/内存配额和并发必须在 C38 实测冻结；CUDA 的设备变量不能证明 Vulkan 的隔离。Embedding 当前由独立 Ollama 主机提供，移到辅助卡前须另核验资源预算。
 
 文档配置见 [MinerU 配置示例](mineru-config.example.json)。将明确选定的配置放入 `documentConversion.mineru`，替换示例引用并通过部署 Schema 校验；`null` 仅表示未配置，PDF/图片/DOCX 转换会阻塞。服务 token 仅经受限秘密文件注入，XLSX/CSV 不依赖 MinerU。
 
 更换转换部署或策略时，先通过正式 C11 入口登记资料新版本，再转换并完成本代清洗、知识审核/发布和检索构建。已登记资料段的旧版本不原地重跑；只更换 conversionId 不能建立新代际。保留全部历史工件、段集合和评估引用。
+
+新清洗策略使用 `schemaVersion: "2"`，通过 `documentRules` 配置每类资料的可用结构。例如 CSV/XLSX 使用 `{ "inputKind": "csv", "requiredSegmentKinds": ["table"] }`（XLSX 将类型改为 `xlsx`）；DOCX、`text-pdf` 和 `ocr-layout` 可配置 `["chapter", "table"]`，保留内容具备其中一种即可。空白页沿转换记录追溯，不要求每页都有正文。受保护段与监测样本、文档覆盖要求仍按策略执行；普通内容被排除后可以形成部分可用结果。旧 V1 策略继续按原规则重放。
+
+运行清单在`projectBindings[].policyRefs`列出各阶段已有策略。评分准备只解析八类评分配置，预警、处置、预测和校准分别在开始时选择并固定自己的策略。后续配置缺项显示待准备，补齐后继续原等待；已开始任务使用原预算与版本。策略批准保留批准人和日期，可随兼容的软件版本继续使用。
+
+Agent预算在策略目录`budgetPolicies`唯一登记。清洗V3、知识编制/检索审阅/评分编制/处置Agent/校准V2只保存`budgetPolicyRef`，由目录补出原运行对象。候选生成V2引用同目录的`risk-candidate-budget`，其余Agent引用`agent-task-budget`。例如：
+
+```json
+{
+  "schemaVersion": 1,
+  "projectId": "project-rail-01",
+  "policyType": "risk-candidate-budget",
+  "policyRef": { "entityId": "candidate-generation-budget", "versionId": "v2" },
+  "approval": { "approvedBy": "risk-manager", "approvedAt": "2030-01-01T00:00:00.000Z" },
+  "body": {
+    "maxCandidates": 64,
+    "maxOutputBytes": 1048576,
+    "maxTotalTokens": 65536,
+    "maxWallClockMs": 1800000,
+    "maxRepairRounds": 2
+  }
+}
+```
+
+数值为编写目录的示例，实际任务使用本工程批准的预算。候选生成成员保留`policyRef/outputSchemaRef/budgetPolicyRef`并设`schemaVersion: "2"`，预算正文只写在上述目录项。其他Agent的目录正文复用`AgentTaskBudgetPolicyV1`，包括模型、提示、工具及数值上限，子策略保留业务参数和预算引用。
 
 官网 hybrid 的原页定位使用 `preproc_blocks`，段落合并后的 `para_blocks` 不作为第二份正文。没有原页块却带跨页标记时明确拒绝；公式原始 LaTeX 保留于规范化正文，不执行或计算。合成验收使用 `references/acceptance/mineru-v2/manifest.json` 的新投影及源字段清单，历史 V1 文件保留；新投影路径不表示已登记生产资料版本。
 
@@ -62,13 +91,13 @@ MinerU 使用自托管 4.0.12 V1 tasks；PDF/图片为 Standard，DOCX 为 Flash
 
 ## 6. 故障排查
 
-| 现象 | 首先检查 |
-| --- | --- |
-| 入口 404 / 白屏 | caddy 是否在运行；`/api/*` 未匹配时是否仍是 404 JSON |
-| 业务页停在「权限检查中」 | 会话自省是否成功；证书是否被本机信任 |
-| 就绪检查失败 | 四组件探针：API、Worker、模型、数据库 |
-| 副本不可用 | 是否完成了清单消费与 descriptor 耐久发布 |
-| 桌面客户端无法连接 | 私有 CA 是否进入系统信任链；不得关闭证书校验 |
+| 现象                     | 首先检查                                             |
+| ------------------------ | ---------------------------------------------------- |
+| 入口 404 / 白屏          | caddy 是否在运行；`/api/*` 未匹配时是否仍是 404 JSON |
+| 业务页停在「权限检查中」 | 会话自省是否成功；证书是否被本机信任                 |
+| 就绪检查失败             | 四组件探针：API、Worker、模型、数据库                |
+| 副本不可用               | 是否完成了清单消费与 descriptor 耐久发布             |
+| 桌面客户端无法连接       | 私有 CA 是否进入系统信任链；不得关闭证书校验         |
 
 日志只含稳定状态、原因码、引用与计数；不记录正文、秘密、URL、宿主路径或思维链。
 业务审计以 PostgreSQL 只追加记录为准，普通日志不能替代。

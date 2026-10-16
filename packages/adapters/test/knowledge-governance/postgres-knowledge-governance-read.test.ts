@@ -185,7 +185,7 @@ const stubArtifactStore = {
       content: (async function* () {
         yield bytes;
       })(),
-      verified: Promise.resolve(),
+      completed: Promise.resolve(),
     };
   },
   put: async () => {

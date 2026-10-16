@@ -539,6 +539,7 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
       actorId: request.actorId,
       occurredAt: request.requestedAt,
       purposeCode: request.purposeCode,
+      artifactRef: request.artifactRef,
       authorizationContextRef: request.authorization.authorizationContextRef,
       authorizationPolicyRef: request.authorization.authorizationPolicyRef,
       outcome,
@@ -622,15 +623,23 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
     const settleCancelled = async (): Promise<void> => {
       if (settled) return;
       settled = true;
-      if (recordRead) await this.#recordAccess(request, "cancelled", "read.cancelled");
+      try {
+        if (recordRead) await this.#recordAccess(request, "cancelled", "read.cancelled");
+      } catch (error) {
+        rejectVerified(error);
+        throw error;
+      }
       rejectVerified(makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.cancelled"));
     };
     const abort = async (): Promise<void> => {
       cancelled = true;
       if (!started) {
-        await settleCancelled();
-        await file.close().catch(() => undefined);
-        cleanup();
+        try {
+          await settleCancelled();
+        } finally {
+          await file.close().catch(() => undefined);
+          cleanup();
+        }
         return;
       }
       await file.close().catch(() => undefined);
@@ -643,7 +652,6 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
     const recordIntegrityFailure = this.#recordIntegrityFailure.bind(this);
     async function* consume(): AsyncGenerator<Uint8Array> {
       started = true;
-      const hash = createHash("sha256");
       const buffer = Buffer.allocUnsafe(CHUNK_SIZE);
       let byteLength = 0;
       let position = 0;
@@ -652,16 +660,14 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
           const result = await file.read(buffer, 0, buffer.byteLength, position);
           if (result.bytesRead === 0) break;
           const chunk = buffer.subarray(0, result.bytesRead);
-          hash.update(chunk);
           byteLength += result.bytesRead;
           position += result.bytesRead;
           if (!Number.isSafeInteger(byteLength) || byteLength > maxArtifactBytes)
             throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.length");
-          yield chunk;
+          yield Uint8Array.from(chunk);
         }
-        const digest = hash.digest("hex");
-        if (byteLength !== manifest.content.byteLength || digest !== manifest.content.hash.value)
-          throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.hash");
+        if (byteLength !== manifest.content.byteLength)
+          throw makeArtifactError("ARTIFACT_IO_FAILURE", "read.length");
         const receipt = ArtifactReadReceiptV1Schema.parse({
           schemaVersion: "1",
           requestId: request.requestId,
@@ -692,8 +698,11 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
         throw mapped;
       } finally {
         await file.close().catch(() => undefined);
-        if (!settled) await settleCancelled();
-        cleanup();
+        try {
+          if (!settled) await settleCancelled();
+        } finally {
+          cleanup();
+        }
       }
     }
     const iterator = consume();
@@ -735,14 +744,18 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
       throw makeArtifactError("ARTIFACT_INPUT_INVALID", "read.proof-limit");
     const handle = await this.#open(request, false);
     const chunks: Uint8Array[] = [];
+    const hash = createHash("sha256");
     let byteLength = 0;
     for await (const chunk of handle.content) {
       byteLength += chunk.byteLength;
       if (byteLength > maxBytes)
         throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.proof-limit");
       chunks.push(Uint8Array.from(chunk));
+      hash.update(chunk);
     }
-    await handle.verified;
+    await handle.completed;
+    if (hash.digest("hex") !== handle.manifest.content.hash.value)
+      throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "maintenance.content-hash");
     return validate(Buffer.concat(chunks, byteLength));
   }
 
@@ -750,7 +763,7 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
     if (this.#closed) throw makeArtifactError("ARTIFACT_IO_FAILURE", "store.closed");
     const parsed = ArtifactReadRequestV1Schema.safeParse(request);
     if (!parsed.success) throw makeArtifactError("ARTIFACT_INPUT_INVALID", "read.command");
-    const value = parsed.data;
+    const value = { ...parsed.data, requestId: randomUUID() };
     let manifest: ArtifactManifestV1 | undefined;
     try {
       manifest = await this.#registry.readManifest(value.projectId, value.artifactRef);
@@ -768,16 +781,6 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
         throw error;
       }
       throw mapFileError(error, "read.authorization");
-    }
-    const digest = await this.#registry.readManifestDigest(value.projectId, value.artifactRef);
-    if (digest === undefined) {
-      if (recordRead) await this.#recordDenied(value, "read.authorization");
-      throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "read.authorization");
-    }
-    if (digest !== manifestSha256(manifest)) {
-      if (recordRead)
-        await this.#recordIntegrityFailure(value, "read.manifest-digest", "manifest digest");
-      throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "read.manifest-digest");
     }
     if (recordRead) await this.#recordAccess(value, "authorized", "read.authorized");
     await this.#readSlots.acquire();
@@ -815,13 +818,13 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
       }
       let resolveVerified!: (receipt: ReturnType<typeof ArtifactReadReceiptV1Schema.parse>) => void;
       let rejectVerified!: (error: unknown) => void;
-      const verified = new Promise<ReturnType<typeof ArtifactReadReceiptV1Schema.parse>>(
+      const completed = new Promise<ReturnType<typeof ArtifactReadReceiptV1Schema.parse>>(
         (resolvePromise, rejectPromise) => {
           resolveVerified = resolvePromise;
           rejectVerified = rejectPromise;
         },
       );
-      void verified.catch(() => undefined);
+      void completed.catch(() => undefined);
       let resolveActive!: () => void;
       const active = new Promise<void>((resolvePromise) => {
         resolveActive = resolvePromise;
@@ -837,7 +840,7 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
         recordRead,
       );
       void active.finally(() => this.#activeStreams.delete(active));
-      return { manifest, content, verified };
+      return { manifest, content, completed };
     } catch (error) {
       this.#readSlots.release();
       const mapped = mapFileError(error, "read");

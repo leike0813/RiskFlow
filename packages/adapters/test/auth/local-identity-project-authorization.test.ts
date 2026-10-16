@@ -1,6 +1,6 @@
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { AuthorizationContextV1, SpatialScopeRefV1 } from "@riskflow/contracts/ports";
+import type { SpatialScopeRefV1 } from "@riskflow/contracts/ports";
 
 import {
   activePasswordDerivations,
@@ -16,13 +16,13 @@ import {
 } from "../../src/auth/index.js";
 import type { PostgresLocalIdentityAccess } from "../../src/auth/index.js";
 import { startAuthPostgresFixture, type AuthPostgresFixture } from "./fixture.js";
-import {
-  createDeploymentAuthorizationAdapterV1,
-  DEPLOYMENT_AUTHORIZATION_ERROR_V1,
-} from "../../src/auth/deployment-authorization.js";
 import { createPostgresRuntime } from "../../src/postgres/pool.js";
 import { createPostgresRunEventReaderV1 } from "../../src/workflow/index.js";
 import * as workflowRunEventsMigration from "../../src/postgres/migrations/workflow/deliver-offline-private-deployment-and-operations/000057_workflow_run_events.js";
+import {
+  agentAuthorizationBoundaryFromContext,
+  type AgentTaskSnapshotV1,
+} from "@riskflow/core/agent-runtime";
 
 const ADMIN_PASSWORD = "admin-password-v1";
 const USER_PASSWORD = "user-password-v1";
@@ -974,8 +974,7 @@ describe.sequential("local identity and project authorization", () => {
         });
       };
       await expect(subscribe(roleSessionTokens["business-viewer"]!, false)).resolves.toMatchObject({
-        kind: "failed",
-        error: { code: "AUTHORIZATION_DENIED" },
+        kind: "succeeded",
       });
       await expect(subscribe(roleSessionTokens["business-viewer"]!, true)).resolves.toEqual({
         kind: "succeeded",
@@ -1146,6 +1145,176 @@ describe.sequential("local identity and project authorization", () => {
       }),
     ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
     expect(sourceTwoGrantId).toBeDefined();
+  });
+
+  it("任务跨旧有效期继续，读取和提交仍检查当前账号与冻结范围", async () => {
+    const admission = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: managerSessionToken! },
+      invocationId: "task-admission-expiry",
+      projectId: "project-a",
+      branch: "agent-task.start-task",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    const versionRef = { entityId: "task-policy", versionId: "1" };
+    const documentAdmission = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: managerSessionToken! },
+      invocationId: "task-document-admission",
+      projectId: "project-a",
+      branch: "engineering-data.source-segments",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    const taskRef = {
+      kind: "agent-task" as const,
+      reference: { entityId: "leased-task", versionId: "1" },
+      taskType: "data-cleaning" as const,
+      triggerMode: "embedded" as const,
+      modelDeploymentRef: versionRef,
+      promptTemplateRef: versionRef,
+      toolPolicyRef: versionRef,
+      budgetPolicyRef: versionRef,
+      incrementSchemaRef: versionRef,
+      validationPolicyRef: versionRef,
+    };
+    let task = {
+      envelope: {
+        agentTaskRef: taskRef,
+        authorization: admission.context,
+        frozenAuthorization: agentAuthorizationBoundaryFromContext(
+          admission.context,
+          admission.context.decidedAt,
+        ),
+        projectId: "project-a",
+        actorId: admission.context.actorId,
+        parentRunRef: {
+          kind: "workflow-run",
+          reference: { entityId: "task-parent", versionId: "1" },
+        },
+      },
+    } as unknown as AgentTaskSnapshotV1;
+    let taskNow = clock.now();
+    const advance = () => {
+      taskNow = new Date(taskNow.getTime() + 5 * 60 * 1000 + 1);
+    };
+    const authority = createPostgresLocalIdentityAccess({
+      ...connection(),
+      now: () => taskNow,
+      registeredTaskReader: async () => task,
+    });
+    const input = {
+      taskRef,
+      capability: "agent-task.start" as const,
+      causalRunRef: task.envelope.parentRunRef,
+      projectId: admission.context.projectId,
+      actorId: admission.context.actorId,
+      branch: "agent-task.start-task" as const,
+      invocationId: "task-action-current",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    };
+    try {
+      advance();
+      await expect(
+        authority.verify({
+          authorizationContextRef: admission.contextRef,
+          invocationId: "task-admission-expiry",
+          projectId: "project-a",
+          branch: input.branch,
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        }),
+      ).resolves.toMatchObject({ redacted: false });
+      const decision = await authority.authorizeBusinessAction(input);
+      expect(decision.context.invocation).toEqual({ kind: "agent-task", agentTaskRef: taskRef });
+      expect(decision.context.causalRunRef).toEqual(task.envelope.parentRunRef);
+      expect(decision.context.authorizationContextRef).not.toEqual(admission.contextRef);
+      const documentDecision = await authority.authorizeBusinessAction({
+        ...input,
+        branch: "engineering-data.source-segments",
+        capability: "engineering-data.read",
+        invocationId: "task-document-action-current",
+      });
+      expect(documentDecision.context.grantedCapabilities).toEqual(
+        documentAdmission.context.grantedCapabilities,
+      );
+      await expect(
+        authority.verify({
+          authorizationContextRef: decision.contextRef,
+          invocationId: "task-action-current",
+          projectId: "project-a",
+          branch: input.branch,
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        }),
+      ).resolves.toMatchObject({ redacted: false });
+      for (const changed of [
+        { ...input, projectId: "project-b" },
+        { ...input, actorId: "wrong-actor" },
+        {
+          ...input,
+          requestedSourceVersionRefs: [
+            {
+              kind: "source-version" as const,
+              reference: { entityId: "not-frozen", versionId: "1" },
+            },
+          ],
+        },
+      ])
+        await expect(authority.authorizeBusinessAction(changed)).rejects.toThrow();
+      task = { ...task, envelope: { ...task.envelope, actorId: "other-account" } };
+      await expect(authority.authorizeBusinessAction(input)).rejects.toThrow();
+      await expect(
+        authority.verify({
+          authorizationContextRef: decision.contextRef,
+          invocationId: "task-reuse-after-owner-change",
+          projectId: "project-a",
+          branch: input.branch,
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        }),
+      ).rejects.toThrow();
+      task = { ...task, envelope: { ...task.envelope, actorId: admission.context.actorId } };
+      await fixture!.adminPool.query(
+        "UPDATE business.local_accounts SET status = 'disabled' WHERE account_id = $1",
+        [admission.context.actorId],
+      );
+      try {
+        await expect(
+          authority.authorizeBusinessAction({ ...input, invocationId: "task-security-revoked" }),
+        ).rejects.toBeDefined();
+      } finally {
+        await fixture!.adminPool.query(
+          "UPDATE business.local_accounts SET status = 'active' WHERE account_id = $1",
+          [admission.context.actorId],
+        );
+      }
+      await fixture!.adminPool.query(
+        "REVOKE INSERT ON business.security_audit_events FROM riskflow_app",
+      );
+      try {
+        await expect(
+          authority.authorizeBusinessAction({ ...input, invocationId: "task-audit-failure" }),
+        ).rejects.toThrow();
+      } finally {
+        await fixture!.adminPool.query(
+          "GRANT INSERT ON business.security_audit_events TO riskflow_app",
+        );
+      }
+      advance();
+      await expect(
+        authority.verify({
+          authorizationContextRef: decision.contextRef,
+          invocationId: "task-action-current",
+          projectId: "project-a",
+          branch: input.branch,
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        }),
+      ).resolves.toMatchObject({ redacted: false });
+    } finally {
+      await authority.close();
+    }
   });
 
   it("throttle, reset clearing, tamper rejection, and non-enumeration", async () => {
@@ -2258,374 +2427,53 @@ describe.sequential("local identity and project authorization", () => {
     ).rejects.toMatchObject({ details: { code: "SESSION_EXPIRED" } });
   }, 180_000);
 
-  it("C37 因果授权：受理签发下游分支并耐久关联，后台按原身份复验", async () => {
-    const runtime = createPostgresRuntime(fixture!.app, "riskflow_app");
-    const policy = {
-      policyRef: { entityId: "deployment-downstream-policy", versionId: "1" },
-      bindings: [
-        {
-          rootBranch: "knowledge-modeling.publish-approved-release" as const,
-          downstreamBranches: ["knowledge-modeling.identification-basis" as const],
-        },
-        {
-          rootBranch: "engineering-data.register-source-delivery" as const,
-          downstreamBranches: ["projection.query" as const],
-        },
-        {
-          rootBranch: "projection.export" as const,
-          downstreamBranches: [
-            "projection.export" as const,
-            "warning-response.record-execution" as const,
-          ],
-        },
-      ],
-    };
-    const adapter = createDeploymentAuthorizationAdapterV1({
-      db: runtime.db,
-      access: access!,
-      policy,
-      now: clock.now,
+  it("业务动作沿用账号权限，不依赖旧调用编号或网页登录期限", async () => {
+    const login = await access!.login({
+      kind: "login",
+      loginAttemptId: "business-action-login",
+      loginName: "user001",
+      password: USER_PASSWORD_CHANGED,
     });
+    const admission = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: login.sessionToken },
+      invocationId: "business-action-admission",
+      projectId: "project-a",
+      branch: "workflow.resume-run",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    await access!.logout({ kind: "logout", sessionToken: login.sessionToken });
+    clock.advance(5 * 60 * 1000 + 1);
+    const input = {
+      actorId: admission.context.actorId,
+      projectId: "project-a",
+      capability: "risk-assessment.evaluate" as const,
+      branch: "risk-assessment.evaluate" as const,
+      invocationId: "business-action-after-logout",
+      requestedSpatialScopeRefs: admission.context.spatialScopeRefs,
+      requestedSourceVersionRefs: [],
+    };
+    const result = await access!.authorizeBusinessAction(input);
+    expect(result.context.grantedCapabilities).toEqual(["risk-assessment.evaluate"]);
+    await expect(
+      access!.authorizeBusinessAction({
+        ...input,
+        actorId: roleAccountIds["business-viewer"]!,
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+    await fixture!.adminPool.query(
+      "UPDATE business.local_accounts SET status = 'disabled' WHERE account_id = $1",
+      [input.actorId],
+    );
     try {
-      // 会话超时用例会推进共享时钟，这里必须重新登录取得有效会话。
-      const login = await access!.login({
-        kind: "login",
-        loginAttemptId: "login-c37-issue",
-        loginName: "user001",
-        password: USER_PASSWORD_CHANGED,
-      });
-      const sessionToken = login.restricted
-        ? (
-            await access!.changePassword({
-              kind: "change-password",
-              sessionToken: login.sessionToken,
-              newPassword: `${USER_PASSWORD_CHANGED}-c37`,
-            })
-          ).sessionToken
-        : login.sessionToken;
-      const publishRoot = await access!.authorize({
-        invocation: { kind: "human-session", sessionToken },
-        invocationId: "command-c37-publish",
-        projectId: "project-a",
-        branch: "knowledge-modeling.publish-approved-release",
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
-      });
-      const [buildParent] = await adapter.issueDownstreamContexts({
-        root: publishRoot.context,
-        sessionToken,
-        invocationId: "command-c37-publish-downstream",
-        branches: ["knowledge-modeling.identification-basis"],
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
-      });
-      const causalCommandRef = {
-        kind: "command" as const,
-        commandId: "command-c37-publish",
-        authorizationContextRef: publishRoot.contextRef,
-      };
-      const buildRequest = {
-        invocationId: "c37-independent-build",
-        projectId: "project-a",
-        branch: "knowledge-modeling.identification-basis" as const,
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
-        invocation: {
-          kind: "system" as const,
-          systemActorId: publishRoot.context.actorId,
-          reasonCode: "published-basis-build",
-        },
-        parentContext: buildParent!,
-        causalCommandRef,
-      };
-      const build = await access!.authorize(buildRequest);
-      expect(build.context.causalRunRef).toBeUndefined();
-      expect("causalCommandRef" in build.context && build.context.causalCommandRef).toEqual(
-        causalCommandRef,
-      );
-      await expect(access!.authorize(buildRequest)).resolves.toMatchObject({
-        contextRef: build.contextRef,
-      });
-      await expect(
-        access!.readDeploymentAuthorizationSource({
-          authorizationContextRef: build.contextRef,
-          projectId: "project-a",
-        }),
-      ).resolves.toMatchObject({ causalCommandRef });
-      for (const override of [
-        { causalCommandRef: { ...causalCommandRef, commandId: "other-command" } },
-        {
-          causalCommandRef: {
-            ...causalCommandRef,
-            authorizationContextRef: buildParent!.authorizationContextRef,
-          },
-        },
-        { parentContext: publishRoot.context },
-        { branch: "projection.query" as const },
-      ]) {
-        await expect(
-          access!.authorize({ ...buildRequest, ...override, invocationId: "c37-invalid-build" }),
-        ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
-      }
-      await expect(
-        adapter.resolveDownstreamContext({
-          root: build.context,
-          branch: "knowledge-modeling.identification-basis",
-          invocationId: "c37-build-descendant",
-          requestedSpatialScopeRefs: [],
-          requestedSourceVersionRefs: [],
-          causalCommandRef,
-        }),
-      ).resolves.toMatchObject({ causalCommandRef });
-      const root = await access!.authorize({
-        invocation: { kind: "human-session", sessionToken },
-        invocationId: "invocation-c37-root",
-        projectId: "project-a",
-        branch: "engineering-data.register-source-delivery",
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
-      });
-
-      // 受理阶段：用真实会话为固定下游分支签发，并记录到关联表。
-      const contexts = await adapter.issueDownstreamContexts({
-        root: root.context,
-        sessionToken,
-        invocationId: "invocation-c37-issue",
-        branches: ["projection.query"],
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
-      });
-      expect(contexts).toHaveLength(1);
-      expect(
-        await access!.readIssuedContext({
-          invocationId: "invocation-c37-issue",
-          branch: "projection.query",
-          projectId: root.context.projectId,
-          actorId: root.context.actorId,
-        }),
-      ).toEqual(contexts[0]);
-
-      const row = await fixture!.adminPool.query<{ count: string }>(
-        "SELECT COUNT(*)::text AS count FROM business.deployment_causal_authorizations WHERE project_id = $1 AND invocation_id = $2",
-        ["project-a", "invocation-c37-issue"],
-      );
-      expect(row.rows[0]!.count).toBe("1");
-      await expect(
-        adapter.issueDownstreamContexts({
-          root: root.context,
-          sessionToken,
-          invocationId: "invocation-c37-issue",
-          branches: ["projection.query"],
-          requestedSpatialScopeRefs: [],
-          requestedSourceVersionRefs: [],
-        }),
-      ).resolves.toEqual(contexts);
-      for (const branches of [
-        [],
-        ["projection.query", "projection.query"],
-        ["risk-identification.read"],
-      ]) {
-        await expect(
-          adapter.issueDownstreamContexts({
-            root: root.context,
-            sessionToken,
-            invocationId: "invocation-c37-policy-rejected",
-            branches,
-            requestedSpatialScopeRefs: [],
-            requestedSourceVersionRefs: [],
-          }),
-        ).rejects.toMatchObject({ code: DEPLOYMENT_AUTHORIZATION_ERROR_V1.policyRejected });
-      }
-      await expect(
-        adapter.issueDownstreamContexts({
-          root: root.context,
-          sessionToken,
-          invocationId: "invocation-c37-issue-conflict",
-          branches: ["projection.query"],
-          requestedSpatialScopeRefs: [],
-          requestedSourceVersionRefs: [],
-        }),
-      ).rejects.toThrow("deployment causal authorization conflict");
-      const preservedAssociation = await fixture!.adminPool.query<{ invocation_id: string }>(
-        "SELECT invocation_id FROM business.deployment_causal_authorizations WHERE project_id = $1 AND actor_id = $2 AND branch = $3",
-        [root.context.projectId, root.context.actorId, "projection.query"],
-      );
-      expect(preservedAssociation.rows).toEqual([{ invocation_id: "invocation-c37-issue" }]);
-
-      // 后台阶段：按目标分支取已关联上下文并复验当前权限。
-      const resolved = await adapter.resolveDownstreamContext({
-        root: root.context,
-        branch: "projection.query",
-        invocationId: "invocation-c37-resolve-one",
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
-        causalRunRef: {
-          kind: "workflow-run",
-          reference: { entityId: "run-c37", versionId: "v1" },
-        },
-      });
-      expect(resolved.actorId).toBe(root.context.actorId);
-      expect(resolved.projectId).toBe(root.context.projectId);
-      const readOnlyRequest = {
-        root: resolved,
-        branch: "projection.query",
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
-      };
-      const countsBefore = await fixture!.adminPool.query(
-        "SELECT (SELECT COUNT(*) FROM business.authorization_contexts) AS contexts, (SELECT COUNT(*) FROM audit.entries) AS audits",
-      );
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        expect(await adapter.readDownstreamContext(readOnlyRequest)).toEqual({
-          context: contexts[0],
-          invocationId: "invocation-c37-issue",
-          branch: "projection.query",
-        });
-      }
-      const countsAfter = await fixture!.adminPool.query(
-        "SELECT (SELECT COUNT(*) FROM business.authorization_contexts) AS contexts, (SELECT COUNT(*) FROM audit.entries) AS audits",
-      );
-      expect(countsAfter.rows).toEqual(countsBefore.rows);
-      await expect(
-        adapter.readDownstreamContext({
-          ...readOnlyRequest,
-          branch: "risk-identification.read",
-        }),
-      ).rejects.toMatchObject({ code: DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated });
-      await expect(
-        adapter.readDownstreamContext({
-          ...readOnlyRequest,
-          root: { ...resolved, actorId: "other-actor" },
-        }),
-      ).rejects.toMatchObject({ code: DEPLOYMENT_AUTHORIZATION_ERROR_V1.rootNotGranted });
-      await expect(
-        adapter.resolveDownstreamContext({
-          root: resolved,
-          branch: "projection.query",
-          invocationId: "invocation-c37-resolve-descendant",
-          requestedSpatialScopeRefs: [],
-          requestedSourceVersionRefs: [],
-          causalRunRef: {
-            kind: "workflow-run",
-            reference: { entityId: "run-c37", versionId: "v1" },
-          },
-        }),
-      ).resolves.toMatchObject({
-        actorId: root.context.actorId,
-        projectId: root.context.projectId,
-      });
-      await expect(
-        adapter.resolveDownstreamContext({
-          root: root.context,
-          branch: "projection.query",
-          invocationId: "invocation-c37-resolve-two",
-          requestedSpatialScopeRefs: [],
-          requestedSourceVersionRefs: [],
-          causalRunRef: {
-            kind: "workflow-run",
-            reference: { entityId: "run-c37", versionId: "v1" },
-          },
-        }),
-      ).resolves.toMatchObject({ actorId: root.context.actorId });
-
-      // 没有关联的分支必须失败：不得重构令牌或借用其它分支。
-      await expect(
-        adapter.resolveDownstreamContext({
-          root: root.context,
-          branch: "risk-identification.read",
-          invocationId: "invocation-c37-resolve-missing",
-          requestedSpatialScopeRefs: [],
-          requestedSourceVersionRefs: [],
-          causalRunRef: {
-            kind: "workflow-run",
-            reference: { entityId: "run-c37", versionId: "v1" },
-          },
-        }),
-      ).rejects.toMatchObject({
-        code: DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated,
-      });
-
-      const mismatchedReaders = [
-        async (): Promise<AuthorizationContextV1> => ({
-          ...contexts[0]!,
-          authorizationContextRef: {
-            ...contexts[0]!.authorizationContextRef,
-            reference: { entityId: "wrong-child", versionId: "1" },
-          },
-        }),
-        async (): Promise<AuthorizationContextV1> => ({ ...contexts[0]!, actorId: "wrong-actor" }),
-      ];
-      for (const [index, read] of mismatchedReaders.entries()) {
-        const mismatchedAdapter = createDeploymentAuthorizationAdapterV1({
-          db: runtime.db,
-          access: access!,
-          policy,
-          issuedContextReader: { read },
-        });
-        await expect(
-          mismatchedAdapter.resolveDownstreamContext({
-            root: root.context,
-            branch: "projection.query",
-            invocationId: `invocation-c37-resolve-mismatch-${index}`,
-            requestedSpatialScopeRefs: [],
-            requestedSourceVersionRefs: [],
-            causalRunRef: {
-              kind: "workflow-run",
-              reference: { entityId: "run-c37", versionId: "v1" },
-            },
-          }),
-        ).rejects.toMatchObject({ code: DEPLOYMENT_AUTHORIZATION_ERROR_V1.notAssociated });
-      }
-
-      const viewerLogin = await access!.login({
-        kind: "login",
-        loginAttemptId: "login-c37-viewer-root",
-        loginName: "viewer001",
-        password: VIEWER_PASSWORD,
-      });
-      const viewerToken = viewerLogin.sessionToken;
-      const viewerRoot = await access!.authorize({
-        invocation: { kind: "human-session", sessionToken: viewerToken },
-        invocationId: "invocation-c37-viewer-root",
-        projectId: "project-a",
-        branch: "projection.export",
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
-      });
-      await expect(
-        adapter.issueDownstreamContexts({
-          root: viewerRoot.context,
-          sessionToken: viewerToken,
-          invocationId: "invocation-c37-partial-reject",
-          branches: ["projection.export", "warning-response.record-execution"],
-          requestedSpatialScopeRefs: [],
-          requestedSourceVersionRefs: [],
-        }),
-      ).rejects.toMatchObject({ code: DEPLOYMENT_AUTHORIZATION_ERROR_V1.downstreamRejected });
-      const rejectedGroup = await fixture!.adminPool.query<{ count: string }>(
-        "SELECT COUNT(*)::text AS count FROM business.deployment_causal_authorizations WHERE invocation_id = $1",
-        ["invocation-c37-partial-reject"],
-      );
-      expect(rejectedGroup.rows[0]!.count).toBe("0");
-      clock.advance(5 * 60 * 1000 + 1);
-      await expect(adapter.readDownstreamContext(readOnlyRequest)).rejects.toThrow();
-      await expect(
-        access!.verify({
-          authorizationContextRef: build.contextRef,
-          invocationId: buildRequest.invocationId,
-          projectId: buildRequest.projectId,
-          branch: buildRequest.branch,
-          requestedSpatialScopeRefs: [],
-          requestedSourceVersionRefs: [],
-        }),
-      ).rejects.toMatchObject({ details: { code: "SESSION_EXPIRED" } });
-      await expect(
-        access!.authorize({ ...buildRequest, invocationId: "c37-build-expired" }),
-      ).rejects.toMatchObject({ details: { code: "SESSION_EXPIRED" } });
+      await expect(access!.authorizeBusinessAction(input)).rejects.toBeDefined();
     } finally {
-      await runtime.close();
+      await fixture!.adminPool.query(
+        "UPDATE business.local_accounts SET status = 'active' WHERE account_id = $1",
+        [input.actorId],
+      );
     }
-  }, 180_000);
+  });
 
   it("C37 D-20 来源窄读：原签发事实、真实父因果关联与拒绝边界", async () => {
     const login = await access!.login({

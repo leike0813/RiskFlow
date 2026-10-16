@@ -127,7 +127,7 @@ export const createEffectForecastModelReaderV1 = (
           chunks.push(next.value);
         }
         // 内容完整消费并由 C04 完成摘要校验后，才允许解析模型正文。
-        await handle.verified;
+        await handle.completed;
         const buffer = new Uint8Array(byteLength);
         let offset = 0;
         for (const chunk of chunks) {
@@ -152,8 +152,8 @@ export const createEffectForecastModelReaderV1 = (
         try {
           await iterator.return?.();
         } finally {
-          // 提前取消会拒绝 C04 的 verified promise；先校验失败时也必须观察该结果。
-          await handle.verified.then(
+          // 提前取消会拒绝 C04 的 completed promise；先校验失败时也必须观察该结果。
+          await handle.completed.then(
             () => undefined,
             () => undefined,
           );

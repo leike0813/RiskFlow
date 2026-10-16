@@ -30,6 +30,10 @@ import {
 } from "@riskflow/contracts/vocabulary";
 
 import { RetrievalMemberRefV1Schema, RetrievalSourceKindV1Schema } from "../../retrieval/schema.js";
+import {
+  AgentTaskBudgetPolicyV1Schema,
+  AgentValidationItemV1Schema,
+} from "../../agent-runtime/schema.js";
 
 export const IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1 = "1" as const;
 /** 单次增量最多提交的操作数；候选规模另有策略上限。 */
@@ -239,6 +243,29 @@ export const RetrievalReviewCandidateSetV1Schema = z.strictObject({
   frozenAt: IsoDateTimeSchema,
 });
 export type RetrievalReviewCandidateSetV1 = z.infer<typeof RetrievalReviewCandidateSetV1Schema>;
+
+export const RetrievalReviewModelObservationV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("retrieval-result"),
+    schemaVersion: z.literal(IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1),
+    taskRef: AgentTaskRefV1Schema,
+    candidateSetRef: ContentArtifactRefV1Schema,
+    candidateVersion: positiveInt,
+    queryResultRef: KnowledgeQueryResultRefV1Schema,
+    members: z.array(RetrievalReviewCandidateV1Schema),
+    resupplements: z.array(RetrievalReviewResupplementV1Schema),
+  }),
+  z.strictObject({
+    kind: z.literal("validation"),
+    schemaVersion: z.literal(IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1),
+    taskRef: AgentTaskRefV1Schema,
+    candidateSetRef: ContentArtifactRefV1Schema.optional(),
+    items: z.array(AgentValidationItemV1Schema),
+  }),
+]);
+export type RetrievalReviewModelObservationV1 = z.infer<
+  typeof RetrievalReviewModelObservationV1Schema
+>;
 
 export const RetrievalReviewSelectOperationV1Schema = z.strictObject({
   operation: z.literal("select"),
@@ -519,18 +546,70 @@ export type IdentificationContextResultRowV1 = z.infer<
 // ------------------------------------------------------------ 策略与稳定身份
 
 /** C21 审阅策略：由组合根冻结注入，必须与输入快照的审阅策略引用一致。 */
-export const RetrievalReviewPolicyV1Schema = z.strictObject({
-  schemaVersion: z.literal(IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1),
+export const RetrievalReviewPolicyV1Schema = z
+  .strictObject({
+    schemaVersion: z.literal(IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1),
+    policyRef: VersionReferenceSchema,
+    definitionRef: VersionReferenceSchema,
+    toolPolicyRef: VersionReferenceSchema,
+    incrementSchemaRef: VersionReferenceSchema,
+    validationPolicyRef: VersionReferenceSchema,
+    readFrozenResultToolRef: VersionReferenceSchema,
+    resupplementToolRef: VersionReferenceSchema,
+    budgetPolicyRef: VersionReferenceSchema,
+    budgetPolicy: AgentTaskBudgetPolicyV1Schema,
+    modelDeploymentRef: VersionReferenceSchema,
+    promptTemplateRef: VersionReferenceSchema,
+    maxCandidateMembers: z.number().int().positive().max(512),
+    maxResupplements: z.number().int().positive().max(16),
+    allowedSupplementIntentCodes: z
+      .array(IdentifierSchema)
+      .min(1)
+      .refine((codes) => new Set(codes).size === codes.length),
+    modelMaxOutputTokens: z.number().int().positive(),
+  })
+  .superRefine((policy, context) => {
+    const budget = policy.budgetPolicy;
+    for (const [key, actual, expected] of [
+      ["policyRef", budget.policyRef, policy.budgetPolicyRef],
+      ["modelDeploymentRef", budget.modelDeploymentRef, policy.modelDeploymentRef],
+      ["promptTemplateRef", budget.promptTemplateRef, policy.promptTemplateRef],
+      ["toolPolicyRef", budget.toolPolicyRef, policy.toolPolicyRef],
+    ] as const) {
+      if (actual.entityId !== expected.entityId || actual.versionId !== expected.versionId)
+        context.addIssue({
+          code: "custom",
+          path: ["budgetPolicy", key],
+          message: "budget reference mismatch",
+        });
+    }
+    if (
+      policy.maxCandidateMembers > budget.maxObjects ||
+      policy.maxResupplements > budget.maxSupplementarySearches ||
+      policy.modelMaxOutputTokens > (budget.maxOutputTokens ?? budget.maxContextTokens)
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["budgetPolicy"],
+        message: "review policy exceeds task budget",
+      });
+  });
+export type RetrievalReviewPolicyV1 = z.infer<typeof RetrievalReviewPolicyV1Schema>;
+
+/**
+ * D-08 单份运行清单：V2 只引用唯一预算正文与候选/补搜业务参数；
+ * 模型、提示与工具策略引用由该预算解析，不在策略中重复抄写。
+ * modelMaxOutputTokens 仍是每步业务上限，超出被引用预算时由目录归一拒绝。
+ */
+export const RetrievalReviewPolicyV2Schema = z.strictObject({
+  schemaVersion: z.literal("2"),
   policyRef: VersionReferenceSchema,
   definitionRef: VersionReferenceSchema,
-  toolPolicyRef: VersionReferenceSchema,
   incrementSchemaRef: VersionReferenceSchema,
   validationPolicyRef: VersionReferenceSchema,
   readFrozenResultToolRef: VersionReferenceSchema,
   resupplementToolRef: VersionReferenceSchema,
   budgetPolicyRef: VersionReferenceSchema,
-  modelDeploymentRef: VersionReferenceSchema,
-  promptTemplateRef: VersionReferenceSchema,
   maxCandidateMembers: z.number().int().positive().max(512),
   maxResupplements: z.number().int().positive().max(16),
   allowedSupplementIntentCodes: z
@@ -539,7 +618,7 @@ export const RetrievalReviewPolicyV1Schema = z.strictObject({
     .refine((codes) => new Set(codes).size === codes.length),
   modelMaxOutputTokens: z.number().int().positive(),
 });
-export type RetrievalReviewPolicyV1 = z.infer<typeof RetrievalReviewPolicyV1Schema>;
+export type RetrievalReviewPolicyV2 = z.infer<typeof RetrievalReviewPolicyV2Schema>;
 
 /** 结果稳定身份：`relationship-query-result:<project>:<queryId>` 等（design D-03）。 */
 export const relationshipQueryResultRefFor = (input: {
@@ -555,25 +634,23 @@ export const relationshipQueryResultRefFor = (input: {
 });
 
 export const retrievalArtifactSetRefFor = (input: {
-  readonly taskRef: { readonly reference: { readonly entityId: string } };
+  readonly entityId: string;
   readonly requestDigest: string;
 }): z.infer<typeof RetrievalArtifactSetRefV1Schema> => ({
   kind: "retrieval-artifact-set",
   reference: {
-    entityId: `retrieval-review:${input.taskRef.reference.entityId}`,
+    entityId: input.entityId,
     versionId: input.requestDigest,
   },
 });
 
 export const modelContextArtifactSetRefFor = (input: {
-  readonly projectId: string;
-  readonly workItemEntityId: string;
-  readonly taskEntityId: string;
+  readonly entityId: string;
   readonly requestDigest: string;
 }): z.infer<typeof ModelContextArtifactSetRefV1Schema> => ({
   kind: "model-context-artifact-set",
   reference: {
-    entityId: `identification-model-context:${input.projectId}:${input.workItemEntityId}:${input.taskEntityId}`,
+    entityId: input.entityId,
     versionId: input.requestDigest,
   },
 });

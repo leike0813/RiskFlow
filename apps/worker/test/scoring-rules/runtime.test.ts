@@ -600,7 +600,7 @@ describe("structured scoring rule authoring model step", () => {
       policy.tools.standardSegmentToolRef,
     );
     expect(renderModelStep.mock.calls[0]?.[2]).toEqual({});
-    expect(renderModelStep.mock.calls[1]?.[2]).toEqual({
+    expect(renderModelStep.mock.calls[1]?.[2]).toMatchObject({
       previousObservationArtifactRef: observationRef,
     });
 
@@ -668,7 +668,11 @@ describe("structured scoring rule authoring model step", () => {
     expect(ScoringRuleActionV1Schema.safeParse(oversizedSegmentSliceRequest).success).toBe(true);
     // 切片在模型步就被拒：动作未落结果工件，仍保留动作意图工件供复验。
     expect(store.actionFailures).toEqual([
-      { code: "AGENT_INPUT_INVALID", reasonCode: undefined, evidenceRef: undefined },
+      {
+        code: "AGENT_INPUT_INVALID",
+        reasonCode: undefined,
+        evidenceRef: expect.objectContaining({ kind: "content-artifact" }),
+      },
     ]);
     expect(store.calls).not.toContain("complete-task");
     expect(persisted.filter((entry) => entry.purposeCode === "agent-action-intent")).toHaveLength(
@@ -700,7 +704,11 @@ describe("structured scoring rule authoring model step", () => {
     expect(port.calls.standardSlices).toEqual([]);
     expect(port.calls.indicatorSlices).toEqual([]);
     expect(store.actionFailures).toEqual([
-      { code: "AGENT_TOOL_NOT_ALLOWED", reasonCode: undefined, evidenceRef: undefined },
+      {
+        code: "AGENT_TOOL_NOT_ALLOWED",
+        reasonCode: undefined,
+        evidenceRef: expect.objectContaining({ kind: "content-artifact" }),
+      },
     ]);
     expect(store.calls).not.toContain("complete-task");
     expect(persisted.some((entry) => entry.purposeCode === "agent-action-intent")).toBe(true);

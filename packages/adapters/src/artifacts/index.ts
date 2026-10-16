@@ -1,9 +1,11 @@
 export * from "./artifact-stream-service.js";
 export * from "./artifact-stream-service-handler.js";
 export * from "./remote-artifact-store.js";
+export { assertArtifactAccess } from "./postgres-artifact-registry.js";
 
 import type {
   ArtifactMaintenanceV1,
+  ArtifactManifestReaderV1,
   ArtifactReferenceGuardV1,
   ArtifactStoreV1,
   ArtifactStorePolicyV1,
@@ -29,6 +31,7 @@ export interface ContentAddressedArtifactStoreConfigV1 extends PostgresConnectio
 export interface ContentAddressedArtifactStoreHandleV1 extends ArtifactStoreV1 {
   readonly referenceGuard: ArtifactReferenceGuardV1;
   readonly maintenance: ArtifactMaintenanceV1;
+  readonly readManifest: ArtifactManifestReaderV1;
   close(): Promise<void>;
 }
 
@@ -65,6 +68,7 @@ export const createContentAddressedArtifactStore = async (
       put: store.put.bind(store),
       open: store.open.bind(store),
       verifyContent: store.verifyContent.bind(store),
+      readManifest: registry.readManifest.bind(registry),
       referenceGuard: registry,
       maintenance,
       async close() {

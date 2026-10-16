@@ -9,7 +9,10 @@ import {
 import {
   AgentCommandProposalV1Schema,
   AgentTaskDefinitionRegistry,
+  type AgentTaskExecutionAuthorityRequestV1,
   buildCompletedAgentTaskResult,
+  emptyAgentBudgetUsage,
+  makeAgentError,
   type AgentTaskCompletedResultReadRequestV1,
   type AgentTaskCompletedResultReadResultV1,
   type AgentTaskDefinitionV1,
@@ -416,6 +419,151 @@ describe("postgres agent runtime adapter", () => {
     expect(outbox.rows).toHaveLength(0);
   });
 
+  it.each([
+    { outcome: "complete", repairable: false },
+    { outcome: "fail", repairable: false },
+    { outcome: "fail", repairable: true },
+  ] as const)("结算失败后重试：$outcome，候选修正=$repairable", async ({ outcome, repairable }) => {
+    const retryPolicy = {
+      ...policy,
+      maxToolInvocations: 3,
+      maxTransientRetries: repairable ? 0 : 1,
+      maxCorrections: repairable ? 1 : 0,
+    };
+    const registry = new AgentTaskDefinitionRegistry([
+      { ...cleaningDefinition, budgetPolicy: retryPolicy },
+    ]);
+    const retryAdapter = new PostgresAgentTaskAdapter({
+      db: fixture.runtime.db,
+      registry,
+      transactionUnit: fixture.transactionUnit,
+      artifactStore: fixture.store,
+      referenceGuard: fixture.registry,
+    });
+    const id = "retry-tool-" + outcome + (repairable ? "-repair" : "");
+    const started = await retryAdapter.startTask({
+      ...startCommand,
+      commandId: id,
+      idempotencyKey: id,
+    });
+    expect(started.kind).toBe("succeeded");
+    if (started.kind !== "succeeded") return;
+    const taskRef = started.result.agentTaskRef;
+    const claim = await retryAdapter.claim({
+      workerId: id,
+      leaseDurationMs: 30_000,
+      now: "2030-01-01T00:00:01.000Z",
+    });
+    expect(claim?.task.envelope.agentTaskRef).toEqual(taskRef);
+    if (claim === undefined) return;
+    const intent = await putArtifact(id + "-intent", "diagnostic", "agent-action-intent");
+    const observation = await putArtifact(
+      id + "-observation",
+      "diagnostic",
+      "agent-tool-observation",
+    );
+    const action = {
+      taskRef,
+      workerId: claim.workerId,
+      leaseToken: claim.leaseToken,
+      actionId: id + "-action",
+      actionType: "domain-tool" as const,
+      sequence: 1,
+      idempotencyKey: id + "-action",
+      intentArtifactRef: intent,
+    };
+    await retryAdapter.reserveAction({
+      ...action,
+      reservationId: id + "-first",
+      now: "2030-01-01T00:00:02.000Z",
+    });
+    const transient = makeAgentError({
+      code: repairable ? "AGENT_VALIDATION_REJECTED" : "AGENT_TOOL_FAILURE",
+      category: repairable ? "validation" : "tool",
+      retryable: true,
+      stage: "test.retry",
+    });
+    await retryAdapter.failAction({
+      ...action,
+      error: transient,
+      now: "2030-01-01T00:00:03.000Z",
+    });
+    await retryAdapter.releaseLease({ ...action, now: "2030-01-01T00:00:03.100Z" });
+    const retryClaim = await retryAdapter.claim({
+      workerId: id,
+      leaseDurationMs: 30_000,
+      now: "2030-01-01T00:00:03.200Z",
+    });
+    expect(retryClaim?.task.envelope.agentTaskRef).toEqual(taskRef);
+    if (retryClaim === undefined) return;
+    action.leaseToken = retryClaim.leaseToken;
+    const second = await retryAdapter.reserveAction({
+      ...action,
+      reservationId: id + "-retry",
+      now: "2030-01-01T00:00:04.000Z",
+    });
+    expect(second.reservation.amount.transientRetries).toBe(repairable ? 0 : 1);
+    expect(second.reservation.amount.corrections).toBe(repairable ? 1 : 0);
+    const used = {
+      ...emptyAgentBudgetUsage(),
+      toolInvocations: 1,
+      corrections: repairable ? 1 : 0,
+    };
+    const settled =
+      outcome === "complete"
+        ? await retryAdapter.completeAction({
+            ...action,
+            resultArtifactRef: observation,
+            usage: used,
+            now: "2030-01-01T00:00:05.000Z",
+          })
+        : await retryAdapter.failAction({
+            ...action,
+            error: transient,
+            usage: used,
+            now: "2030-01-01T00:00:05.000Z",
+          });
+    expect(settled.budgetLedger.used).toMatchObject({
+      toolInvocations: 2,
+      transientRetries: repairable ? 0 : 1,
+      corrections: repairable ? 1 : 0,
+    });
+    expect(settled.budgetLedger.currentConcurrency).toBe(0);
+    if (outcome === "fail") {
+      await retryAdapter.releaseLease({ ...action, now: "2030-01-01T00:00:05.100Z" });
+      const exhaustedClaim = await retryAdapter.claim({
+        workerId: id,
+        leaseDurationMs: 30_000,
+        now: "2030-01-01T00:00:05.200Z",
+      });
+      expect(exhaustedClaim).toBeDefined();
+      if (exhaustedClaim === undefined) return;
+      action.leaseToken = exhaustedClaim.leaseToken;
+      await expect(
+        retryAdapter.reserveAction({
+          ...action,
+          reservationId: id + "-exhausted",
+          now: "2030-01-01T00:00:06.000Z",
+        }),
+      ).rejects.toMatchObject({ details: { code: "AGENT_BUDGET_EXHAUSTED", retryable: false } });
+      expect((await retryAdapter.getTask(taskRef))?.budgetLedger.used.transientRetries).toBe(
+        repairable ? 0 : 1,
+      );
+    }
+    await retryAdapter.failTask({
+      ...action,
+      error: { ...transient, retryable: false },
+      now: "2030-01-01T00:00:07.000Z",
+    });
+    expect(
+      await retryAdapter.claim({
+        workerId: id,
+        leaseDurationMs: 30_000,
+        now: "2030-01-01T00:00:08.000Z",
+      }),
+    ).toBeUndefined();
+  });
+
   it("uses C03 idempotency, SKIP LOCKED claim, CAS versioning and action reuse", async () => {
     const first = await adapter.startTask(startCommand);
     expect(first.kind).toBe("succeeded");
@@ -586,6 +734,66 @@ describe("postgres agent runtime adapter", () => {
     expect(confirmation.rows[0]?.command_result_ref).toEqual(targetRef);
   });
 
+  it("settles actual over-budget usage as a terminal failure and cannot claim it again", async () => {
+    const started = await adapter.startTask({
+      ...startCommand,
+      commandId: "command-over-budget",
+      idempotencyKey: "idempotency-over-budget",
+    });
+    expect(started.kind).toBe("succeeded");
+    if (started.kind !== "succeeded") return;
+    const taskRef = started.result.agentTaskRef;
+    const claim = await adapter.claim({
+      workerId: "worker-over-budget",
+      leaseDurationMs: 30_000,
+      now: "2030-01-01T00:09:00.000Z",
+    });
+    expect(claim?.task.envelope.agentTaskRef).toEqual(taskRef);
+    if (claim === undefined) return;
+    const intent = await putArtifact("over-budget-intent", "diagnostic", "agent-action-intent");
+    const result = await putArtifact("over-budget-result", "diagnostic", "agent-action-result");
+    const action = {
+      taskRef,
+      workerId: claim.workerId,
+      leaseToken: claim.leaseToken,
+      actionId: "over-budget-action",
+    };
+    await adapter.reserveAction({
+      ...action,
+      reservationId: "over-budget-reservation",
+      actionType: "model-invocation",
+      sequence: 1,
+      idempotencyKey: "over-budget-action",
+      intentArtifactRef: intent,
+      amount: { inputTokens: 10 },
+      now: "2030-01-01T00:09:01.000Z",
+    });
+    const failed = await adapter.failAction({
+      ...action,
+      resultArtifactRef: result,
+      usage: { ...emptyAgentBudgetUsage(), modelInvocations: 1, inputTokens: 11 },
+      error: makeAgentError({
+        code: "AGENT_BUDGET_EXHAUSTED",
+        category: "budget",
+        retryable: false,
+        stage: "budget.settle.inputTokens",
+      }),
+      now: "2030-01-01T00:09:02.000Z",
+    });
+    expect(failed.state.status).toBe("terminal-failure");
+    expect(failed.budgetLedger.used.inputTokens).toBe(11);
+    expect(failed.budgetLedger.reserved.inputTokens).toBe(0);
+    await adapter.releaseLease({ ...action, now: "2030-01-01T00:09:03.000Z" });
+    expect(
+      await adapter.claim({
+        workerId: claim.workerId,
+        leaseDurationMs: 30_000,
+        now: "2030-01-01T00:09:04.000Z",
+      }),
+    ).toBeUndefined();
+    expect((await adapter.findAction(taskRef, action.actionId))?.resultArtifactRef).toEqual(result);
+  });
+
   it("reads terminal-failure evidence and preserves committed budget and references", async () => {
     const started = await adapter.startTask({
       ...startCommand,
@@ -627,6 +835,18 @@ describe("postgres agent runtime adapter", () => {
       amount: { inputTokens: 10 },
       now: "2030-01-01T00:10:01.000Z",
     });
+    await expect(
+      adapter.completeAction({
+        taskRef,
+        workerId: claim.workerId,
+        leaseToken: claim.leaseToken,
+        actionId: "action-read-1",
+        resultArtifactRef: actionResult,
+        usage: { ...reserved.reservation.amount, inputTokens: 11 },
+        now: "2030-01-01T00:10:01.500Z",
+      }),
+    ).rejects.toMatchObject({ details: { code: "AGENT_BUDGET_EXHAUSTED", retryable: false } });
+    expect((await adapter.getTask(taskRef))?.budgetLedger).toEqual(reserved.task.budgetLedger);
     await adapter.completeAction({
       taskRef,
       workerId: claim.workerId,
@@ -967,7 +1187,7 @@ describe("postgres agent runtime adapter", () => {
     expect((await adapter.getTask(pendingRef))?.state.status).toBe("terminal-failure");
   });
 
-  it("closes successful reads with one receipt, one audit entry, and no outbox event", async () => {
+  it("records each successful access without command receipts or outbox events", async () => {
     const otherProjectStart = await adapter.startTask({
       ...startCommand,
       commandId: "command-read-project-two",
@@ -1010,9 +1230,9 @@ describe("postgres agent runtime adapter", () => {
       "SELECT count(*)::text AS count FROM business.command_receipts WHERE command_kind = $1 AND idempotency_key = $2",
       ["agent-task.read-failure-evidence", requestId],
     );
-    expect(initialReceipts.rows[0]?.count).toBe("1");
+    expect(initialReceipts.rows[0]?.count).toBe("0");
     const initialAudits = await fixture.postgres.adminPool.query<{ count: string }>(
-      "SELECT count(*)::text AS count FROM audit.entries WHERE action = $1 AND idempotency_key = $2",
+      "SELECT count(*)::text AS count FROM audit.entries WHERE action = $1 AND command_id = $2",
       ["agent-task.read-failure-evidence", requestId],
     );
     expect(initialAudits.rows[0]?.count).toBe("1");
@@ -1022,12 +1242,12 @@ describe("postgres agent runtime adapter", () => {
       "SELECT count(*)::text AS count FROM business.command_receipts WHERE command_kind = $1 AND idempotency_key = $2",
       ["agent-task.read-failure-evidence", requestId],
     );
-    expect(replayedReceipts.rows[0]?.count).toBe("1");
+    expect(replayedReceipts.rows[0]?.count).toBe("0");
     const replayedAudits = await fixture.postgres.adminPool.query<{ count: string }>(
-      "SELECT count(*)::text AS count FROM audit.entries WHERE action = $1 AND idempotency_key = $2",
+      "SELECT count(*)::text AS count FROM audit.entries WHERE action = $1 AND command_id = $2",
       ["agent-task.read-failure-evidence", requestId],
     );
-    expect(replayedAudits.rows[0]?.count).toBe("1");
+    expect(replayedAudits.rows[0]?.count).toBe("2");
     const events = await fixture.postgres.adminPool.query<{ event_id: string }>(
       "SELECT event_id FROM outbox.events WHERE producer_command_id = $1",
       [requestId],
@@ -1037,25 +1257,16 @@ describe("postgres agent runtime adapter", () => {
     const otherTarget = await readerAdapter.readTerminalFailure(
       await readRequest(requestId, { taskRef: cancelledTaskRef! }),
     );
-    expect(otherTarget).toMatchObject({
-      kind: "failed",
-      error: { code: "IDEMPOTENCY_CONFLICT", category: "idempotency", retryable: false },
-    });
+    expect(otherTarget).toMatchObject({ kind: "succeeded" });
     const otherType = await readerAdapter.readTerminalFailure(
       await readRequest(requestId, { expectedTaskType: "knowledge-authoring" }),
     );
-    expect(otherType).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    expect(otherType).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
     const sameRequestOtherProject = await readerAdapter.readTerminalFailure(
       await readRequest(requestId, { projectId: "project-2", taskRef: projectTwoTaskRef }),
     );
     expect(sameRequestOtherProject).toMatchObject({
-      kind: "failed",
-      error: {
-        code: "IDEMPOTENCY_CONFLICT",
-        category: "idempotency",
-        retryable: false,
-        idempotencyKey: requestId,
-      },
+      kind: "succeeded",
     });
   });
 
@@ -1448,7 +1659,10 @@ describe("postgres agent runtime adapter", () => {
       projectId: "project-1",
       actorId: managerAccountId!,
       requestedAt: READ_REQUESTED_AT,
-      authorization: await readAuthorizationFor("ui-read-missing-capability"),
+      authorization: {
+        ...(await readAuthorizationFor("ui-read-missing-capability")),
+        grantedCapabilities: [],
+      },
       kind: "list",
       payload: {},
     } as never);
@@ -1527,7 +1741,7 @@ describe("postgres agent runtime adapter", () => {
       pageSize: 2,
       cursor: list.result.nextCursor,
     });
-    expect(rebound.kind).toBe("succeeded");
+    expect(rebound, JSON.stringify(rebound)).toMatchObject({ kind: "succeeded" });
     if (rebound.kind !== "succeeded" || rebound.result.kind !== "list") return;
     const changedFilter = await uiQuery("ui-read-rebound-cursor", "list", {
       pageSize: 2,
@@ -1535,6 +1749,37 @@ describe("postgres agent runtime adapter", () => {
       cursor: list.result.nextCursor,
     });
     expect(changedFilter.kind).toBe("failed");
+    const changedScope = await uiQuery(
+      "ui-read-new-scope",
+      "list",
+      {
+        pageSize: 2,
+        cursor: list.result.nextCursor,
+      },
+      {
+        authorization: {
+          ...(await uiReadAuthorizationFor("ui-read-new-scope")),
+          sourceAccessGrantRefs: [],
+        },
+      },
+    );
+    expect(changedScope.kind).toBe("succeeded");
+    const failedRead = vi.spyOn(fixture.runtime.db, "selectFrom").mockImplementationOnce(() => {
+      throw Object.assign(new Error("database unavailable"), { code: "ECONNRESET" });
+    });
+    try {
+      const failed = await uiQuery("ui-read-database-failure", "list", { pageSize: 2 });
+      expect(failed).toMatchObject({
+        kind: "failed",
+        error: {
+          code: "TRANSIENT_FAILURE",
+          retryable: true,
+          diagnosticRef: { kind: "diagnostic-artifact" },
+        },
+      });
+    } finally {
+      failedRead.mockRestore();
+    }
 
     // 详情：原预算策略与台账整体呈现，安全错误只有结构化字段。
     const detail = await uiQuery("ui-read-detail", "detail", {
@@ -1544,6 +1789,14 @@ describe("postgres agent runtime adapter", () => {
     if (detail.kind !== "succeeded" || detail.result.kind !== "detail") return;
     expect(detail.result.budget.policy).toBeDefined();
     expect(detail.result.budget.ledger).toBeDefined();
+    expect(
+      await uiQuery("ui-read-detail-by-identity", "detail", {
+        agentTaskRef: { kind: "agent-task", reference: terminalFailureTaskRef!.reference },
+      }),
+    ).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "detail", summary: { agentTaskRef: terminalFailureTaskRef! } },
+    });
     expect(detail.result.safeError?.code).toBe("AGENT_VALIDATION_REJECTED");
     expect(Object.keys(detail.result.safeError ?? {}).sort()).not.toContain("message");
     // 终局任务无法恢复/取消，也没有待确认提案。
@@ -1579,6 +1832,15 @@ describe("postgres agent runtime adapter", () => {
     expect(validation.kind).toBe("succeeded");
     if (validation.kind !== "succeeded" || validation.result.kind !== "validation") return;
     expect(validation.result.candidateVersion).toBe(1);
+    const persistedValidation = await fixture.postgres.adminPool.query<{
+      validation: { validationArtifactRef: unknown };
+    }>(
+      "SELECT validation FROM business.agent_task_candidates WHERE agent_task_id = $1 AND candidate_version = 1",
+      [terminalFailureTaskRef!.reference.entityId],
+    );
+    expect(candidates.result.items[0]?.validationArtifactRef).toEqual(
+      persistedValidation.rows[0]?.validation.validationArtifactRef,
+    );
 
     // 未知候选版本的校验引用不可见：整页安全失败，不用替代内容填补。
     const unknownCandidate = await uiQuery("ui-read-validation-unknown", "validation", {
@@ -1811,5 +2073,99 @@ describe("postgres agent runtime adapter", () => {
 
     expect(await readSideEffectCounters()).toEqual(before);
     expect(await artifactFacts()).toEqual(artifactsBefore);
+  });
+
+  /**
+   * D-48 任务执行授权依据：只认真实任务行与当前有效 Worker 租约，读面自身不写任何台账；
+   * 原预算按已用量超额关闭（顶到上限仍可继续持久化），墙钟按余量耗尽关闭。
+   */
+  it("reads execution authority only for a real task, live lease and unspent budget", async () => {
+    const claim = await adapter.claim({
+      workerId: "worker-authority",
+      leaseDurationMs: 30_000,
+      now: "2030-01-01T00:40:00.000Z",
+    });
+    expect(claim?.task.state.status).toBe("running");
+    if (claim === undefined) throw new Error("execution authority fixture did not claim a task");
+    const taskRef = claim.task.envelope.agentTaskRef;
+    const request = { taskRef, workerId: claim.workerId, leaseToken: claim.leaseToken };
+
+    const before = await readSideEffectCounters();
+    expect(await adapter.readExecutionAuthority(request)).toEqual(await adapter.getTask(taskRef));
+    expect(await readSideEffectCounters()).toEqual(before);
+
+    const denials: ReadonlyArray<{
+      readonly name: string;
+      readonly input: AgentTaskExecutionAuthorityRequestV1;
+      readonly details: { readonly code: string; readonly category: string };
+    }> = [
+      {
+        name: "伪造租约",
+        input: { ...request, leaseToken: "forged-lease" },
+        details: { code: "AGENT_STALE_VERSION", category: "concurrency" },
+      },
+      {
+        name: "他人 Worker",
+        input: { ...request, workerId: "worker-someone-else" },
+        details: { code: "AGENT_STALE_VERSION", category: "concurrency" },
+      },
+      {
+        name: "漂移的精确任务引用",
+        input: { ...request, taskRef: { ...taskRef, promptTemplateRef: ref("other-prompt") } },
+        details: { code: "AGENT_AUTHORIZATION_DENIED", category: "authorization" },
+      },
+      {
+        name: "未知任务",
+        input: {
+          ...request,
+          taskRef: {
+            ...taskRef,
+            reference: { entityId: "agent-task:project-1:missing", versionId: "1" },
+          },
+        },
+        details: { code: "AGENT_TASK_NOT_FOUND", category: "not-found" },
+      },
+    ];
+    for (const denial of denials)
+      await expect(adapter.readExecutionAuthority(denial.input), denial.name).rejects.toMatchObject(
+        { details: denial.details },
+      );
+
+    const patchLedger = (patch: Record<string, unknown>) =>
+      fixture.postgres.adminPool.query(
+        "UPDATE business.agent_tasks SET budget_ledger = budget_ledger || $1::jsonb WHERE agent_task_id = $2",
+        [JSON.stringify(patch), taskRef.reference.entityId],
+      );
+    const { maxObjects, maxWallClockMs } = claim.task.budgetPolicy;
+    await patchLedger({ used: { ...emptyAgentBudgetUsage(), objects: maxObjects } });
+    expect((await adapter.readExecutionAuthority(request)).budgetLedger.used.objects).toBe(
+      maxObjects,
+    );
+    await patchLedger({ activeWallClockMs: maxWallClockMs });
+    await expect(adapter.readExecutionAuthority(request)).rejects.toMatchObject({
+      details: { code: "AGENT_WALL_CLOCK_EXCEEDED", category: "budget" },
+    });
+    await patchLedger({
+      activeWallClockMs: 0,
+      used: { ...emptyAgentBudgetUsage(), objects: maxObjects + 1 },
+    });
+    await expect(adapter.readExecutionAuthority(request)).rejects.toMatchObject({
+      details: { code: "AGENT_BUDGET_EXHAUSTED", category: "budget" },
+    });
+
+    const cancelled = await adapter.cancelTask({
+      kind: "cancel-task",
+      commandId: "command-authority-cancel",
+      idempotencyKey: "idempotency-authority-cancel",
+      projectId: claim.task.envelope.projectId,
+      actorId: authorization.actorId,
+      issuedAt: "2030-01-01T00:40:01.000Z",
+      authorization: { ...cancelAuthorization, projectId: claim.task.envelope.projectId },
+      payload: { agentTaskRef: taskRef, reasonCode: "user-request" },
+    });
+    expect(cancelled.kind).toBe("succeeded");
+    await expect(adapter.readExecutionAuthority(request)).rejects.toMatchObject({
+      details: { code: "AGENT_CANCELLED", category: "cancelled" },
+    });
   });
 });

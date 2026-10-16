@@ -11,6 +11,7 @@ import {
   classifyValidationFailure,
   emptyAgentBudgetUsage,
   prepareAgentTaskStart,
+  agentTaskRefFor,
   reserveAgentBudget,
   settleAgentBudget,
   AgentActionEntryV1Schema,
@@ -276,6 +277,47 @@ describe("agent runtime core", () => {
     ).toThrow(AgentRuntimeError);
   });
 
+  it("records actual over-budget usage only on failure settlement and refuses another reservation", () => {
+    const taskPolicy = { ...policy("data-cleaning"), maxInputTokens: 10 };
+    const initial = {
+      schemaVersion: "1" as const,
+      reserved: emptyAgentBudgetUsage(),
+      used: emptyAgentBudgetUsage(),
+      activeWallClockMs: 0,
+      currentConcurrency: 0,
+      ledgerVersion: 1,
+      changedAt: "2030-01-01T00:00:00.000Z",
+    };
+    const reserved = reserveAgentBudget(taskPolicy, initial, {
+      actionType: "model-invocation",
+      actionId: "overrun-action",
+      reservationId: "overrun-reservation",
+      amount: { inputTokens: 10 },
+    });
+    const actual = { ...emptyAgentBudgetUsage(), modelInvocations: 1, inputTokens: 11 };
+    expect(() =>
+      settleAgentBudget(taskPolicy, reserved.ledger, reserved.reservation, actual),
+    ).toThrow(AgentRuntimeError);
+    const failed = settleAgentBudget(
+      taskPolicy,
+      reserved.ledger,
+      reserved.reservation,
+      actual,
+      "2030-01-01T00:00:01.000Z",
+      0,
+      { allowBudgetOverrun: true },
+    );
+    expect(failed.used.inputTokens).toBe(11);
+    expect(failed.reserved.inputTokens).toBe(0);
+    expect(() =>
+      reserveAgentBudget(taskPolicy, failed, {
+        actionType: "model-invocation",
+        actionId: "after-overrun",
+        reservationId: "after-overrun",
+      }),
+    ).toThrow(AgentRuntimeError);
+  });
+
   it("records the actual wall-clock overrun when settling a timeout failure", () => {
     const taskPolicy = policy("data-cleaning");
     const reserved = reserveAgentBudget(
@@ -327,6 +369,10 @@ describe("agent runtime core", () => {
       startCommand,
       registry.get("data-cleaning"),
       "2030-01-01T00:00:00.000Z",
+    );
+    expect(prepared.taskRef).toEqual(agentTaskRefFor(startCommand));
+    expect(agentTaskRefFor({ ...startCommand, idempotencyKey: "other-batch" })).not.toEqual(
+      prepared.taskRef,
     );
     const running = {
       ...prepared.state,

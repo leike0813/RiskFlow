@@ -666,8 +666,7 @@ describe("统一风险事实生产读取接缝", () => {
     expect(newer.reference.entityId).not.toBe(eventRef.reference.entityId);
   }, 240_000);
 
-  it("入口来源授权未覆盖记录已保存来源时关闭失败（来源撤权/不覆盖目标）", async () => {
-    // 授权上下文不含任何来源授权：记录已保存的来源无法被证明覆盖，读取必须失败而不是退化为空来源。
+  it("按记录来源的当前权限读取，不要求入口重复声明来源", async () => {
     const uncovered = await readRequest({
       requestId: "seam-source-uncovered",
       riskInput: recordRef,
@@ -675,7 +674,7 @@ describe("统一风险事实生产读取接缝", () => {
       sourceVersionRefs: [],
     });
     const result = await fixture.riskInputFacts.readRiskInputFacts(uncovered);
-    expect(result).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(result.kind).toBe("succeeded");
   }, 180_000);
 
   it("外部分支缺目标与错引用按同形授权拒绝", async () => {

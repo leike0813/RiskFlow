@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { VersionReference } from "@riskflow/contracts/common";
 import {
   ModuleErrorV1Schema,
+  MODULE_BRANCH_CAPABILITY_V1,
   type AgentTaskRefV1,
   type AuthorizationContextV1,
 } from "@riskflow/contracts/ports";
@@ -15,9 +16,11 @@ import {
 import type { ArtifactRefV1 } from "@riskflow/core/artifacts";
 import {
   IdentificationContextService,
+  baselineQueryIdFor,
   RetrievalReviewCandidateSetV1Schema,
   RetrievalReviewPolicyV1Schema,
   type IdentificationContextResultStoreV1,
+  type IdentificationContextResultRowV1,
   type RetrievalReviewPolicyV1,
 } from "@riskflow/core/identification/context";
 import {
@@ -334,7 +337,7 @@ export const memberRef = (sourceEntryId: string, release: VersionReference) => (
   },
 });
 
-export const baselineQueryId = `${NODE_ID}:retrieval-baseline`;
+export const baselineQueryId = baselineQueryIdFor(NODE_ID, workItemRef);
 /** 与当前授权范围一致的摘要；测试不伪造范围。 */
 export const scopeDigest = authorizationScopeDigest(authorization());
 
@@ -474,6 +477,7 @@ export const reviewPolicy = (): RetrievalReviewPolicyV1 =>
     promptTemplateRef: versionRef("prompt-template"),
     maxCandidateMembers: 8,
     maxResupplements: 2,
+    budgetPolicy: reviewBudgetPolicy(),
     allowedSupplementIntentCodes: ["settlement", "support"],
     modelMaxOutputTokens: 1024,
   });
@@ -650,7 +654,7 @@ export const makeServiceHarness = (overrides: ServiceHarnessOverrides = {}) => {
         content: (async function* () {
           yield bytes;
         })(),
-        verified: Promise.resolve({}),
+        completed: Promise.resolve({}),
       };
     },
   };
@@ -685,16 +689,20 @@ export const makeServiceHarness = (overrides: ServiceHarnessOverrides = {}) => {
         ? { kind: "registered", replayed: true }
         : { kind: "idempotency-conflict" };
     },
-    async readResult({ projectId, resultKind, resultId }) {
-      for (const row of rows.values()) {
-        const typed = row as { projectId: string; resultKind: string; resultId: string };
-        if (
-          typed.projectId === projectId &&
-          typed.resultKind === resultKind &&
-          typed.resultId === resultId
-        ) {
-          return row as never;
-        }
+    async readResult(input) {
+      for (const value of rows.values()) {
+        const row = value as unknown as IdentificationContextResultRowV1;
+        if (row.projectId !== input.projectId || row.resultKind !== input.resultKind) continue;
+        const matched =
+          "resultId" in input
+            ? row.resultId === input.resultId
+            : "agentTaskRef" in input
+              ? row.resultKind === "reviewed-retrieval" &&
+                JSON.stringify(row.agentTaskRef) === JSON.stringify(input.agentTaskRef)
+              : row.resultKind !== "relationship" &&
+                JSON.stringify(row.retrievalArtifactSetRef) ===
+                  JSON.stringify(input.retrievalArtifactSetRef);
+        if (matched) return row;
       }
       return undefined;
     },
@@ -734,8 +742,8 @@ export const makeServiceHarness = (overrides: ServiceHarnessOverrides = {}) => {
       },
     },
     authorization: {
-      async issueReadContext() {
-        return authorization({ grantedCapabilities: ["knowledge-modeling.read"] });
+      async issueReadContext(input) {
+        return authorization({ grantedCapabilities: [MODULE_BRANCH_CAPABILITY_V1[input.branch]] });
       },
       async verifyCurrent() {
         return await (overrides.verifyCurrent?.() ?? Promise.resolve(authorization()));

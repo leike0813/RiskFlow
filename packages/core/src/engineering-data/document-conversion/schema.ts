@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ArtifactRefV1Schema } from "../../artifacts/schema.js";
 
 import { IdentifierSchema, IsoDateTimeSchema } from "@riskflow/contracts/common";
 import {
@@ -16,6 +17,7 @@ import {
 } from "../context-source/schema.js";
 
 export const DOCUMENT_CONVERSION_SCHEMA_VERSION_V1 = "1" as const;
+export const STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1 = 16 * 1024 * 1024;
 export const DOCUMENT_CONVERSION_MAX_BLOCK_CODE_POINTS = 512;
 export const DOCUMENT_CONVERSION_MAX_BLOCKS = 10_000;
 export const DOCUMENT_CONVERSION_MAX_TEXT_BLOCKS = 50_000;
@@ -84,6 +86,28 @@ const pageExtentsSchema = z
 
 const confidenceSchema = z.number().finite().min(0).max(1);
 
+// 仅引用耐久ZIP内的规范化相对路径。
+const packageEntryPath = z
+  .string()
+  .min(1)
+  .max(512)
+  .regex(
+    /^[A-Za-z0-9_\u4e00-\u9fff][A-Za-z0-9_.\-\u4e00-\u9fff]*(?:\/[A-Za-z0-9_\u4e00-\u9fff][A-Za-z0-9_.\-\u4e00-\u9fff]*)*$/u,
+  );
+
+/** 未识别视觉载荷引用：指向已耐久 MinerU 原响应 ZIP 中经复验的唯一图片条目，不表达业务值。 */
+export const UnrecognizedTableImageRefV1Schema = z.strictObject({
+  kind: z.literal("unrecognized-image"),
+  rawResponseArtifactRef: ArtifactRefV1Schema,
+  packageEntryPath,
+});
+export type UnrecognizedTableImageRefV1 = z.infer<typeof UnrecognizedTableImageRefV1Schema>;
+
+const unrecognizedImagesSchema = z
+  .array(UnrecognizedTableImageRefV1Schema)
+  .min(1)
+  .max(DOCUMENT_CONVERSION_MAX_BLOCKS);
+
 export const NormalizedBlockKindV1Schema = z.enum([
   "heading",
   "paragraph",
@@ -118,6 +142,7 @@ export const NormalizedBlockV1Schema = z
     columnSpan: positiveInteger.optional(),
     formula: boundedText.optional(),
     cachedValue: scalarValue.optional(),
+    unrecognizedImages: unrecognizedImagesSchema.optional(),
   })
   .superRefine((block, context) => {
     if (block.kind === "cell") {
@@ -131,6 +156,13 @@ export const NormalizedBlockV1Schema = z
       if (block.row === undefined || block.column === undefined) {
         context.addIssue({ code: "custom", path: ["row"], message: "cell coordinate required" });
       }
+    }
+    if (block.unrecognizedImages !== undefined && block.kind !== "cell") {
+      context.addIssue({
+        code: "custom",
+        path: ["unrecognizedImages"],
+        message: "unrecognized images are only allowed on cell blocks",
+      });
     }
     if (block.kind === "table" && block.tableId === undefined) {
       context.addIssue({ code: "custom", path: ["tableId"], message: "table identity required" });
@@ -271,6 +303,7 @@ export const TableFieldV1Schema = z.strictObject({
       endColumn: positiveInteger,
     })
     .optional(),
+  unrecognizedImages: unrecognizedImagesSchema.optional(),
 });
 export type TableFieldV1 = z.infer<typeof TableFieldV1Schema>;
 

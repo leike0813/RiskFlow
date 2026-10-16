@@ -133,8 +133,8 @@ const refKey = (value: {
   kind: string;
   reference: { entityId: string; versionId: string };
 }): string => `${value.kind}/${value.reference.entityId}/${value.reference.versionId}`;
-const versionKey = (value: { entityId: string; versionId: string }): string =>
-  `${value.entityId}/${value.versionId}`;
+const accessIdentity = (value: { kind: string; reference: { entityId: string } }): string =>
+  `${value.kind}/${value.reference.entityId}`;
 
 const asIso = (value: Date | string): string =>
   value instanceof Date ? value.toISOString() : new Date(value).toISOString();
@@ -296,31 +296,13 @@ const rowFromManifest = (
 const commandPayload = (
   command: ArtifactPutCommandV1,
   manifest: ArtifactManifestV1,
-  manifestDigest: string,
 ): AtomicCommandV1["payload"] => {
-  const authorization = {
-    schemaVersion: command.authorization.schemaVersion,
-    authorizationContextRef: command.authorization.authorizationContextRef,
-    actorId: command.authorization.actorId,
-    projectId: command.authorization.projectId,
-    grantedCapabilities: command.authorization.grantedCapabilities,
-    spatialScopeRefs: command.authorization.spatialScopeRefs,
-    sourceAccessGrantRefs: command.authorization.sourceAccessGrantRefs,
-    authorizationPolicyRef: command.authorization.authorizationPolicyRef,
-    decidedAt: command.authorization.decidedAt,
-    invocation: command.authorization.invocation,
-    ...(command.authorization.causalRunRef === undefined
-      ? {}
-      : { causalRunRef: command.authorization.causalRunRef }),
-  };
   return {
     schemaVersion: command.schemaVersion,
     commandId: command.commandId,
     idempotencyKey: command.idempotencyKey,
     projectId: command.projectId,
     actorId: command.actorId,
-    authorization,
-    authorizationContextRef: command.authorization.authorizationContextRef,
     requiredCapability: command.requiredCapability,
     issuedAt: command.issuedAt,
     artifactId: command.artifactId,
@@ -335,7 +317,6 @@ const commandPayload = (
     additionalSourceAccessGrantRefs: command.additionalSourceAccessGrantRefs,
     actualContent: manifest.content,
     writePolicyRef: manifest.writePolicyRef,
-    manifestSha256: manifestDigest,
   };
 };
 
@@ -344,7 +325,7 @@ const targetProject = (projectId: string): ContractReferenceV1 => ({
   reference: { entityId: projectId, versionId: "v1" },
 });
 
-const assertAuthorized = (
+export const assertArtifactAccess = (
   manifest: ArtifactManifestV1,
   projectId: string,
   purposeCode: string,
@@ -355,16 +336,11 @@ const assertAuthorized = (
     projectId === authorization.projectId &&
     projectId === manifest.access.projectId &&
     authorization.grantedCapabilities.includes(requiredCapability) &&
-    containsAll(authorization.spatialScopeRefs, manifest.access.spatialScopeRefs, refKey) &&
+    containsAll(authorization.spatialScopeRefs, manifest.access.spatialScopeRefs, accessIdentity) &&
     containsAll(
       authorization.sourceAccessGrantRefs,
       manifest.access.sourceAccessGrantRefs,
-      refKey,
-    ) &&
-    containsAll(
-      authorizationPolicyRefs(authorization),
-      manifest.access.authorizationPolicyRefs,
-      versionKey,
+      accessIdentity,
     );
   if (!allowed || purposeCode !== manifest.purposeCode) {
     throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "registry.authorization");
@@ -403,9 +379,6 @@ const manifestColumns = [
 
 const accessAction = (outcome: ArtifactAccessOutcomeV1): string =>
   outcome === "authorized" ? "artifact.read-started" : `artifact.read-${outcome}`;
-
-const accessCommandKind = (outcome: ArtifactAccessOutcomeV1): string =>
-  `artifact.read-${outcome}.v1`;
 
 export interface ArtifactPreparedMetadataV1 {
   readonly access: ArtifactAccessSnapshotV1;
@@ -651,7 +624,7 @@ export class PostgresArtifactRegistry {
         throw makeArtifactError("ARTIFACT_ACCESS_DENIED", "registry.parent-access", [parentRef]);
       }
       try {
-        assertAuthorized(
+        assertArtifactAccess(
           parent,
           value.projectId,
           parent.purposeCode,
@@ -718,7 +691,7 @@ export class PostgresArtifactRegistry {
       commandKind: "artifact.put.v1",
       commandId: value.commandId,
       idempotencyKey: value.idempotencyKey,
-      payload: commandPayload(value, validManifest, manifestDigest),
+      payload: commandPayload(value, validManifest),
       actorRef: value.actorId,
       authorizationContextRef: value.authorization.authorizationContextRef,
       issuedAt: value.issuedAt,
@@ -751,7 +724,7 @@ export class PostgresArtifactRegistry {
             }
             const parent = manifestFromRow(parentRow);
             try {
-              assertAuthorized(
+              assertArtifactAccess(
                 parent,
                 value.projectId,
                 parent.purposeCode,
@@ -803,7 +776,7 @@ export class PostgresArtifactRegistry {
         value.projectId,
         validManifest.artifactRef,
       );
-      if (storedDigest !== manifestDigest) {
+      if (storedDigest === undefined || (!receipt.replayed && storedDigest !== manifestDigest)) {
         throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "registry.register-digest");
       }
       return {
@@ -828,6 +801,7 @@ export class PostgresArtifactRegistry {
     outcome: ArtifactAccessRecordV1["outcome"];
     stage: string;
     diagnosticRef?: ArtifactAccessRecordV1["diagnosticRef"];
+    artifactRef?: ArtifactRefV1;
   }): Promise<ArtifactAccessRecordV1> {
     const valid = ArtifactAccessRecordV1Schema.parse({
       schemaVersion: "1",
@@ -850,33 +824,29 @@ export class PostgresArtifactRegistry {
       ...(request.diagnosticRef === undefined ? {} : { diagnosticRef: request.diagnosticRef }),
     });
     const auditEntryId = valid.auditTrailRef.reference.entityId;
-    const commandId = `${valid.requestId}-${valid.outcome}`;
-    const atomic = AtomicCommandV1Schema.parse({
-      projectId: valid.projectId,
-      commandKind: accessCommandKind(valid.outcome),
-      commandId,
-      idempotencyKey: request.idempotencyKey,
-      payload: {
-        schemaVersion: valid.schemaVersion,
-        requestId: valid.requestId,
-        projectId: valid.projectId,
-        actorId: valid.actorId,
-        purposeCode: valid.purposeCode,
-        authorizationContextRef: valid.authorizationContextRef,
-        authorizationPolicyRef: valid.authorizationPolicyRef,
-        outcome: valid.outcome,
-        stage: valid.stage,
-        occurredAt: valid.occurredAt,
-        ...(valid.diagnosticRef === undefined ? {} : { diagnosticRef: valid.diagnosticRef }),
-      },
-      actorRef: valid.actorId,
-      authorizationContextRef: valid.authorizationContextRef,
-      issuedAt: valid.occurredAt,
-    });
     try {
       await this.#trackTransaction(() =>
-        this.#transactionUnit.execute(atomic, async (context) => {
-          const transaction = asRegistryTransaction(context);
+        this.#db.transaction().execute(async (transaction) => {
+          await transaction
+            .insertInto("audit.entries")
+            .values({
+              audit_entry_id: auditEntryId,
+              project_id: valid.projectId,
+              action: accessAction(valid.outcome),
+              target_ref: jsonValue(request.artifactRef ?? targetProject(valid.projectId)),
+              actor_ref: valid.actorId,
+              authorization_context_ref: jsonValue(valid.authorizationContextRef),
+              version_ref: jsonValue({ entityId: valid.requestId, versionId: "v1" }),
+              occurred_at: valid.occurredAt,
+              recorded_at: valid.occurredAt,
+              persisted_at: sql`clock_timestamp()`,
+              command_id: request.idempotencyKey,
+              idempotency_key: valid.requestId,
+              run_id: null,
+              thread_id: null,
+              reason_ref: null,
+            })
+            .execute();
           await transaction
             .insertInto("business.artifact_access_records")
             .values({
@@ -894,27 +864,7 @@ export class PostgresArtifactRegistry {
               diagnostic_ref:
                 valid.diagnosticRef === undefined ? null : jsonValue(valid.diagnosticRef),
             })
-            .onConflict((conflict) =>
-              conflict.columns(["project_id", "request_id", "outcome"]).doNothing(),
-            )
             .execute();
-          return {
-            resultRef: valid.auditTrailRef,
-            audit: {
-              auditEntryId,
-              projectId: valid.projectId,
-              action: accessAction(valid.outcome),
-              targetRef: targetProject(valid.projectId),
-              actorRef: valid.actorId,
-              authorizationContextRef: valid.authorizationContextRef,
-              occurredAt: valid.occurredAt,
-              recordedAt: valid.occurredAt,
-              version: { entityId: valid.requestId, versionId: "v1" },
-              commandId,
-              idempotencyKey: request.idempotencyKey,
-            },
-            events: [],
-          };
         }),
       );
       return valid;
@@ -966,7 +916,7 @@ export class PostgresArtifactRegistry {
       if (row === undefined)
         throw makeArtifactError("ARTIFACT_REFERENCE_NOT_FOUND", "registry.reference");
       const manifest = manifestFromRow(row);
-      assertAuthorized(
+      assertArtifactAccess(
         manifest,
         value.projectId,
         value.purposeCode,
@@ -1001,7 +951,7 @@ export class PostgresArtifactRegistry {
       ...request,
     });
     if (!parsed.success) throw makeArtifactError("ARTIFACT_INPUT_INVALID", "registry.read-request");
-    assertAuthorized(
+    assertArtifactAccess(
       manifest,
       parsed.data.projectId,
       parsed.data.purposeCode,

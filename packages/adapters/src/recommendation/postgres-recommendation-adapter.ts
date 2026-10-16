@@ -30,6 +30,7 @@ import {
   RiskMatrixDocumentV1Schema,
   type RiskAcceptanceThresholdContentV1,
   type RiskMatrixContentV1,
+  type AssessmentConfigurationGovernancePolicyV1,
 } from "@riskflow/core/assessment-config";
 import { ApplicabilityMetadataSnapshotV1Schema } from "@riskflow/core/engineering-data/context-source";
 import {
@@ -45,6 +46,7 @@ import {
 } from "@riskflow/core/agent-runtime";
 import {
   KnowledgeRetrievalQueryV1Schema,
+  KnowledgeQueryResultRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   RecommendationCommandV1Schema,
   ReviewRequestV1Schema,
@@ -75,8 +77,8 @@ import {
   type RiskAssessmentRecord,
 } from "@riskflow/contracts/records";
 import {
-  AssessmentInputSnapshotV1Schema,
-  type AssessmentInputSnapshotV1,
+  AssessmentInputSnapshotSchema,
+  type AssessmentInputSnapshot,
 } from "@riskflow/contracts/workflows";
 import {
   MeasureCandidateSetV1Schema,
@@ -375,7 +377,7 @@ const matchesApplicability = (
 const riskAcceptanceBasisOf = (
   entry: LoadedWarningV1,
   documents: RiskAcceptanceDocumentsV1,
-  inputSnapshot: AssessmentInputSnapshotV1,
+  inputSnapshot: AssessmentInputSnapshot,
 ): RecommendationRiskAcceptanceBasisV1 | undefined => {
   if (
     !sameRef(documents.thresholdReleaseRef, inputSnapshot.riskAcceptanceThresholdRef) ||
@@ -520,7 +522,7 @@ export interface RecommendationTaskAuthorizationProviderV1 {
 
 interface LoadedWarningV1 {
   readonly warningRef: RecommendationFrozenWarningV1;
-  readonly inputSnapshot: AssessmentInputSnapshotV1;
+  readonly inputSnapshot: AssessmentInputSnapshot;
   /** 关联评估记录正文：风险等级分支核验等级与有效指标的依据（D-13）。 */
   readonly assessmentRecord: RiskAssessmentRecord;
   readonly riskInputRef: RiskInputVersionRefV1;
@@ -541,11 +543,35 @@ export class PostgresRecommendationContextReader implements RecommendationContex
   readonly #artifactStore: ArtifactStoreV1;
   readonly #basis: AssessmentBasisReleaseSetReaderV1;
   readonly #authorizeDownstream: AssessmentDownstreamAuthorizerV1 | undefined;
+  readonly #configuration:
+    Pick<AssessmentConfigurationGovernancePolicyV1, "resolveConfigurationSet"> | undefined;
+  readonly #runtimePolicies:
+    | ((
+        projectId: string,
+      ) =>
+        | Pick<
+            RecommendationFrozenContextV1,
+            "generationPolicyRef" | "validationPolicyRef" | "agentPolicyRef" | "reviewPolicyRef"
+          >
+        | undefined)
+    | undefined;
 
   constructor(options: {
     readonly db: Kysely<PostgresDatabase>;
     readonly artifactStore: ArtifactStoreV1;
     readonly basis: AssessmentBasisReleaseSetReaderV1;
+    readonly configuration?: Pick<
+      AssessmentConfigurationGovernancePolicyV1,
+      "resolveConfigurationSet"
+    >;
+    readonly runtimePolicies?: (
+      projectId: string,
+    ) =>
+      | Pick<
+          RecommendationFrozenContextV1,
+          "generationPolicyRef" | "validationPolicyRef" | "agentPolicyRef" | "reviewPolicyRef"
+        >
+      | undefined;
     /**
      * 组合根注入的下游签发接缝：依据集合与配置正文读取按知识读用途另签一次。
      * C27 自身的查询上下文只带处置域能力，直接交给依据读取器会被 C06 关闭，
@@ -556,6 +582,8 @@ export class PostgresRecommendationContextReader implements RecommendationContex
     this.#db = options.db as unknown as Kysely<RecommendationDatabase>;
     this.#artifactStore = options.artifactStore;
     this.#basis = options.basis;
+    this.#configuration = options.configuration;
+    this.#runtimePolicies = options.runtimePolicies;
     this.#authorizeDownstream = options.authorizeDownstream;
   }
 
@@ -567,7 +595,7 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       readonly kind: "warning-response-task";
       readonly reference: { readonly entityId: string; readonly versionId: string };
     };
-    readonly measureLibraryReleaseRef: {
+    readonly measureLibraryReleaseRef?: {
       readonly kind: "measure-library-release";
       readonly reference: { readonly entityId: string; readonly versionId: string };
     };
@@ -641,34 +669,28 @@ export class PostgresRecommendationContextReader implements RecommendationContex
     if (first === undefined) {
       failRecommendation("recommendation-warning-mismatch", taskTarget);
     }
-    const measureLibraryReleaseRef = {
-      kind: "measure-library-release" as const,
-      reference: first.inputSnapshot.measureLibraryReleaseRef,
-    };
-    if (!sameRef(measureLibraryReleaseRef.reference, input.measureLibraryReleaseRef.reference)) {
-      failRecommendation("recommendation-task-version-stale", input.measureLibraryReleaseRef);
-    }
+    const historical = first.inputSnapshot.schemaVersion === "1" ? first.inputSnapshot : undefined;
+    // 注入运行策略时以其结果为准：解析不出处置策略即失败闭合，不回落到评估快照里的旧引用。
+    const runtimePolicies =
+      this.#runtimePolicies === undefined
+        ? historical === undefined
+          ? undefined
+          : {
+              generationPolicyRef: historical.responseGenerationPolicyRef,
+              validationPolicyRef: historical.responseValidationPolicyRef,
+              agentPolicyRef: historical.responseAgentPolicyRef,
+              reviewPolicyRef: historical.reviewPolicyRef,
+            }
+        : this.#runtimePolicies(authorization.projectId);
+    if (runtimePolicies === undefined)
+      failRecommendation("measure-candidates-unavailable", taskTarget);
     for (const entry of loaded.slice(1)) {
       const consistent =
-        sameRef(entry.inputSnapshot.measureLibraryReleaseRef, measureLibraryReleaseRef.reference) &&
         sameRef(entry.riskInputRef.reference, first.riskInputRef.reference) &&
         entry.riskInputRef.kind === first.riskInputRef.kind &&
         sameRef(entry.basisRef.reference, first.basisRef.reference) &&
         refKey(entry.inputSnapshot.applicableRuleSetRef) ===
           refKey(first.inputSnapshot.applicableRuleSetRef) &&
-        sameRef(
-          entry.inputSnapshot.responseGenerationPolicyRef,
-          first.inputSnapshot.responseGenerationPolicyRef,
-        ) &&
-        sameRef(
-          entry.inputSnapshot.responseValidationPolicyRef,
-          first.inputSnapshot.responseValidationPolicyRef,
-        ) &&
-        sameRef(
-          entry.inputSnapshot.responseAgentPolicyRef,
-          first.inputSnapshot.responseAgentPolicyRef,
-        ) &&
-        sameRef(entry.inputSnapshot.reviewPolicyRef, first.inputSnapshot.reviewPolicyRef) &&
         JSON.stringify(entry.applicability) === JSON.stringify(first.applicability);
       if (!consistent) {
         failRecommendation("recommendation-warning-mismatch", taskTarget);
@@ -696,31 +718,59 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       failRecommendation("recommendation-contract-drift", taskTarget);
     }
     if (basisResult.data.kind === "unavailable") {
-      failRecommendation("measure-candidates-unavailable", measureLibraryReleaseRef);
+      failRecommendation("measure-candidates-unavailable", taskTarget);
     }
     if (basisResult.data.kind !== "succeeded") {
       failRecommendation(
         "measure-candidates-unavailable",
-        measureLibraryReleaseRef,
+        taskTarget,
         basisResult.data.error.code === "TRANSIENT_FAILURE"
           ? "TRANSIENT_FAILURE"
           : "TERMINAL_FAILURE",
       );
     }
-    const measureMember = basisResult.data.configurationMembers.find(
+    let configurationMembers = basisResult.data.configurationMembers;
+    if (this.#configuration !== undefined) {
+      const responseConfiguration = await this.#configuration.resolveConfigurationSet({
+        requestId: `${input.requestId}:response-configuration`,
+        idempotencyKey: `${input.requestId}:response-configuration`,
+        projectId: authorization.projectId,
+        actorId: authorization.actorId,
+        requestedAt: input.requestedAt,
+        authorization: knowledgeAuthorization,
+        requiredAt: input.requestedAt,
+        asOfRecordedAt: input.requestedAt,
+        purpose: "response",
+      });
+      if (responseConfiguration.kind !== "succeeded")
+        failRecommendation("measure-candidates-unavailable", taskTarget);
+      const measure = responseConfiguration.configurationSet.members.find(
+        (member) => member.definitionType === "measure-library",
+      );
+      if (measure === undefined) failRecommendation("measure-candidates-unavailable", taskTarget);
+      configurationMembers = [
+        ...configurationMembers.filter((member) => member.definitionType !== "measure-library"),
+        measure,
+      ];
+    }
+    const measureMember = configurationMembers.find(
       (member) => member.definitionType === "measure-library",
     );
+    if (measureMember === undefined)
+      failRecommendation("measure-candidates-unavailable", taskTarget);
+    const measureLibraryReleaseRef = {
+      kind: "measure-library-release" as const,
+      reference: measureMember.releaseRef.reference,
+    };
     if (
-      measureMember === undefined ||
-      !sameRef(measureMember.releaseRef.reference, measureLibraryReleaseRef.reference)
-    ) {
-      failRecommendation("measure-candidates-unavailable", measureLibraryReleaseRef);
-    }
+      input.measureLibraryReleaseRef !== undefined &&
+      !sameRef(measureLibraryReleaseRef.reference, input.measureLibraryReleaseRef.reference)
+    )
+      failRecommendation("recommendation-task-version-stale", input.measureLibraryReleaseRef);
     const measureArtifactRef = {
       kind: "content-artifact" as const,
       reference: measureMember.artifactRef.reference,
     };
-    const configurationMembers = basisResult.data.configurationMembers;
     const readMember = async (definitionType: string): Promise<unknown> => {
       const member = configurationMembers.find((entry) => entry.definitionType === definitionType);
       if (member === undefined)
@@ -833,10 +883,7 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       measureLibrary: library.data.content,
       applicability: applicabilityConditionsOf(first.applicability),
       warnings,
-      generationPolicyRef: first.inputSnapshot.responseGenerationPolicyRef,
-      validationPolicyRef: first.inputSnapshot.responseValidationPolicyRef,
-      agentPolicyRef: first.inputSnapshot.responseAgentPolicyRef,
-      reviewPolicyRef: first.inputSnapshot.reviewPolicyRef,
+      ...runtimePolicies,
     };
   }
 
@@ -1030,7 +1077,7 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       );
     }
     const warningRecord = WarningRecordSchema.safeParse(row.warning_payload);
-    const inputSnapshot = AssessmentInputSnapshotV1Schema.safeParse(row.input_snapshot_payload);
+    const inputSnapshot = AssessmentInputSnapshotSchema.safeParse(row.input_snapshot_payload);
     const applicability = ApplicabilityMetadataSnapshotV1Schema.safeParse(row.applicability_values);
     // 风险等级分支要按关联评估记录核验等级与有效指标（D-13），因此这里把正文一并读出并
     // 校验身份一致；解析失败按契约漂移关闭，不按触发类型跳过读取。
@@ -1127,7 +1174,7 @@ export class PostgresRecommendationContextReader implements RecommendationContex
       }
       chunks.push(chunk);
     }
-    await handle.verified;
+    await handle.completed;
     const buffer = new Uint8Array(byteLength);
     let offset = 0;
     for (const chunk of chunks) {
@@ -1302,12 +1349,45 @@ export class PostgresRecommendationAdapter
         },
         "knowledge-modeling.measure-candidates",
       );
+      const receipt = await this.#db
+        .selectFrom("business.command_receipts")
+        .select(["result_ref", "payload_sha256", "actor_ref"])
+        .where("project_id", "=", valid.projectId)
+        .where("command_kind", "=", "knowledge-modeling.measure-candidates")
+        .where("idempotency_key", "=", valid.queryId)
+        .where("command_id", "=", valid.queryId)
+        .where("completed_at", "is not", null)
+        .executeTakeFirst();
+      if (receipt !== undefined) {
+        const resultRef = KnowledgeQueryResultRefV1Schema.parse(receipt.result_ref);
+        const row = await this.#readQueryById(
+          valid.projectId,
+          resultRef.reference,
+          verified.spatialScopeRefs.map((scope) => scope.reference.entityId),
+        );
+        if (row === undefined)
+          failRecommendation("recommendation-authorization-required", resultRef);
+        const frozen = MeasureCandidateSetV1Schema.parse(row.candidate_set_payload);
+        if (
+          receipt.actor_ref !== verified.actorId ||
+          receipt.payload_sha256 !==
+            sha256CanonicalJson({
+              query: valid.payload,
+              riskEventCategory: frozen.riskEventCategory,
+              inputDigest: frozen.inputDigest,
+            })
+        )
+          failRecommendation("recommendation-idempotency-conflict", resultRef);
+        return { kind: "succeeded", result: { knowledgeQueryResultRef: resultRef } };
+      }
       const context = await this.#reader.readFrozenContext({
         requestId: valid.queryId,
         requestedAt: valid.requestedAt,
         authorization: verified,
         warningResponseTaskRef: valid.payload.warningResponseTaskRef,
-        measureLibraryReleaseRef: valid.payload.measureLibraryReleaseRef,
+        ...(valid.payload.measureLibraryReleaseRef === undefined
+          ? {}
+          : { measureLibraryReleaseRef: valid.payload.measureLibraryReleaseRef }),
       });
       const generationPolicy = await this.#policies.readGenerationPolicy({
         requestId: valid.queryId,
@@ -1592,6 +1672,7 @@ export class PostgresRecommendationAdapter
   /**
    * D-05：命令只接受与冻结依据精确对应的已完成 C08 结果；
    * 任务类型、结果族、候选版本、生成策略、查询与工程任一不符即类型化拒绝。
+   * 生成策略引用省略时消费候选行上已登记的精确引用，显式提供仍须与之逐字相符。
    */
   async #bindAgentResult(input: {
     readonly projectId: string;
@@ -1600,7 +1681,8 @@ export class PostgresRecommendationAdapter
       readonly reference: { readonly entityId: string; readonly versionId: string };
     };
     readonly measureCandidateQueryResultRef: KnowledgeQueryResultRefV1;
-    readonly responseGenerationPolicyRef: { readonly entityId: string; readonly versionId: string };
+    readonly responseGenerationPolicyRef:
+      { readonly entityId: string; readonly versionId: string } | undefined;
     readonly agentResult: AgentTaskResultRefV1;
   }): Promise<RecommendationCandidateRefV1> {
     const agentResult = input.agentResult;
@@ -1629,6 +1711,11 @@ export class PostgresRecommendationAdapter
         "AUTHORIZATION_DENIED",
       );
     }
+    // 冻结消费：省略生成策略引用时用已保存候选行上的精确引用，运行配置更新不改写它。
+    const generationPolicyRef = input.responseGenerationPolicyRef ?? {
+      entityId: candidateRow.generation_policy_entity_id,
+      versionId: candidateRow.generation_policy_version_id,
+    };
     const queryRow = await this.#readQueryById(
       input.projectId,
       { entityId: candidateRow.query_result_id, versionId: candidateRow.query_result_version_id },
@@ -1667,8 +1754,8 @@ export class PostgresRecommendationAdapter
       candidateRow.query_result_id === input.measureCandidateQueryResultRef.reference.entityId &&
       candidateRow.query_result_version_id ===
         input.measureCandidateQueryResultRef.reference.versionId &&
-      candidateRow.generation_policy_entity_id === input.responseGenerationPolicyRef.entityId &&
-      candidateRow.generation_policy_version_id === input.responseGenerationPolicyRef.versionId &&
+      candidateRow.generation_policy_entity_id === generationPolicyRef.entityId &&
+      candidateRow.generation_policy_version_id === generationPolicyRef.versionId &&
       candidateRow.agent_task_id === agentResult.agentTaskRef.reference.entityId &&
       candidateRow.agent_task_type === RECOMMENDATION_TASK_TYPE_V1 &&
       candidateRow.agent_result_id === agentResult.reference.entityId &&
@@ -1746,19 +1833,22 @@ export class PostgresRecommendationAdapter
       ) {
         failRecommendation("recommendation-candidate-mismatch", candidateRef);
       }
-      if (!sameRef(candidateSet.validationPolicyRef, valid.payload.responseValidationPolicyRef)) {
+      // 冻结消费：省略校验策略引用时用候选集冻结的精确引用，显式提供仍须与冻结事实一致。
+      const validationPolicyRef =
+        valid.payload.responseValidationPolicyRef ?? candidateSet.validationPolicyRef;
+      if (!sameRef(candidateSet.validationPolicyRef, validationPolicyRef)) {
         failRecommendation("response-policy-mismatch", candidateRef);
       }
       const { validationPolicy, siteContext } = await this.#policies.readValidationContext({
         requestId: valid.commandId,
         requestedAt: valid.issuedAt,
         authorization: verified,
-        validationPolicyRef: valid.payload.responseValidationPolicyRef,
+        validationPolicyRef,
         siteContextRef: valid.payload.siteContextRef,
       });
       if (
         validationPolicy.projectId !== valid.projectId ||
-        !sameRef(validationPolicy.policyRef, valid.payload.responseValidationPolicyRef) ||
+        !sameRef(validationPolicy.policyRef, validationPolicyRef) ||
         !sameRef(siteContext.siteContextRef, valid.payload.siteContextRef) ||
         siteContext.projectId !== valid.projectId ||
         !sameRef(siteContext.spatialScopeRef.reference, candidateSet.spatialScopeRef.reference)
@@ -1777,14 +1867,14 @@ export class PostgresRecommendationAdapter
       const validatedAt = this.#nowIso();
       const bindingDigest = sha256CanonicalJson({
         candidateRef,
-        validationPolicyRef: valid.payload.responseValidationPolicyRef,
+        validationPolicyRef,
         siteContextRef: valid.payload.siteContextRef,
       });
       const validationId = `recommendation-validation-${bindingDigest.slice(0, 32)}`;
       const evidence = buildRecommendationValidationEvidence({
         projectId: valid.projectId,
         candidate,
-        validationPolicyRef: valid.payload.responseValidationPolicyRef,
+        validationPolicyRef,
         siteContextRef: valid.payload.siteContextRef,
         outcome,
         validatedBy: verified.actorId,
@@ -1843,6 +1933,7 @@ export class PostgresRecommendationAdapter
             candidateRow,
             candidate,
             candidateSet,
+            validationPolicyRef,
             outcome,
             evidence,
             evidenceArtifactRef,
@@ -1881,6 +1972,8 @@ export class PostgresRecommendationAdapter
       readonly candidateRow: RecommendationCandidateRow;
       readonly candidate: RecommendationCandidateV1;
       readonly candidateSet: MeasureCandidateSetV1;
+      /** 冻结消费后的精确校验策略引用：命令省略时即为候选集冻结值。 */
+      readonly validationPolicyRef: { readonly entityId: string; readonly versionId: string };
       readonly outcome: RecommendationValidationOutcomeV1;
       readonly evidence: RecommendationValidationEvidenceV1;
       readonly evidenceArtifactRef: ContentArtifactRefV1;
@@ -1909,8 +2002,8 @@ export class PostgresRecommendationAdapter
         candidate_id: candidateRef.reference.entityId,
         candidate_version_id: candidateRef.reference.versionId,
         candidate_content_digest: candidateRow.content_digest,
-        validation_policy_entity_id: valid.payload.responseValidationPolicyRef.entityId,
-        validation_policy_version_id: valid.payload.responseValidationPolicyRef.versionId,
+        validation_policy_entity_id: input.validationPolicyRef.entityId,
+        validation_policy_version_id: input.validationPolicyRef.versionId,
         site_context_entity_id: valid.payload.siteContextRef.entityId,
         site_context_version_id: valid.payload.siteContextRef.versionId,
         trigger_consistency_passed: outcome.results.triggerConsistency.passed,
@@ -1971,8 +2064,8 @@ export class PostgresRecommendationAdapter
             candidateSet.measureLibraryReleaseRef.reference.versionId,
           generation_policy_entity_id: candidateSet.generationPolicyRef.entityId,
           generation_policy_version_id: candidateSet.generationPolicyRef.versionId,
-          validation_policy_entity_id: valid.payload.responseValidationPolicyRef.entityId,
-          validation_policy_version_id: valid.payload.responseValidationPolicyRef.versionId,
+          validation_policy_entity_id: input.validationPolicyRef.entityId,
+          validation_policy_version_id: input.validationPolicyRef.versionId,
           site_context_entity_id: valid.payload.siteContextRef.entityId,
           site_context_version_id: valid.payload.siteContextRef.versionId,
           agent_task_id: candidateRow.agent_task_id,
@@ -2559,7 +2652,7 @@ export class PostgresRecommendationAdapter
         )
         .catch(() => undefined);
       if (existing === undefined) throw error;
-      await existing.verified;
+      await existing.completed;
       return {
         kind: "content-artifact",
         reference: {
@@ -3115,9 +3208,6 @@ export const createPostgresRecommendationAdapter = (
   options: PostgresRecommendationAdapterOptionsV1,
 ): PostgresRecommendationAdapter => new PostgresRecommendationAdapter(options);
 
-export const createPostgresRecommendationContextReader = (options: {
-  readonly db: Kysely<PostgresDatabase>;
-  readonly artifactStore: ArtifactStoreV1;
-  readonly basis: AssessmentBasisReleaseSetReaderV1;
-  readonly authorizeDownstream?: AssessmentDownstreamAuthorizerV1;
-}): PostgresRecommendationContextReader => new PostgresRecommendationContextReader(options);
+export const createPostgresRecommendationContextReader = (
+  options: ConstructorParameters<typeof PostgresRecommendationContextReader>[0],
+): PostgresRecommendationContextReader => new PostgresRecommendationContextReader(options);

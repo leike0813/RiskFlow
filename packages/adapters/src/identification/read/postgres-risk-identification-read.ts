@@ -427,7 +427,7 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
   }
 
   /**
-   * 读 C04 正文（C24 同形）：按登记行的精确 `artifactRef` 打开，`handle.verified` 保证字节与
+   * 读 C04 正文（C24 同形）：按登记行的精确 `artifactRef` 打开，`handle.completed` 保证字节与
    * 引用摘要一致；purposeCode 与写入清单不一致时工件注册表直接拒绝。
    */
   async #readBody(input: {
@@ -456,7 +456,7 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       }),
     );
     const bytes = await boundedContent(handle.content, MAX_BODY_BYTES_V1);
-    await handle.verified;
+    await handle.completed;
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   }
 

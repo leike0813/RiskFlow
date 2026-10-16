@@ -1,0 +1,283 @@
+{
+  "schemaVersion": "1",
+  "projectId": "synthetic-station-tunnel-project",
+  "datasetRef": {
+    "entityId": "retrieval-dataset-synthetic-v1",
+    "versionId": "physical-20261015-v13"
+  },
+  "evidenceBaseReleaseRef": {
+    "kind": "retrieval-evidence-base-release",
+    "reference": {
+      "entityId": "knowledge-release-b33e7df3-3b60-4035-a083-7be249731961",
+      "versionId": "1"
+    }
+  },
+  "syntheticSample": true,
+  "sampleNotice": "合成样本、待甲方复核",
+  "queries": [
+    {
+      "queryId": "query-mechanism-01-face-stability",
+      "queryText": "变径扩挖过程中开挖面控制压力低于地层自稳能力，土体抗剪不足导致局部塌方并伴随地表塌陷，应识别哪类风险机理？",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "mechanism-01",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "case-entry-01",
+          "grade": 3
+        },
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-04a20112-b67d-42e3-9556-312ccdcfbfae",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "standard-03-shield-construction",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-02-support-failure",
+      "queryText": "扩挖段支护时机与刚度不匹配，管片拼装偏差累积后侵限，如何判断支护结构失效风险？",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "mechanism-02",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "case-entry-02",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-03-water-inrush",
+      "queryText": "承压水沿盾尾密封或开挖面薄弱带突破并携砂涌入舱内，识别渗流突涌机理及其适用工序。",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "mechanism-03",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "case-entry-03",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-04-over-excavation-settlement",
+      "queryText": "扩挖量超出设计控制值，地表累计沉降与变化速率同步增大，对应哪条过挖与地表沉降机理？",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "mechanism-04",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "case-entry-04",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-05-equipment-failure",
+      "queryText": "变径驱动或制动回路异常，装备在坡道段失去动力或制停能力，应识别何种施工装备故障机理？",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "mechanism-05",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "case-entry-05",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "queryId": "query-mechanism-06-assembly-connection",
+      "queryText": "狭小空间内拼装构件错位、连接件未紧固导致接缝承载能力不足，识别装配连接失效机理。",
+      "relevance": [
+        {
+          "sourceKind": "risk-mechanism",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "mechanism-06",
+          "grade": 3
+        },
+        {
+          "sourceKind": "case-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "case-entry-06",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "queryId": "query-standard-01-risk-grading",
+      "queryText": "地下工程风险等级应根据哪些因素划分？分级与风险接受程度、处置原则之间有什么对应依据？",
+      "relevance": [
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-04a20112-b67d-42e3-9556-312ccdcfbfae",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "standard-01-risk-management",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "queryId": "query-standard-02-monitoring-selection",
+      "queryText": "盾构隧道管片变形和周围土体应选择哪些监测项目？管片竖向位移、净空收敛及地表沉降控制值在缺少当地经验时如何确定，适用范围有什么限制？",
+      "relevance": [
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-04a20112-b67d-42e3-9556-312ccdcfbfae",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "standard-02-monitoring",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "queryId": "query-standard-03-warning-reporting",
+      "queryText": "施工监测达到预警标准，或者实测变形超过允许变形的一定比例时，应启动什么报送行动，比例条件是什么？",
+      "relevance": [
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-04a20112-b67d-42e3-9556-312ccdcfbfae",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "standard-03-shield-construction",
+          "grade": 3
+        }
+      ]
+    },
+    {
+      "queryId": "query-standard-04-historical-air-pressure",
+      "queryText": "仅查询已废止条款的历史技术内容：气压开仓前的工作压力需要如何确定，为什么要考虑开挖面土侧压力与地下水，如何验证保压效果？这些内容不作为现行强制条款使用。",
+      "relevance": [
+        {
+          "sourceKind": "standard-library",
+          "sourceReleaseRef": {
+            "kind": "knowledge-release",
+            "reference": {
+              "entityId": "knowledge-release-04a20112-b67d-42e3-9556-312ccdcfbfae",
+              "versionId": "1"
+            }
+          },
+          "sourceEntryId": "standard-03-shield-construction",
+          "grade": 3
+        }
+      ]
+    }
+  ]
+}

@@ -283,6 +283,36 @@ const rejectedReasonCodes = (
     .map((item) => item.reasonCode.split(":")[0]);
 
 describe("C17 identification knowledge package validation", () => {
+  it.each([true, false, undefined] as const)(
+    "validates standard retrieval text against its exact preparation (%s)",
+    async (verified) => {
+      const entry = {
+        ...standardEntry("standard-text", "national"),
+        retrievalText: "真实资料正文",
+      };
+      const checked: unknown[] = [];
+      const outcome = await validateIdentificationKnowledgePackage({
+        value: standardPackage([entry]),
+        expectedDefinitionType: "standard-library",
+        dependencies: dependenciesFor({
+          ...(verified === undefined
+            ? {}
+            : {
+                checkStandardRetrievalText: async (input) => {
+                  checked.push(input);
+                  return verified;
+                },
+              }),
+        }),
+      });
+      expect(outcome.disposition).toBe(verified === true ? "accepted" : "rejected");
+      if (verified !== undefined) {
+        expect(checked).toEqual([{ entry, preparationSnapshotRef: PREPARATION_SNAPSHOT_REF }]);
+      }
+      if (verified !== true) expect(outcome.rejectionClass).toBe("terminal");
+    },
+  );
+
   it.each([
     {
       name: "missing critical rule",

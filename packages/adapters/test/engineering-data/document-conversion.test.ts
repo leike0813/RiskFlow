@@ -110,6 +110,24 @@ const fixture = async (name: string): Promise<Uint8Array> =>
     await readFile(new URL(`../fixtures/structured-document-conversion/${name}`, import.meta.url)),
   );
 
+const docxBytes = (documentXml: string): Uint8Array =>
+  zipSync({
+    "[Content_Types].xml": strToU8(`<?xml version="1.0"?>
+      <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+        <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+      </Types>`),
+    "_rels/.rels": strToU8(`<?xml version="1.0"?>
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+      </Relationships>`),
+    "word/document.xml": strToU8(documentXml),
+  });
+
+const docxInput = context(
+  "docx",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+);
+
 describe("structured document format adapters", () => {
   it("preserves horizontal and vertical DOCX cell spans and rejects orphan continuations", async () => {
     const entries = unzipSync(await fixture("sample.docx"));
@@ -264,6 +282,65 @@ describe("structured document format adapters", () => {
     expect(document.blocks.at(-1)?.text).toBe("表格值");
   });
 
+  it.each([
+    ["&quot;", '"'],
+    ["&apos;", "'"],
+    ["&lt;", "<"],
+    ["&gt;", ">"],
+    ["&amp;", "&"],
+    ["&#34;", '"'],
+    ["&#0000034;", '"'],
+    ["&#x22;", '"'],
+    ["&#x000022;", '"'],
+    ["&#9;", "\t"],
+    ["&#xA;", "\n"],
+    ["&amp;quot;", "&quot;"],
+    ["&amp;#34;", "&#34;"],
+    ["&nbsp;", "&nbsp;"],
+    ["&#0;", "&#0;"],
+    ["&#xD800;", "&#xD800;"],
+    ["&#xFFFE;", "&#xFFFE;"],
+    ["&#1114112;", "&#1114112;"],
+  ])(
+    "turns XML character references in DOCX text into their characters: %s",
+    (reference, expected) => {
+      const parsed = parseDocx(
+        docxBytes(
+          `<w:document xmlns:w="urn:w"><w:body><w:p><w:r><w:t>${reference}</w:t></w:r></w:p></w:body></w:document>`,
+        ),
+        docxInput,
+      );
+      expect(parsed.blocks.find(({ kind }) => kind === "paragraph")?.text).toBe(expected);
+    },
+  );
+
+  it("keeps CDATA literal while decoding standard references beside it", () => {
+    const parsed = parseDocx(
+      docxBytes(`<w:document xmlns:w="urn:w"><w:body>
+        <w:p><w:r><w:t>风险&quot;<![CDATA[&quot;原始 &amp;]]>&#34;</w:t></w:r></w:p>
+        <w:p><w:r><w:t><![CDATA[&lt;字面&gt;]]></w:t></w:r></w:p>
+      </w:body></w:document>`),
+      docxInput,
+    );
+    expect(
+      parsed.blocks.filter(({ kind }) => kind === "paragraph").map(({ text }) => text),
+    ).toEqual(['风险"&quot;原始 &amp;"', "&lt;字面&gt;"]);
+  });
+
+  it("rejects DTD and entity declarations in DOCX parts before parsing them", () => {
+    const declared = `<?xml version="1.0"?>
+      <!DOCTYPE w:document [<!ENTITY xxe "boom">]>
+      <w:document xmlns:w="urn:w"><w:body><w:p><w:r><w:t>&xxe;</w:t></w:r></w:p></w:body></w:document>`;
+    expect(codeOf(() => parseDocx(docxBytes(declared), docxInput))).toBe("XML_EXTERNAL_ENTITY");
+    const relationships = unzipSync(
+      docxBytes(`<w:document xmlns:w="urn:w"><w:body/></w:document>`),
+    );
+    relationships["_rels/.rels"] = strToU8(`<?xml version="1.0"?>
+      <!DOCTYPE Relationships [<!ENTITY xxe "word/document.xml">]>
+      <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="&xxe;"/></Relationships>`);
+    expect(codeOf(() => parseDocx(zipSync(relationships), docxInput))).toBe("XML_EXTERNAL_ENTITY");
+  });
+
   it("keeps XLSX formula/cache and CSV quoting, BOM, newline and coordinates", async () => {
     const workbook = new Workbook();
     const sheet = workbook.addWorksheet("指标");
@@ -408,7 +485,7 @@ describe("structured document format adapters", () => {
             yield bytes;
             completedReads += 1;
           })(),
-          verified: Promise.resolve({} as never),
+          completed: Promise.resolve({} as never),
         } as unknown as ArtifactReadHandleV1;
       },
       async put(

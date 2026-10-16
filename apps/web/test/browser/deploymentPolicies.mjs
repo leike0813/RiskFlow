@@ -79,8 +79,10 @@ export const createWarningRuntimePolicies = ({
   return {
     read: async (input) => {
       if (
-        !matchesRef(aggregationPolicyRef, input.warningAggregationPolicyRef) ||
-        !matchesRef(notificationPolicyRef, input.notificationPolicyRef)
+        (input.warningAggregationPolicyRef !== undefined &&
+          !matchesRef(aggregationPolicyRef, input.warningAggregationPolicyRef)) ||
+        (input.notificationPolicyRef !== undefined &&
+          !matchesRef(notificationPolicyRef, input.notificationPolicyRef))
       ) {
         throw Object.assign(new Error("warning-runtime-policy-unavailable"), {
           failure: { code: "PRECONDITION_FAILED", requestId: input.requestId },

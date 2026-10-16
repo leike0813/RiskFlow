@@ -255,7 +255,7 @@ export const readVerifiedJsonArtifact = async <T>(
       );
     });
   const bytes = await readBoundedContent(handle);
-  const receipt = await handle.verified;
+  const receipt = await handle.completed;
   if (
     receipt.content.hash.value !== handle.manifest.content.hash.value ||
     receipt.content.byteLength !== handle.manifest.content.byteLength

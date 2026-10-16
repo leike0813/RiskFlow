@@ -27,7 +27,7 @@ import {
 } from "../persistence/index.js";
 import {
   ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
-  ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1,
+  ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE,
   ASSESSMENT_CONFIGURATION_MAX_ARTIFACT_BYTES_V1,
   ASSESSMENT_CONFIGURATION_MEDIA_TYPE_V1,
   ASSESSMENT_CONFIGURATION_SCHEMA_VERSION_V1,
@@ -232,7 +232,7 @@ export const readPreparedAssessmentConfiguration = async (
   const bytes = await readBoundedContent(handle).catch((error: unknown): never =>
     rethrowArtifactFailure(error, targetRef),
   );
-  const receipt = await handle.verified.catch((error: unknown): never =>
+  const receipt = await handle.completed.catch((error: unknown): never =>
     rethrowArtifactFailure(error, targetRef),
   );
   if (
@@ -368,9 +368,11 @@ export class AssessmentConfigurationResolverV1 {
       );
     }
     const valid = parsed.data as ResolveAssessmentConfigurationSetV1;
+    const purpose = valid.purpose ?? "full";
+    const requiredTypes = [...ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE[purpose]];
     const resolution = await this.#ports.resolveConfigurationMembers({
       projectId: valid.projectId,
-      requiredDefinitionTypes: ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1,
+      requiredDefinitionTypes: requiredTypes,
       requiredAt: valid.requiredAt,
       asOfRecordedAt: valid.asOfRecordedAt,
       authorization: valid.authorization,
@@ -379,9 +381,7 @@ export class AssessmentConfigurationResolverV1 {
       return { kind: "failed", error: resolution.error };
     }
 
-    const canonicalTypes = [...ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1].sort(
-      compareDefinitionType,
-    );
+    const canonicalTypes = [...requiredTypes].sort(compareDefinitionType);
     const ordered = [...resolution.members].sort((left, right) =>
       compareDefinitionType(left.definitionType, right.definitionType),
     );
@@ -402,25 +402,21 @@ export class AssessmentConfigurationResolverV1 {
         ASSESSMENT_CONFIGURATION_SET_TARGET_REF_V1,
       );
     }
-    const coherent = ordered.every(
-      (member) =>
-        sameVersionReference(member.configurationSetRef, head.configurationSetRef) &&
-        sameVersionReference(
-          member.projectRevisionRef.reference,
-          head.projectRevisionRef.reference,
-        ),
-    );
-    if (!coherent) {
-      failAssessmentConfiguration(
-        "assessment-configuration-incompatible",
-        ASSESSMENT_CONFIGURATION_SET_TARGET_REF_V1,
-      );
-    }
-
     const documents: AssessmentConfigurationDocumentV1[] = [];
     const members: AssessmentConfigurationMemberV1[] = [];
     const requiredCapability: ModuleCapabilityV1 = "knowledge-modeling.read";
     for (const member of ordered) {
+      if (
+        !sameVersionReference(member.configurationSetRef, head.configurationSetRef) ||
+        !sameVersionReference(
+          member.projectRevisionRef.reference,
+          head.projectRevisionRef.reference,
+        )
+      )
+        failAssessmentConfiguration(
+          "assessment-configuration-incompatible",
+          memberTargetRef(member),
+        );
       const prepared = await readPreparedAssessmentConfiguration({
         artifactStore: this.#ports.artifactStore,
         artifactRef: member.artifactRef,
@@ -452,6 +448,29 @@ export class AssessmentConfigurationResolverV1 {
         );
       }
       documents.push(prepared.document);
+      if (
+        purpose === "deviation" &&
+        prepared.document.definitionType === "deviation-policy" &&
+        prepared.document.content.policies.some((policy) => policy.basis === "risk-level-step")
+      ) {
+        const dependency = await this.#ports.resolveConfigurationMembers({
+          projectId: valid.projectId,
+          requiredDefinitionTypes: ["risk-matrix"],
+          requiredAt: valid.requiredAt,
+          asOfRecordedAt: valid.asOfRecordedAt,
+          authorization: valid.authorization,
+        });
+        if (dependency.kind === "failed") return { kind: "failed", error: dependency.error };
+        if (
+          dependency.members.length !== 1 ||
+          dependency.members[0]?.definitionType !== "risk-matrix"
+        )
+          failAssessmentConfiguration(
+            "assessment-configuration-set-incomplete",
+            memberTargetRef(member),
+          );
+        ordered.push(dependency.members[0]!);
+      }
       members.push(
         AssessmentConfigurationMemberV1Schema.parse({
           definitionType: member.definitionType,
@@ -463,7 +482,7 @@ export class AssessmentConfigurationResolverV1 {
       );
     }
     try {
-      validateAssessmentConfigurationSet(documents);
+      validateAssessmentConfigurationSet(documents, purpose);
     } catch (error) {
       const failure = assessmentConfigurationFailureFrom(error);
       if (failure === undefined) throw error;
@@ -492,6 +511,7 @@ export class AssessmentConfigurationResolverV1 {
       identityDigest,
       recordedAt,
       members,
+      ...(valid.purpose === undefined ? {} : { purpose }),
     });
     const command = AtomicCommandV1Schema.parse({
       projectId: valid.projectId,

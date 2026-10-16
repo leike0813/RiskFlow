@@ -79,7 +79,7 @@ describe.skipIf(!enabled)("llama.cpp real-service smoke", () => {
         let byteLength = 0;
         for await (const chunk of opened.content) byteLength += chunk.byteLength;
         expect(byteLength).toBeGreaterThan(0);
-        await opened.verified;
+        await opened.completed;
       };
 
       const structured = await gateway.completeStructured(

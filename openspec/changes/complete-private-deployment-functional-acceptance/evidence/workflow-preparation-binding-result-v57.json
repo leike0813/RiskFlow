@@ -1,0 +1,98 @@
+{
+  "at": "2026-10-15T12:27:16.936Z",
+  "runRef": {
+    "kind": "workflow-run",
+    "reference": {
+      "entityId": "risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9",
+      "versionId": "035157af5173eb1e3025be0da1894fa9e5722fd386597b6193bea4ab0a53fde6"
+    }
+  },
+  "state": {
+    "schemaVersion": "1",
+    "projectId": "synthetic-station-tunnel-project",
+    "runId": "risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9",
+    "runVersionId": "905945e60558ae62537c573790ca049b3d0de69f94958d891ca8ce8258fcee92",
+    "entryMode": "identify-and-assess",
+    "entryIdentity": {
+      "entityId": "workflow-entry:synthetic-station-tunnel-project:identify-and-assess",
+      "versionId": "ca5ab20c264b046f6c135ad7c6c9fde62f078fe80ae8f3d4818686060543c6f9"
+    },
+    "stage": "identification",
+    "status": "retryable-failure",
+    "assessmentRunRefs": [],
+    "acceptedRiskRecordRefs": [],
+    "assessmentRecordRefs": [],
+    "warningRecordRefs": [],
+    "responseRecommendationRefs": [],
+    "deviationRecordRefs": [],
+    "calibrationSuggestionRefs": [],
+    "lastStageResultRef": {
+      "kind": "stage-result",
+      "reference": {
+        "entityId": "risk-flow-stage-result:risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9:preparing",
+        "versionId": "827ed205774ece32b96e216c411623074115a10798276e075aea6baa466a66b6"
+      }
+    },
+    "lastRouteDecisionRef": {
+      "kind": "route-decision",
+      "reference": {
+        "entityId": "risk-flow-entry:risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9",
+        "versionId": "f2ff51d4786aaddf23ca50b81b39e7db99555c14d798632f56dfe598fbf04578"
+      }
+    },
+    "lastErrorRef": {
+      "kind": "workflow-error",
+      "reference": {
+        "entityId": "risk-flow-graph-workflow-error:identification:unclassified-failure",
+        "versionId": "7c3e739496724c8e3cd917d88f6928890eab34db55f59d8d0f10d8846facd005"
+      }
+    },
+    "graphVersion": {
+      "entityId": "physical-risk-flow-graph",
+      "versionId": "physical-20261014-v1"
+    },
+    "recordedAt": "2026-10-15T03:59:30.584Z"
+  },
+  "preparationBindings": [
+    {
+      "actorRef": "account-9616718d-a935-46b5-abb9-e27ce774549d",
+      "frozenRefs": [
+        {
+          "kind": "identification-preparation-snapshot",
+          "reference": {
+            "entityId": "identification-preparation-50efff5ad17336023281c241aba94e153465e03a",
+            "versionId": "1"
+          }
+        }
+      ]
+    }
+  ],
+  "bindingAudits": [
+    {
+      "action": "workflow.bind-identification-preparation",
+      "command_id": "physical-bind-original-five-preparation-d51-v56",
+      "target_ref": {
+        "kind": "identification-preparation-snapshot",
+        "reference": {
+          "entityId": "identification-preparation-50efff5ad17336023281c241aba94e153465e03a",
+          "versionId": "1"
+        }
+      },
+      "authorization_context_ref": {
+        "kind": "authorization-context",
+        "reference": {
+          "entityId": "authorization-context-e54d1008-a315-4880-bbd6-e22e337114ea",
+          "versionId": "1"
+        }
+      },
+      "occurred_at": "2026-10-15T12:20:44.254Z"
+    }
+  ],
+  "taskCount": 10,
+  "newAgentTasks": 0,
+  "identificationChildCreated": false,
+  "fullFunctionalPass": false,
+  "publicHttpOutcome": 503,
+  "checkpointerBoundaryPassed": true,
+  "nextBlocker": "C24 fixed workflow.start-run differs from actual parent workflow.resume-run"
+}

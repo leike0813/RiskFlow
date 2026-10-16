@@ -71,24 +71,6 @@ type IdentificationContextTransactionV1 = Transaction<IdentificationContextDatab
 /** jsonb 列以文本形式写入，避免驱动二次编码。 */
 const jsonValue = (value: unknown): JsonValue => JSON.stringify(value) as unknown as JsonValue;
 
-/**
- * 审计外键在提交时延迟校验：C03 事务单元以提交对象里的 `audit.auditEntryId` 写审计行，
- * 而登记端口只传结果行，因此登记行的审计身份必须与核心 `#persistResult` 的
- * `${artifactId}:register:audit` 约定同形——artifactId 由核心按三类结果的稳定身份派生
- * （关系查询取 queryId，审阅取任务身份，上下文取工作项身份）。约定不符时延迟外键会
- * 在提交时显式失败，不会静默留下无审计的结果行。
- */
-const resultAuditEntryIdFor = (row: IdentificationContextResultRowV1): string => {
-  switch (row.resultKind) {
-    case "relationship":
-      return `relationship-query-result-${row.queryId}:register:audit`;
-    case "reviewed-retrieval":
-      return `retrieval-artifact-set-${row.agentTaskRef.reference.entityId}:register:audit`;
-    case "model-context":
-      return `identification-model-context-${row.workItemRef.reference.entityId}:register:audit`;
-  }
-};
-
 /** 三类结果只写本类专列，它类专列保持 NULL；与迁移的种类 CHECK 一一对应。 */
 const insertColumnsFor = (
   row: IdentificationContextResultRowV1,
@@ -118,7 +100,7 @@ const insertColumnsFor = (
   model_context_artifact_set_ref:
     row.resultKind === "model-context" ? jsonValue(row.modelContextArtifactSetRef) : null,
   created_at: occurredAt,
-  audit_entry_id: resultAuditEntryIdFor(row),
+  audit_entry_id: `${row.artifactRef.reference.entityId}:register:audit`,
 });
 
 /** 回读一律经核心严格判别 Schema 复验，避免数据库补足核心未声明的形状。 */
@@ -265,21 +247,25 @@ export class PostgresIdentificationContextAdapter implements IdentificationConte
     }
   }
 
-  async readResult(input: {
-    readonly projectId: string;
-    readonly resultKind: IdentificationContextResultRowV1["resultKind"];
-    readonly resultId: string;
-  }): Promise<IdentificationContextResultRowV1 | undefined> {
+  async readResult(
+    input: Parameters<IdentificationContextResultStoreV1["readResult"]>[0],
+  ): Promise<IdentificationContextResultRowV1 | undefined> {
     try {
-      const row = await this.#db
+      let query = this.#db
         .selectFrom("business.identification_context_results")
         .selectAll()
         .where("project_id", "=", input.projectId)
-        .where("result_kind", "=", input.resultKind)
-        .where("result_id", "=", input.resultId)
-        .orderBy("persisted_at", "desc")
-        .limit(1)
-        .executeTakeFirst();
+        .where("result_kind", "=", input.resultKind);
+      if ("resultId" in input) query = query.where("result_id", "=", input.resultId);
+      else if ("agentTaskRef" in input)
+        query = query.where("agent_task_ref", "=", jsonValue(input.agentTaskRef));
+      else
+        query = query.where(
+          "retrieval_artifact_set_ref",
+          "=",
+          jsonValue(input.retrievalArtifactSetRef),
+        );
+      const row = await query.orderBy("persisted_at", "desc").limit(1).executeTakeFirst();
       return row === undefined ? undefined : resultRowFromDbRow(row);
     } catch (error) {
       throw mapPostgresError(error, "identification-context.result-read");
@@ -419,7 +405,7 @@ export class PostgresOfficialHybridResultReader implements OfficialHybridResultR
         }),
       );
       const bytes = await boundedContent(handle.content, HYBRID_RESULT_MAX_BYTES_V1);
-      await handle.verified;
+      await handle.completed;
       payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     } catch {
       return {

@@ -766,7 +766,7 @@ describe("C14 PostgreSQL monitoring store", () => {
     expect(emptyRow.rows).toEqual([{ availability: "unavailable" }]);
   });
 
-  it("reads one exact series revision with bounded fields, receipts, and stable denials", async () => {
+  it("reads one exact series revision with bounded fields, independent access audits, and stable denials", async () => {
     const seriesRef = {
       kind: "monitoring-series" as const,
       reference: { entityId: "c14-series", versionId: "1" },
@@ -827,19 +827,19 @@ describe("C14 PostgreSQL monitoring store", () => {
     });
     expect((await evidenceFor("c14-series-read")).rows).toEqual([
       {
-        receipts: 1,
+        receipts: 0,
         audits: 1,
-        command_kind: "engineering-data.monitoring-series-read.v1",
-        result_ref: seriesRef,
+        command_kind: null,
+        result_ref: null,
       },
     ]);
     expect(await fixture.monitoringStore.readSeriesRevision(query)).toEqual(read);
     expect((await evidenceFor("c14-series-read")).rows).toEqual([
       {
-        receipts: 1,
-        audits: 1,
-        command_kind: "engineering-data.monitoring-series-read.v1",
-        result_ref: seriesRef,
+        receipts: 0,
+        audits: 2,
+        command_kind: null,
+        result_ref: null,
       },
     ]);
     expect(
@@ -847,7 +847,7 @@ describe("C14 PostgreSQL monitoring store", () => {
         ...query,
         requestedAt: "2030-01-01T00:00:01.000Z",
       }),
-    ).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    ).toEqual(read);
     const facts = await fixture.postgres.adminPool.query<{
       series: number;
       revisions: number;
@@ -946,7 +946,7 @@ describe("C14 PostgreSQL monitoring store", () => {
     ]);
   });
 
-  it("keeps authorization ahead of idempotency and writes only the verified actor", async () => {
+  it("records each authorized access and writes only the verified actor", async () => {
     const seriesRef = {
       kind: "monitoring-series" as const,
       reference: { entityId: "c14-series", versionId: "1" },
@@ -971,21 +971,21 @@ describe("C14 PostgreSQL monitoring store", () => {
           `SELECT (SELECT count(*)::int FROM business.command_receipts WHERE command_id = $1) AS receipts,
                   (SELECT count(*)::int FROM audit.entries WHERE command_id = $1) AS audits,
                   (SELECT actor_ref FROM business.command_receipts WHERE command_id = $1) AS receipt_actor,
-                  (SELECT actor_ref FROM audit.entries WHERE command_id = $1) AS audit_actor`,
+                  (SELECT actor_ref FROM audit.entries WHERE command_id = $1 LIMIT 1) AS audit_actor`,
           [id],
         )
       ).rows[0];
-    // 同 queryId 同载荷重放：返回同一结果并复用既有收据与审计。
+    // 重复查看返回同一业务结果，每次记录访问。
     const first = await fixture.monitoringStore.readSeriesRevision(query);
     expect(first).toMatchObject({ kind: "succeeded", result: { monitoringSeriesRef: seriesRef } });
     expect(await fixture.monitoringStore.readSeriesRevision(query)).toEqual(first);
     expect(await readEvidence(queryId)).toEqual({
-      receipts: 1,
-      audits: 1,
-      receipt_actor: managerId,
+      receipts: 0,
+      audits: 2,
+      receipt_actor: null,
       audit_actor: managerId,
     });
-    // 同 queryId 异载荷：授权校验通过后由 C03 幂等键拒绝，收据与审计保持不变。
+    // 新的访问时间不占用业务幂等键。
     const changedAuthorization = {
       ...query.authorization,
       decidedAt: "2030-01-01T00:00:01.000Z",
@@ -995,14 +995,14 @@ describe("C14 PostgreSQL monitoring store", () => {
         ...query,
         authorization: changedAuthorization,
       }),
-    ).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    ).toEqual(first);
     expect(await readEvidence(queryId)).toEqual({
-      receipts: 1,
-      audits: 1,
-      receipt_actor: managerId,
+      receipts: 0,
+      audits: 3,
+      receipt_actor: null,
       audit_actor: managerId,
     });
-    // 同 queryId 改授权上下文：当前授权拒绝优先于既有收据。
+    // 新登录取得的授权可以继续读取既有对象。
     const otherAuthorization = await authorization(
       "c14-read-other-invocation",
       "engineering-data.monitoring-snapshot-query",
@@ -1012,11 +1012,11 @@ describe("C14 PostgreSQL monitoring store", () => {
         ...query,
         authorization: otherAuthorization,
       }),
-    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    ).toEqual(first);
     expect(await readEvidence(queryId)).toEqual({
-      receipts: 1,
-      audits: 1,
-      receipt_actor: managerId,
+      receipts: 0,
+      audits: 4,
+      receipt_actor: null,
       audit_actor: managerId,
     });
     // 伪造载荷 actor：当前授权通过也不得进入收据、审计或任何事实。
@@ -1665,9 +1665,9 @@ describe("C14 PostgreSQL monitoring store", () => {
       }),
     ).toMatchObject({ kind: "succeeded", result: { monitoringSeriesRef: seriesRef } });
     expect(await commandEvidence(seriesReadControlId)).toMatchObject({
-      receipts: 1,
+      receipts: 0,
       audits: 1,
-      receipt_actor: managerId,
+      receipt_actor: null,
       audit_actor: managerId,
     });
     const forgedReplayAuthorization = await forgedAuthorization(
@@ -1685,9 +1685,9 @@ describe("C14 PostgreSQL monitoring store", () => {
       }),
     ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
     expect(await commandEvidence(seriesReadControlId)).toMatchObject({
-      receipts: 1,
+      receipts: 0,
       audits: 1,
-      receipt_actor: managerId,
+      receipt_actor: null,
       audit_actor: managerId,
     });
   });
@@ -1918,7 +1918,7 @@ describe("C14 PostgreSQL monitoring store", () => {
     });
     expect(
       await readRevision("c14-read-v1-superseded", "2", supersededAuthorization),
-    ).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    ).toMatchObject({ kind: "succeeded", result: { status: "current" } });
     const factsAfter = await fixture.postgres.adminPool.query<{
       revisions: number;
       series: number;
@@ -1929,7 +1929,7 @@ describe("C14 PostgreSQL monitoring store", () => {
     expect(factsAfter.rows).toEqual(factsBefore.rows);
   });
 
-  it("rechecks current authorization before resolving a stored query", async () => {
+  it("keeps background reads after password change and rejects a disabled account", async () => {
     await fixture.access.changePassword({
       kind: "change-password",
       sessionToken: managerSessionToken,
@@ -1943,7 +1943,7 @@ describe("C14 PostgreSQL monitoring store", () => {
       requestedAt: now,
       authorization: queryAuthorization,
     });
-    expect(resolved).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(resolved).toMatchObject({ kind: "succeeded" });
     const reread = await fixture.monitoringStore.readSeriesRevision({
       queryId: "c14-series-read",
       projectId,
@@ -1955,6 +1955,26 @@ describe("C14 PostgreSQL monitoring store", () => {
         reference: { entityId: "c14-series", versionId: "1" },
       },
     });
-    expect(reread).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    expect(reread).toMatchObject({ kind: "succeeded" });
+    await fixture.postgres.adminPool.query(
+      "UPDATE business.local_accounts SET status = 'disabled' WHERE account_id = $1",
+      [managerId],
+    );
+    try {
+      const denied = await fixture.monitoringStore.resolveSnapshotQuery({
+        queryResultRef,
+        invocationId: "c14-query",
+        projectId,
+        actorId: managerId,
+        requestedAt: now,
+        authorization: queryAuthorization,
+      });
+      expect(denied).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    } finally {
+      await fixture.postgres.adminPool.query(
+        "UPDATE business.local_accounts SET status = 'active' WHERE account_id = $1",
+        [managerId],
+      );
+    }
   });
 });

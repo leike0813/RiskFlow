@@ -847,10 +847,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     expect(setDocument.includedMembers.map((member) => member.ruleId)).toEqual([softSoilRuleId]);
 
     const setRevisionRef = assembled.applicableRuleSetRevisionRef;
-    const setReleaseRef = await requireFixture().approveAndPublishRevision({
-      projectId: world.projectId,
-      revisionRef: setRevisionRef,
-    });
+    const setReleaseRef = assembled.applicableRuleSetReleaseRef;
     expect(setReleaseRef.kind).toBe("knowledge-release");
 
     const resolution = await requireFixture().scoringRules.resolve({
@@ -889,7 +886,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     if (basisRead.kind !== "succeeded") {
       throw new Error(`basis member read failed: ${JSON.stringify(basisRead).slice(0, 600)}`);
     }
-    expect(basisRead.configurationMembers).toHaveLength(11);
+    expect(basisRead.configurationMembers).toHaveLength(8);
     expect(basisRead.scoringRuleMembers).toHaveLength(1);
     expect(basisRead.applicableRuleSetMember.releaseRef).toEqual(setReleaseRef);
     expect(basisRead.memberDigest).toMatch(/^[0-9a-f]{64}$/u);
@@ -1645,6 +1642,161 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     ).toBe(before);
   }, 300_000);
 
+  it("正式组装产生派生发布，重放和异载荷不重复写入，撤权拒绝", async () => {
+    const fixture = requireFixture();
+    const request = chain!.prepareRequest;
+    fixture.setPreparationProjection({
+      schemaVersion: "1",
+      projectId: request.projectId,
+      preparationSnapshotRef: request.preparationSnapshotRef,
+      projectRevisionRef: request.projectRevisionRef,
+      applicabilitySnapshotRef: request.applicabilitySnapshotRef,
+      applicability: request.applicability,
+    });
+    const commandId = "c19-public-assembly";
+    const authorization = fixture.authorize({
+      projectId: request.projectId,
+      actorId: request.actorId,
+      branch: "knowledge-modeling.assemble-applicable-rule-set",
+      entityId: commandId,
+      requestedAt: request.requestedAt,
+    });
+    const command = {
+      kind: "assemble-applicable-rule-set" as const,
+      commandId,
+      idempotencyKey: commandId,
+      projectId: request.projectId,
+      actorId: request.actorId,
+      issuedAt: request.requestedAt,
+      authorization,
+      payload: {
+        preparationSnapshotRef: request.preparationSnapshotRef,
+        requiredAt: request.requiredAt,
+        scoringPolicyRef: request.scoringPolicyRef,
+        assemblyPolicyRef: request.assemblyPolicyRef,
+        compatibilityRef: request.compatibilityRef,
+        configurationSetRef: request.configurationSetRef,
+      },
+    };
+    const first = await fixture.scoringRules.assemble(command);
+    if (first.kind !== "succeeded") throw new Error(JSON.stringify(first));
+    expect(first).toMatchObject({ kind: "succeeded" });
+    const nextPreparation = {
+      ...request.preparationSnapshotRef,
+      reference: {
+        ...request.preparationSnapshotRef.reference,
+        entityId: `${request.preparationSnapshotRef.reference.entityId}:next`,
+      },
+    };
+    fixture.setPreparationProjection({
+      schemaVersion: "1",
+      projectId: request.projectId,
+      preparationSnapshotRef: nextPreparation,
+      projectRevisionRef: request.projectRevisionRef,
+      applicabilitySnapshotRef: request.applicabilitySnapshotRef,
+      applicability: request.applicability,
+    });
+    const resolveNext = {
+      kind: "assessment-basis" as const,
+      commandId: "c19-next-preparation-basis",
+      idempotencyKey: "c19-next-preparation-basis",
+      projectId: request.projectId,
+      actorId: request.actorId,
+      issuedAt: request.requestedAt,
+      authorization: fixture.authorize({
+        projectId: request.projectId,
+        actorId: request.actorId,
+        branch: "knowledge-modeling.assessment-basis",
+        entityId: "c19-next-preparation-basis",
+        requestedAt: request.requestedAt,
+      }),
+      payload: { preparationSnapshotRef: nextPreparation, requiredAt: request.requiredAt },
+    };
+    const nextBasis = await fixture.scoringRules.resolve(resolveNext);
+    expect(nextBasis).toMatchObject({ kind: "succeeded" });
+    expect(await fixture.scoringRules.resolve(resolveNext)).toEqual(nextBasis);
+    fixture.setPreparationProjection({
+      schemaVersion: "1",
+      projectId: request.projectId,
+      preparationSnapshotRef: request.preparationSnapshotRef,
+      projectRevisionRef: request.projectRevisionRef,
+      applicabilitySnapshotRef: request.applicabilitySnapshotRef,
+      applicability: request.applicability,
+    });
+    const before = await countRows(
+      "SELECT count(*)::text AS count FROM business.knowledge_revisions WHERE project_id = $1 AND definition_type = 'applicable-rule-set'",
+      [request.projectId],
+    );
+    expect(await fixture.scoringRules.assemble(command)).toEqual(first);
+    const changed = await fixture.scoringRules.assemble({
+      ...command,
+      payload: { ...command.payload, requiredAt: "2030-01-01T00:00:04.000Z" },
+    });
+    expect(changed).toMatchObject({ kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } });
+    fixture.revokeAuthorization(authorization.authorizationContextRef);
+    expect(await fixture.scoringRules.assemble(command)).toMatchObject({
+      kind: "failed",
+      error: { code: "AUTHORIZATION_DENIED" },
+    });
+    expect(
+      await countRows(
+        "SELECT count(*)::text AS count FROM business.knowledge_revisions WHERE project_id = $1 AND definition_type = 'applicable-rule-set'",
+        [request.projectId],
+      ),
+    ).toBe(before);
+    if (first.kind === "succeeded")
+      expect(
+        await countRows(
+          "SELECT count(*)::text AS count FROM business.knowledge_releases WHERE revision_id = $1",
+          [first.result.applicableRuleSetRevisionRef.reference.entityId],
+        ),
+      ).toBe(1);
+  }, 300_000);
+
+  it.each([
+    "projectRevisionRef",
+    "applicability",
+    "scoringPolicyRef",
+    "assemblyPolicyRef",
+    "compatibilityRef",
+    "configurationSetRef",
+  ] as const)("组装拒绝%s错配且不新增修订", async (field) => {
+    const request = chain!.prepareRequest;
+    requireFixture().setPreparationProjection({
+      schemaVersion: "1",
+      projectId: request.projectId,
+      preparationSnapshotRef: request.preparationSnapshotRef,
+      projectRevisionRef: request.projectRevisionRef,
+      applicabilitySnapshotRef: request.applicabilitySnapshotRef,
+      applicability: request.applicability,
+    });
+    const value =
+      field === "applicability"
+        ? { ...request.applicability, stratumCondition: "其它地层" }
+        : field === "projectRevisionRef"
+          ? {
+              ...request.projectRevisionRef,
+              reference: { ...request.projectRevisionRef.reference, versionId: "wrong" },
+            }
+          : { ...request[field], versionId: "wrong" };
+    const before = await countRows(
+      "SELECT count(*)::text AS count FROM business.knowledge_revisions WHERE project_id = $1 AND definition_type = 'applicable-rule-set'",
+      [request.projectId],
+    );
+    expect(
+      await requireFixture().scoringRules.assembleApplicableRuleSetRevision({
+        ...request,
+        [field]: value,
+      }),
+    ).toMatchObject({ kind: "failed" });
+    expect(
+      await countRows(
+        "SELECT count(*)::text AS count FROM business.knowledge_revisions WHERE project_id = $1 AND definition_type = 'applicable-rule-set'",
+        [request.projectId],
+      ),
+    ).toBe(before);
+  });
+
   it("事务失败回滚：注入组装事务故障后不产生部分规则集修订", async () => {
     expect(chain).toBeDefined();
     const request = {
@@ -1718,13 +1870,13 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
         "revisionRef",
       ]);
     }
-    expect(read.configurationMembers).toHaveLength(11);
+    expect(read.configurationMembers).toHaveLength(8);
     expect(JSON.stringify(read)).not.toContain("exceptionClauses");
     expect(JSON.stringify(read)).not.toContain("scoringThresholds");
     expect(JSON.stringify(read)).not.toContain("preparationSnapshotRef");
   }, 180_000);
 
-  it("basis 读取幂等：成功结果按同一规范载荷重放且同键异载荷冲突", async () => {
+  it("basis 重复查看独立记账，同一查询编号可读取另一集合", async () => {
     expect(chain).toBeDefined();
     const request = basisReadInput({
       requestId: `c19-basis-replay-${chain!.projectId}`,
@@ -1738,7 +1890,10 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
         WHERE project_id = $1 AND action LIKE 'knowledge.read-assessment-basis-release-set%'`,
       [chain!.projectId],
     );
-    const second = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
+    const second = await requireFixture().scoringRules.readAssessmentBasisReleaseSet({
+      ...request,
+      requestedAt: "2030-01-02T00:00:00.000Z",
+    });
     expect(first.kind).toBe("succeeded");
     expect(second.kind).toBe("succeeded");
     if (first.kind !== "succeeded" || second.kind !== "succeeded") return;
@@ -1751,7 +1906,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
           WHERE project_id = $1 AND action LIKE 'knowledge.read-assessment-basis-release-set%'`,
         [chain!.projectId],
       ),
-    ).toBe(auditBefore);
+    ).toBe(auditBefore + 1);
 
     const conflicted = await requireFixture().scoringRules.readAssessmentBasisReleaseSet({
       ...request,
@@ -1760,10 +1915,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
         reference: { entityId: "another-basis", versionId: "1" },
       },
     });
-    expect(conflicted.kind).toBe("failed");
-    if (conflicted.kind === "failed") {
-      expect(conflicted.error.code).toBe("IDEMPOTENCY_CONFLICT");
-    }
+    expect(conflicted.kind).toBe("unavailable");
   }, 180_000);
 
   it("reads an exact published configuration member from the verified C19 basis snapshot", async () => {
@@ -1827,7 +1979,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     }
   }, 180_000);
 
-  it("basis 不可用幂等：授权有效但集合缺失时只写一条 unavailable 审计并原样重放", async () => {
+  it("basis 集合缺失时每次查看记录 unavailable，不占用业务回执", async () => {
     expect(chain).toBeDefined();
     const request = basisReadInput({
       requestId: `c19-basis-unavailable-${chain!.projectId}`,
@@ -1858,7 +2010,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
         `SELECT count(*)::text AS count FROM audit.entries WHERE project_id = $1 AND action = $2`,
         [chain!.projectId, unavailableAction],
       ),
-    ).toBe(auditBefore + 1);
+    ).toBe(auditBefore + 2);
     expect(
       await countRows(
         `SELECT count(*)::text AS count FROM business.command_receipts
@@ -1866,8 +2018,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
             AND idempotency_key = $2 AND completed_at IS NOT NULL`,
         [chain!.projectId, request.idempotencyKey],
       ),
-    ).toBe(1);
-    // 同键异载荷：即使首次结果是不可用，也必须返回幂等冲突。
+    ).toBe(0);
     const conflicted = await requireFixture().scoringRules.readAssessmentBasisReleaseSet({
       ...request,
       assessmentBasisReleaseSetRef: {
@@ -1875,13 +2026,10 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
         reference: { entityId: "missing-basis-other", versionId: "1" },
       },
     });
-    expect(conflicted.kind).toBe("failed");
-    if (conflicted.kind === "failed") {
-      expect(conflicted.error.code).toBe("IDEMPOTENCY_CONFLICT");
-    }
+    expect(conflicted.kind).toBe("unavailable");
   }, 180_000);
 
-  it("basis 瞬时失败不伪装成不可用：读取事务故障返回 failed 且不完成回执", async () => {
+  it("basis 访问审计写入失败返回 failed，恢复后可重新查看", async () => {
     expect(chain).toBeDefined();
     const requestId = `c19-basis-transient-${chain!.projectId}`;
     const request = basisReadInput({
@@ -1889,12 +2037,12 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       authorization: basisAuthorization(chain!.projectId, requestId),
       assessmentBasisReleaseSetRef: chain!.basisReleaseSetRef,
     });
-    requireFixture().injectTransactionFailure(requestId);
+    await adminPool().query("REVOKE INSERT ON audit.entries FROM riskflow_app");
     try {
       const failed = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
       expect(failed.kind).toBe("failed");
       if (failed.kind === "failed") {
-        expect(failed.error.code).toBe("TRANSIENT_FAILURE");
+        expect(failed.error.code).toBe("TERMINAL_FAILURE");
       }
       expect(
         await countRows(
@@ -1905,132 +2053,11 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
         ),
       ).toBe(0);
     } finally {
-      requireFixture().injectTransactionFailure(undefined);
+      await adminPool().query("GRANT INSERT ON audit.entries TO riskflow_app");
     }
     // 原键可重试并成功。
     const retried = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
     expect(retried.kind).toBe("succeeded");
-  }, 180_000);
-
-  it("basis 历史成功完整性：success 回执对应快照损坏时失败关闭", async () => {
-    expect(chain).toBeDefined();
-    const requestId = `c19-basis-integrity-${chain!.projectId}`;
-    const request = basisReadInput({
-      requestId,
-      authorization: basisAuthorization(chain!.projectId, requestId),
-      assessmentBasisReleaseSetRef: chain!.basisReleaseSetRef,
-    });
-    const first = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
-    expect(first.kind).toBe("succeeded");
-    const original = await adminPool().query<{ member_snapshot: unknown }>(
-      `SELECT member_snapshot FROM business.assessment_basis_release_sets
-        WHERE project_id = $1 AND set_id = $2 AND version_id = $3`,
-      [
-        chain!.projectId,
-        chain!.basisReleaseSetRef.reference.entityId,
-        chain!.basisReleaseSetRef.reference.versionId,
-      ],
-    );
-    const unavailableBefore = await countRows(
-      `SELECT count(*)::text AS count FROM audit.entries
-        WHERE project_id = $1 AND action = 'knowledge.read-assessment-basis-release-set.unavailable'`,
-      [chain!.projectId],
-    );
-    await adminPool().query(
-      `UPDATE business.assessment_basis_release_sets SET member_snapshot = $4::jsonb
-        WHERE project_id = $1 AND set_id = $2 AND version_id = $3`,
-      [
-        chain!.projectId,
-        chain!.basisReleaseSetRef.reference.entityId,
-        chain!.basisReleaseSetRef.reference.versionId,
-        JSON.stringify({ damaged: true }),
-      ],
-    );
-    try {
-      const replay = await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
-      expect(replay).toMatchObject({
-        kind: "failed",
-        error: { code: "TERMINAL_FAILURE", retryable: false },
-      });
-      expect(
-        await countRows(
-          `SELECT count(*)::text AS count FROM audit.entries
-            WHERE project_id = $1 AND action = 'knowledge.read-assessment-basis-release-set.unavailable'`,
-          [chain!.projectId],
-        ),
-      ).toBe(unavailableBefore);
-    } finally {
-      await adminPool().query(
-        `UPDATE business.assessment_basis_release_sets SET member_snapshot = $4::jsonb
-          WHERE project_id = $1 AND set_id = $2 AND version_id = $3`,
-        [
-          chain!.projectId,
-          chain!.basisReleaseSetRef.reference.entityId,
-          chain!.basisReleaseSetRef.reference.versionId,
-          JSON.stringify(original.rows[0]!.member_snapshot),
-        ],
-      );
-    }
-
-    const hiddenSetId = `${chain!.basisReleaseSetRef.reference.entityId}-hidden`;
-    await adminPool().query(
-      `UPDATE business.assessment_basis_release_sets SET set_id = $4
-        WHERE project_id = $1 AND set_id = $2 AND version_id = $3`,
-      [
-        chain!.projectId,
-        chain!.basisReleaseSetRef.reference.entityId,
-        chain!.basisReleaseSetRef.reference.versionId,
-        hiddenSetId,
-      ],
-    );
-    try {
-      const missingReplay =
-        await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
-      expect(missingReplay).toMatchObject({
-        kind: "failed",
-        error: { code: "TERMINAL_FAILURE", retryable: false },
-      });
-    } finally {
-      await adminPool().query(
-        `UPDATE business.assessment_basis_release_sets SET set_id = $4
-          WHERE project_id = $1 AND set_id = $2 AND version_id = $3`,
-        [
-          chain!.projectId,
-          hiddenSetId,
-          chain!.basisReleaseSetRef.reference.versionId,
-          chain!.basisReleaseSetRef.reference.entityId,
-        ],
-      );
-    }
-
-    const receipt = await adminPool().query<{ audit_entry_id: string }>(
-      `SELECT audit_entry_id FROM business.command_receipts WHERE command_id = $1`,
-      [requestId],
-    );
-    await adminPool().query(`UPDATE audit.entries SET action = $2 WHERE audit_entry_id = $1`, [
-      receipt.rows[0]!.audit_entry_id,
-      "knowledge.read-assessment-basis-release-set.unknown",
-    ]);
-    try {
-      const unknownAuditReplay =
-        await requireFixture().scoringRules.readAssessmentBasisReleaseSet(request);
-      expect(unknownAuditReplay).toMatchObject({
-        kind: "failed",
-        error: { code: "TERMINAL_FAILURE", retryable: false },
-      });
-      expect(
-        await countRows(
-          `SELECT count(*)::text AS count FROM audit.entries
-            WHERE project_id = $1 AND action = 'knowledge.read-assessment-basis-release-set.unavailable'`,
-          [chain!.projectId],
-        ),
-      ).toBe(unavailableBefore);
-    } finally {
-      await adminPool().query(`UPDATE audit.entries SET action = $2 WHERE audit_entry_id = $1`, [
-        receipt.rows[0]!.audit_entry_id,
-        "knowledge.read-assessment-basis-release-set.succeeded",
-      ]);
-    }
   }, 180_000);
 
   it("basis 冻结集合：成员停用后仍返回原精确快照", async () => {

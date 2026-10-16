@@ -15,6 +15,7 @@ import {
   DataCleaningCandidateV1Schema,
   DataCleaningFrozenInputV1Schema,
   DataCleaningPolicyV1Schema,
+  DataCleaningPolicyV2Schema,
   createDataCleaningTaskDefinition,
   settleDataCleaningCandidate,
   validateDataCleaningCandidate,
@@ -600,6 +601,89 @@ const decisionSummary = (decision: DataCleaningExclusionDecisionV1) =>
   );
 
 describe("C25 settleDataCleaningCandidate", () => {
+  const policyV2 = () =>
+    DataCleaningPolicyV2Schema.parse({
+      schemaVersion: "2",
+      policyRef: { entityId: "cleaning-by-input-kind", versionId: "1" },
+      allowedExclusionReasonCodes: policyInput.allowedExclusionReasonCodes,
+      protectedSegmentKinds: policyInput.protectedSegmentKinds,
+      protectedMonitoringSelectionReasons: policyInput.protectedMonitoringSelectionReasons,
+      minimumRetainedSampleRatio: policyInput.minimumRetainedSampleRatio,
+      minimumDocumentCoverageRatio: policyInput.minimumDocumentCoverageRatio,
+      monitoring: policyInput.monitoring,
+      tools: policyInput.tools,
+      agent: policyInput.agent,
+      documentRules: [
+        { inputKind: "csv", requiredSegmentKinds: ["table"] },
+        { inputKind: "xlsx", requiredSegmentKinds: ["table"] },
+        { inputKind: "text-pdf", requiredSegmentKinds: ["chapter", "table"] },
+        { inputKind: "ocr-layout", requiredSegmentKinds: ["chapter", "table"] },
+        { inputKind: "docx", requiredSegmentKinds: ["chapter", "table"] },
+      ],
+    });
+
+  it.each(["csv", "xlsx", "text-pdf", "ocr-layout", "docx"] as const)(
+    "V2按%s实际表格判定可用，不要求空白页或章节",
+    (inputKind) => {
+      const frozen = frozenInput({
+        documents: [{ ...frozenDocument("source-1", [segment("source-1-1", "table")]), inputKind }],
+        monitoring: undefined,
+      });
+      const result = settleDataCleaningCandidate({
+        candidate: candidate([]),
+        frozen,
+        policy: policyV2(),
+      });
+      expect(result.overallAvailability).toBe("available");
+    },
+  );
+
+  it("V2允许排除非关键正文，仍保护指定资料段和全部排空边界", () => {
+    const frozen = frozenInput({
+      documents: [chapterTableDocument("source-1")],
+      monitoring: undefined,
+    });
+    const partial = settleDataCleaningCandidate({
+      candidate: candidate([documentExclusion("source-1-1")]),
+      frozen,
+      policy: policyV2(),
+    });
+    expect(partial.overallAvailability).toBe("partial");
+    expect(partial.inputs[0]?.retainedSegmentIds).toEqual(["source-1-2"]);
+    const empty = settleDataCleaningCandidate({
+      candidate: candidate([documentExclusion("source-1-1"), documentExclusion("source-1-2")]),
+      frozen,
+      policy: policyV2(),
+    });
+    expect(empty.overallAvailability).toBe("unavailable");
+    const protectedResult = validateDataCleaningCandidate({
+      candidate: candidate([documentExclusion("source-1-5")]),
+      frozen: frozenInput(),
+      policy: policyV2(),
+    });
+    expect(protectedResult.disposition).toBe("rejected");
+  });
+
+  it("V2拒绝重复输入类型及不适用的结构", () => {
+    const active = policyV2();
+    expect(
+      DataCleaningPolicyV2Schema.safeParse({
+        ...active,
+        documentRules: [active.documentRules[0], active.documentRules[0]],
+      }).success,
+    ).toBe(false);
+    const frozen = frozenInput({
+      documents: [
+        { ...frozenDocument("source-1", [segment("source-1-1", "chapter")]), inputKind: "csv" },
+      ],
+      monitoring: undefined,
+    });
+    expect(
+      settleDataCleaningCandidate({ candidate: candidate([]), frozen, policy: active })
+        .overallAvailability,
+    ).toBe("unavailable");
+  });
+
   it.each(settlementCases)(
     "$name",
     ({ candidate: subject, frozen, overall, coverageRatio, reasonCodes, inputAvailability }) => {
@@ -793,7 +877,10 @@ const toolResult: AgentDomainToolResultV1 = {
   effect: "none",
 };
 
-const setup = (frozen: DataCleaningFrozenInputV1 = frozenInput()) => {
+const setup = (
+  frozen: DataCleaningFrozenInputV1 = frozenInput(),
+  activePolicy: DataCleaningPolicyV1 = policy(),
+) => {
   const resultRef = buildCompletedAgentTaskResult(taskRef, {
     kind: "content-artifact",
     reference: { entityId: "cleaned-result", versionId: sha256("cleaned-result") },
@@ -812,9 +899,10 @@ const setup = (frozen: DataCleaningFrozenInputV1 = frozenInput()) => {
     persistCleaningResult: vi.fn(async () => resultRef),
     readDocumentSlice: vi.fn(async () => toolResult),
     readMonitoringSlice: vi.fn(async () => toolResult),
+    readPreparationCatalogSlice: vi.fn(async () => toolResult),
   } satisfies DataCleaningTaskPortV1;
   const definition = createDataCleaningTaskDefinition({
-    policy: policy(),
+    policy: activePolicy,
     port,
     now: () => new Date(ISO),
   });
@@ -834,7 +922,7 @@ describe("C25 createDataCleaningTaskDefinition", () => {
     expect(definition.metadata.resultFamilies).toEqual(["content-artifact"]);
   });
 
-  it("动作协议接受三种动作并拒绝携带替换内容的候选", () => {
+  it("动作协议接受四种动作并拒绝携带替换内容的候选", () => {
     const { definition } = setup();
     const actions = [
       {
@@ -846,6 +934,11 @@ describe("C25 createDataCleaningTaskDefinition", () => {
         kind: "read-monitoring-snapshot-slice",
         monitoringSnapshotRef: snapshotRef,
         sampleVersionRefs: [sampleRef(1)],
+      },
+      {
+        kind: "read-cleaning-preparation-catalog-slice",
+        sourceVersionRef: sourceVersion1,
+        offset: 0,
       },
       { kind: "submit-cleaning-candidate", candidate: cleanCandidate },
     ];
@@ -861,6 +954,52 @@ describe("C25 createDataCleaningTaskDefinition", () => {
         },
       }).success,
     ).toBe(false);
+  });
+
+  it("只在策略声明定位工具引用时注册分页定位工具并转发请求", async () => {
+    const catalogToolRef = { entityId: "preparation-catalog-tool", versionId: "1" };
+    const plain = setup();
+    expect(plain.definition.tools.map((tool) => tool.toolRef)).toEqual([
+      policyInput.tools.documentSegmentToolRef,
+      policyInput.tools.monitoringSnapshotToolRef,
+    ]);
+
+    const paged = setup(
+      frozenInput(),
+      policy({ tools: { ...policyInput.tools, preparationCatalogToolRef: catalogToolRef } }),
+    );
+    expect(paged.definition.metadata.allowedToolRefs).toEqual([
+      policyInput.tools.documentSegmentToolRef,
+      policyInput.tools.monitoringSnapshotToolRef,
+      catalogToolRef,
+    ]);
+    expect(paged.definition.tools.map((tool) => tool.toolRef)).toEqual([
+      policyInput.tools.documentSegmentToolRef,
+      policyInput.tools.monitoringSnapshotToolRef,
+      catalogToolRef,
+    ]);
+    // 已声明的三个工具引用必须互不相同，重名在 Schema 阶段就拒绝而不是留给 registry。
+    expect(() =>
+      policy({
+        tools: {
+          ...policyInput.tools,
+          preparationCatalogToolRef: policyInput.tools.documentSegmentToolRef,
+        },
+      }),
+    ).toThrow();
+
+    const request = {
+      kind: "read-cleaning-preparation-catalog-slice",
+      sourceVersionRef: sourceVersion1,
+      offset: 1,
+    };
+    const context = { task, taskRef, actionId: "action-catalog" };
+    expect(paged.definition.actionSchema.safeParse({ ...request, offset: -1 }).success).toBe(false);
+    expect(paged.definition.actionSchema.safeParse(request).success).toBe(true);
+    await paged.definition.tools[2]!.execute(request, context);
+    expect(paged.port.readPreparationCatalogSlice).toHaveBeenCalledWith(request, context);
+    // 只读分页可安全恢复：同身份重放复用同一观察工件路径。
+    expect(paged.definition.tools[2]!.recover).toBeTypeOf("function");
   });
 
   it("接受干净候选并持久化校验记录", async () => {

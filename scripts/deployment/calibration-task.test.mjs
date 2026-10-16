@@ -277,7 +277,7 @@ const setup = ({
               ? streamedInputBytes
               : stored.bytes;
         })(),
-        verified: verified
+        completed: verified
           ? Promise.resolve(
               ArtifactReadReceiptV1Schema.parse({
                 schemaVersion: "1",

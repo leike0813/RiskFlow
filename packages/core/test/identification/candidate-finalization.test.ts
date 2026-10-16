@@ -409,7 +409,9 @@ const forcedReviewPolicy = (overrides: Record<string, unknown> = {}): ForcedRevi
     ...overrides,
   });
 
-const generationPolicy = (): RiskCandidateGenerationPolicyV1 =>
+const generationPolicy = (
+  budgetOverrides: Record<string, unknown> = {},
+): RiskCandidateGenerationPolicyV1 =>
   RiskCandidateGenerationPolicyV1Schema.parse({
     schemaVersion: "1",
     policyRef: versionRef("generation-policy"),
@@ -422,6 +424,7 @@ const generationPolicy = (): RiskCandidateGenerationPolicyV1 =>
       maxTotalTokens: 4_096,
       maxWallClockMs: 60_000,
       maxRepairRounds: 2,
+      ...budgetOverrides,
     },
   });
 
@@ -540,6 +543,19 @@ const zeroModelOutcome = () => ({
   rawResponseRef: diagnosisRef("raw-response-zero"),
   usage: { inputTokens: 10, outputTokens: 0, totalTokens: 10, outputBytes: 2 },
   elapsedMs: 5,
+});
+
+/**
+ * D-10 可修正输出错误夹具（合成样本、待甲方复核）：网关已耐久保存原响应，并带回本次
+ * 真实 token 计数、响应字节与墙钟；没有候选正文，因此不携带 outputs。
+ */
+const invalidOutputOutcome = (overrides: Record<string, unknown> = {}) => ({
+  kind: "output-schema-invalid" as const,
+  invocationId: "invocation-invalid",
+  rawResponseRef: diagnosisRef("raw-response-invalid"),
+  usage: { inputTokens: 10, outputTokens: 0, totalTokens: 10, outputBytes: 4 },
+  elapsedMs: 3,
+  ...overrides,
 });
 
 /** 逐项校验的失败码表：每项检查声明的失败原因码是稳定契约。 */
@@ -882,12 +898,16 @@ const acceptanceRouteSetRow = () => ({
 // ------------------------------------------------------------------------- 测试端口
 
 interface HarnessOverrides {
+  readonly workPlanSnapshotOverrides?: Record<string, unknown>;
   readonly verifyCurrent?: (input: {
     readonly invocationId: string;
     readonly branch: string;
   }) => Promise<AuthorizationContextV1 | undefined>;
   readonly missingConfidencePolicy?: boolean;
   readonly modelOutcome?: unknown;
+  /** 按调用序号脚本化的模型结果；未覆盖的调用回落到 `modelOutcome` 或默认成功结果。 */
+  readonly modelOutcomes?: readonly unknown[];
+  readonly generationBudgetOverrides?: Record<string, unknown>;
   readonly workPlanValidatedRefs?: readonly unknown[];
   readonly validationPolicyOverrides?: Record<string, unknown>;
   readonly forcedReviewPolicyOverrides?: Record<string, unknown>;
@@ -945,6 +965,12 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
   };
 
   const seedRow = (row: Record<string, unknown>, value: unknown) => {
+    if (row.resultKind === "candidate-set") {
+      for (const candidate of (value as { candidates?: readonly RiskCandidateV1[] }).candidates ??
+        []) {
+        putValue("seed-candidate", candidate);
+      }
+    }
     const reference = putValue(String(row.resultId), value);
     const parsed = RiskCandidateFinalizationResultRowV1Schema.parse({
       ...row,
@@ -1000,7 +1026,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
         content: (async function* () {
           yield bytes;
         })(),
-        verified: Promise.resolve({}),
+        completed: Promise.resolve({}),
       };
     },
   };
@@ -1040,7 +1066,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
         read: {
           workPlanRef,
           inputSnapshotRef,
-          inputSnapshot: inputSnapshot(),
+          inputSnapshot: inputSnapshot(overrides.workPlanSnapshotOverrides),
           workItems: [
             {
               workItemRef,
@@ -1076,7 +1102,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
 
   const policyProvider = {
     async resolveGeneration() {
-      return generationPolicy();
+      return generationPolicy(overrides.generationBudgetOverrides);
     },
     async resolveValidation() {
       return validationPolicy(overrides.validationPolicyOverrides);
@@ -1161,10 +1187,22 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
     },
   };
 
+  const modelRequests: {
+    readonly repair?: unknown;
+    readonly invocationId: string;
+    readonly maxOutputTokens: number;
+  }[] = [];
   const model = {
-    async generateCandidates() {
+    async generateCandidates(request: {
+      readonly repair?: unknown;
+      readonly invocationId: string;
+      readonly maxOutputTokens: number;
+    }) {
+      const scripted = overrides.modelOutcomes?.[calls.generateCalls];
       calls.generateCalls += 1;
+      modelRequests.push(request);
       return (
+        scripted ??
         overrides.modelOutcome ?? {
           kind: "succeeded",
           outputs: [candidateOutput()],
@@ -1226,11 +1264,43 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
     service: new RiskCandidateFinalizationService(options),
     options,
     calls,
+    modelRequests,
     artifacts,
     rows,
     seedRow,
     putValue,
   };
+};
+
+/**
+ * RI-S58 有界修正的既有夹具：登记一份只含可修正候选（工序节点不匹配）的候选集。
+ * 返回登记引用，供需要区分新增候选集的用例使用。
+ */
+const seedRepairableCandidateSet = (harness: ReturnType<typeof makeHarness>) => {
+  const candidateSetRef = {
+    kind: "identification-candidate-set" as const,
+    reference: versionRef("candidate-set-c22"),
+  };
+  harness.seedRow(
+    {
+      ...resultRowBase(
+        "candidate-set",
+        candidateSetRef.reference.entityId,
+        candidateSetRef.reference.versionId,
+      ),
+      workItemRef,
+      modelContextArtifactSetRef,
+      candidateSetRef,
+    },
+    RiskCandidateSetV1Schema.parse(
+      candidateSetValue({
+        candidates: [
+          candidateValue({ candidateId: "candidate-repairable", nodeId: RELATED_NODE_ID }),
+        ],
+      }),
+    ),
+  );
+  return candidateSetRef;
 };
 
 // ---------------------------------------------------------------------- 合成命令
@@ -2331,17 +2401,62 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(harness.artifacts.size).toBe(0);
   });
 
-  it("assemble-and-infer 正常生成并登记不可变候选集", async () => {
-    const harness = makeHarness();
+  it.each([false, true])(
+    "assemble-and-infer 生成后校验，候选正文缺失：%s",
+    async (missingCandidate) => {
+      const harness = makeHarness();
+      const storedIds = new Set<string>();
+      const put = harness.options.artifactStore.put.bind(harness.options.artifactStore);
+      harness.options.artifactStore.put = async (command, content) => {
+        if (storedIds.has(command.artifactId)) throw new Error("duplicate immutable artifact");
+        storedIds.add(command.artifactId);
+        return put(command, content);
+      };
 
-    const result = await harness.service.analyze(assembleCommand());
+      const result = await harness.service.analyze(assembleCommand());
 
-    expect(result.kind).toBe("succeeded");
-    expect(result.kind === "succeeded" ? result.result.kind : undefined).toBe("assemble-and-infer");
-    expect(harness.calls.generateCalls).toBe(1);
-    expect(harness.calls.registerCalls).toBe(1);
-    expect(harness.calls.transactionCalls).toBe(1);
-  });
+      expect(result.kind).toBe("succeeded");
+      expect(result.kind === "succeeded" ? result.result.kind : undefined).toBe(
+        "assemble-and-infer",
+      );
+      expect(harness.calls.generateCalls).toBe(1);
+      expect(harness.calls.registerCalls).toBe(1);
+      expect(harness.calls.transactionCalls).toBe(1);
+      const candidateSetRow = [...harness.rows.values()].find(
+        (row) => row.resultKind === "candidate-set",
+      );
+      expect(candidateSetRow).toBeDefined();
+      expect(
+        RiskCandidateSetV1Schema.safeParse(
+          JSON.parse(
+            new TextDecoder().decode(
+              harness.artifacts.get(candidateSetRow!.artifactRef.reference.versionId),
+            ),
+          ),
+        ).success,
+      ).toBe(true);
+      if (result.kind !== "succeeded" || result.result.kind !== "assemble-and-infer") return;
+      const command = repairCommand();
+      if (command.kind !== "repair-and-validate") throw new Error("repair command required");
+      if (missingCandidate) {
+        for (const [key, bytes] of harness.artifacts) {
+          const value = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+          if (typeof value.candidateId === "string") harness.artifacts.delete(key);
+        }
+      }
+      const validation = harness.service.analyze({
+        ...command,
+        payload: { ...command.payload, candidateSetRef: result.result.candidateSetRef },
+      });
+      if (missingCandidate) {
+        await expect(validation).rejects.toThrow();
+        expect(harness.calls.registerCalls).toBe(1);
+      } else {
+        expect((await validation).kind).toBe("succeeded");
+      }
+      expect(harness.calls.generateCalls).toBe(1);
+    },
+  );
 
   it("assemble-and-infer 超过冻结候选数量预算时失败关闭且零正式候选", async () => {
     const harness = makeHarness({
@@ -2598,49 +2713,39 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(afterRead.kind).toBe("unavailable");
   });
 
-  it("repair-and-validate 修正轮次空输出仍按元数失败而不转为零结果", async () => {
+  it.each([true, false])("repair-and-validate 有界修正工件，空输出：%s", async (emptyOutput) => {
     const harness = makeHarness({
       validationPolicyOverrides: { requiredRelationTypes: ["作用关系"] },
       modelOutcome: {
         kind: "succeeded",
-        outputs: [],
+        outputs: emptyOutput ? [] : [candidateOutput()],
         invocationId: "invocation-repair-empty",
         rawResponseRef: diagnosisRef("raw-response-repair-empty"),
         usage: { inputTokens: 10, outputTokens: 0, totalTokens: 10, outputBytes: 2 },
         elapsedMs: 5,
       },
     });
-    const candidateSetRef = {
-      kind: "identification-candidate-set" as const,
-      reference: versionRef("candidate-set-c22"),
-    };
-    harness.seedRow(
-      {
-        ...resultRowBase(
-          "candidate-set",
-          candidateSetRef.reference.entityId,
-          candidateSetRef.reference.versionId,
-        ),
-        workItemRef,
-        modelContextArtifactSetRef,
-        candidateSetRef,
-      },
-      RiskCandidateSetV1Schema.parse(
-        candidateSetValue({
-          candidates: [
-            candidateValue({
-              candidateId: "candidate-repairable",
-              nodeId: RELATED_NODE_ID,
-            }),
-          ],
-        }),
-      ),
-    );
+    seedRepairableCandidateSet(harness);
 
     const result = await harness.service.analyze(repairCommand());
 
-    expect(result).toMatchObject({ kind: "failed", error: { code: "TERMINAL_FAILURE" } });
-    expect(harness.calls.registerCalls).toBe(0);
+    if (emptyOutput) {
+      expect(result).toMatchObject({ kind: "failed", error: { code: "TERMINAL_FAILURE" } });
+      expect(harness.calls.registerCalls).toBe(0);
+    } else {
+      expect(result.kind).toBe("succeeded");
+      const sets = [...harness.rows.values()].filter((row) => row.resultKind === "candidate-set");
+      expect(sets).toHaveLength(2);
+      for (const row of sets) {
+        expect(
+          RiskCandidateSetV1Schema.safeParse(
+            JSON.parse(
+              new TextDecoder().decode(harness.artifacts.get(row.artifactRef.reference.versionId)),
+            ),
+          ).success,
+        ).toBe(true);
+      }
+    }
     expect([...harness.rows.values()].some((row) => row.resultKind === "zero-result")).toBe(false);
   });
 
@@ -2689,6 +2794,185 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(harness.calls.registerCalls).toBe(0);
   });
 
+  it("repair-and-validate 首次响应不满足输出 Schema 时由原修正循环纠正并结算真实用量", async () => {
+    const harness = makeHarness({
+      validationPolicyOverrides: { requiredRelationTypes: ["作用关系"] },
+      modelOutcomes: [
+        invalidOutputOutcome(),
+        {
+          kind: "succeeded",
+          outputs: [candidateOutput()],
+          invocationId: "invocation-repair-2",
+          rawResponseRef: diagnosisRef("raw-response-repair-2"),
+          usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30, outputBytes: 100 },
+          elapsedMs: 5,
+        },
+      ],
+    });
+    const candidateSetRef = seedRepairableCandidateSet(harness);
+
+    const result = await harness.service.analyze(repairCommand());
+
+    expect(result.kind).toBe("succeeded");
+    expect(harness.calls.generateCalls).toBe(2);
+    // 原循环在原父候选上重试；响应级格式错误只反馈稳定原因码，不伪造候选。
+    expect(harness.modelRequests[1]?.repair).toMatchObject({
+      attempt: 2,
+      parentCandidates: [
+        expect.objectContaining({ candidateId: "candidate-repairable", candidateVersion: 1 }),
+      ],
+      outputError: { reasonCode: CANDIDATE_VALIDATION_REASON_CODES_V1.schemaInvalid },
+      previousRawResponseRefs: [
+        diagnosisRef("raw-response-1"),
+        diagnosisRef("raw-response-invalid"),
+      ],
+    });
+
+    const setRows = [...harness.rows.values()].filter((row) => row.resultKind === "candidate-set");
+    expect(setRows).toHaveLength(2);
+    const repairedRow = setRows.find((row) => row.resultId !== candidateSetRef.reference.entityId);
+    if (repairedRow === undefined) throw new Error("repaired candidate set row is required");
+    const repaired = RiskCandidateSetV1Schema.parse(
+      JSON.parse(
+        new TextDecoder().decode(
+          harness.artifacts.get(repairedRow.artifactRef.reference.versionId),
+        ),
+      ),
+    );
+    // 两次实际响应都先结算：token、输出字节与墙钟按发生累加，修正轮次推进一次。
+    expect(repaired.usage).toEqual({
+      modelInvocations: 3,
+      inputTokens: 30,
+      outputTokens: 40,
+      totalTokens: 70,
+      outputBytes: 204,
+      elapsedMs: 13,
+      repairRounds: 2,
+    });
+    expect(repaired.rawResponseRefs.map((ref) => ref.reference.entityId)).toEqual([
+      "raw-response-1",
+      "raw-response-invalid",
+      "raw-response-repair-2",
+    ]);
+    expect(
+      repaired.candidates.map((candidate) => [candidate.candidateId, candidate.candidateVersion]),
+    ).toEqual([["candidate-repairable", 2]]);
+  });
+
+  it("repair-and-validate 修正预算耗尽时保持终态且不登记新候选集", async () => {
+    const harness = makeHarness({
+      validationPolicyOverrides: { requiredRelationTypes: ["作用关系"] },
+      generationBudgetOverrides: { maxRepairRounds: 1 },
+      modelOutcomes: [invalidOutputOutcome()],
+    });
+    seedRepairableCandidateSet(harness);
+
+    const result = await harness.service.analyze(repairCommand());
+
+    expect(result.kind).toBe("failed");
+    expect(blockedKindOf(result)).toBe(CANDIDATE_VALIDATION_REASON_CODES_V1.budgetExhausted);
+    expect(harness.calls.generateCalls).toBe(1);
+    expect(harness.calls.registerCalls).toBe(0);
+    expect(
+      [...harness.rows.values()].filter((row) => row.resultKind === "candidate-set"),
+    ).toHaveLength(1);
+  });
+
+  it("repair-and-validate 语义权限失败直接终止且不进入修正循环", async () => {
+    const harness = makeHarness({
+      validationPolicyOverrides: { requiredRelationTypes: ["作用关系"] },
+      modelOutcomes: [
+        {
+          kind: "failed",
+          error: ModuleErrorV1Schema.parse({
+            stageCode: "risk-candidate-model.generate",
+            occurredAt: TIMESTAMP,
+            causalRunId: "model-run-c22",
+            code: "AUTHORIZATION_DENIED",
+            category: "authorization",
+            retryable: false,
+            requiredCapability: "risk-identification.run",
+            authorizationPolicyRef: versionRef("access-policy"),
+          }),
+        },
+      ],
+    });
+    seedRepairableCandidateSet(harness);
+
+    const result = await harness.service.analyze(repairCommand());
+
+    expect(failedError(result)?.code).toBe("AUTHORIZATION_DENIED");
+    expect(harness.calls.generateCalls).toBe(1);
+    expect(harness.calls.registerCalls).toBe(0);
+  });
+
+  it("assemble-and-infer 首次响应不满足输出 Schema 时在原预算内重生成并结算真实用量", async () => {
+    const harness = makeHarness({
+      generationBudgetOverrides: { maxRepairRounds: 1 },
+      modelOutcomes: [
+        invalidOutputOutcome(),
+        {
+          kind: "succeeded",
+          outputs: [candidateOutput()],
+          invocationId: "invocation-1",
+          rawResponseRef: diagnosisRef("raw-response-1"),
+          usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30, outputBytes: 100 },
+          elapsedMs: 5,
+        },
+      ],
+    });
+
+    const result = await harness.service.analyze(assembleCommand());
+
+    expect(result.kind).toBe("succeeded");
+    expect(harness.calls.generateCalls).toBe(2);
+    expect(harness.modelRequests[1]?.invocationId).not.toBe(harness.modelRequests[0]?.invocationId);
+    expect(harness.modelRequests[1]?.maxOutputTokens).toBe(4_096 - 10);
+    // 首次生成没有父候选：只反馈稳定原因码，并保留已结算的原响应引用。
+    expect(harness.modelRequests[1]?.repair).toMatchObject({
+      attempt: 2,
+      parentCandidates: [],
+      failures: [],
+      outputError: { reasonCode: CANDIDATE_VALIDATION_REASON_CODES_V1.schemaInvalid },
+      previousRawResponseRefs: [diagnosisRef("raw-response-invalid")],
+    });
+
+    const setRow = [...harness.rows.values()].find((row) => row.resultKind === "candidate-set");
+    if (setRow === undefined) throw new Error("candidate set row is required");
+    const registered = RiskCandidateSetV1Schema.parse(
+      JSON.parse(
+        new TextDecoder().decode(harness.artifacts.get(setRow.artifactRef.reference.versionId)),
+      ),
+    );
+    expect(registered.usage).toEqual({
+      modelInvocations: 2,
+      inputTokens: 20,
+      outputTokens: 20,
+      totalTokens: 40,
+      outputBytes: 104,
+      elapsedMs: 8,
+      repairRounds: 1,
+    });
+    expect(registered.rawResponseRefs.map((ref) => ref.reference.entityId)).toEqual([
+      "raw-response-invalid",
+      "raw-response-1",
+    ]);
+  });
+
+  it("assemble-and-infer 生成修正预算耗尽时终态阻断且不登记候选集", async () => {
+    const harness = makeHarness({
+      generationBudgetOverrides: { maxRepairRounds: 0 },
+      modelOutcomes: [invalidOutputOutcome()],
+    });
+
+    const result = await harness.service.analyze(assembleCommand());
+
+    expect(blockedKindOf(result)).toBe(CANDIDATE_VALIDATION_REASON_CODES_V1.budgetExhausted);
+    expect(harness.calls.generateCalls).toBe(1);
+    expect(harness.calls.registerCalls).toBe(0);
+    expect([...harness.rows.values()]).toHaveLength(0);
+  });
+
   it("合并输入与冻结工作计划的已校验集合不一致时整体拒绝", async () => {
     const harness = makeHarness({
       workPlanValidatedRefs: [validatedSetRef("validated-set-plan")],
@@ -2722,9 +3006,11 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(harness.calls.registerCalls).toBe(0);
   });
 
-  it("高置信组生成唯一自动验收路线且不创建人工复核任务", async () => {
+  it.each([false, true])("高置信组生成唯一自动验收路线，冻结实际运行：%s", async (hasRun) => {
+    const actualRun = { kind: "workflow-run" as const, reference: versionRef("c24-run", DIGEST_C) };
     const harness = makeHarness({
       forcedReviewPolicyOverrides: { autoAcceptanceThreshold: 0.1 },
+      workPlanSnapshotOverrides: hasRun ? { identificationRunRef: actualRun } : {},
     });
     const validatedRef = validatedSetRef("validated-set-a");
     const groupRef = groupRefValue("group-1");
@@ -2784,6 +3070,18 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(harness.calls.reviewRequests).toBe(0);
     expect(harness.calls.registerCalls).toBe(1);
     expect(harness.calls.transactionCalls).toBe(1);
+    const routeRow = [...harness.rows.values()].find(
+      (row) => row.resultKind === "acceptance-route-set",
+    );
+    expect(routeRow).toBeDefined();
+    const routes = AcceptanceRouteSetV1Schema.parse(
+      JSON.parse(
+        new TextDecoder().decode(harness.artifacts.get(routeRow!.artifactRef.reference.versionId)),
+      ),
+    );
+    expect(routes.identificationRunRef).toEqual(
+      hasRun ? actualRun : MergePlanV1Schema.parse(mergePlanValue()).identificationRunRef,
+    );
   });
 
   it("提交组的验收决定错配时阻断且不写记录与事件", async () => {

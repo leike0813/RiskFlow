@@ -312,7 +312,12 @@ describe("QdrantRetrievalProjection", () => {
     queryDenseVector: [...DENSE_QUERY_VECTOR],
     queryText: BM25_UNIQUE_TOKEN,
     policy,
-    filter: { projectId, generationRef, authorizationScopeDigest: AUTHORIZATION_SCOPE_DIGEST },
+    filter: {
+      projectId,
+      generationRef,
+      authorizationScopeDigest: AUTHORIZATION_SCOPE_DIGEST,
+      visiblePointIds: Object.values(buildMemberFixture(generationRef).pointIdByEntryId),
+    },
   });
 
   // 干扰点：验证 payload filter 在 Qdrant 侧隔离工程、代际和授权范围。
@@ -550,7 +555,11 @@ describe("QdrantRetrievalProjection", () => {
     }
 
     // 正对照：换成该 collection 中真实存在的另一工程 filter 时，只返回该工程的干扰点。
-    const foreignProject = await adapter.queryHybrid(buildQuery(generationRef, foreignProjectId));
+    const foreignQuery = buildQuery(generationRef, foreignProjectId);
+    const foreignProject = await adapter.queryHybrid({
+      ...foreignQuery,
+      filter: { ...foreignQuery.filter, visiblePointIds: [otherProjectPointId] },
+    });
     expect(foreignProject.fused.map((hit) => hit.pointId)).toEqual([otherProjectPointId]);
     expect(foreignProject.denseRoute.map((hit) => hit.pointId)).toEqual([otherProjectPointId]);
 

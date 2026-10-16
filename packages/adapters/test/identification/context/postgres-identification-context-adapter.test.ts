@@ -18,6 +18,7 @@ import {
 import {
   IDENTIFICATION_CONTEXT_SCHEMA_VERSION_V1,
   IdentificationContextResultRowV1Schema,
+  modelContextArtifactSetRefFor,
   type IdentificationContextResultRowV1,
 } from "@riskflow/core/identification/context";
 import type {
@@ -220,11 +221,10 @@ const modelContextResultRow = (input: {
   readonly workItemEntityId: string;
   readonly requestDigest: string;
 }): IdentificationContextResultRowV1 => {
-  const modelContextArtifactSetRef = refOf(
-    "model-context-artifact-set",
-    `identification-model-context:${PROJECT_ID}:${input.workItemEntityId}`,
-    input.requestDigest,
-  );
+  const modelContextArtifactSetRef = modelContextArtifactSetRefFor({
+    entityId: `context-${input.workItemEntityId}`,
+    requestDigest: input.requestDigest,
+  });
   return IdentificationContextResultRowV1Schema.parse({
     ...baseResultColumns(),
     resultKind: "model-context",
@@ -233,7 +233,7 @@ const modelContextResultRow = (input: {
     requestDigest: input.requestDigest,
     artifactRef: refOf(
       "content-artifact",
-      `identification-model-context-${input.workItemEntityId}`,
+      `identification-model-context-${input.workItemEntityId}-task-read`,
       `sha256:${sha(`model-context-artifact-${input.workItemEntityId}`)}`,
     ),
     authorizationScopeDigest: sha(`model-context-scope-${input.workItemEntityId}`),
@@ -259,16 +259,8 @@ type RegistrationOutcome =
  * 与核心服务 `#persistResult` 同形的命令身份：artifactId 由三类结果的稳定身份派生，
  * 审计 id 为 `${commandId}:audit`；登记行的审计外键必须与此一致才能提交。
  */
-const registrationArtifactIdFor = (row: IdentificationContextResultRowV1): string => {
-  switch (row.resultKind) {
-    case "relationship":
-      return `relationship-query-result-${row.queryId}`;
-    case "reviewed-retrieval":
-      return `retrieval-artifact-set-${row.agentTaskRef.reference.entityId}`;
-    case "model-context":
-      return `identification-model-context-${row.workItemRef.reference.entityId}`;
-  }
-};
+const registrationArtifactIdFor = (row: IdentificationContextResultRowV1): string =>
+  row.artifactRef.reference.entityId;
 
 const registrationAuditEntryId = (row: IdentificationContextResultRowV1): string =>
   `${registrationArtifactIdFor(row)}:register:audit`;
@@ -611,6 +603,31 @@ describe("PostgreSQL identification context result registry", () => {
         projectId: PROJECT_ID,
         resultKind: "model-context",
         resultId: modelContext.resultId,
+      }),
+    ).toEqual(modelContext);
+
+    expect(
+      await fixture!.adapter.readResult({
+        projectId: PROJECT_ID,
+        resultKind: "reviewed-retrieval",
+        agentTaskRef:
+          reviewed.resultKind === "reviewed-retrieval"
+            ? reviewed.agentTaskRef
+            : (() => {
+                throw new Error("reviewed fixture required");
+              })(),
+      }),
+    ).toEqual(reviewed);
+    expect(
+      await fixture!.adapter.readResult({
+        projectId: PROJECT_ID,
+        resultKind: "model-context",
+        retrievalArtifactSetRef:
+          modelContext.resultKind === "model-context"
+            ? modelContext.retrievalArtifactSetRef
+            : (() => {
+                throw new Error("model context fixture required");
+              })(),
       }),
     ).toEqual(modelContext);
 

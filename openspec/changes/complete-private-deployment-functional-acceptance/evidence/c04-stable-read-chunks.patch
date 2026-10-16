@@ -1,0 +1,23 @@
+*** Begin Patch
+*** Update File: packages/adapters/src/artifacts/filesystem-artifact-store.ts
+@@
+-          yield chunk;
++          yield Uint8Array.from(chunk);
+*** Update File: packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts
+@@
+   it("read only resolves verified after complete streaming reads", async () => {
+-    const content = encoder.encode("readable content");
++    const content = new Uint8Array(2 * 1024 * 1024 + 17);
++    content.fill(17, 0, 1024 * 1024);
++    content.fill(33, 1024 * 1024, 2 * 1024 * 1024);
++    content.fill(55, 2 * 1024 * 1024);
+@@
+-      chunks(content, 3),
++      chunks(content),
+@@
+-    expect(await collect(handle.content)).toEqual(content);
++    expect(Buffer.compare(await collect(handle.content), content)).toBe(0);
+@@
+-    expect(await collect(replay.content)).toEqual(content);
++    expect(Buffer.compare(await collect(replay.content), content)).toBe(0);
+*** End Patch

@@ -728,15 +728,14 @@ const dedupeRefs = <T extends ContractReferenceV1>(refs: readonly T[]): T[] => {
 /**
  * 父子入口身份的唯一构造函数（design D-12）。
  *
- * 父公开 `startRunPort` 与子 runtime 的 `entryIdentityConsistent` 都调用它；非重评不携带
- * `reassessmentEntry`，身份摘要与其原值完全一致。父入口身份摘要包含现有冻结输入与完整
- * `reassessmentEntry`，因此不同前驱、原因或变化引用不会共享同一个运行分区。摘要沿用
- * 现有 canonical JSON，不引入额外哈希门禁。
+ * 父公开入口与子 runtime 共用：冻结输入、显式批次及重评前驱/原因共同确定运行分区。
+ * 可选批次与重评输入缺省时保留原摘要，仍使用现有 canonical JSON。
  */
 export const workflowEntryIdentityFor = (input: {
   readonly entryMode: WorkflowEntryModeV1;
   readonly projectId: string;
   readonly frozenRefs: readonly ContractReferenceV1[];
+  readonly executionBatchId?: string | undefined;
   readonly reassessmentEntry?: WorkflowReassessmentInputV1 | undefined;
 }): VersionReference => ({
   entityId: `workflow-entry:${input.projectId}:${input.entryMode}`,
@@ -744,6 +743,7 @@ export const workflowEntryIdentityFor = (input: {
     entryMode: input.entryMode,
     projectId: input.projectId,
     frozenRefs: input.frozenRefs.map(refKey).sort(),
+    ...(input.executionBatchId === undefined ? {} : { executionBatchId: input.executionBatchId }),
     ...(input.reassessmentEntry === undefined
       ? {}
       : {

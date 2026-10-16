@@ -943,7 +943,7 @@ const createStoreFixture = (entries: readonly StoredArtifact[]) => {
         content: (async function* () {
           yield entry.bytes;
         })(),
-        verified: Promise.resolve({ content }),
+        completed: Promise.resolve({ content }),
       };
     },
   } as unknown as ArtifactStoreV1;
@@ -1137,7 +1137,7 @@ describe("bounded artifact read and immutable set resolution", () => {
       ...base,
       open: async (...args: Parameters<ArtifactStoreV1["open"]>) => ({
         ...(await base.open(...args)),
-        verified: Promise.reject(
+        completed: Promise.reject(
           Object.assign(new Error("temporary artifact read failure"), {
             code: "ARTIFACT_IO_FAILURE",
           }),
@@ -1147,6 +1147,35 @@ describe("bounded artifact read and immutable set resolution", () => {
     await expect(
       readPreparedAssessmentConfiguration(readInput("risk-matrix", store)),
     ).rejects.toMatchObject({ failure: { code: "TRANSIENT_FAILURE" } });
+  });
+
+  it.each([
+    { purpose: "assessment" as const, expected: 8 },
+    { purpose: "response" as const, expected: 9 },
+    { purpose: "forecast" as const, expected: 2 },
+    { purpose: "deviation" as const, expected: 2 },
+  ])("只解析$purpose阶段实际需要的配置", async ({ purpose, expected }) => {
+    const requested: string[][] = [];
+    const resolver = new AssessmentConfigurationResolverV1({
+      artifactStore: fullStore(),
+      transactionUnit: transactionUnitFixture(() => undefined),
+      resolveConfigurationMembers: async ({ requiredDefinitionTypes }) => {
+        requested.push([...requiredDefinitionTypes]);
+        return {
+          kind: "succeeded",
+          members: memberSources().filter((member) =>
+            requiredDefinitionTypes.includes(member.definitionType),
+          ),
+        };
+      },
+      appendConfigurationSet: async () => undefined,
+    });
+    const result = await resolver.resolveConfigurationSet({ ...resolveRequest(purpose), purpose });
+    expect(result.kind).toBe("succeeded");
+    if (result.kind !== "succeeded") return;
+    expect(result.configurationSet.members).toHaveLength(expected);
+    expect(result.configurationSet.purpose).toBe(purpose);
+    if (purpose === "assessment") expect(requested.flat()).not.toContain("forecast-policy");
   });
 
   it("resolves the exact eleven member set with a stable identity", async () => {

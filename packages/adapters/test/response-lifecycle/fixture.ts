@@ -552,6 +552,13 @@ export const startResponseLifecycleFixture = async (
   let configurationRevision = 1;
   /** 执行后监测快照按序列修订递增：C14 只接受紧邻上一修订。 */
   let postActionSeriesVersion = 1;
+  /**
+   * 已发布成员正文按精确释放引用登记：预测/偏差策略按阶段冻结的精确引用取回同一份发布事实，
+   * 与生产组合接 C18 `readPublishedConfigurationMember` 的读取语义一致。
+   */
+  const publishedConfigurationBodies = new Map<string, { body: unknown; sha256: string }>();
+  const referenceKeyOf = (reference: { readonly entityId: string; readonly versionId: string }) =>
+    `${reference.entityId}\u0000${reference.versionId}`;
 
   /** C25 合成配置正文：指标系统与风险矩阵按同一冻结依据复用，避免第二套定义。 */
   const c25Documents = c25ConfigurationDocuments();
@@ -638,6 +645,11 @@ export const startResponseLifecycleFixture = async (
         artifactId,
         value: definition.document,
       });
+      // 重新发布只换修订与成员工件；释放引用仍是同一正式身份，冻结引用继续精确命中。
+      publishedConfigurationBodies.set(
+        referenceKeyOf(c25ReleaseRef(definition.definitionType).reference),
+        { body: definition.document, sha256: c25Digest(definition.document) },
+      );
       members.push({
         definitionType: definition.definitionType,
         releaseRef: c25ReleaseRef(definition.definitionType),
@@ -748,6 +760,9 @@ export const startResponseLifecycleFixture = async (
     monitoring: recommendation.c26.c25.postgres.monitoringStore,
     measureReleases,
     authorizeDownstream,
+    // 预测/偏差策略按阶段冻结的精确引用读取已发布成员，不塞回评分依据快照。
+    readStagePolicy: async (input) =>
+      publishedConfigurationBodies.get(referenceKeyOf(input.releaseRef)),
   });
 
   /** 活数组：夹具按用例替换执行器，adapter 始终读取当前集合，不新增生产测试接缝。 */
@@ -979,7 +994,8 @@ export const startResponseLifecycleFixture = async (
             },
           },
           ...(input.forecastRef === undefined ? {} : { effectForecastRef: input.forecastRef }),
-          deviationPolicyRef: c25Version("deviation-policy"),
+          // 阶段冻结的是 C18 已发布成员的释放引用：偏差事实、窄读投影都以该引用为准。
+          deviationPolicyRef: c25ReleaseRef("deviation-policy").reference,
           calibrationAgentPolicyRef: c25Version("calibration-agent-policy"),
           authorizationContextRef: {
             kind: "authorization-context",

@@ -1873,6 +1873,9 @@ class WorkflowGraphPersistence {
           entryMode: state.entryMode,
           status: state.status,
           stage: state.stage,
+          ...(state.status === "waiting" && state.lastWaitingRef !== undefined
+            ? { waitingRef: state.lastWaitingRef }
+            : {}),
           graphVersion: state.graphVersion,
           actorRef: row.actorRef,
           startedAt: state.recordedAt,
@@ -2309,7 +2312,7 @@ class WorkflowGraphPersistence {
           }),
         );
         const bytes = await boundedContent(handle.content, MAX_BODY_BYTES_V1);
-        await handle.verified;
+        await handle.completed;
         const decoded: unknown = JSON.parse(
           new TextDecoder("utf-8", { fatal: true }).decode(bytes),
         );

@@ -37,8 +37,7 @@ export const ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1 =
   "assessment-configuration" as const;
 export const ASSESSMENT_CONFIGURATION_SET_REF_KIND_V1 = "knowledge-query-result" as const;
 
-/** The eleven C18 definition types inside the C02 knowledge definition vocabulary. */
-export const ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1 = [
+export const ASSESSMENT_SCORING_CONFIGURATION_TYPES = [
   "indicator-system",
   "indicator-field-mapping",
   "weight-set",
@@ -47,6 +46,11 @@ export const ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1 = [
   "risk-acceptance-threshold",
   "monitoring-warning-threshold",
   "joint-trigger-policy",
+] as const satisfies readonly KnowledgeDefinitionTypeV1[];
+
+/** The eleven C18 definition types inside the C02 knowledge definition vocabulary. */
+export const ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1 = [
+  ...ASSESSMENT_SCORING_CONFIGURATION_TYPES,
   "measure-library",
   "forecast-policy",
   "deviation-policy",
@@ -54,6 +58,22 @@ export const ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1 = [
 
 export type AssessmentConfigurationDefinitionTypeV1 =
   (typeof ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1)[number];
+
+export const ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE = {
+  full: ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1,
+  assessment: ASSESSMENT_SCORING_CONFIGURATION_TYPES,
+  response: [...ASSESSMENT_SCORING_CONFIGURATION_TYPES, "measure-library"],
+  forecast: ["indicator-system", "forecast-policy"],
+  deviation: ["deviation-policy"],
+} as const satisfies Readonly<Record<string, readonly AssessmentConfigurationDefinitionTypeV1[]>>;
+export const AssessmentConfigurationPurposeSchema = z.enum([
+  "full",
+  "assessment",
+  "response",
+  "forecast",
+  "deviation",
+]);
+export type AssessmentConfigurationPurpose = z.infer<typeof AssessmentConfigurationPurposeSchema>;
 
 export const AssessmentConfigurationDefinitionTypeV1Schema = z.enum(
   ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1,
@@ -774,7 +794,7 @@ export type AssessmentConfigurationMemberV1 = z.infer<typeof AssessmentConfigura
 
 const configurationMembers = z
   .array(AssessmentConfigurationMemberV1Schema)
-  .min(ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1.length)
+  .min(1)
   .max(ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1.length)
   .superRefine((members, context) => {
     const keys = members.map((member) => member.definitionType);
@@ -790,19 +810,38 @@ const configurationMembers = z
     }
   });
 
-export const AssessmentConfigurationReleaseSetV1Schema = z.strictObject({
-  setRef: KnowledgeQueryResultRefV1Schema,
-  schemaVersion: z.literal(ASSESSMENT_CONFIGURATION_SCHEMA_VERSION_V1),
-  projectId: IdentifierSchema,
-  projectRevisionRef: ProjectRevisionRefV1Schema,
-  configurationSetRef: VersionReferenceSchema,
-  requiredAt: IsoDateTimeSchema,
-  asOfRecordedAt: IsoDateTimeSchema,
-  memberDigest: hashValue,
-  identityDigest: hashValue,
-  recordedAt: IsoDateTimeSchema,
-  members: configurationMembers,
-});
+export const AssessmentConfigurationReleaseSetV1Schema = z
+  .strictObject({
+    setRef: KnowledgeQueryResultRefV1Schema,
+    schemaVersion: z.literal(ASSESSMENT_CONFIGURATION_SCHEMA_VERSION_V1),
+    projectId: IdentifierSchema,
+    projectRevisionRef: ProjectRevisionRefV1Schema,
+    configurationSetRef: VersionReferenceSchema,
+    requiredAt: IsoDateTimeSchema,
+    asOfRecordedAt: IsoDateTimeSchema,
+    memberDigest: hashValue,
+    identityDigest: hashValue,
+    recordedAt: IsoDateTimeSchema,
+    members: configurationMembers,
+    purpose: AssessmentConfigurationPurposeSchema.optional(),
+  })
+  .superRefine((set, context) => {
+    const required = ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE[set.purpose ?? "full"];
+    const actual = set.members.map((member) => member.definitionType);
+    if (
+      required.some((kind) => !actual.includes(kind)) ||
+      actual.some(
+        (kind) =>
+          !(required as readonly string[]).includes(kind) &&
+          !(set.purpose === "deviation" && kind === "risk-matrix"),
+      )
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["members"],
+        message: "configuration members must match the stage purpose",
+      });
+  });
 export type AssessmentConfigurationReleaseSetV1 = z.infer<
   typeof AssessmentConfigurationReleaseSetV1Schema
 >;
@@ -820,6 +859,7 @@ export const ResolveAssessmentConfigurationSetV1Schema = z
     authorization: AuthorizationContextV1Schema,
     requiredAt: IsoDateTimeSchema,
     asOfRecordedAt: IsoDateTimeSchema,
+    purpose: AssessmentConfigurationPurposeSchema.optional(),
   })
   .superRefine((request, context) => {
     if (request.projectId !== request.authorization.projectId) {

@@ -111,7 +111,14 @@ import {
 } from "@riskflow/contracts/ports";
 import { IdentifierSchema, type EvidenceReference } from "@riskflow/contracts/common";
 
-import type { DataCleaningResultV1 } from "@riskflow/core/engineering-data/cleaning";
+import {
+  CleaningPreparationManifestV1Schema,
+  type DataCleaningResultV1,
+} from "@riskflow/core/engineering-data/cleaning";
+import {
+  STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1,
+  StructuredDocumentJsonLdV1Schema,
+} from "@riskflow/core/engineering-data/document-conversion";
 
 import type { PostgresDataCleaningStore } from "../engineering-data/cleaning/index.js";
 import { getPostgresTransaction } from "../postgres/transaction-unit.js";
@@ -227,6 +234,15 @@ interface AuthoringAttemptRow {
 }
 
 interface IdentificationKnowledgeDatabase {
+  "business.identification_knowledge_entries": {
+    project_id: string;
+    release_id: string;
+    release_version_id: string;
+    source_kind: "risk-mechanism" | "standard-library" | "case-library";
+    entry_id: string;
+    entry_json: JsonValue;
+    source_version_refs: JsonValue;
+  };
   "business.identification_knowledge_validations": ValidationRow;
   "business.identification_knowledge_revision_bindings": RevisionBindingRow;
   "business.identification_knowledge_release_bindings": ReleaseBindingRow;
@@ -312,6 +328,43 @@ const jsonValue = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value
 
 /** jsonb 列使用文本形式写入，避免驱动把对象直接交给 text 通道。 */
 const jsonbValue = (value: unknown): JsonValue => JSON.stringify(value) as unknown as JsonValue;
+
+const registerKnowledgeEntries = async (
+  db: Kysely<IdentificationKnowledgeDatabase>,
+  releaseRef: GenericReleaseRefV1,
+  value: IdentificationKnowledgePackageV1,
+): Promise<void> => {
+  if (
+    value.definitionType !== "risk-mechanism" &&
+    value.definitionType !== "standard-library" &&
+    value.definitionType !== "case-library"
+  )
+    return;
+  const entries = value.definitionType === "risk-mechanism" ? value.mechanisms : value.entries;
+  if (entries.length === 0) return;
+  await db
+    .insertInto("business.identification_knowledge_entries")
+    .values(
+      entries.map((entry) => ({
+        project_id: value.projectId,
+        release_id: releaseRef.reference.entityId,
+        release_version_id: releaseRef.reference.versionId,
+        source_kind: value.definitionType,
+        entry_id: "mechanismId" in entry ? entry.mechanismId : entry.entryId,
+        entry_json: jsonbValue(entry),
+        source_version_refs: jsonbValue(
+          entry.evidence.map((evidence) => ({
+            kind: "source-version",
+            reference: evidence.sourceVersion,
+          })),
+        ),
+      })),
+    )
+    .onConflict((conflict) =>
+      conflict.columns(["project_id", "release_id", "release_version_id", "entry_id"]).doNothing(),
+    )
+    .execute();
+};
 
 const nowIso = (clock: () => Date): string => {
   const value = clock();
@@ -544,6 +597,15 @@ const retainedSegmentsFor = (
   )?.retainedSegmentIds ?? [];
 
 /**
+ * D-38：逐组证据的读取身份。C15 精确准备读取与 C11 证据访问都按 requestId 幂等，同一校验
+ * 内不同证据组必须各自持有可重放的派生身份，否则第二组会被当作同键改载荷而整组被拒。
+ */
+const evidenceGroupRequestId = (
+  commandId: string,
+  evidenceReferences: readonly EvidenceReference[],
+): string => `${commandId}:evidence:${sha256CanonicalJson(evidenceReferences).slice(0, 16)}`;
+
+/**
  * 提交命令的证据引用：优先取包内首个条目的证据；组合包没有条目证据时使用清单冻结的
  * 保留资料段，绝不用自由文本或伪造引用占位。
  */
@@ -588,6 +650,8 @@ const readContentArtifact = async (
     readonly artifactRef: ReturnType<typeof ContractCandidateArtifactRefV1Schema.parse>;
     readonly purposeCode: string;
   },
+  onBytes?: (bytes: number) => void,
+  maxBytes = MAX_PACKAGE_BYTES,
 ): Promise<unknown> => {
   const readId = randomId("c17-read");
   const handle: ArtifactReadHandleV1 = await artifactStore.open(
@@ -608,10 +672,11 @@ const readContentArtifact = async (
   let size = 0;
   for await (const chunk of handle.content) {
     size += chunk.byteLength;
-    if (size > MAX_PACKAGE_BYTES) throw new RangeError("artifact exceeds the bounded read limit");
+    onBytes?.(chunk.byteLength);
+    if (size > maxBytes) throw new RangeError("artifact exceeds the bounded read limit");
     chunks.push(chunk);
   }
-  await handle.verified;
+  await handle.completed;
   const buffer = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) {
@@ -628,15 +693,135 @@ const readContentArtifact = async (
 export interface PostgresIdentificationPreparationKnowledgeReaderOptionsV1 {
   readonly narrowRead: IdentificationPreparationNarrowReadV1;
   readonly authorize: PostgresIdentificationKnowledgeAdapterOptionsV1["authorize"];
+  readonly artifactStore: ArtifactStoreV1;
 }
 
 export class PostgresIdentificationPreparationKnowledgeReader implements IdentificationPreparationKnowledgeReaderV1 {
   readonly #narrowRead: IdentificationPreparationNarrowReadV1;
   readonly #authorize: PostgresIdentificationKnowledgeAdapterOptionsV1["authorize"];
+  readonly #artifactStore: ArtifactStoreV1;
 
   constructor(options: PostgresIdentificationPreparationKnowledgeReaderOptionsV1) {
     this.#narrowRead = options.narrowRead;
     this.#authorize = options.authorize;
+    this.#artifactStore = options.artifactStore;
+  }
+
+  async checkStandardRetrievalText(
+    input: Parameters<IdentificationPreparationKnowledgeReaderV1["checkStandardRetrievalText"]>[0],
+  ): Promise<boolean> {
+    if (input.entry.retrievalText === undefined) return true;
+    try {
+      const preparation = await this.readExactPreparation({
+        ...input,
+        requestId: `${input.requestId}:preparation`,
+      });
+      if (preparation.kind !== "ok") return false;
+      const checked = await this.checkEvidence({
+        ...input,
+        requestId: `${input.requestId}:evidence`,
+        evidenceReferences: input.entry.evidence,
+        purposeCode: "identification-knowledge-package",
+      });
+      if (
+        checked.kind !== "succeeded" ||
+        checked.items.some((item) => item.disposition !== "eligible")
+      ) {
+        return false;
+      }
+      const authorization = await this.#authorize({
+        ...(input.taskRef === undefined ? {} : { taskRef: input.taskRef }),
+        projectId: input.projectId,
+        actorId: input.actorId,
+        invocationId: input.requestId,
+        branch: SOURCE_SEGMENTS_BRANCH,
+        requestedAt: input.requestedAt,
+        requestedSpatialScopeRefs: [...preparation.snapshot.spatialScopeRefs],
+        requestedSourceVersionRefs: [...preparation.snapshot.sourceVersionRefs],
+      });
+      let readBytes = 0;
+      const read = async (
+        artifactRef: ContentArtifactRefV1,
+        purposeCode: string,
+        maxBytes = MAX_PACKAGE_BYTES,
+      ) =>
+        readContentArtifact(
+          this.#artifactStore,
+          {
+            ...input,
+            authorization,
+            artifactRef,
+            purposeCode,
+          },
+          (bytes) => {
+            readBytes += bytes;
+            if (readBytes > STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1)
+              throw new RangeError("standard retrieval read limit");
+          },
+          maxBytes,
+        );
+      const manifest = CleaningPreparationManifestV1Schema.parse(
+        await read(
+          preparation.result.manifestArtifactRef,
+          "engineering-data.data-cleaning-preparation-manifest",
+        ),
+      );
+      if (manifest.projectId !== input.projectId) return false;
+      const documents = new Map<
+        string,
+        ReturnType<typeof StructuredDocumentJsonLdV1Schema.parse>
+      >();
+      const texts: string[] = [];
+      for (const evidence of input.entry.evidence) {
+        const member = manifest.documents.find((document) =>
+          versionedEquals(document.sourceVersionRef, { reference: evidence.sourceVersion }),
+        );
+        if (
+          member === undefined ||
+          !preparation.snapshot.sourceVersionRefs.some((ref) =>
+            versionedEquals(ref, member.sourceVersionRef),
+          ) ||
+          !preparation.snapshot.includedSourceSegmentSetRefs.some((ref) =>
+            versionedEquals(ref, member.sourceSegmentSetRef),
+          ) ||
+          !retainedSegmentsFor(preparation.result, member.sourceVersionRef).includes(
+            evidence.locator.sourceSegmentId,
+          )
+        )
+          return false;
+        const key = `${member.sourceVersionRef.reference.entityId}:${member.sourceVersionRef.reference.versionId}`;
+        let document = documents.get(key);
+        if (document === undefined) {
+          document = StructuredDocumentJsonLdV1Schema.parse(
+            await read(
+              member.jsonLdArtifactRef,
+              "engineering-data.structured-document-conversion",
+              STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1,
+            ),
+          );
+          if (document.metadata.projectId !== input.projectId) return false;
+          documents.set(key, document);
+        }
+        const fragments = document.evidenceFragments.filter(
+          (fragment) => fragment.sourceSegmentId === evidence.locator.sourceSegmentId,
+        );
+        if (fragments.length !== 1 || fragments[0]!.textBlockIds.length === 0) return false;
+        const blocks = new Map(document.textBlocks.map((block) => [block.blockId, block]));
+        for (const blockId of fragments[0]!.textBlockIds) {
+          const block = blocks.get(blockId);
+          if (
+            block === undefined ||
+            block.sourceSegmentId !== evidence.locator.sourceSegmentId ||
+            !versionedEquals(block.sourceVersionRef, member.sourceVersionRef)
+          )
+            return false;
+          texts.push(block.text);
+        }
+      }
+      return texts.join("\n") === input.entry.retrievalText;
+    } catch {
+      return false;
+    }
   }
 
   async readExactPreparation(input: {
@@ -958,7 +1143,20 @@ export class PostgresIdentificationKnowledgeReleasePolicy implements Identificat
       } as never)
       .onConflict((conflict) => conflict.columns(["project_id", "idempotency_key"]).doNothing())
       .execute();
-    if (members === undefined) return [];
+    if (members === undefined) {
+      const value = IdentificationKnowledgePackageV1Schema.parse(
+        await readContentArtifact(this.#options.artifactStore, {
+          projectId: input.command.projectId,
+          actorId: input.command.actorId,
+          requestedAt: input.command.issuedAt,
+          authorization: input.authorization,
+          artifactRef: input.revision.candidateArtifactRef,
+          purposeCode: CANDIDATE_PURPOSE,
+        }),
+      );
+      await registerKnowledgeEntries(tx, input.releaseRef, value);
+      return [];
+    }
     return [
       identificationBasisPublishedEvent({
         releaseRef: input.releaseRef,
@@ -1160,6 +1358,7 @@ export class PostgresIdentificationKnowledgeAdapter {
     this.#preparationReader = new PostgresIdentificationPreparationKnowledgeReader({
       narrowRead: options.narrowRead,
       authorize: options.authorize,
+      artifactStore: options.artifactStore,
     });
     this.#policy = options.policy;
     this.#policySetProvider = options.policySetProvider;
@@ -1223,6 +1422,82 @@ export class PostgresIdentificationKnowledgeAdapter {
   }
 
   /** D-12：C20/C24 的唯一窄读面，按精确发布引用返回不可变包与治理元数据。 */
+  async readVisibleEntries(input: {
+    readonly projectId: string;
+    readonly releaseRefs: readonly GenericReleaseRefV1[];
+    readonly authorization: AuthorizationContextV1;
+  }) {
+    if (
+      input.authorization.projectId !== input.projectId ||
+      this.#access.filterVisibleSources === undefined
+    )
+      throw new IdentificationKnowledgeModuleError(
+        moduleError({
+          code: "AUTHORIZATION_DENIED",
+          branch: "knowledge-modeling.hybrid-evidence",
+          causalRunId: input.projectId,
+        }),
+      );
+    const rows = [];
+    for (const ref of input.releaseRefs) {
+      let entries = await this.#db
+        .selectFrom("business.identification_knowledge_entries")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("release_id", "=", ref.reference.entityId)
+        .where("release_version_id", "=", ref.reference.versionId)
+        .execute();
+      if (entries.length === 0) {
+        const binding = await this.#findReleaseBindingByRef(input.projectId, ref);
+        if (binding === undefined) continue;
+        const original = await this.readExact({
+          projectId: input.projectId,
+          releaseRef: ref,
+          actorId: input.authorization.actorId,
+          requestedAt: input.authorization.decidedAt,
+          authorization: input.authorization,
+        });
+        if (original.kind !== "succeeded")
+          throw new IdentificationKnowledgeModuleError(original.error);
+        entries = await this.#db
+          .selectFrom("business.identification_knowledge_entries")
+          .selectAll()
+          .where("project_id", "=", input.projectId)
+          .where("release_id", "=", ref.reference.entityId)
+          .where("release_version_id", "=", ref.reference.versionId)
+          .execute();
+      }
+      rows.push(...entries);
+    }
+    const sources = new Map<string, SourceVersionRefV1>();
+    for (const row of rows)
+      for (const ref of row.source_version_refs as unknown as SourceVersionRefV1[])
+        sources.set(refKey(ref), ref);
+    const visible = new Set(
+      (
+        await this.#access.filterVisibleSources({
+          authorization: input.authorization,
+          sourceVersionRefs: [...sources.values()],
+        })
+      ).map(refKey),
+    );
+    return rows
+      .filter((row) =>
+        (row.source_version_refs as unknown as SourceVersionRefV1[]).every((ref) =>
+          visible.has(refKey(ref)),
+        ),
+      )
+      .map((row) => ({
+        sourceKind: row.source_kind,
+        sourceReleaseRef: {
+          kind: "knowledge-release" as const,
+          reference: { entityId: row.release_id, versionId: row.release_version_id },
+        },
+        sourceEntryId: row.entry_id,
+        entry: row.entry_json as Readonly<Record<string, unknown>>,
+      }));
+  }
+
   async readExact(input: {
     readonly projectId: string;
     readonly releaseRef: unknown;
@@ -1316,6 +1591,16 @@ export class PostgresIdentificationKnowledgeAdapter {
         ContractCandidateArtifactRefV1Schema.parse(binding.candidate_artifact_ref),
         CANDIDATE_PURPOSE,
       )) as IdentificationKnowledgePackageV1;
+      const indexed = await this.#db
+        .selectFrom("business.identification_knowledge_entries")
+        .select("entry_id")
+        .where("project_id", "=", input.projectId)
+        .where("release_id", "=", releaseRef.data.reference.entityId)
+        .where("release_version_id", "=", releaseRef.data.reference.versionId)
+        .limit(1)
+        .executeTakeFirst();
+      if (indexed === undefined)
+        await registerKnowledgeEntries(this.#db, releaseRef.data, packageValue);
       return {
         kind: "succeeded",
         read: {
@@ -1352,6 +1637,7 @@ export class PostgresIdentificationKnowledgeAdapter {
 
   async #submitIdentificationRevision(
     command: Extract<KnowledgeGovernanceCommandV1, { kind: "submit-revision" }>,
+    derived?: { readonly requiredAt: string },
   ): Promise<ReturnType<typeof KnowledgeGovernanceResultV1Schema.parse>> {
     const definitionType = command.payload.definitionType;
     if (!isIdentificationKnowledgeDefinitionTypeV1(definitionType)) {
@@ -1366,7 +1652,7 @@ export class PostgresIdentificationKnowledgeAdapter {
         command.projectId,
         command.actorId,
         command.commandId,
-        "knowledge-modeling.submit-revision",
+        derived === undefined ? "knowledge-modeling.submit-revision" : IDENTIFICATION_BASIS_BRANCH,
       );
       const verifiedCommand = { ...command, authorization: verified };
       const candidateArtifactRef = ContractCandidateArtifactRefV1Schema.parse(
@@ -1386,6 +1672,14 @@ export class PostgresIdentificationKnowledgeAdapter {
         dependencies: {
           projectId: command.projectId,
           policy: this.#policy,
+          checkStandardRetrievalText: (input) =>
+            this.#preparationReader.checkStandardRetrievalText({
+              ...input,
+              projectId: command.projectId,
+              actorId: command.actorId,
+              requestedAt: command.issuedAt,
+              requestId: `${command.commandId}:standard-text:${input.entry.entryId}`,
+            }),
           checkEvidence: async (input) => {
             if (!preparationSnapshotRef.success) return [];
             const checked = await this.#preparationReader.checkEvidence({
@@ -1395,7 +1689,7 @@ export class PostgresIdentificationKnowledgeAdapter {
               purposeCode: input.purposeCode,
               actorId: command.actorId,
               requestedAt: command.issuedAt,
-              requestId: `${command.commandId}:evidence`,
+              requestId: evidenceGroupRequestId(command.commandId, input.evidenceReferences),
             });
             return checked.kind === "succeeded" ? checked.items : [];
           },
@@ -1412,7 +1706,9 @@ export class PostgresIdentificationKnowledgeAdapter {
       const packageValue = rawCandidate as IdentificationKnowledgePackageV1;
       const packageDigest = identificationKnowledgePackageDigest(packageValue);
       const validationArtifactRef = await this.#putArtifact(verifiedCommand, {
-        artifactId: `c17-validation-${packageDigest.slice(0, 40)}`,
+        // D-38：验证工件的 put 身份按本次提交命令隔离；包摘要仍保存在工件与验证行里，同一
+        // 命令重放复用同一身份，新提交不会与旧提交的 issuedAt/authorization 幂等冲突。
+        artifactId: `c17-validation-${command.commandId}-${packageDigest.slice(0, 40)}`,
         purposeCode: VALIDATION_PURPOSE,
         value: {
           schemaVersion: SCHEMA_VERSION,
@@ -1512,6 +1808,91 @@ export class PostgresIdentificationKnowledgeAdapter {
             blockerKind: `identification-knowledge-${outcome.rejectionClass ?? "repairable"}`,
             blockerRef: asContractReference(validationArtifactRef),
           }),
+        });
+      }
+      if (derived !== undefined && packageValue.definitionType === "retrieval-evidence-base") {
+        const parentReleaseRefs = [
+          {
+            kind: "knowledge-release" as const,
+            reference: packageValue.riskMechanismReleaseRef.reference,
+          },
+          packageValue.standardLibraryReleaseRef,
+          packageValue.caseLibraryReleaseRef,
+        ];
+        const policy = new PostgresIdentificationKnowledgeReleasePolicy({
+          db: this.#db as unknown as PostgresIdentificationKnowledgeReleasePolicyOptionsV1["db"],
+          artifactStore: this.#artifactStore,
+          governance: () => this.#governance,
+          authorize: this.#authorize,
+        });
+        const published = await this.#governance.publishDerivedRelease({
+          projectId: command.projectId,
+          actorId: command.actorId,
+          commandId: `${command.commandId}:publish-derived`,
+          idempotencyKey: `${command.idempotencyKey}:publish-derived`,
+          issuedAt: command.issuedAt,
+          effectiveFrom: derived.requiredAt,
+          authorization: verified,
+          definitionType: "retrieval-evidence-base",
+          candidateArtifactRef,
+          evidenceReferences: command.payload.evidenceReferences,
+          parentReleaseRefs,
+          derivationPolicyRef: this.#policy.policyRef,
+          contextRef: packageValue.preparationSnapshotRef,
+          append: async (context, { revision, releaseRef, audit, recordedAt }) => {
+            await asKnowledgeTransaction(context)
+              .insertInto("business.identification_knowledge_revision_bindings")
+              .values({
+                revision_id: revision.revisionRef.reference.entityId,
+                revision_version_id: revision.revisionRef.reference.versionId,
+                schema_version: SCHEMA_VERSION,
+                project_id: command.projectId,
+                definition_type: definitionType,
+                binding_kind: "validated",
+                validation_id: persistedValidation.validation_id,
+                validation_version_id: persistedValidation.version_id,
+                package_digest: packageDigest,
+                agent_task_ref: null,
+                failure_artifact_ref: null,
+                command_id: revision.commandId,
+                idempotency_key: `${revision.commandId}:bind-revision`,
+                actor_ref: command.actorId,
+                audit_entry_id: audit.auditEntryId,
+                occurred_at: new Date(command.issuedAt),
+                recorded_at: new Date(recordedAt),
+                persisted_at: new Date(recordedAt),
+              })
+              .execute();
+            return policy.appendRelease(context, {
+              command: {
+                kind: "derived-approved",
+                commandId: revision.commandId,
+                idempotencyKey: `${command.idempotencyKey}:publish-derived`,
+                projectId: command.projectId,
+                actorId: command.actorId,
+                issuedAt: command.issuedAt,
+                authorizationContextRef: verified.authorizationContextRef,
+              },
+              revision: {
+                projectId: command.projectId,
+                definitionType: "retrieval-evidence-base",
+                revisionRef: revision.revisionRef,
+                candidateArtifactRef,
+              },
+              releaseRef,
+              audit: { auditEntryId: audit.auditEntryId },
+              recordedAt,
+              requiredAt: derived.requiredAt,
+              authorization: verified,
+            });
+          },
+        });
+        return KnowledgeGovernanceResultV1Schema.parse({
+          kind: "succeeded",
+          result: {
+            kind: "release",
+            knowledgeReleaseRef: published.releaseRef,
+          },
         });
       }
       // C16 校验绑定在命令身份上：原样委派调用方命令，C17 仅用自己的派生键记录本地阶段。
@@ -1759,11 +2140,13 @@ export class PostgresIdentificationKnowledgeAdapter {
       const resolveGovernedReleases = async (
         requiredDefinitionTypes: readonly KnowledgeDefinitionTypeV1[],
       ) => {
-        const invocationId = governedReleaseResolutionInvocationId({
-          requiredDefinitionTypes,
-          requiredAt,
-          asOfRecordedAt,
-        });
+        const invocationId = `${sha256CanonicalJson(command.authorization.authorizationContextRef)}:${command.commandId}:${governedReleaseResolutionInvocationId(
+          {
+            requiredDefinitionTypes,
+            requiredAt,
+            asOfRecordedAt,
+          },
+        )}`;
         const authorization = await this.#authorize({
           projectId: command.projectId,
           actorId: command.actorId,
@@ -1772,6 +2155,7 @@ export class PostgresIdentificationKnowledgeAdapter {
           requestedAt: command.issuedAt,
         });
         return await this.#governance.resolveGovernedReleases({
+          invocationId,
           projectId: command.projectId,
           requiredDefinitionTypes,
           requiredAt,
@@ -1782,7 +2166,8 @@ export class PostgresIdentificationKnowledgeAdapter {
       const resolved = await resolveGovernedReleases([
         "process-model",
         "risk-mechanism",
-        "retrieval-evidence-base",
+        "standard-library",
+        "case-library",
       ]);
       if (resolved.kind !== "succeeded") return resolved;
       const processModel = resolved.result.members.find(
@@ -1791,10 +2176,18 @@ export class PostgresIdentificationKnowledgeAdapter {
       const riskMechanism = resolved.result.members.find(
         (member) => member.definitionType === "risk-mechanism",
       );
-      const composite = resolved.result.members.find(
-        (member) => member.definitionType === "retrieval-evidence-base",
+      const standardLibrary = resolved.result.members.find(
+        (member) => member.definitionType === "standard-library",
       );
-      if (processModel === undefined || riskMechanism === undefined || composite === undefined) {
+      const caseLibrary = resolved.result.members.find(
+        (member) => member.definitionType === "case-library",
+      );
+      if (
+        processModel === undefined ||
+        riskMechanism === undefined ||
+        standardLibrary === undefined ||
+        caseLibrary === undefined
+      ) {
         return {
           kind: "failed",
           error: moduleError({
@@ -1804,6 +2197,94 @@ export class PostgresIdentificationKnowledgeAdapter {
             blockerRef: asContractReference(command.payload.preparationSnapshotRef),
           }),
         };
+      }
+      let composite: { readonly releaseRef: GenericReleaseRefV1 } | undefined;
+      const currentComposite = await resolveGovernedReleases(["retrieval-evidence-base"]);
+      if (currentComposite.kind === "succeeded") {
+        const candidate = currentComposite.result.members[0];
+        const binding =
+          candidate === undefined
+            ? undefined
+            : await this.#findReleaseBindingByRef(command.projectId, candidate.releaseRef);
+        const memberRefs = binding?.composite_member_release_refs;
+        const expected = [
+          riskMechanism.releaseRef,
+          standardLibrary.releaseRef,
+          caseLibrary.releaseRef,
+        ];
+        if (
+          Array.isArray(memberRefs) &&
+          memberRefs.length === expected.length &&
+          expected.every((ref) =>
+            memberRefs.some((member) => {
+              const parsed = KnowledgeReleaseRefV1Schema.safeParse(member);
+              return parsed.success && versionedEquals(parsed.data, ref);
+            }),
+          )
+        )
+          composite = candidate;
+      } else if (
+        currentComposite.error.code !== "BUSINESS_BLOCKED" ||
+        currentComposite.error.blockerKind !== "required-release-unavailable"
+      )
+        return currentComposite;
+      if (composite === undefined) {
+        const derivedCommandId = `${command.commandId}:retrieval-evidence-base`;
+        const authorization = await this.#authorize({
+          projectId: command.projectId,
+          actorId: command.actorId,
+          invocationId: derivedCommandId,
+          branch: IDENTIFICATION_BASIS_BRANCH,
+          requestedAt: command.issuedAt,
+        });
+        const candidateArtifactRef = await this.#putArtifact(
+          { ...command, authorization },
+          {
+            artifactId: `${derivedCommandId}:package`,
+            purposeCode: CANDIDATE_PURPOSE,
+            value: {
+              schemaVersion: SCHEMA_VERSION,
+              projectId: command.projectId,
+              definitionType: "retrieval-evidence-base",
+              validationPolicyRef: this.#policy.policyRef,
+              preparationSnapshotRef: command.payload.preparationSnapshotRef,
+              generatedAt: requiredAt,
+              riskMechanismReleaseRef: {
+                kind: "risk-mechanism-release",
+                reference: riskMechanism.releaseRef.reference,
+              },
+              standardLibraryReleaseRef: standardLibrary.releaseRef,
+              caseLibraryReleaseRef: caseLibrary.releaseRef,
+            },
+            parentArtifactRefs: [],
+          },
+        );
+        const derived = await this.#submitIdentificationRevision(
+          {
+            kind: "submit-revision",
+            commandId: derivedCommandId,
+            idempotencyKey: derivedCommandId,
+            projectId: command.projectId,
+            actorId: command.actorId,
+            issuedAt: command.issuedAt,
+            authorization,
+            payload: {
+              definitionType: "retrieval-evidence-base",
+              candidateArtifactRef,
+              evidenceReferences: preparation.snapshot.sourceVersionRefs.flatMap((source) =>
+                retainedSegmentsFor(preparation.result, source).map((sourceSegmentId) => ({
+                  locator: { sourceSegmentId },
+                  sourceVersion: source.reference,
+                })),
+              ),
+            },
+          },
+          { requiredAt },
+        );
+        if (derived.kind !== "succeeded") return derived;
+        if (derived.result.kind !== "release")
+          throw new TypeError("derived retrieval release missing");
+        composite = { releaseRef: derived.result.knowledgeReleaseRef };
       }
       const compositeBinding = await this.#findReleaseBindingByRef(
         command.projectId,
@@ -1843,7 +2324,7 @@ export class PostgresIdentificationKnowledgeAdapter {
       }
       const memberResolution = await resolveGovernedReleases(["standard-library", "case-library"]);
       if (memberResolution.kind !== "succeeded") return memberResolution;
-      const compositeReadInvocationId = `knowledge-read-${refKey(composite.releaseRef)}`;
+      const compositeReadInvocationId = `${sha256CanonicalJson(command.authorization.authorizationContextRef)}:${command.commandId}:knowledge-read-${refKey(composite.releaseRef)}`;
       const compositeRead = await this.readExact({
         projectId: command.projectId,
         releaseRef: composite.releaseRef,
@@ -2513,6 +2994,15 @@ export class PostgresIdentificationKnowledgeAdapter {
       dependencies: {
         projectId: packageValue.projectId,
         policy: this.#policy,
+        checkStandardRetrievalText: (input) =>
+          this.#preparationReader.checkStandardRetrievalText({
+            ...input,
+            taskRef: task.envelope.agentTaskRef,
+            projectId: packageValue.projectId,
+            actorId: task.envelope.actorId,
+            requestedAt: task.envelope.createdAt,
+            requestId: `${task.envelope.commandId}:standard-text:${input.entry.entryId}`,
+          }),
         checkEvidence: async (input) => {
           const checked = await this.#preparationReader.checkEvidence({
             taskRef: task.envelope.agentTaskRef,
@@ -2521,7 +3011,7 @@ export class PostgresIdentificationKnowledgeAdapter {
             evidenceReferences: input.evidenceReferences,
             purposeCode: input.purposeCode,
             actorId: task.envelope.actorId,
-            requestId: `${task.envelope.commandId}:evidence`,
+            requestId: evidenceGroupRequestId(task.envelope.commandId, input.evidenceReferences),
             requestedAt: task.envelope.createdAt,
           });
           return checked.kind === "succeeded" ? checked.items : [];

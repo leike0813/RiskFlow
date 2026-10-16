@@ -220,6 +220,13 @@ export const SourceDeliveryDescriptorV1Schema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("file-upload"),
     contentFingerprint: extendedText,
+    originalFileName: boundedText
+      .refine(
+        // eslint-disable-next-line no-control-regex -- 文件名必须拒绝 ASCII 控制字符。
+        (name) => !/[\u0000-\u001f\u007f/\\]/u.test(name),
+        "file name must not contain path or control characters",
+      )
+      .optional(),
   }),
   z.strictObject({
     kind: z.literal("database-snapshot"),

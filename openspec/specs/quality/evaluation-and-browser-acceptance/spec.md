@@ -88,12 +88,13 @@ C22 MUST 允许调用方仅以当前授权复验、精确结果登记读和 C04 
 
 ### Requirement: C36 页面查询投影必须有界且只追加
 
-系统 MUST 由 C36 自有投影在既有 `projection.query` 上仅增加 `quality-evaluation` 查询类型：输入为按项目修订、页大小不超过 50 的列表选择器，或精确 C04 报告引用选择器；输出保留 `queryResultRef`，可附加 `qualitySummaries` 与 `nextCursor`。每项摘要字段闭合为 `schemaVersion`、`projectId`、`reportArtifactRef`、`datasetArtifactRef`、`sampleKind`、`label`、`metrics`（指标码、分子、分母、值/不可计算原因）、`evidenceRefs` 和 `createdAt`，不得含领域正文或任意筛选字段；原查询类型的语义与形状不变。投影只能消费所属模块公开接口及正式事实引用，正文仍由拥有方保存。服务端 MUST 使用当前会话签发的最小工程授权，并在返回前复验工程、空间和资料可见性；无权、跨工程或不存在目标统一拒绝且不可枚举，正文无权时只返回获准定位摘要。相同事件/报告重放不得重复追加，更新报告必须产生新版本而不覆盖历史。（RI-S6；RA-S5～RA-S7）
+系统 MUST 由 C36 自有投影在既有 `projection.query` 上仅增加 `quality-evaluation` 查询类型：输入为按项目修订、页大小不超过 50 的列表选择器，或精确 C04 报告引用选择器；输出保留 `queryResultRef`，可附加 `qualitySummaries` 与 `nextCursor`，每项摘要字段闭合为场景声明的字段集合，不得含领域正文或任意筛选字段，原查询类型的语义与形状不变。投影只能消费所属模块公开接口及正式事实引用，正文仍由拥有方保存；服务端 MUST 使用当前会话签发的最小工程授权，并在返回前复验工程、空间和资料可见性，无权、跨工程或不存在目标统一拒绝且不可枚举，正文无权时只返回获准定位摘要。相同事件/报告重放不得重复追加，更新报告必须产生新版本而不覆盖历史。（RI-S6；RA-S5～RA-S7）
 
 #### Scenario: 获授权页面读取精确质量报告
 
 - **WHEN** 用户在当前工程查询已正式成立的精确质量报告
 - **THEN** 返回有界摘要与 C04 精确证据引用，页面刷新和跨页面返回后按服务端当前投影重建
+- **AND** 每项摘要字段闭合为 `schemaVersion`、`projectId`、`reportArtifactRef`、`datasetArtifactRef`、`sampleKind`、`label`、`metrics`（指标码、分子、分母、值/不可计算原因）、`evidenceRefs` 和 `createdAt`
 
 #### Scenario: 工程切换或撤权
 

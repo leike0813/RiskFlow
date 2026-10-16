@@ -6,6 +6,9 @@ import {
   AgentTaskTypeV1Schema,
   ActualAssessmentProofQueryV1Schema,
   ActualAssessmentProofV1Schema,
+  ApplicableRuleSetAssemblyCommandV1Schema,
+  ApplicableRuleSetAssemblyPayloadV1Schema,
+  ApplicableRuleSetAssemblyResultV1Schema,
   AssessmentBasisReleaseSetRefV1Schema,
   AssessmentEvaluationCommandV1Schema,
   AssessmentEvaluationResultV1Schema,
@@ -402,6 +405,10 @@ describe("module interface contracts", () => {
       ],
       [
         EngineeringFreezeCommandV1Schema,
+        command("complete-identification-preparation", { agentTaskRef }),
+      ],
+      [
+        EngineeringFreezeCommandV1Schema,
         command("assessment-preparation", {
           riskInput,
           projectRevisionRef,
@@ -504,6 +511,17 @@ describe("module interface contracts", () => {
         command("assessment-basis", {
           preparationSnapshotRef: assessmentPreparationRef,
           requiredAt: now,
+        }),
+      ],
+      [
+        ApplicableRuleSetAssemblyCommandV1Schema,
+        command("assemble-applicable-rule-set", {
+          preparationSnapshotRef: assessmentPreparationRef,
+          requiredAt: now,
+          scoringPolicyRef: policyRef,
+          assemblyPolicyRef: policyRef,
+          compatibilityRef: policyRef,
+          configurationSetRef: policyRef,
         }),
       ],
       [
@@ -610,8 +628,6 @@ describe("module interface contracts", () => {
         OpenWarningCommandV1Schema,
         command("open", {
           assessmentRecordRef,
-          warningAggregationPolicyRef: policyRef,
-          notificationPolicyRef: policyRef,
         }),
       ],
       [
@@ -794,6 +810,28 @@ describe("module interface contracts", () => {
         }),
       ).success,
     ).toBe(false);
+
+    // D-49 完成入口复用 freeze 能力位，且只接受完整精确任务引用：缺引用、平铺引用与
+    // 任何附加字段都在契约处拒绝，不提供清单、结果或来源覆盖入口。
+    expect(
+      MODULE_BRANCH_CAPABILITY_V1["engineering-data.complete-identification-preparation"],
+    ).toBe("engineering-data.freeze");
+    for (const invalidCompletion of [
+      command("complete-identification-preparation", {}),
+      command("complete-identification-preparation", agentTaskRef),
+      command("complete-identification-preparation", {
+        agentTaskRef,
+        identificationPreparationSnapshotRef: identificationPreparationRef,
+      }),
+      command("complete-identification-preparation", {
+        agentTaskRef: { ...agentTaskRef, resultRef: agentTaskResultRef },
+      }),
+    ]) {
+      expect(
+        EngineeringFreezeCommandV1Schema.safeParse(invalidCompletion).success,
+        JSON.stringify(invalidCompletion),
+      ).toBe(false);
+    }
 
     expect(MODULE_BRANCH_CAPABILITY_V1["warning-response.acknowledge"]).toBe(
       "warning-response.record",
@@ -1351,6 +1389,55 @@ describe("module interface contracts", () => {
         }),
       ).success,
     ).toBe(true);
+    // D-51：识别准备就绪是独立的恢复原因，只接收精确准备引用。
+    const identificationPreparationSnapshotRef = version("identification-preparation-snapshot");
+    expect(
+      ResumeWorkflowRunCommandV1Schema.safeParse(
+        command("resume-run", {
+          workflowRunRef,
+          expectedStateVersion: "state-v1",
+          resumeCause: {
+            kind: "identification-preparation-ready",
+            identificationPreparationSnapshotRef,
+          },
+        }),
+      ).success,
+    ).toBe(true);
+    // 该原因仍是闭合分支：不能夹带旧准备任务引用，也不能省掉精确引用。
+    expect(
+      ResumeWorkflowRunCommandV1Schema.safeParse(
+        command("resume-run", {
+          workflowRunRef,
+          expectedStateVersion: "state-v1",
+          resumeCause: {
+            kind: "identification-preparation-ready",
+            identificationPreparationSnapshotRef,
+            knowledgePreparationTaskRef: version("knowledge-preparation-task"),
+          },
+        }),
+      ).success,
+    ).toBe(false);
+    expect(
+      ResumeWorkflowRunCommandV1Schema.safeParse(
+        command("resume-run", {
+          workflowRunRef,
+          expectedStateVersion: "state-v1",
+          resumeCause: { kind: "identification-preparation-ready" },
+        }),
+      ).success,
+    ).toBe(false);
+    expect(
+      ResumeWorkflowRunCommandV1Schema.safeParse(
+        command("resume-run", {
+          workflowRunRef,
+          expectedStateVersion: "state-v1",
+          resumeCause: {
+            kind: "identification-preparation-ready",
+            identificationPreparationSnapshotRef: version("knowledge-preparation-task"),
+          },
+        }),
+      ).success,
+    ).toBe(false);
     expect(
       CancelWorkflowRunCommandV1Schema.safeParse(
         command("cancel-run", {
@@ -2971,6 +3058,18 @@ describe("C30 additive workflow inputs and bounded read ports", () => {
     expect(
       StartWorkflowRunCommandV1Schema.safeParse({
         ...identifyStart,
+        payload: { ...identifyStart.payload, executionBatchId: "batch-a" },
+      }).success,
+    ).toBe(true);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...identifyStart,
+        payload: { ...identifyStart.payload, executionBatchId: "" },
+      }).success,
+    ).toBe(false);
+    expect(
+      StartWorkflowRunCommandV1Schema.safeParse({
+        ...identifyStart,
         payload: { ...identifyStart.payload, assessmentContexts: [] },
       }).success,
     ).toBe(false);
@@ -3653,5 +3752,114 @@ describe("C35 有界窄读分支与共享构造", () => {
     expect(StartAgentTaskCommandV1Schema.safeParse(command("start-task", payload)).success).toBe(
       true,
     );
+  });
+});
+
+describe("C19 applicable-rule-set assembly contract", () => {
+  const assemblyPayload = {
+    preparationSnapshotRef: assessmentPreparationRef,
+    requiredAt: now,
+    scoringPolicyRef: policyRef,
+    assemblyPolicyRef: policyRef,
+    compatibilityRef: policyRef,
+    configurationSetRef: policyRef,
+  };
+
+  it("maps the assembly branch to the existing govern capability", () => {
+    expect(MODULE_BRANCH_CAPABILITY_V1["knowledge-modeling.assemble-applicable-rule-set"]).toBe(
+      "knowledge-modeling.govern",
+    );
+    expect(
+      ModuleBranchV1Schema.safeParse("knowledge-modeling.assemble-applicable-rule-set").success,
+    ).toBe(true);
+  });
+
+  it("closes the payload to the six server-resolved references", () => {
+    // 这六个字段是唯一允许的调用方输入；服务端据此复用同一份 shape，不另立事实源。
+    expect(Object.keys(ApplicableRuleSetAssemblyPayloadV1Schema.shape).sort()).toEqual([
+      "assemblyPolicyRef",
+      "compatibilityRef",
+      "configurationSetRef",
+      "preparationSnapshotRef",
+      "requiredAt",
+      "scoringPolicyRef",
+    ]);
+    expect(ApplicableRuleSetAssemblyPayloadV1Schema.safeParse(assemblyPayload).success).toBe(true);
+    // 工程修订、适用性与规则成员只取 C11 生产准备投影，不接受调用方自报。
+    for (const field of [
+      "projectRevisionRef",
+      "applicabilitySnapshotRef",
+      "applicability",
+      "members",
+      "decisions",
+    ]) {
+      expect(
+        ApplicableRuleSetAssemblyPayloadV1Schema.safeParse({ ...assemblyPayload, [field]: {} })
+          .success,
+      ).toBe(false);
+    }
+    expect(
+      ApplicableRuleSetAssemblyPayloadV1Schema.safeParse({
+        preparationSnapshotRef: assessmentPreparationRef,
+        requiredAt: now,
+        scoringPolicyRef: policyRef,
+        assemblyPolicyRef: policyRef,
+        compatibilityRef: policyRef,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires the govern capability and one project for the assembly command", () => {
+    const assemblyCommand = command("assemble-applicable-rule-set", assemblyPayload);
+    expect(ApplicableRuleSetAssemblyCommandV1Schema.safeParse(assemblyCommand).success).toBe(true);
+    expect(
+      ApplicableRuleSetAssemblyCommandV1Schema.safeParse({
+        ...assemblyCommand,
+        projectId: "project-2",
+      }).success,
+    ).toBe(false);
+    expect(
+      ApplicableRuleSetAssemblyCommandV1Schema.safeParse({
+        ...assemblyCommand,
+        authorization: { ...authorization, grantedCapabilities: ["knowledge-modeling.read"] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts formal assembled release and assessment basis results", () => {
+    const success = {
+      applicableRuleSetRevisionRef: version("knowledge-revision", "revision-1"),
+      applicableRuleSetArtifactRef: version("content-artifact", "artifact-1"),
+      applicableRuleSetReleaseRef: version("knowledge-release", "release-1"),
+      assessmentBasisReleaseSetRef: version("assessment-basis-release-set", "basis-1"),
+    };
+    expect(
+      ApplicableRuleSetAssemblyResultV1Schema.safeParse({ kind: "succeeded", result: success })
+        .success,
+    ).toBe(true);
+    // 成功体使用正式引用，不接受客户端自述发布状态。
+    expect(
+      ApplicableRuleSetAssemblyResultV1Schema.safeParse({
+        kind: "succeeded",
+        result: { ...success, published: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      ApplicableRuleSetAssemblyResultV1Schema.safeParse({
+        kind: "waiting",
+        waiting: { kind: "user-confirmation", userConfirmationRef: version("user-confirmation") },
+      }).success,
+    ).toBe(true);
+    expect(
+      ApplicableRuleSetAssemblyResultV1Schema.safeParse({
+        kind: "failed",
+        error: {
+          ...transientFailure,
+          stageCode: "assemble-applicable-rule-set",
+          causalRunId: "command-assemble-applicable-rule-set",
+          occurredAt: now,
+        },
+      }).success,
+    ).toBe(true);
   });
 });

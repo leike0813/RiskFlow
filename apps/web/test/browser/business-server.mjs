@@ -29,6 +29,7 @@ import { createPostgresEngineeringDataCatalogAdapter } from "../../../../package
 import {
   createAssessmentEntryContextReadPort,
   createPostgresEngineeringContextSourceRegistry,
+  SourceOriginalReaderV1,
 } from "../../../../packages/adapters/dist/engineering-data/context-source/index.js";
 import { createPostgresMonitoringStore } from "../../../../packages/adapters/dist/engineering-data/monitoring/index.js";
 import {
@@ -71,6 +72,7 @@ import { createRiskInputFactsReader } from "../../../../packages/core/dist/risk-
 import {
   CALIBRATION_VALIDATION_POLICY,
   DEMO_FORECAST_POLICIES,
+  DEMO_RUNTIME_POLICY_REFS,
   DEMO_RISK_FLOW_CONFIG,
   createRecommendationPolicies,
   createResponseAgentPolicy,
@@ -2766,7 +2768,6 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
      */
     const checkpointer = await setupPostgresCheckpointer({
       ...roleConfig("riskflow_checkpointer_login"),
-      validateReference: () => true,
     });
     closeables.push(() => checkpointer.end());
 
@@ -3233,6 +3234,9 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
       governedReleases: governedReleaseResolver,
       // 准备快照投影由所属的 C11 提供，不注入假投影。
       preparationSnapshot: registry,
+      derivedPublisher: {
+        publishDerivedRelease: (input) => knowledgeGovernance.publishDerivedRelease(input),
+      },
       // C19 的修订提交没有独立写路径：经 C16 `submit-revision` 与 C07 审阅、C16 发布同事务
       // 落库。授权按提交调用身份单独签发，不复用编制入口的上下文。
       submitRevision: {
@@ -3348,7 +3352,7 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
       preparationContext: registry,
       riskInputFacts,
       basisReader: scoringRules,
-      runtimePolicies: createRiskAssessmentRuntimePolicies({ projectId: PROJECT_ID }),
+      configuration: assessmentConfiguration,
       monitoring: monitoringStore,
       authorizeDownstream,
       entryContext: createAssessmentEntryContextReadPort(registry),
@@ -3875,7 +3879,7 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
     if (assembled.kind !== "succeeded") {
       throw new Error(`C19 组装失败: ${JSON.stringify(assembled).slice(0, 600)}`);
     }
-    await publishApprovedRelease(assembled.applicableRuleSetRevisionRef);
+    declaredBaseReleaseRefs.set("applicable-rule-set", assembled.applicableRuleSetReleaseRef);
 
     // ---- C27 处置建议：Agent 任务契约与 C08 只读接缝 ----
     //
@@ -4364,6 +4368,13 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
         db: appRuntime.db,
         artifactStore,
         basis: scoringRules,
+        configuration: assessmentConfiguration,
+        runtimePolicies: () => ({
+          generationPolicyRef: DEMO_RUNTIME_POLICY_REFS.responseGenerationPolicyRef,
+          validationPolicyRef: DEMO_RUNTIME_POLICY_REFS.responseValidationPolicyRef,
+          agentPolicyRef: DEMO_RUNTIME_POLICY_REFS.responseAgentPolicyRef,
+          reviewPolicyRef: DEMO_RUNTIME_POLICY_REFS.reviewPolicyRef,
+        }),
         // C27 自身查询上下文只带处置域能力；依据集合与配置正文按知识读用途另签，
         // 否则 `readAssessmentBasisReleaseSet` 恒返回 unavailable，正式建议永不成立。
         authorizeDownstream,
@@ -4464,6 +4475,7 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
       artifactStore,
       basis: scoringRules,
       monitoring: monitoringStore,
+      readStagePolicy: (input) => assessmentConfiguration.readPublishedConfigurationMember(input),
       measureReleases: {
         readPublishedMeasureReleases: async (input) => {
           const sourceVersionRefs = input.authorization.sourceAccessGrantRefs.map((grant) => {
@@ -4555,6 +4567,10 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
       bindingProof: workflow.bindingProof,
       assessmentProof: assessmentEngine,
       runCompletionProof: workflow.runCompletionProof,
+      resolveFeedbackPolicies: async () => ({
+        deviationPolicyRef: publishedConfigurationReleaseRefs.get("deviation-policy").reference,
+        calibrationAgentPolicyRef: DEMO_RUNTIME_POLICY_REFS.calibrationAgentPolicyRef,
+      }),
       responseLifecycle,
       responseContext,
       // 服务端已发布的入口控制，绝不取自客户端载荷。
@@ -4838,7 +4854,7 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
               authorization: probeAuthorization,
             });
             for await (const _chunk of handle.content) void _chunk;
-            await handle.verified;
+            await handle.completed;
             return { status: "available" };
           })(componentId, signal);
         // 本装配没有任何模型网关接线：如实呈现缺席，而不是把注册表里的引用说成可用。
@@ -4899,6 +4915,19 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
     const api = buildApi({
       access,
       ports: {
+        sourceOriginal: new SourceOriginalReaderV1({
+          access,
+          source: registry,
+          artifactStore,
+          readManifest: artifactStore.readManifest,
+          temporaryRoot: join(rootDirectory, "original-preview"),
+          policy: {
+            maxBytes: 104857600,
+            maxConcurrentReads: 2,
+            maxTemporaryBytes: 209715200,
+            timeoutMs: 120000,
+          },
+        }),
         riskAssessmentRead: assessmentEngine,
         warningResponseRead: warningLifecycle,
         /**

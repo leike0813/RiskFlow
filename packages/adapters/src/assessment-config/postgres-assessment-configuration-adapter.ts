@@ -1,4 +1,4 @@
-import type { ColumnType, Kysely, Selectable, Transaction } from "kysely";
+import { sql, type ColumnType, type Kysely, type Selectable, type Transaction } from "kysely";
 
 import {
   AssessmentConfigurationError,
@@ -27,6 +27,7 @@ import {
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import {
   ArtifactReadRequestV1Schema,
+  ArtifactStoreError,
   type ArtifactReadHandleV1,
 } from "@riskflow/core/artifacts";
 import {
@@ -135,7 +136,7 @@ const readConfigurationBody = async (handle: ArtifactReadHandleV1): Promise<unkn
     }
     chunks.push(chunk);
   }
-  await handle.verified;
+  await handle.completed;
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) {
@@ -325,7 +326,7 @@ export class PostgresAssessmentConfigurationAdapter implements AssessmentConfigu
       artifactStore: this.#artifactStore,
       transactionUnit: this.#transactionUnit,
       now: this.#now,
-      resolveConfigurationMembers: (request) => this.#resolveConfigurationMembers(request),
+      resolveConfigurationMembers: (request) => this.readConfigurationMembers(request),
       appendConfigurationSet: (context, input) => this.#appendConfigurationSet(context, input),
     });
   }
@@ -357,26 +358,23 @@ export class PostgresAssessmentConfigurationAdapter implements AssessmentConfigu
     if (input.authorization === undefined || input.authorization.projectId !== input.projectId) {
       return undefined;
     }
-    const members = await this.#db
-      .selectFrom("business.assessment_configuration_release_set_members as member")
-      .innerJoin("business.assessment_configuration_release_sets as release_set", (join) =>
-        join
-          .onRef("release_set.set_id", "=", "member.set_id")
-          .onRef("release_set.version_id", "=", "member.version_id"),
-      )
-      .select([
-        "member.definition_type as definition_type",
-        "member.artifact_ref as artifact_ref",
-        "member.content_digest as content_digest",
-      ])
-      .distinct()
-      .where("release_set.project_id", "=", input.projectId)
-      .where("member.release_id", "=", input.releaseRef.entityId)
-      .where("member.release_version_id", "=", input.releaseRef.versionId)
-      .limit(2)
-      .execute();
+    const { rows: members } = await sql<{
+      definition_type: string;
+      artifact_ref: unknown;
+      content_digest: string;
+    }>`
+      SELECT metadata.definition_type, metadata.artifact_ref, metadata.content_digest
+      FROM business.knowledge_releases AS release
+      JOIN business.assessment_config_revision_metadata AS metadata
+        ON metadata.revision_id = release.revision_id AND metadata.version_id = release.revision_version_id
+      WHERE release.project_id = ${input.projectId} AND metadata.project_id = ${input.projectId}
+        AND release.release_id = ${input.releaseRef.entityId} AND release.version_id = ${input.releaseRef.versionId}
+      LIMIT 2`.execute(this.#db);
     const member = members[0];
-    if (member === undefined || !isAssessmentConfigurationDefinitionTypeV1(member.definition_type)) {
+    if (
+      member === undefined ||
+      !isAssessmentConfigurationDefinitionTypeV1(member.definition_type)
+    ) {
       return undefined;
     }
     if (
@@ -413,8 +411,13 @@ export class PostgresAssessmentConfigurationAdapter implements AssessmentConfigu
         return undefined;
       }
       return { body: document, sha256 };
-    } catch {
-      return undefined;
+    } catch (error) {
+      if (
+        error instanceof ArtifactStoreError &&
+        (error.code === "ARTIFACT_ACCESS_DENIED" || error.code === "ARTIFACT_REFERENCE_NOT_FOUND")
+      )
+        return undefined;
+      throw error;
     }
   }
 
@@ -574,7 +577,7 @@ export class PostgresAssessmentConfigurationAdapter implements AssessmentConfigu
     }
   }
 
-  async #resolveConfigurationMembers(request: {
+  async readConfigurationMembers(request: {
     readonly projectId: string;
     readonly requiredDefinitionTypes: readonly AssessmentConfigurationDefinitionTypeV1[];
     readonly requiredAt: string;

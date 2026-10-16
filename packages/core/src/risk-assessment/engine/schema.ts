@@ -50,7 +50,6 @@ export const RISK_ASSESSMENT_MAX_ARTIFACT_BYTES_V1 = 1024 * 1024;
 export const RISK_ASSESSMENT_MAX_FACT_FIELDS_V1 = RISK_INPUT_FACT_MAX_FIELDS_V1;
 export const RISK_ASSESSMENT_MAX_INDICATOR_VALUES_V1 = 512;
 export const RISK_ASSESSMENT_MAX_TRIGGERS_V1 = 1024;
-export const RISK_ASSESSMENT_INPUT_SNAPSHOT_REFERENCE_COUNT_V1 = 22;
 
 /* -------------------------------------------------------------------------- */
 /* 闭合失败事实源（D-11）                                                      */

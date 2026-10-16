@@ -25,6 +25,7 @@ import {
   type DataCleaningDocumentSliceRequestV1,
   type DataCleaningMonitoringSliceRequestV1,
   type DataCleaningPolicyV1,
+  type DataCleaningPreparationCatalogSliceRequestV1,
   type DataCleaningSettlementV1,
   type DataCleaningTaskPortV1,
   type DataCleaningValidationViewV1,
@@ -36,6 +37,7 @@ import type { AgentTaskExecutionStoreV1 } from "@riskflow/adapters/agent-runtime
 import { AgentRuntimeRunner } from "../../../src/agent-runtime/index.js";
 import {
   interpretDataCleaningModelStep,
+  renderDataCleaningModelStep,
   withDataCleaningModelStep,
   type DataCleaningModelStepOptionsV1,
 } from "../../../src/engineering-data/cleaning/index.js";
@@ -123,7 +125,8 @@ const TABLE_SEGMENT_ID = "manual-table-annex";
 
 const frozenInput = DataCleaningFrozenInputV1Schema.parse({
   schemaVersion: "1",
-  manifestArtifactRef: artifactRef("frozen-manifest"),
+  // 冻结清单工件引用由任务信封的 frozenInputRef 派生，二者必须一致。
+  manifestArtifactRef: artifactRef("frozen-input"),
   manifestDigest: sha256("frozen-manifest"),
   agentTaskRef: taskRef,
   policyRef: POLICY_REF,
@@ -241,7 +244,24 @@ const claim = {
 
 const observationRef = artifactRef("observation:document-slice");
 
+/** 受权 reader 返回的上一轮观察内容；模型消息只接受它，不接受清单正文。 */
+const observationContent = {
+  schemaVersion: "1",
+  manifestArtifactRef: frozenInput.manifestArtifactRef,
+  sourceVersionRef: { kind: "source-version", reference: SOURCE_VERSION },
+  inputKind: "docx",
+  segments: [{ sourceSegmentId: TABLE_SEGMENT_ID, kind: "table" }],
+};
+
+/** 模型形态：只回抄任务内短选项。 */
 const documentSliceRequest = {
+  kind: "read-document-segment-slice",
+  sourceOption: 1,
+  sourceSegmentIds: [TABLE_SEGMENT_ID],
+};
+
+/** 内部工具形态：宿主解析出的冻结精确引用，历史已登记动作同样使用该形态。 */
+const documentSliceToolInput = {
   kind: "read-document-segment-slice",
   sourceVersionRef: { kind: "source-version", reference: SOURCE_VERSION },
   sourceSegmentIds: [TABLE_SEGMENT_ID],
@@ -403,6 +423,7 @@ const makeStore = (overrides: Record<string, unknown> = {}) => {
 interface PortCallsV1 {
   readonly documentSlices: DataCleaningDocumentSliceRequestV1[];
   readonly monitoringSlices: DataCleaningMonitoringSliceRequestV1[];
+  readonly catalogSlices: DataCleaningPreparationCatalogSliceRequestV1[];
   readonly validations: DataCleaningValidationViewV1[];
   readonly settlements: DataCleaningSettlementV1[];
 }
@@ -411,6 +432,7 @@ const makePort = (documentSlice?: AgentDomainToolResultV1) => {
   const calls: PortCallsV1 = {
     documentSlices: [],
     monitoringSlices: [],
+    catalogSlices: [],
     validations: [],
     settlements: [],
   };
@@ -438,6 +460,10 @@ const makePort = (documentSlice?: AgentDomainToolResultV1) => {
     },
     async readMonitoringSlice(input: DataCleaningMonitoringSliceRequestV1) {
       calls.monitoringSlices.push(input);
+      return { observationArtifactRef: observationRef, effect: "none" as const };
+    },
+    async readPreparationCatalogSlice(input: DataCleaningPreparationCatalogSliceRequestV1) {
+      calls.catalogSlices.push(input);
       return { observationArtifactRef: observationRef, effect: "none" as const };
     },
   } as unknown as DataCleaningTaskPortV1 & { calls: PortCallsV1 };
@@ -481,7 +507,9 @@ const setup = (options: {
   readonly script: readonly unknown[];
   readonly documentSlice?: AgentDomainToolResultV1;
   readonly storeOverrides?: Record<string, unknown>;
+  readonly policy?: DataCleaningPolicyV1;
 }) => {
+  const activePolicy = options.policy ?? policy;
   const store = makeStore(options.storeOverrides);
   const port = makePort(options.documentSlice);
   const persisted: Array<{
@@ -500,8 +528,15 @@ const setup = (options: {
       return artifactRef(`${input.actionId}:${input.purposeCode}`);
     },
   );
-  const definition = createDataCleaningTaskDefinition({ policy, port });
-  const modelStep = withDataCleaningModelStep({ policy, persistArtifact, now: () => NOW });
+  const readObservation = vi.fn(async () => observationContent);
+  const definition = createDataCleaningTaskDefinition({ policy: activePolicy, port });
+  const modelStep = withDataCleaningModelStep({
+    policy: activePolicy,
+    persistArtifact,
+    loadFrozenInput: async () => frozenInput,
+    readObservation,
+    now: () => NOW,
+  });
   const renderModelStep = vi.fn(modelStep.renderModelStep);
   const gateway = makeGateway(...options.script);
   const runner = new AgentRuntimeRunner({
@@ -516,19 +551,29 @@ const setup = (options: {
     persistArtifact,
     now: () => NOW,
   });
-  return { store, port, persisted, persistArtifact, renderModelStep, gateway, definition, runner };
+  return {
+    store,
+    port,
+    persisted,
+    persistArtifact,
+    readObservation,
+    renderModelStep,
+    gateway,
+    definition,
+    runner,
+  };
 };
 
 describe("data cleaning model step", () => {
   it("routes a read request to the frozen tool and feeds the observation back before finalizing", async () => {
-    const { store, port, persisted, renderModelStep, runner } = setup({
+    const { store, port, persisted, readObservation, renderModelStep, runner } = setup({
       script: [documentSliceRequest, tableCandidateSubmission],
     });
 
     expect(await runner.runOnce()).toBe(1);
 
-    // 只读切片按冻结工具引用路由，观察工件在下一轮渲染中回填。
-    expect(port.calls.documentSlices).toEqual([documentSliceRequest]);
+    // 模型短选项由宿主解析为冻结工具精确输入，观察工件在下一轮渲染中回填。
+    expect(port.calls.documentSlices).toEqual([documentSliceToolInput]);
     expect(port.calls.monitoringSlices).toEqual([]);
     const toolIntent = persisted.find(
       (entry) =>
@@ -539,18 +584,51 @@ describe("data cleaning model step", () => {
       policy.tools.documentSegmentToolRef,
     );
     expect(renderModelStep.mock.calls[0]?.[2]).toEqual({});
-    expect(renderModelStep.mock.calls[1]?.[2]).toEqual({
+    expect(renderModelStep.mock.calls[1]?.[2]).toMatchObject({
       previousObservationArtifactRef: observationRef,
     });
+    // 上一轮观察内容只经受权 reader 进入消息，模型据此继续决策。
+    expect(readObservation).toHaveBeenCalledWith(task, observationRef);
+    const secondStep = (await renderModelStep.mock.results[1]?.value) as RenderedStepV1 | undefined;
+    expect(JSON.parse(secondStep?.messages[1]?.content ?? "")).toMatchObject({
+      previousObservationArtifactRef: observationRef,
+      previousObservation: observationContent,
+    });
 
-    // 渲染请求只携带引用与策略预算，不设置领域工具。
-    const firstStep = renderModelStep.mock.results[0]?.value as RenderedStepV1 | undefined;
+    // 渲染请求携带冻结准备的真实定位与策略预算，不设置领域工具、不含清单正文。
+    const firstStep = (await renderModelStep.mock.results[0]?.value) as RenderedStepV1 | undefined;
     expect(firstStep?.maxOutputTokens).toBe(policy.agent.budgetPolicy.maxOutputTokens);
     expect(firstStep?.domainTool).toBeUndefined();
     expect(firstStep?.messages).toHaveLength(2);
-    expect(JSON.parse(firstStep?.messages[1]?.content ?? "")).toEqual({
+    const listed = JSON.parse(firstStep?.messages[1]?.content ?? "") as {
+      readonly frozenManifestArtifactRef: unknown;
+      readonly documents: readonly {
+        readonly sourceVersionRef: unknown;
+        readonly inputKind: string;
+        readonly segmentIdPrefix: string;
+        readonly segmentIdSuffixesByKind: Readonly<Record<string, readonly string[]>>;
+      }[];
+      readonly previousObservation?: unknown;
+    };
+    expect(listed).toMatchObject({
       frozenManifestArtifactRef: task.envelope.frozenInputRef,
+      // 清单只给短选项，模型据此选择资料，不接触资料版本引用。
+      documents: [{ sourceOption: 1, inputKind: "docx" }],
     });
+    // 清单不再出现资料版本长标识，模型不改写内部精确来源。
+    expect(firstStep?.messages[1]?.content ?? "").not.toContain(SOURCE_VERSION.entityId);
+    const listedDocument = listed.documents[0]!;
+    expect(
+      Object.entries(listedDocument.segmentIdSuffixesByKind).flatMap(([kind, suffixes]) =>
+        suffixes.map((suffix) => ({
+          sourceSegmentId: listedDocument.segmentIdPrefix + suffix,
+          kind,
+        })),
+      ),
+    ).toEqual([
+      { sourceSegmentId: CHAPTER_SEGMENT_ID, kind: "chapter" },
+      { sourceSegmentId: TABLE_SEGMENT_ID, kind: "table" },
+    ]);
 
     // 候选提交走完校验与收口，任务以正式结果完成。
     expect(port.calls.validations).toHaveLength(2);
@@ -649,7 +727,123 @@ describe("data cleaning model step", () => {
 
 describe("data cleaning model step routing", () => {
   const persistArtifact = vi.fn(async () => observationRef);
-  const options: DataCleaningModelStepOptionsV1 = { policy, persistArtifact };
+  const options: DataCleaningModelStepOptionsV1 = {
+    policy,
+    persistArtifact,
+    loadFrozenInput: async () => frozenInput,
+    readObservation: async () => observationContent,
+  };
+  it("生成Schema只允许任务内短选项与已登记动作", async () => {
+    const catalogToolRef = versionRef("tool:preparation-catalog-slice", "1");
+    const pagedPolicy = DataCleaningPolicyV1Schema.parse({
+      ...policy,
+      tools: { ...policy.tools, preparationCatalogToolRef: catalogToolRef },
+    });
+    const step = await renderDataCleaningModelStep({ ...options, policy: pagedPolicy }, task);
+    const catalog = { kind: "read-cleaning-preparation-catalog-slice", sourceOption: 1 };
+    expect(step.outputSchema?.safeParse(catalog).success).toBe(true);
+    expect(step.outputSchema?.safeParse(documentSliceRequest).success).toBe(true);
+    expect(step.outputSchema?.safeParse(tableCandidateSubmission).success).toBe(true);
+    for (const input of [
+      // 冻结清单外或非法的短选项，以及模型自带的资料长标识与 offset 都不合法。
+      { ...catalog, sourceOption: frozenInput.documents.length + 1 },
+      { ...catalog, sourceOption: 0 },
+      { ...catalog, offset: 0 },
+      { ...catalog, sourceVersionRef: frozenInput.documents[0]!.sourceVersionRef },
+      monitoringSliceRequest,
+    ])
+      expect(step.outputSchema?.safeParse(input).success).toBe(false);
+    const unpaged = await renderDataCleaningModelStep(options, task);
+    expect(unpaged.outputSchema?.safeParse(catalog).success).toBe(false);
+  });
+  it.each([1, 8])("保留已完成目录页和正文读取，分页大小=%s", async (pageSize) => {
+    const catalogToolRef = versionRef("tool:preparation-catalog-slice", "1");
+    const pagedPolicy = DataCleaningPolicyV1Schema.parse({
+      ...policy,
+      tools: {
+        ...policy.tools,
+        maxSegmentsPerRead: pageSize,
+        preparationCatalogToolRef: catalogToolRef,
+      },
+    });
+    const completedToolCalls = [
+      {
+        toolRef: catalogToolRef,
+        input: {
+          kind: "read-cleaning-preparation-catalog-slice",
+          sourceVersionRef: frozenInput.documents[0]!.sourceVersionRef,
+          offset: 0,
+        },
+        observationArtifactRef: observationRef,
+      },
+      {
+        toolRef: pagedPolicy.tools.documentSegmentToolRef,
+        input: documentSliceToolInput,
+        observationArtifactRef: observationRef,
+      },
+    ];
+    const rendered = await renderDataCleaningModelStep({ ...options, policy: pagedPolicy }, task, {
+      completedToolCalls,
+    });
+    const payload = JSON.parse(rendered.messages[1]!.content);
+    expect(payload.completedReads).toMatchObject([
+      {
+        kind: "read-cleaning-preparation-catalog-slice",
+        sourceOption: 1,
+        totalCount: frozenInput.documents[0]!.segments.length,
+        segments: frozenInput.documents[0]!.segments.slice(0, pageSize).map(
+          ({ sourceSegmentId, kind }) => ({ sourceSegmentId, kind }),
+        ),
+        complete: pageSize >= frozenInput.documents[0]!.segments.length,
+        ...(pageSize < frozenInput.documents[0]!.segments.length ? { nextOffset: pageSize } : {}),
+      },
+      {
+        kind: "read-document-segment-slice",
+        sourceOption: 1,
+        sourceSegmentIds: documentSliceToolInput.sourceSegmentIds,
+      },
+    ]);
+    await expect(
+      renderDataCleaningModelStep({ ...options, policy: pagedPolicy }, task, {
+        completedToolCalls: [
+          {
+            ...completedToolCalls[1]!,
+            input: { ...documentSliceToolInput, sourceSegmentIds: ["other-source-1-1"] },
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID" } });
+  });
+  it.each(["tool", "offset", "count", "monitoring"])(
+    "已完成读取记录拒绝错误绑定或越界：%s",
+    async (invalid) => {
+      const catalogToolRef = versionRef("tool:preparation-catalog-slice", "1");
+      const pagedPolicy = DataCleaningPolicyV1Schema.parse({
+        ...policy,
+        tools: { ...policy.tools, preparationCatalogToolRef: catalogToolRef },
+      });
+      const call = {
+        toolRef: invalid === "tool" ? versionRef("other-tool") : catalogToolRef,
+        input:
+          invalid === "monitoring"
+            ? monitoringSliceRequest
+            : {
+                kind: "read-cleaning-preparation-catalog-slice",
+                sourceVersionRef: frozenInput.documents[0]!.sourceVersionRef,
+                offset: invalid === "offset" ? frozenInput.documents[0]!.segments.length + 1 : 0,
+              },
+        observationArtifactRef: observationRef,
+      };
+      await expect(
+        renderDataCleaningModelStep({ ...options, policy: pagedPolicy }, task, {
+          completedToolCalls:
+            invalid === "count"
+              ? Array.from({ length: task.budgetPolicy.maxToolInvocations + 1 }, () => call)
+              : [call],
+        }),
+      ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID" } });
+    },
+  );
   const foreignTask = {
     ...task,
     envelope: {
@@ -687,7 +881,40 @@ describe("data cleaning model step routing", () => {
 
   it("maps read actions to the frozen tool references and rejects unknown actions", async () => {
     await expect(
-      interpretDataCleaningModelStep(options, modelResponse(monitoringSliceRequest), task),
+      interpretDataCleaningModelStep(options, modelResponse(documentSliceRequest), task),
+    ).resolves.toEqual({
+      kind: "tool-request",
+      toolRef: policy.tools.documentSegmentToolRef,
+      toolInput: documentSliceToolInput,
+    });
+    const withMonitoring = {
+      ...options,
+      loadFrozenInput: async () =>
+        DataCleaningFrozenInputV1Schema.parse({
+          ...frozenInput,
+          monitoring: {
+            monitoringSnapshotRef: monitoringSliceRequest.monitoringSnapshotRef,
+            monitoringSeriesRef: {
+              kind: "monitoring-series",
+              reference: versionRef("monitoring-series"),
+            },
+            availability: "available",
+            coverageRatio: 1,
+            availabilityReasons: [],
+            members: monitoringSliceRequest.sampleVersionRefs.map(
+              (sampleVersionRef, memberIndex) => ({
+                memberIndex,
+                sampleVersionRef,
+                selectionReason: "latest-valid",
+              }),
+            ),
+            pointStatuses: [],
+            snapshotFingerprint: sha256("monitoring-snapshot"),
+          },
+        }),
+    };
+    await expect(
+      interpretDataCleaningModelStep(withMonitoring, modelResponse(monitoringSliceRequest), task),
     ).resolves.toEqual({
       kind: "tool-request",
       toolRef: policy.tools.monitoringSnapshotToolRef,
@@ -695,8 +922,101 @@ describe("data cleaning model step routing", () => {
     });
     await expect(
       interpretDataCleaningModelStep(options, modelResponse({ kind: "unexpected-action" }), task),
-    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID" } });
+    ).rejects.toMatchObject({ details: { code: "AGENT_VALIDATION_REJECTED", retryable: true } });
     expect(persistArtifact).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("清洗消息显示未识别表格图片数量，分页模式=%s", async (paged) => {
+    const input = structuredClone(frozenInput);
+    input.documents[0]!.unrecognizedTableImageCount = 2;
+    const step = (await renderDataCleaningModelStep(
+      {
+        ...options,
+        policy: {
+          ...policy,
+          tools: {
+            ...policy.tools,
+            ...(paged ? { preparationCatalogToolRef: versionRef("tool:catalog") } : {}),
+          },
+        },
+        loadFrozenInput: async () => input,
+      },
+      task,
+    )) as RenderedStepV1;
+    expect(JSON.parse(step.messages[1]!.content).documents[0]).toMatchObject({
+      unrecognizedTableImageCount: 2,
+    });
+  });
+
+  it("分页模式初始消息只列资料身份与段数，并把分页动作路由到登记的工具", async () => {
+    const catalogToolRef = versionRef("tool:preparation-catalog-slice", "1");
+    const pagedPolicy = DataCleaningPolicyV1Schema.parse({
+      ...policy,
+      tools: { ...policy.tools, preparationCatalogToolRef: catalogToolRef },
+      agent: {
+        ...policy.agent,
+        budgetPolicy: { ...policy.agent.budgetPolicy, maxOutputTokens: 32_768 },
+      },
+    });
+
+    const step = (await renderDataCleaningModelStep(
+      { ...options, policy: pagedPolicy },
+      task,
+    )) as RenderedStepV1;
+    const listing = step.messages[1]?.content ?? "";
+    const payload = JSON.parse(listing) as {
+      readonly documents: readonly {
+        readonly inputKind: string;
+        readonly segmentCount: number;
+        readonly sourceOption: number;
+      }[];
+      readonly tools: Readonly<Record<string, unknown>>;
+      readonly constraints: Readonly<Record<string, unknown>>;
+      readonly remainingBudget: unknown;
+    };
+
+    expect(payload.documents).toEqual([
+      {
+        sourceOption: 1,
+        inputKind: "docx",
+        segmentCount: frozenInput.documents[0]!.segments.length,
+      },
+    ]);
+    // 初始消息不再逐个列出段标识，模型改用登记的分页工具定位。
+    expect(listing).not.toContain(CHAPTER_SEGMENT_ID);
+    expect(listing).not.toContain(TABLE_SEGMENT_ID);
+    expect(payload.tools.preparationCatalogToolRef).toEqual(catalogToolRef);
+    expect(payload.tools.maxSegmentsPerRead).toBe(policy.tools.maxSegmentsPerRead);
+    expect(payload.constraints.minimumRetainedSegmentRatio).toBe(
+      policy.minimumRetainedSegmentRatio,
+    );
+    expect(payload.remainingBudget).toBeDefined();
+    // 单次调用不预留整份累计输出额度。
+    expect(step.maxOutputTokens).toBe(8_192);
+
+    const request = {
+      kind: "read-cleaning-preparation-catalog-slice",
+      sourceOption: 1,
+    };
+    await expect(
+      interpretDataCleaningModelStep(
+        { ...options, policy: pagedPolicy },
+        modelResponse(request),
+        task,
+      ),
+    ).resolves.toEqual({
+      kind: "tool-request",
+      toolRef: catalogToolRef,
+      toolInput: {
+        kind: request.kind,
+        sourceVersionRef: frozenInput.documents[0]!.sourceVersionRef,
+        offset: 0,
+      },
+    });
+    // 未登记该工具的版本没有对应工具，按输入拒绝而不是落到同名工具。
+    await expect(
+      interpretDataCleaningModelStep(options, modelResponse(request), task),
+    ).rejects.toMatchObject({ details: { code: "AGENT_VALIDATION_REJECTED", retryable: true } });
   });
 
   it("delegates non-cleaning task types to the inner model step and fails closed without one", () => {
@@ -722,5 +1042,33 @@ describe("data cleaning model step routing", () => {
     expect(
       throwCode(() => withoutInner.interpretModelStep(modelResponse({}), foreignTask, definition)),
     ).toBe("AGENT_INPUT_INVALID");
+  });
+
+  it("fails with an explicit budget error instead of truncating an over-budget input", async () => {
+    const overBudgetTask = {
+      ...task,
+      budgetPolicy: { ...policy.agent.budgetPolicy, maxInputBytes: 16 },
+    } as unknown as AgentTaskSnapshotV1;
+
+    await expect(renderDataCleaningModelStep(options, overBudgetTask)).rejects.toMatchObject({
+      details: { code: "AGENT_BUDGET_EXHAUSTED", category: "budget", retryable: false },
+    });
+  });
+
+  it("refuses a frozen inventory bound to another task, manifest or policy", async () => {
+    const mismatches = [
+      { policyRef: versionRef("policy:other", "1") },
+      { agentTaskRef: { ...taskRef, reference: versionRef("agent-task:other", "1") } },
+      { manifestArtifactRef: artifactRef("other-frozen-manifest") },
+    ];
+
+    for (const mismatch of mismatches) {
+      await expect(
+        renderDataCleaningModelStep(
+          { ...options, loadFrozenInput: async () => ({ ...frozenInput, ...mismatch }) },
+          task,
+        ),
+      ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID", retryable: false } });
+    }
   });
 });

@@ -16,7 +16,7 @@ import { IsoDateTimeSchema } from "@riskflow/contracts/common";
 import {
   KnowledgeDefinitionV1Schema,
   KnowledgeReleaseDecisionV1Schema,
-  KnowledgeReleaseV1Schema,
+  KnowledgeReleaseSchema,
   KnowledgeRevisionProjectionV1Schema,
   KnowledgeRevisionStatusV1Schema,
   KnowledgeRevisionV1Schema,
@@ -24,7 +24,7 @@ import {
   type GovernedReleaseCandidateV1,
   type KnowledgeDefinitionV1,
   type KnowledgeReleaseDecisionV1,
-  type KnowledgeReleaseV1,
+  type KnowledgeRelease,
   type KnowledgeRevisionProjectionV1,
   type KnowledgeRevisionStatusV1,
   type KnowledgeRevisionV1,
@@ -107,8 +107,8 @@ export const validateRevisionBase = (input: {
   readonly hasDefinition: boolean;
   readonly baseReleaseRef?: KnowledgeReleaseRefV1 | undefined;
   readonly baseRevisionRef?: KnowledgeRevisionRefV1 | undefined;
-  readonly baseRelease?: KnowledgeReleaseV1 | undefined;
-  readonly latestRelease?: KnowledgeReleaseV1 | undefined;
+  readonly baseRelease?: KnowledgeRelease | undefined;
+  readonly latestRelease?: KnowledgeRelease | undefined;
 }): void => {
   const missingTarget = KnowledgeRevisionRefV1Schema.parse({
     kind: "knowledge-revision",
@@ -137,7 +137,7 @@ export const validateRevisionBase = (input: {
   if (baseRelease === undefined) {
     fail("ENTITY_NOT_FOUND", "base-release-not-found", releaseTarget(requiredBaseReleaseRef));
   }
-  const requiredBaseRelease = baseRelease as KnowledgeReleaseV1;
+  const requiredBaseRelease = baseRelease as KnowledgeRelease;
   if (
     requiredBaseRelease.projectId !== input.projectId ||
     requiredBaseRelease.definitionType !== input.definitionType ||
@@ -218,8 +218,8 @@ export const validatePublicationTimeline = (input: {
   readonly revisionRef: KnowledgeRevisionRefV1;
   readonly effectiveFrom: string;
   readonly now: string;
-  readonly existingReleases: readonly KnowledgeReleaseV1[];
-  readonly currentRelease?: KnowledgeReleaseV1 | undefined;
+  readonly existingReleases: readonly KnowledgeRelease[];
+  readonly currentRelease?: KnowledgeRelease | undefined;
   readonly expectedBaseReleaseRef?: KnowledgeReleaseRefV1 | undefined;
   readonly allowPreviouslyPublishedRevision?: boolean | undefined;
 }): void => {
@@ -329,6 +329,7 @@ export const selectGovernedReleaseCandidates = (input: {
   readonly requiredAt: string;
   readonly asOfRecordedAt: string;
   readonly candidates: readonly GovernedReleaseCandidateV1[];
+  readonly contextRef?: ContractReferenceV1;
 }): ResolveGovernedReleasesResultV1 => {
   const requiredAt = parseDate(input.requiredAt);
   const asOfRecordedAt = parseDate(input.asOfRecordedAt);
@@ -339,6 +340,16 @@ export const selectGovernedReleaseCandidates = (input: {
         (candidate) =>
           candidate.release.projectId === input.projectId &&
           candidate.release.definitionType === definitionType &&
+          (definitionType !== "applicable-rule-set" ||
+            !("publicationOrigin" in candidate.release) ||
+            candidate.release.publicationOrigin.kind !== "derived-approved" ||
+            (input.contextRef !== undefined &&
+              "reference" in input.contextRef &&
+              candidate.release.publicationOrigin.contextRef.kind === input.contextRef.kind &&
+              versionedReferenceEquals(
+                candidate.release.publicationOrigin.contextRef,
+                input.contextRef,
+              ))) &&
           releaseIsActiveAt(candidate, requiredAt, asOfRecordedAt),
       )
       .sort((left, right) => {
@@ -360,7 +371,16 @@ export const selectGovernedReleaseCandidates = (input: {
     const second = eligible[1];
     if (
       second !== undefined &&
-      parseDate(selectedCandidate.release.effectiveFrom) === parseDate(second.release.effectiveFrom)
+      parseDate(selectedCandidate.release.effectiveFrom) ===
+        parseDate(second.release.effectiveFrom) &&
+      !(
+        definitionType === "applicable-rule-set" &&
+        input.contextRef !== undefined &&
+        "publicationOrigin" in selectedCandidate.release &&
+        selectedCandidate.release.publicationOrigin.kind === "derived-approved" &&
+        "publicationOrigin" in second.release &&
+        second.release.publicationOrigin.kind === "derived-approved"
+      )
     ) {
       fail(
         "BUSINESS_BLOCKED",
@@ -377,7 +397,7 @@ export const parseKnowledgeDefinition = (value: unknown): KnowledgeDefinitionV1 
   KnowledgeDefinitionV1Schema.parse(value);
 export const parseKnowledgeRevision = (value: unknown): KnowledgeRevisionV1 =>
   KnowledgeRevisionV1Schema.parse(value);
-export const parseKnowledgeRelease = (value: unknown): KnowledgeReleaseV1 =>
-  KnowledgeReleaseV1Schema.parse(value);
+export const parseKnowledgeRelease = (value: unknown): KnowledgeRelease =>
+  KnowledgeReleaseSchema.parse(value);
 export const parseKnowledgeReleaseDecision = (value: unknown): KnowledgeReleaseDecisionV1 =>
   KnowledgeReleaseDecisionV1Schema.parse(value);

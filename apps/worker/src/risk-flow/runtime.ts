@@ -42,6 +42,7 @@ import {
 } from "@riskflow/contracts/ports";
 import {
   RiskFlowGraphStateV1Schema,
+  type IdentificationPreparationSnapshotV1,
   type RiskFlowGraphStateV1,
 } from "@riskflow/contracts/workflows";
 import {
@@ -186,6 +187,7 @@ export interface RiskFlowResumeCommandV1 {
   readonly runRef: WorkflowRunRefV1;
   readonly expectedRunVersionId: string;
   readonly resumeCause: RiskFlowResumeValueV1;
+  readonly bindIdentificationPreparation?: true;
 }
 
 /** 父运行取消命令：协作式，只阻止未开始动作（design D-08）。 */
@@ -211,6 +213,21 @@ export interface RiskFlowGraphRuntimeOptionsV1 {
    * 必需注入（组合根缺失即拒绝构造）：缺失时绝不据恢复原因自行推进等待态运行。
    */
   readonly humanDecisionProof: HumanDecisionProofPortV1;
+  readonly identificationPreparation?: {
+    read(input: {
+      readonly projectId: string;
+      readonly actorId: string;
+      readonly requestId: string;
+      readonly requestedAt: string;
+      readonly authorization: AuthorizationContextV1;
+      readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
+      readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
+      readonly sourceVersionRefs: readonly ContractReferenceV1[];
+    }): Promise<
+      | { readonly kind: "ok"; readonly snapshot: IdentificationPreparationSnapshotV1 }
+      | { readonly kind: "error"; readonly retryable: boolean }
+    >;
+  };
   readonly now: () => Date;
 }
 
@@ -438,6 +455,16 @@ const assertResumeReferences = (input: {
     blocked("human-decision-pending");
   }
   switch (input.cause.kind) {
+    case "business-preparation-ready": {
+      const waiting = input.cursor.lastWaitingRef;
+      if (
+        input.cursor.status !== "waiting" ||
+        waiting?.kind !== "business-preparation" ||
+        !sameReference(waiting.preparationRef, input.cause.preparationRef)
+      )
+        blocked("preparation-reference-mismatch");
+      return;
+    }
     case "inputs-ready": {
       const expected = identificationPreparationWaitingFor({ runRef: input.runRef });
       const matched = input.rows.some(
@@ -632,6 +659,17 @@ const primaryRiskRefOfPayload = (
 /** 公共恢复原因 → 父图恢复值：只映射稳定引用，未知原因按“条件变化后重判”收口（design D-08）。 */
 const resumeValueOfCause = (cause: ResumeCauseV1): RiskFlowResumeValueV1 => {
   switch (cause.kind) {
+    case "business-preparation-ready":
+      return { kind: cause.kind, preparationRef: cause.preparationRef };
+    case "agent-task-completed":
+      return { kind: cause.kind, agentTaskResultRef: cause.agentTaskResultRef };
+    case "review-resolved":
+      return { kind: cause.kind, reviewDecisionRef: cause.reviewDecisionRef };
+    case "identification-preparation-ready":
+      return {
+        kind: "inputs-ready",
+        identificationPreparationSnapshotRef: cause.identificationPreparationSnapshotRef,
+      };
     case "knowledge-ready":
       return {
         kind: "inputs-ready",
@@ -986,13 +1024,43 @@ export const createRiskFlowGraphRuntime = (
       graphVersion: cursorBefore.graphVersion ?? provisional.graphVersion,
       frozenRefs,
       pairing: pairingsFromRowsV1(rows),
+      ...(command.resumeCause.kind === "business-preparation-ready"
+        ? { businessPreparationResume: command.resumeCause }
+        : {}),
       ...(primaryRiskRef === undefined ? {} : { primaryRiskRef }),
       ...(resumePreparation === undefined
         ? preparation === undefined
           ? {}
           : { identificationPreparationSnapshotRef: preparation }
         : { identificationPreparationSnapshotRef: resumePreparation }),
+      ...(command.resumeCause.kind === "agent-task-completed"
+        ? {
+            identificationResumeCause: {
+              kind: "agent-task-completed" as const,
+              agentTaskRef: command.resumeCause.agentTaskResultRef.agentTaskRef,
+              agentTaskResultRef: command.resumeCause.agentTaskResultRef,
+            },
+          }
+        : command.resumeCause.kind === "review-resolved"
+          ? {
+              identificationResumeCause: {
+                kind: "review-resolved" as const,
+                reviewDecisionRef: command.resumeCause.reviewDecisionRef,
+              },
+            }
+          : command.resumeCause.kind === "transient-recovered"
+            ? { identificationResumeCause: { kind: "transient-recovered" as const } }
+            : {}),
     };
+    if (command.bindIdentificationPreparation && cursorBefore.status === "cancelled") {
+      throw runFailure({
+        stage: resumeStage,
+        code: "RUN_TERMINATED",
+        retryable: false,
+        detailCode: "run-already-terminal",
+        occurredAt: options.now().toISOString(),
+      });
+    }
     if (cursorBefore.status === "cancelled") {
       // 已取消的运行不再推进，也不新建任何动作（design D-08）。
       return outcomeOf({
@@ -1017,6 +1085,152 @@ export const createRiskFlowGraphRuntime = (
       cause: command.resumeCause,
       occurredAt: options.now().toISOString(),
     });
+    if (command.bindIdentificationPreparation) {
+      const deny = (code: WorkflowGraphErrorCodeV1, detailCode: string): never => {
+        throw runFailure({
+          stage: resumeStage,
+          code,
+          retryable: code === "RETRYABLE_INFRASTRUCTURE_FAILURE",
+          detailCode,
+          occurredAt: options.now().toISOString(),
+        });
+      };
+      if (
+        resumePreparation === undefined ||
+        options.identificationPreparation === undefined ||
+        cursorBefore.status !== "waiting" ||
+        cursorBefore.stage !== "identification" ||
+        cursorBefore.lastWaitingRef?.kind !== "knowledge-preparation" ||
+        cursorBefore.identificationRunRef !== undefined ||
+        cursorBefore.graphVersion === undefined ||
+        !sameReference(
+          command.runRef,
+          workflowRunIdentityFor({
+            projectId: command.projectId,
+            entryMode: cursorBefore.entryMode,
+            entryIdentity: cursorBefore.entryIdentity,
+            graphVersion: cursorBefore.graphVersion,
+          }).runRef,
+        ) ||
+        rows.find((row) => row.resultKind === "entry-snapshot")?.actorRef !== command.actorId ||
+        (preparation !== undefined && !sameReference(preparation, resumePreparation))
+      )
+        deny("UPSTREAM_WAITING", "identification-preparation-binding-unavailable");
+      const preparationRef = resumePreparation!;
+      const projectRefs = frozenRefs.filter((ref) => ref.kind === "project-revision");
+      const spatialScopeRefs = frozenRefs.filter((ref) => ref.kind === "spatial-scope");
+      const sourceVersionRefs = frozenRefs.filter((ref) => ref.kind === "source-version");
+      const read = await options.identificationPreparation!.read({
+        projectId: command.projectId,
+        actorId: command.actorId,
+        requestId: `${command.commandId}:identification-preparation`,
+        requestedAt: command.issuedAt,
+        authorization: authorized,
+        preparationSnapshotRef: preparationRef,
+        spatialScopeRefs,
+        sourceVersionRefs,
+      });
+      if (read.kind === "error") {
+        deny(
+          read.retryable ? "RETRYABLE_INFRASTRUCTURE_FAILURE" : "AUTHORIZATION_DENIED",
+          "identification-preparation-read-denied",
+        );
+      }
+      if (read.kind !== "ok") throw new TypeError("preparation reader result invalid");
+      const snapshot = read.snapshot;
+      const matches = (
+        left: readonly ContractReferenceV1[],
+        right: readonly ContractReferenceV1[],
+      ) =>
+        left.length === right.length &&
+        left.every((ref) => "reference" in ref && right.some((other) => sameReference(other, ref)));
+      if (
+        snapshot.createdBy !== command.actorId ||
+        !matches(projectRefs, [snapshot.projectRevisionRef]) ||
+        !matches(spatialScopeRefs, snapshot.spatialScopeRefs) ||
+        !matches(sourceVersionRefs, snapshot.sourceVersionRefs) ||
+        (snapshot.monitoringSnapshotRef !== undefined &&
+          !frozenRefs.some((ref) => sameReference(ref, snapshot.monitoringSnapshotRef!)))
+      )
+        deny("ENTRY_REFERENCES_INCOMPLETE", "identification-preparation-input-mismatch");
+      // 父运行级幂等身份防止两个不同准备在并发恢复时分别成立；原清洗因果保持不变。
+      const bindingKey = `workflow-preparation-binding:${command.runRef.reference.entityId}`;
+      try {
+        await ports.transactionUnit.execute(
+          {
+            projectId: command.projectId,
+            commandKind: "workflow.bind-identification-preparation",
+            commandId: command.commandId,
+            idempotencyKey: bindingKey,
+            payload: { workflowRunRef: command.runRef, preparationSnapshotRef: preparationRef },
+            actorRef: command.actorId,
+            authorizationContextRef: authorized.authorizationContextRef,
+            issuedAt: command.issuedAt,
+            runId: command.runRef.reference.entityId,
+            threadId,
+          },
+          async (context) => {
+            await ports.registrationStore.assertCurrentRunVersion(
+              {
+                projectId: command.projectId,
+                runId: command.runRef.reference.entityId,
+                expectedRunVersionId: command.expectedRunVersionId,
+              },
+              context,
+            );
+            return {
+              resultRef: preparationRef,
+              audit: {
+                auditEntryId: bindingKey,
+                projectId: command.projectId,
+                action: "workflow.bind-identification-preparation",
+                targetRef: preparationRef,
+                actorRef: command.actorId,
+                authorizationContextRef: authorized.authorizationContextRef,
+                occurredAt: command.issuedAt,
+                recordedAt: options.now().toISOString(),
+                version: preparationRef.reference,
+                commandId: command.commandId,
+                idempotencyKey: bindingKey,
+                runId: command.runRef.reference.entityId,
+                threadId,
+              },
+              events: [],
+            };
+          },
+        );
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        deny(
+          code === "IDEMPOTENCY_CONFLICT"
+            ? "IDEMPOTENCY_CONFLICT"
+            : "RETRYABLE_INFRASTRUCTURE_FAILURE",
+          "identification-preparation-binding-failed",
+        );
+      }
+      if (preparation === undefined) {
+        // resume 控制写也会校验准备引用，先提交本次已核验的入口事实供检查点精确取证。
+        await appendEntryFacts({
+          ports,
+          run,
+          cursor: cursorBefore,
+          stage: "identification",
+          actionSuffix: `identification:preparation-bound:${sha256CanonicalJson(preparationRef).slice(0, 32)}`,
+          commandKind: "risk-flow-graph.identification-preparation-bound",
+          entrySnapshots: [
+            {
+              entryIdentity: workflowEntryIdentityFor({
+                entryMode: run.entryMode,
+                projectId: run.projectId,
+                frozenRefs: [preparationRef],
+              }),
+              frozenRefs: [preparationRef],
+            },
+          ],
+          routeDecisions: [],
+        });
+      }
+    }
     const pendingDecisionRef =
       command.resumeCause.kind === "human-decision-committed"
         ? command.resumeCause.routeDecisionRef
@@ -1141,7 +1355,9 @@ export const createRiskFlowGraphRuntime = (
     const state = await runGraph({
       run,
       invocation:
-        command.resumeCause.kind === "transient-recovered"
+        command.resumeCause.kind === "transient-recovered" ||
+        (cursorBefore.status === "retryable-failure" &&
+          command.resumeCause.kind === "agent-task-completed")
           ? { kind: "retry", state: checkpointState }
           : provable
             ? { kind: "recover", state: checkpointState, completedNode: checkpointState.stage }
@@ -1406,6 +1622,10 @@ export const createRiskFlowGraphRuntime = (
       projectId: parsed.projectId,
       frozenRefs: gate.frozenRefs,
       reassessmentEntry,
+      ...(parsed.payload.entryMode === "identify-and-assess" &&
+      parsed.payload.executionBatchId !== undefined
+        ? { executionBatchId: parsed.payload.executionBatchId }
+        : {}),
     });
     const { runRef, threadId } = workflowRunIdentityFor({
       projectId: parsed.projectId,
@@ -1549,6 +1769,9 @@ export const createRiskFlowGraphRuntime = (
         runRef,
         expectedRunVersionId: parsed.payload.expectedStateVersion,
         resumeCause: resumeValueOfCause(parsed.payload.resumeCause),
+        ...(parsed.payload.resumeCause.kind === "identification-preparation-ready"
+          ? { bindIdentificationPreparation: true }
+          : {}),
       });
       if (outcome.status === "waiting" && outcome.lastWaitingRef !== undefined) {
         return {

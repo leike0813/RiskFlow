@@ -23,12 +23,24 @@ const refKey = (ref) => `${ref.entityId}@${ref.versionId}`;
 
 /** C25 十项运行策略的登记引用；与 `ASSESSMENT_RUNTIME_POLICY_SET_V1_FIELDS` 一一对应。 */
 const ASSESSMENT_RUNTIME_POLICY_REFS = Object.freeze({
-  warningAggregationPolicyRef: Object.freeze({ entityId: "demo-policy-warning-aggregation", versionId: "1" }),
+  warningAggregationPolicyRef: Object.freeze({
+    entityId: "demo-policy-warning-aggregation",
+    versionId: "1",
+  }),
   notificationPolicyRef: Object.freeze({ entityId: "demo-policy-notification", versionId: "1" }),
-  responseGenerationPolicyRef: Object.freeze({ entityId: "demo-policy-response-generation", versionId: "1" }),
-  responseValidationPolicyRef: Object.freeze({ entityId: "demo-policy-response-validation", versionId: "1" }),
+  responseGenerationPolicyRef: Object.freeze({
+    entityId: "demo-policy-response-generation",
+    versionId: "1",
+  }),
+  responseValidationPolicyRef: Object.freeze({
+    entityId: "demo-policy-response-validation",
+    versionId: "1",
+  }),
   responseAgentPolicyRef: Object.freeze({ entityId: "demo-policy-response-agent", versionId: "1" }),
-  calibrationAgentPolicyRef: Object.freeze({ entityId: "demo-policy-calibration-agent", versionId: "1" }),
+  calibrationAgentPolicyRef: Object.freeze({
+    entityId: "demo-policy-calibration-agent",
+    versionId: "1",
+  }),
   retryPolicyRef: Object.freeze({ entityId: "demo-policy-retry", versionId: "1" }),
   reviewPolicyRef: Object.freeze({ entityId: "demo-policy-review", versionId: "1" }),
   modelDeploymentRef: Object.freeze({ entityId: "demo-policy-model-deployment", versionId: "1" }),
@@ -67,8 +79,10 @@ export const createWarningRuntimePolicies = ({
   return {
     read: async (input) => {
       if (
-        !matchesRef(aggregationPolicyRef, input.warningAggregationPolicyRef) ||
-        !matchesRef(notificationPolicyRef, input.notificationPolicyRef)
+        (input.warningAggregationPolicyRef !== undefined &&
+          !matchesRef(aggregationPolicyRef, input.warningAggregationPolicyRef)) ||
+        (input.notificationPolicyRef !== undefined &&
+          !matchesRef(notificationPolicyRef, input.notificationPolicyRef))
       ) {
         throw Object.assign(new Error("warning-runtime-policy-unavailable"), {
           failure: { code: "PRECONDITION_FAILED", requestId: input.requestId },
@@ -402,7 +416,10 @@ export const DEMO_CALIBRATION_EVIDENCE = Object.freeze([
     locator: Object.freeze({
       sourceSegmentId: "s_8c79d2bf12558fa45b039bb369a6eaf2-chapter_1-segment_1",
     }),
-    sourceVersion: Object.freeze({ entityId: "s_8c79d2bf12558fa45b039bb369a6eaf2", versionId: "1" }),
+    sourceVersion: Object.freeze({
+      entityId: "s_8c79d2bf12558fa45b039bb369a6eaf2",
+      versionId: "1",
+    }),
   }),
 ]);
 
@@ -424,7 +441,10 @@ export const CALIBRATION_VALIDATION_POLICY = Object.freeze({
   policyRef: Object.freeze({ entityId: "demo-policy-calibration-validation", versionId: "1" }),
   definitionRef: Object.freeze({ entityId: "demo-definition-calibration", versionId: "1" }),
   toolPolicyRef: Object.freeze({ entityId: "demo-policy-calibration-tools", versionId: "1" }),
-  incrementSchemaRef: Object.freeze({ entityId: "demo-schema-calibration-increment", versionId: "1" }),
+  incrementSchemaRef: Object.freeze({
+    entityId: "demo-schema-calibration-increment",
+    versionId: "1",
+  }),
   validationPolicyRef: ASSESSMENT_RUNTIME_POLICY_REFS.responseValidationPolicyRef,
   budgetPolicy: Object.freeze({
     schemaVersion: "1",
@@ -487,8 +507,10 @@ export const createAssessmentPolicyCatalog = ({
     });
     if (read.kind !== "succeeded") return undefined;
     return matchesRef(
-      { entityId: read.assessmentBasisReleaseSetRef.reference.entityId,
-        versionId: read.assessmentBasisReleaseSetRef.reference.versionId },
+      {
+        entityId: read.assessmentBasisReleaseSetRef.reference.entityId,
+        versionId: read.assessmentBasisReleaseSetRef.reference.versionId,
+      },
       input.basisReleaseSetRef.reference,
     )
       ? read
@@ -550,7 +572,10 @@ export const DEMO_RISK_FLOW_CONFIG = Object.freeze({
 export const createRiskFlowRetryPolicyReader = () => ({
   read: async (input) =>
     matchesRef(DEMO_RISK_FLOW_CONFIG.retryPolicyRef, input.retryPolicyRef)
-      ? { maxAttempts: DEMO_RISK_FLOW_CONFIG.retryBudget.maxAttempts, backoffMs: DEMO_RISK_FLOW_CONFIG.retryBudget.backoffMs }
+      ? {
+          maxAttempts: DEMO_RISK_FLOW_CONFIG.retryBudget.maxAttempts,
+          backoffMs: DEMO_RISK_FLOW_CONFIG.retryBudget.backoffMs,
+        }
       : undefined,
 });
 
@@ -739,9 +764,7 @@ const configurationContents = Object.freeze({
     thresholds: [
       {
         thresholdId: "demo-acceptance-default",
-        applicabilityConditions: [
-          { dimension: "工程阶段数据", values: ["变径空间扩挖"] },
-        ],
+        applicabilityConditions: [{ dimension: "工程阶段数据", values: ["变径空间扩挖"] }],
         maximumAcceptedLevelId: "demo-level-2",
       },
     ],
@@ -872,9 +895,7 @@ export const SETTLEMENT_SLOPE_DEMO_INDICATOR_ID = SETTLEMENT_SLOPE_INDICATOR_ID;
  * 确定性校验处被拒，而不是靠部署私藏一份候选冒充冻结集合。
  */
 export const DEMO_MEASURE_IDS = Object.freeze(
-  configurationContents["measure-library"].measures
-    .map((measure) => measure.measureId)
-    .sort(),
+  configurationContents["measure-library"].measures.map((measure) => measure.measureId).sort(),
 );
 
 /**

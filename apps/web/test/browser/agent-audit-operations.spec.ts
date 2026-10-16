@@ -252,6 +252,32 @@ test("纯系统管理员在三条业务窄读口同形失败，在运维面照�
   await expect(page.getByText(audit().reviewTask.entityId)).toHaveCount(0);
 });
 
+test("任务未在列表页出现时，深链仍直接读取详情，技术故障后可重试", async ({ page }) => {
+  let failDetail = true;
+  await page.route("**/queries/agent-task.read", async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.payload?.kind === "detail" && failDetail) return route.abort("connectionreset");
+    if (body.payload?.kind === "list") {
+      const response = await route.fetch();
+      const result = await response.json();
+      result.result.items = [];
+      return route.fulfill({ response, json: result });
+    }
+    return route.continue();
+  });
+  await loginOperator(
+    page,
+    withProject(`/agent/tasks/${encodeURIComponent(audit().agentTask.entityId)}`, {
+      taskVersion: audit().agentTask.versionId,
+    }),
+  );
+  const retry = page.getByRole("button", { name: "重试读取", exact: true });
+  await expect(retry).toBeVisible({ timeout: 30_000 });
+  failDetail = false;
+  await retry.click();
+  await expect(page.getByText("台账已用")).toBeVisible({ timeout: 30_000 });
+});
+
 test("Agent 任务窄读按精确引用返回真实任务事实", async ({ page }) => {
   await loginOperator(page, withProject("/agent"));
   await expect(page.getByRole("heading", { name: "智能 Agent", level: 1 })).toBeVisible();
@@ -418,18 +444,27 @@ test("授权撤销在同一个账号上关闭已成立的读取", async ({ page 
   expect(restored.status).toBe(200);
 });
 
-test("Agent 任务读在慢读下最多一个在途请求，切工程立刻中止在途并停止刷新", async ({ page }) => {
+test("Agent 任务读显示已登记任务的状态与预算，慢读下最多一个在途请求，切工程立刻中止在途并停止刷新", async ({
+  page,
+}) => {
   // 有界单在途与代次守卫都发生在请求层，这里直接在请求层观测：并发峰值、请求计数，
   // 以及切工程后在途请求是否被中止、节拍是否停掉。慢读由路由层施加，不改服务端。
+  // 先真实直穿核对界面能把已登记任务的状态与预算显示出来，再放慢读观测单在途与中止。
   let inFlight = 0;
   let peakInFlight = 0;
   let started = 0;
+  let slowRead = false;
+  let holdNext = false;
+  let releaseHeld;
+  const held = new Promise((resolve) => {
+    releaseHeld = resolve;
+  });
   const pending = new Set();
   const aborted = [];
   page.on("requestfailed", (request) => {
     if (request.url().includes("/queries/agent-task.read")) {
       aborted.push(request.failure()?.errorText ?? "failed");
-      pending.delete(request);
+      if (pending.delete(request)) inFlight -= 1;
     }
   });
   await page.route("**/queries/agent-task.read", async (route) => {
@@ -438,8 +473,11 @@ test("Agent 任务读在慢读下最多一个在途请求，切工程立刻中�
     inFlight += 1;
     peakInFlight = Math.max(peakInFlight, inFlight);
     pending.add(request);
-    // 8 秒慢读：跨越两个以上刷新节拍（5 秒一个），慢读期间不得堆积第二个请求。
-    await new Promise((resolve) => setTimeout(resolve, 8_000));
+    if (slowRead) {
+      // 8 秒慢读：跨越两个以上刷新节拍（5 秒一个），慢读期间不得堆积第二个请求。
+      if (holdNext) await held;
+      else await new Promise((resolve) => setTimeout(resolve, 8_000));
+    }
     if (pending.delete(request)) inFlight -= 1;
     try {
       await route.continue();
@@ -449,16 +487,38 @@ test("Agent 任务读在慢读下最多一个在途请求，切工程立刻中�
   });
 
   await loginOperator(page, withProject("/agent"));
-  // 26 秒覆盖三个 5 秒节拍：慢读期间发出的新请求不得与在途请求重叠。
-  await page.waitForTimeout(26_000);
-  expect(started, "慢读期间至少完成两轮单在途读取").toBeGreaterThanOrEqual(2);
+  await expect(page.getByRole("heading", { name: "智能 Agent", level: 1 })).toBeVisible();
+
+  // 已登记任务必须真正落到界面：列表读到真实事实后按精确身份渲染任务标识与其状态，
+  // 而不是永久停在读取中。清空快照曾把代际归零，真实响应永远对不上代次而被丢弃。
+  const registeredRow = page.locator("tr", { hasText: audit().agentTask.entityId });
+  await expect(registeredRow).toBeVisible({ timeout: 30_000 });
+  await expect(registeredRow.getByText("已完成")).toBeVisible();
+  // 共享详情与预算台账同样呈现真实事实；列头取自服务端预算台账，不是前端自造。
+  await expect(page.getByText("台账已用")).toBeVisible({ timeout: 30_000 });
+
+  // 放慢读：单在途、切工程中止与迟到响应丢弃。
+  slowRead = true;
+  const slowBaseline = started;
+  await expect.poll(() => started, { timeout: 30_000 }).toBeGreaterThanOrEqual(slowBaseline + 2);
   expect(peakInFlight, "任何时刻最多一个在途请求").toBe(1);
+
+  // 把一次在途读取钉住，保证切工程时确实有在途请求可中止。
+  holdNext = true;
+  const heldBaseline = started;
+  await expect.poll(() => started, { timeout: 30_000 }).toBeGreaterThanOrEqual(heldBaseline + 1);
+  expect(inFlight, "切换前必须存在在途读取").toBe(1);
 
   // 切到没有工程上下文的工程标识：在途读取被中止，本工程的事实立即清空、不再节拍刷新。
   const beforeSwitch = started;
-  await gotoSpa(page, "/agent?project=demo-c35-unknown-project");
-  await page.waitForTimeout(2_000);
-  expect(aborted.length, "切工程必须中止在途读取").toBeGreaterThanOrEqual(1);
+  try {
+    await gotoSpa(page, "/agent?project=demo-c35-unknown-project");
+    await expect
+      .poll(() => aborted.length, { message: "切工程必须中止在途读取" })
+      .toBeGreaterThanOrEqual(1);
+  } finally {
+    releaseHeld();
+  }
   await page.waitForTimeout(15_000);
   expect(started, "切工程后不得再向旧工程发起刷新").toBe(beforeSwitch);
 });

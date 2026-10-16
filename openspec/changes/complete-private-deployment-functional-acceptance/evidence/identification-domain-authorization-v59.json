@@ -1,0 +1,625 @@
+{
+  "workspacePreflight": {
+    "at": "2026-10-15T13:19:03.714Z",
+    "preflightOnly": true,
+    "workspaceCodeCandidate": "D-53",
+    "configurationRelease": "d52-v58",
+    "runningServiceUnchanged": true,
+    "parentCallerIdentityVerified": true,
+    "captured": {
+      "commandKind": "identification-graph.start",
+      "commandId": "c30-identification-start:f721543756acc5e7eee3a0539460759b1f3b00d937f5f8d3ad289d125f63da16",
+      "capabilities": [
+        "risk-identification.run"
+      ],
+      "sourceBranch": "risk-identification.plan",
+      "sourceInvocationId": "physical-d53-preflight-b711f528-760c-4306-9dea-8b37a395af84:c24-execution:c30-identification-start:f721543756acc5e7eee3a0539460759b1f3b00d937f5f8d3ad289d125f63da16",
+      "runId": "identification-run:synthetic-station-tunnel-project:risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9"
+    },
+    "executionCapabilityVerified": true,
+    "preparationReaderVerified": true,
+    "preparationSourceCount": 5,
+    "basisAtOriginalInputTime": {
+      "kind": "succeeded",
+      "result": {
+        "kind": "identification-basis",
+        "processModelReleaseRef": {
+          "kind": "process-model-release",
+          "reference": {
+            "entityId": "knowledge-release-cd18006c-59f5-46be-bb94-737544bcf472",
+            "versionId": "1"
+          }
+        },
+        "riskMechanismReleaseRef": {
+          "kind": "risk-mechanism-release",
+          "reference": {
+            "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+            "versionId": "1"
+          }
+        },
+        "retrievalEvidenceBaseReleaseRef": {
+          "kind": "retrieval-evidence-base-release",
+          "reference": {
+            "entityId": "knowledge-release-73655ae6-e721-41ae-9902-1873ae9bbc40",
+            "versionId": "1"
+          }
+        },
+        "identificationPolicySetRef": {
+          "kind": "identification-policy-set",
+          "reference": {
+            "entityId": "physical-identification-graph-policy",
+            "versionId": "physical-20261015-v13"
+          }
+        }
+      }
+    },
+    "originalInputTime": "2026-10-15T03:59:30.584Z",
+    "adapterAllowedCapabilities": [
+      "knowledge-modeling.retrieve",
+      "risk-identification.run",
+      "risk-identification.finalize"
+    ],
+    "blockedBeforeBusinessCommit": true,
+    "noParentWorkflowRetry": true,
+    "noChildRegistration": true,
+    "noModelOrAgentTaskCreated": true
+  },
+  "physicalPreflight": {
+    "at": "2026-10-15T13:26:16.152Z",
+    "preflightOnly": true,
+    "parentCallerIdentityVerified": true,
+    "captured": {
+      "commandKind": "identification-graph.start",
+      "commandId": "c30-identification-start:f721543756acc5e7eee3a0539460759b1f3b00d937f5f8d3ad289d125f63da16",
+      "capabilities": [
+        "risk-identification.run"
+      ],
+      "sourceBranch": "risk-identification.plan",
+      "sourceInvocationId": "physical-d53-preflight-074291aa-d43f-4aca-960f-a326051912b3:c24-execution:c30-identification-start:f721543756acc5e7eee3a0539460759b1f3b00d937f5f8d3ad289d125f63da16",
+      "runId": "identification-run:synthetic-station-tunnel-project:risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9"
+    },
+    "executionCapabilityVerified": true,
+    "preparationReaderVerified": true,
+    "preparationSourceCount": 5,
+    "basisAtOriginalInputTime": {
+      "kind": "failed",
+      "error": {
+        "stageCode": "identification-knowledge.terminal_failure",
+        "occurredAt": "2026-10-15T13:26:15.929Z",
+        "causalRunId": "physical-d53-preflight-074291aa-d43f-4aca-960f-a326051912b3:I1-basis",
+        "code": "TERMINAL_FAILURE",
+        "category": "technical",
+        "retryable": false,
+        "diagnosticRef": {
+          "kind": "diagnostic-artifact",
+          "reference": {
+            "entityId": "identification-knowledge-failure-physical-d53-preflight-074291aa-d43f-4aca-960f-a326051912b3:I1-basis",
+            "versionId": "sha256:1122e3417081931f38d3eddbc605948539bc992ae7a3e49d4a4bfe9c36d80b36"
+          }
+        }
+      }
+    },
+    "originalInputTime": "2026-10-15T03:59:30.584Z",
+    "adapterAllowedCapabilities": [
+      "knowledge-modeling.retrieve",
+      "risk-identification.run",
+      "risk-identification.finalize"
+    ],
+    "blockedBeforeBusinessCommit": true,
+    "noParentWorkflowRetry": true,
+    "noChildRegistration": true,
+    "noModelOrAgentTaskCreated": true
+  },
+  "basisGenerationPreflight": {
+    "at": "2026-10-15T13:20:17.290Z",
+    "readOnlyBusinessPreflight": true,
+    "noParentWorkflowRetry": true,
+    "noModelOrAgentTaskCreated": true,
+    "policyRef": {
+      "entityId": "physical-hybrid-retrieval-policy",
+      "versionId": "physical-20261015-v13"
+    },
+    "rows": [
+      {
+        "timeKind": "original",
+        "time": "2026-10-15T03:59:30.584Z",
+        "result": {
+          "kind": "succeeded",
+          "result": {
+            "kind": "identification-basis",
+            "processModelReleaseRef": {
+              "kind": "process-model-release",
+              "reference": {
+                "entityId": "knowledge-release-cd18006c-59f5-46be-bb94-737544bcf472",
+                "versionId": "1"
+              }
+            },
+            "riskMechanismReleaseRef": {
+              "kind": "risk-mechanism-release",
+              "reference": {
+                "entityId": "knowledge-release-0a6b0606-31f6-4001-98f2-6f5c727f9886",
+                "versionId": "1"
+              }
+            },
+            "retrievalEvidenceBaseReleaseRef": {
+              "kind": "retrieval-evidence-base-release",
+              "reference": {
+                "entityId": "knowledge-release-73655ae6-e721-41ae-9902-1873ae9bbc40",
+                "versionId": "1"
+              }
+            },
+            "identificationPolicySetRef": {
+              "kind": "identification-policy-set",
+              "reference": {
+                "entityId": "physical-identification-graph-policy",
+                "versionId": "physical-20261015-v13"
+              }
+            }
+          }
+        },
+        "activeGeneration": null
+      },
+      {
+        "timeKind": "current",
+        "time": "2026-10-15T13:20:14.095Z",
+        "result": {
+          "kind": "failed",
+          "error": {
+            "stageCode": "identification-knowledge.authorization_denied",
+            "occurredAt": "2026-10-15T13:20:17.290Z",
+            "causalRunId": "synthetic-station-tunnel-project",
+            "code": "AUTHORIZATION_DENIED",
+            "category": "authorization",
+            "retryable": false,
+            "requiredCapability": "knowledge-modeling.govern",
+            "authorizationPolicyRef": {
+              "entityId": "access-policy",
+              "versionId": "v1"
+            }
+          }
+        },
+        "activeGeneration": null
+      }
+    ]
+  },
+  "policyReadiness": {
+    "at": "2026-10-15T13:18:22.069Z",
+    "policyRef": {
+      "entityId": "physical-downstream-authorization",
+      "versionId": "physical-20261015-d49-v1"
+    },
+    "configurationOnly": true,
+    "policyUnchanged": true,
+    "roots": [
+      {
+        "rootBranch": "workflow.start-run",
+        "missing": [
+          "risk-identification.assemble-and-infer",
+          "risk-identification.repair-and-validate",
+          "risk-identification.merge-run-candidates",
+          "risk-identification.route-acceptance",
+          "risk-identification.accept-groups",
+          "review-audit.trace"
+        ]
+      },
+      {
+        "rootBranch": "workflow.resume-run",
+        "missing": [
+          "risk-identification.assemble-and-infer",
+          "risk-identification.repair-and-validate",
+          "risk-identification.merge-run-candidates",
+          "risk-identification.route-acceptance",
+          "risk-identification.accept-groups",
+          "review-audit.trace"
+        ]
+      },
+      {
+        "rootBranch": "engineering-data.complete-identification-preparation",
+        "missing": [
+          "risk-identification.assemble-and-infer",
+          "risk-identification.repair-and-validate",
+          "risk-identification.merge-run-candidates",
+          "risk-identification.route-acceptance",
+          "risk-identification.accept-groups",
+          "review-audit.trace"
+        ]
+      }
+    ]
+  },
+  "identity": {
+    "at": "2026-10-15T13:20:33.309Z",
+    "releaseId": "functional-workspace-20261015-d53-v59",
+    "previousReleaseId": "functional-workspace-20261015-d52-v58",
+    "configRef": "physical-20261015-d53-v59",
+    "codeCommit": "31ad1a2c47a377f20179e0008241034c14a3bec5",
+    "runtimeArtifact": {
+      "path": "/home/joshua/.local/state/riskflow/acceptance/run-20261014-physical/workspace-runtime-d53-v59.tgz",
+      "sha256": "0e28f42c5eaa9de95d92927346b6f696459d8b8920cadcd9646140a87b95b548",
+      "byteLength": 5757960
+    },
+    "trackedDiffSha256": "b2217df3d840b410265d0541bebd6595b3a3fda5bfc5c2a01da45a58ee1a2ad1",
+    "modelsPoliciesBudgetsAndRetrievalInputsUnchanged": true,
+    "downstreamPolicyUnchanged": true,
+    "graphVersionsUnchanged": true,
+    "scope": "synthetic-acceptance-workspace-build",
+    "formalOfflineMediaPass": false,
+    "stagingRecovery": "Completed identity only after original git-diff buffer overflow; existing bundle/config/manifest/catalog preserved"
+  },
+  "parent": {
+    "at": "2026-10-15T13:27:00.102Z",
+    "runRef": {
+      "kind": "workflow-run",
+      "reference": {
+        "entityId": "risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9",
+        "versionId": "035157af5173eb1e3025be0da1894fa9e5722fd386597b6193bea4ab0a53fde6"
+      }
+    },
+    "state": {
+      "schemaVersion": "1",
+      "projectId": "synthetic-station-tunnel-project",
+      "runId": "risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9",
+      "runVersionId": "905945e60558ae62537c573790ca049b3d0de69f94958d891ca8ce8258fcee92",
+      "entryMode": "identify-and-assess",
+      "entryIdentity": {
+        "entityId": "workflow-entry:synthetic-station-tunnel-project:identify-and-assess",
+        "versionId": "ca5ab20c264b046f6c135ad7c6c9fde62f078fe80ae8f3d4818686060543c6f9"
+      },
+      "stage": "identification",
+      "status": "retryable-failure",
+      "assessmentRunRefs": [],
+      "acceptedRiskRecordRefs": [],
+      "assessmentRecordRefs": [],
+      "warningRecordRefs": [],
+      "responseRecommendationRefs": [],
+      "deviationRecordRefs": [],
+      "calibrationSuggestionRefs": [],
+      "lastStageResultRef": {
+        "kind": "stage-result",
+        "reference": {
+          "entityId": "risk-flow-stage-result:risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9:preparing",
+          "versionId": "827ed205774ece32b96e216c411623074115a10798276e075aea6baa466a66b6"
+        }
+      },
+      "lastRouteDecisionRef": {
+        "kind": "route-decision",
+        "reference": {
+          "entityId": "risk-flow-entry:risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9",
+          "versionId": "f2ff51d4786aaddf23ca50b81b39e7db99555c14d798632f56dfe598fbf04578"
+        }
+      },
+      "lastErrorRef": {
+        "kind": "workflow-error",
+        "reference": {
+          "entityId": "risk-flow-graph-workflow-error:identification:unclassified-failure",
+          "versionId": "7c3e739496724c8e3cd917d88f6928890eab34db55f59d8d0f10d8846facd005"
+        }
+      },
+      "graphVersion": {
+        "entityId": "physical-risk-flow-graph",
+        "versionId": "physical-20261014-v1"
+      },
+      "recordedAt": "2026-10-15T03:59:30.584Z"
+    },
+    "taskCount": 10,
+    "bindingAuditCount": 1,
+    "preparationBindings": [
+      {
+        "actorRef": "account-9616718d-a935-46b5-abb9-e27ce774549d",
+        "frozenRefs": [
+          {
+            "kind": "project-revision",
+            "reference": {
+              "entityId": "synthetic-station-tunnel-project",
+              "versionId": "1"
+            }
+          },
+          {
+            "kind": "spatial-scope",
+            "reference": {
+              "entityId": "scope-c52c9cf3-f970-4430-9c5e-bf51177cd60a",
+              "versionId": "scope-revision-d5a44121-9d24-479e-be63-053453954ed2"
+            }
+          },
+          {
+            "kind": "source-version",
+            "reference": {
+              "entityId": "s_5dc5c9ccc11f02fdffe6e9b4218476e2",
+              "versionId": "1"
+            }
+          },
+          {
+            "kind": "source-version",
+            "reference": {
+              "entityId": "s_aa553650b4856364e80e2d4ed0850308",
+              "versionId": "1"
+            }
+          },
+          {
+            "kind": "source-version",
+            "reference": {
+              "entityId": "s_92d8f49300cd46308999e50bb4f6d347",
+              "versionId": "1"
+            }
+          },
+          {
+            "kind": "source-version",
+            "reference": {
+              "entityId": "s_a904784fc4508a33cfbfb4a16d423146",
+              "versionId": "1"
+            }
+          },
+          {
+            "kind": "source-version",
+            "reference": {
+              "entityId": "s_e6aa70288c7d5fb3298d0845b3b97834",
+              "versionId": "1"
+            }
+          },
+          {
+            "kind": "applicability-metadata-snapshot",
+            "reference": {
+              "entityId": "applicability-synthetic-station-tunnel-project-scope-c52c9cf3-f970-4430-9c5e-bf51177cd60a-physical-document-applicability-v1",
+              "versionId": "1"
+            }
+          }
+        ]
+      },
+      {
+        "actorRef": "account-9616718d-a935-46b5-abb9-e27ce774549d",
+        "frozenRefs": [
+          {
+            "kind": "identification-preparation-snapshot",
+            "reference": {
+              "entityId": "identification-preparation-50efff5ad17336023281c241aba94e153465e03a",
+              "versionId": "1"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "nextBatchScope": {
+    "spatialScopeRefs": [
+      {
+        "kind": "spatial-scope",
+        "reference": {
+          "entityId": "scope-c52c9cf3-f970-4430-9c5e-bf51177cd60a",
+          "versionId": "scope-revision-d5a44121-9d24-479e-be63-053453954ed2"
+        }
+      }
+    ],
+    "businessSourceVersionRefs": [
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_5dc5c9ccc11f02fdffe6e9b4218476e2",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_aa553650b4856364e80e2d4ed0850308",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_92d8f49300cd46308999e50bb4f6d347",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_a904784fc4508a33cfbfb4a16d423146",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_e6aa70288c7d5fb3298d0845b3b97834",
+          "versionId": "1"
+        }
+      }
+    ],
+    "requestedSourceVersionRefs": [
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_5dc5c9ccc11f02fdffe6e9b4218476e2",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_aa553650b4856364e80e2d4ed0850308",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_92d8f49300cd46308999e50bb4f6d347",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_a904784fc4508a33cfbfb4a16d423146",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_e6aa70288c7d5fb3298d0845b3b97834",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_83dda1c881e3cec7cbda67ac70d2ea97",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_baa06323b7398504401063b4888945a4",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_5870efd82e8a637233e5f5752b4fac09",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_d2261a936ce020e7b101e6d3ecd3d764",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_44c13f5c4f807ce636ef01ca17f94d28",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_53baa3271236adcb584d2f9453651fee",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_60a29a5728e95d2f746c5181cf79efe7",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_c8dd090b80b376c6310c51d35aa680e9",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_fc6b7e8badc4bf9f73e2c15a26fc885e",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_339de573fc7e080e4f5ac21a7db942a5",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_09d7266aa40e4ec631a48585562be50d",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_c1cd9ae306ed39b0248c245a3bec2779",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_27c8ab407a6362426d99bba336b44086",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_513c3add4efd157c6a32fcc11aea8fcf",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_b10bb46ecb6f4f328a46998c22389344",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_8d54b409c33806603a9fda5d3742867c",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_2439a3741bc0bd916b8a40ec331efd97",
+          "versionId": "1"
+        }
+      }
+    ],
+    "previousRequestedSourceCount": 21,
+    "knowledgePublicationSourceCount": 19,
+    "proposedRequestedSourceCount": 24,
+    "addedSourceVersionRefs": [
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_0b9bd233b248a06a6cd6d7bf494fd882",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_e262258290e088bf32d3faac957b3a6b",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "source-version",
+        "reference": {
+          "entityId": "s_2439a3741bc0bd916b8a40ec331efd97",
+          "versionId": "1"
+        }
+      }
+    ]
+  }
+}

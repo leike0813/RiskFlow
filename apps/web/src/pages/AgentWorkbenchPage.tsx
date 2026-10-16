@@ -13,6 +13,7 @@ import { DataTable, type DataTableColumn } from "../components/DataTable";
 import { Icon } from "../components/icons";
 import { useEngineering, useProjectPath } from "../api/engineering";
 import { useAgentTask } from "../agent/AgentTaskProvider";
+import type { AgentTaskRefView } from "../api/agentAuditOperations";
 import {
   AGENT_TASK_TYPE_LABELS,
   AGENT_TRIGGER_MODE_LABELS,
@@ -124,7 +125,7 @@ export default function AgentWorkbenchPage() {
   }));
 
   const selectTask = (row: Record<string, unknown>) => {
-    const selected = row.agentTaskRef as Parameters<typeof openTask>[0];
+    const selected = row.agentTaskRef as AgentTaskRefView;
     openTask(selected);
     navigate(projectPath(agentTaskDetailPath(selected)));
   };

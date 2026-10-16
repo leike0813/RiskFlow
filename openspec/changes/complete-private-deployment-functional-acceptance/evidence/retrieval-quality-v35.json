@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "instanceId": "physical-functional-20261014",
+  "releaseId": "functional-workspace-20261015-d42-v35",
+  "configRef": "physical-20261015-d42-v35",
+  "report": {
+    "schemaVersion": "1",
+    "acceptancePolicyRef": {
+      "entityId": "physical-retrieval-acceptance-policy",
+      "versionId": "physical-20261015-v9"
+    },
+    "datasetRef": {
+      "entityId": "retrieval-dataset-synthetic-v1",
+      "versionId": "physical-20261015-v9"
+    },
+    "syntheticSample": true,
+    "sampleNotice": "合成样本、待甲方复核",
+    "environment": {
+      "nodeVersion": "v24.12.0",
+      "containerRuntime": "29.9.0",
+      "qdrantServiceRef": "1.19.0",
+      "cpuModel": "Intel(R) Xeon(R) CPU E5-2697A v4 @ 2.60GHz",
+      "platform": "linux/x64"
+    },
+    "gates": [
+      {
+        "gateId": "dense-recall-at-5",
+        "threshold": 0.8,
+        "observed": 0.6388888888888888,
+        "passed": false,
+        "sampleCount": 6,
+        "boundaryNote": "Recall@5 on the fixed synthetic dataset"
+      },
+      {
+        "gateId": "bm25-recall-at-5",
+        "threshold": 0.8,
+        "observed": 0.7638888888888888,
+        "passed": false,
+        "sampleCount": 6,
+        "boundaryNote": "Recall@5 on the fixed synthetic dataset"
+      },
+      {
+        "gateId": "rrf-recall-at-5",
+        "threshold": 0.9,
+        "observed": 0.6666666666666666,
+        "passed": false,
+        "sampleCount": 6,
+        "boundaryNote": "Recall@5 on the fixed synthetic dataset"
+      },
+      {
+        "gateId": "rrf-ndcg-at-5",
+        "threshold": 0.8,
+        "observed": 0.8905737889299666,
+        "passed": true,
+        "sampleCount": 6,
+        "boundaryNote": "nDCG@5 on the fixed synthetic dataset"
+      },
+      {
+        "gateId": "dual-index-reconciliation",
+        "threshold": 1,
+        "observed": 1,
+        "passed": true,
+        "sampleCount": 15,
+        "boundaryNote": "member identity/vector/payload parity against the projected manifest"
+      },
+      {
+        "gateId": "authorization-leakage",
+        "threshold": 0,
+        "observed": 0,
+        "passed": true,
+        "sampleCount": 6,
+        "boundaryNote": "leaked protected candidates or body content across authorization boundaries"
+      },
+      {
+        "gateId": "qdrant-query-p95-ms",
+        "threshold": 2000,
+        "observed": 51.34707100000014,
+        "passed": true,
+        "sampleCount": 3,
+        "boundaryNote": "serial dual-route RRF requests after the query dense vector is ready"
+      }
+    ],
+    "overall": "failed",
+    "measuredAt": "2026-10-15T06:32:10.285Z"
+  }
+}

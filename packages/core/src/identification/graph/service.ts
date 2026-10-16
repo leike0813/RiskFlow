@@ -100,10 +100,11 @@ export type IdentificationGraphGroupOutcomeV1 =
   | { readonly kind: "failed"; readonly groupRef: IdentificationGroupRefV1 };
 
 /**
- * 输入快照身份（design D-03）：同一工程、准备快照与冻结发布组合只对应一个身份。
+ * 输入快照身份：工程、所属识别运行、准备快照与冻结发布组合共同确定身份。
  * 只摘要参与冻结的引用，不含策略正文、当前时间或调用方正文。
  */
 export const identificationInputSnapshotRefFor = (input: {
+  readonly identificationRunRef?: WorkflowRunRefV1 | undefined;
   readonly projectId: string;
   readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
   readonly policySetRef: IdentificationPolicySetRefV1;
@@ -116,6 +117,9 @@ export const identificationInputSnapshotRefFor = (input: {
     versionId: sha256CanonicalJson({
       projectId: input.projectId,
       preparationSnapshotRef: input.preparationSnapshotRef,
+      ...(input.identificationRunRef === undefined
+        ? {}
+        : { identificationRunRef: input.identificationRunRef }),
       policySetRef: input.policySetRef,
       processModelReleaseRef: input.processModelReleaseRef,
       retrievalEvidenceBaseReleaseRef: input.retrievalEvidenceBaseReleaseRef,
@@ -162,6 +166,7 @@ export const identificationWorkItemRefFor = (input: {
  * 因此调用方拿不到半套输入快照。是否就绪（未生效、已停用、错工程）由 I1 上游解析与等待判定。
  */
 export const resolveIdentificationInputSnapshot = (input: {
+  readonly identificationRunRef?: WorkflowRunRefV1 | undefined;
   readonly preparationSnapshotRef: IdentificationPreparationSnapshotRefV1;
   readonly policySet: IdentificationGraphPolicySetV1;
   readonly processModelReleaseRef: VersionReference;
@@ -174,6 +179,9 @@ export const resolveIdentificationInputSnapshot = (input: {
 }): IdentificationInputSnapshotV1 =>
   IdentificationInputSnapshotV1Schema.parse({
     schemaVersion: IDENTIFICATION_GRAPH_SCHEMA_VERSION_V1,
+    ...(input.identificationRunRef === undefined
+      ? {}
+      : { identificationRunRef: input.identificationRunRef }),
     preparationSnapshotRef: input.preparationSnapshotRef,
     processModelReleaseRef: {
       kind: "process-model-release",
@@ -223,6 +231,7 @@ export const buildIdentificationWorkPlan = (input: {
   const invalid = { kind: "invalid", reasonCode: WORK_PLAN_INVALID_REASON_CODE } as const;
 
   const expectedInputSnapshotRef = identificationInputSnapshotRefFor({
+    identificationRunRef: input.inputSnapshot.identificationRunRef,
     projectId: input.projectId,
     preparationSnapshotRef: input.inputSnapshot.preparationSnapshotRef,
     policySetRef: input.inputSnapshot.identificationPolicySetRef,

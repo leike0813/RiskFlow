@@ -74,7 +74,7 @@ const readJson = async ({
     requiredCapability: RUNNER_CAPABILITY,
     authorization,
   });
-  const verified = handle.verified.then(
+  const completed = handle.completed.then(
     (receipt) => ({ receipt }),
     (error) => ({ error }),
   );
@@ -100,7 +100,7 @@ const readJson = async ({
   } catch (error) {
     failure ??= error;
   }
-  const verification = await verified;
+  const verification = await completed;
   if (failure !== undefined) throw failure;
   if ("error" in verification) throw verification.error;
   const receipt = ArtifactReadReceiptV1Schema.parse(verification.receipt);

@@ -32,6 +32,7 @@ import {
   retrievalMemberPointId,
   retrievalMemberRefFor,
   retrievalMemberText,
+  retrievalQueryEmbeddingText,
   type HybridRetrievalFailureCodeV1,
   type HybridRetrievalFailureStageV1,
   type HybridRetrievalPolicyV1,
@@ -311,6 +312,33 @@ describe("HybridRetrievalPolicyV1 strict parsing", () => {
         memberLimit: 5,
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("查询 Embedding 文本渲染", () => {
+  const query = "盾构扩径施工掌子面稳定性失效";
+  const instruction =
+    "Given a Chinese engineering risk query, retrieve the applicable standard clauses";
+
+  it("只在策略声明查询指令时按固定模板渲染，否则使用原查询文本", () => {
+    expect(retrievalQueryEmbeddingText(query, makePolicy())).toBe(query);
+    expect(retrievalQueryEmbeddingText(query, makePolicy({ queryInstruction: instruction }))).toBe(
+      `Instruct: ${instruction}\nQuery:${query}`,
+    );
+  });
+
+  it("查询指令必须是非空任务描述并去除首尾空白", () => {
+    for (const queryInstruction of ["", "   "]) {
+      expect(
+        HybridRetrievalPolicyV1Schema.safeParse({ ...policyInput(), queryInstruction }).success,
+      ).toBe(false);
+    }
+    expect(
+      HybridRetrievalPolicyV1Schema.parse({
+        ...policyInput(),
+        queryInstruction: ` ${instruction} `,
+      }).queryInstruction,
+    ).toBe(instruction);
   });
 });
 
@@ -631,6 +659,38 @@ describe("member normalization", () => {
     expect(again.manifest.membersSha256).toBe(outcome.manifest.membersSha256);
     expect(again.manifest.membersSha256).toMatch(/^[0-9a-f]{64}$/u);
     expect(RetrievalIndexManifestV1Schema.safeParse(outcome.manifest).success).toBe(true);
+  });
+
+  it("把规范正文纳入成员投影文本与内容摘要", () => {
+    const entry = {
+      entryId: "std-1",
+      level: "行业标准",
+      standardIdentity: "SL 795-2016",
+      standardVersion: "2016",
+      clauseRefs: ["5.2.3"],
+      retrievalText: "5.2.3 盾构开仓前应编制专项方案并设置防渗措施。",
+    };
+    const sources = memberSources().map((source) =>
+      source.sourceKind === "standard-library"
+        ? { ...source, entries: [{ entryId: "std-1", entry }] }
+        : source,
+    );
+    const outcome = normalize({ sources });
+    if (outcome.kind !== "succeeded")
+      throw new Error(`expected success, got ${outcome.detailCode}`);
+    const member = outcome.manifest.members.find((m) => m.sourceKind === "standard-library")!;
+    const text = retrievalMemberText("standard-library", entry);
+    expect(text).toContain("盾构开仓前应编制专项方案并设置防渗措施。");
+    expect(text.endsWith("\n5.2.3 盾构开仓前应编制专项方案并设置防渗措施。")).toBe(true);
+    expect(member.contentDigest).toBe(retrievalMemberContentDigest(text));
+    // 同一规范条目在有无正文时摘要必须不同：正文本身进入投影。
+    const baseline = normalize();
+    if (baseline.kind !== "succeeded") throw new Error("baseline normalization must succeed");
+    const baselineMember = baseline.manifest.members.find(
+      (m) => m.sourceKind === "standard-library",
+    )!;
+    expect(member.contentDigest).not.toBe(baselineMember.contentDigest);
+    expect(member.pointId).not.toBe(baselineMember.pointId);
   });
 
   it("keeps distinct members with identical projected text as separate points", () => {

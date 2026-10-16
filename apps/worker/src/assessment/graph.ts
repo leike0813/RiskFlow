@@ -64,7 +64,6 @@ import {
   type KnowledgeQueryResultRefV1,
   type KnowledgeReleaseRefV1,
   type KnowledgeModelingPortV1,
-  type MeasureLibraryReleaseRefV1,
   type ModuleBranchV1,
   type MonitoringSnapshotRefV1,
   type ProjectRevisionRefV1,
@@ -260,8 +259,8 @@ export interface AssessmentGraphRecommendationAgentPortV1 {
     readonly actionId: string;
     readonly queryResultRef: KnowledgeQueryResultRefV1;
     readonly warningResponseTaskRef: WarningResponseTaskRefV1;
-    readonly responseGenerationPolicyRef: VersionReference;
-    readonly responseAgentPolicyRef: VersionReference;
+    readonly responseGenerationPolicyRef?: VersionReference;
+    readonly responseAgentPolicyRef?: VersionReference;
   }): Promise<AssessmentGraphAgentOutcomeV1>;
 }
 
@@ -274,6 +273,7 @@ export interface AssessmentGraphCalibrationAgentPortV1 {
     readonly inputSnapshotRef: CalibrationInputSnapshotRefV1;
     readonly deviationRecordRef: DeviationRecordRefV1;
     readonly calibrationValidationPolicyRef: VersionReference;
+    readonly agentPolicy?: CalibrationValidationPolicyV1;
   }): Promise<AssessmentGraphAgentOutcomeV1>;
 }
 
@@ -598,8 +598,8 @@ export const toAssessmentGraphError = (input: {
   const code = readProperty(error, "code");
   const retryable = readProperty(error, "retryable");
   const details = readProperty(error, "details");
-  const blockerKind = readProperty(details, "blockerKind");
-  const reasonCode = readProperty(details, "reasonCode");
+  const blockerKind = readProperty(error, "blockerKind") ?? readProperty(details, "blockerKind");
+  const reasonCode = readProperty(error, "reasonCode") ?? readProperty(details, "reasonCode");
   if (typeof code !== "string") {
     return classifyWorkflowGraphFailure({
       stage,
@@ -614,6 +614,8 @@ export const toAssessmentGraphError = (input: {
       : typeof reasonCode === "string"
         ? reasonCode
         : code;
+  if (code === "BUSINESS_BLOCKED")
+    return graphError({ code: "ENTRY_REFERENCES_INCOMPLETE", stage, detailCode, occurredAt });
   if (code === "TRANSACTION_FAILED" || code === "transaction_failed") {
     return classifyWorkflowGraphFailure({
       stage,
@@ -917,6 +919,9 @@ const resolveBasisReleaseSetRef = async (input: {
     occurredAt: input.occurredAt,
   });
   if (frozen !== undefined) return frozen;
+  const cursor = await readAssessmentCursor({ ports: input.ports, run: input.run });
+  if (cursor?.assessmentBasisReleaseSetRef !== undefined)
+    return cursor.assessmentBasisReleaseSetRef;
   const entrySnapshotRef = input.state.entrySnapshotRef;
   if (entrySnapshotRef?.kind !== "assessment-preparation") {
     // 分段入口的冻结输入没有评估准备快照可解析：缺失即按入口不完整安全失败（design D-03）。
@@ -935,7 +940,7 @@ const resolveBasisReleaseSetRef = async (input: {
     idempotencyKey: actionId,
     projectId: input.run.projectId,
     actorId: input.run.actorId,
-    issuedAt: input.run.issuedAt,
+    issuedAt: input.occurredAt,
     authorization: await knowledgeReadAuthorizationFor({
       ports: input.ports,
       run: input.run,
@@ -950,7 +955,10 @@ const resolveBasisReleaseSetRef = async (input: {
     fail(
       toAssessmentGraphError({
         stage: input.stage,
-        error: { code: "UPSTREAM_WAITING", retryable: false },
+        error:
+          resolved.kind === "failed"
+            ? resolved.error
+            : { code: "UPSTREAM_WAITING", retryable: false },
         occurredAt: input.occurredAt,
       }),
     );
@@ -1246,6 +1254,10 @@ interface CursorPatchV1 {
   readonly lastWaitingRef?: WorkflowGraphRunStateV1["lastWaitingRef"];
   readonly lastErrorRef?: WorkflowGraphRunStateV1["lastErrorRef"];
   readonly resultRef?: WorkflowGraphRunStateV1["resultRef"];
+  readonly forecastInputSnapshot?: ResponseForecastInputSnapshotV1;
+  readonly calibrationPolicy?: WorkflowGraphRunStateV1["calibrationPolicy"];
+  readonly calibrationPreparedInput?: WorkflowGraphRunStateV1["calibrationPreparedInput"];
+  readonly assessmentBasisReleaseSetRef?: AssessmentBasisReleaseSetRefV1;
 }
 
 /** 游标内容 → 游标正文：只按前一版本与本次阶段/状态追加新版本（design D-05）。 */
@@ -1288,6 +1300,26 @@ const cursorBody = (input: {
     status: input.status,
     // 精确图版本与重评入口同理：每次形成 run-state 工件都写入同一启动值（design D-04）。
     graphVersion: input.run.graphVersion,
+    ...((patch.assessmentBasisReleaseSetRef ?? previous?.assessmentBasisReleaseSetRef) === undefined
+      ? {}
+      : {
+          assessmentBasisReleaseSetRef:
+            patch.assessmentBasisReleaseSetRef ?? previous?.assessmentBasisReleaseSetRef,
+        }),
+    ...((patch.forecastInputSnapshot ?? previous?.forecastInputSnapshot) === undefined
+      ? {}
+      : { forecastInputSnapshot: patch.forecastInputSnapshot ?? previous?.forecastInputSnapshot }),
+    ...((patch.calibrationPolicy ?? previous?.calibrationPolicy) === undefined
+      ? {}
+      : {
+          calibrationPolicy: patch.calibrationPolicy ?? previous?.calibrationPolicy,
+        }),
+    ...((patch.calibrationPreparedInput ?? previous?.calibrationPreparedInput) === undefined
+      ? {}
+      : {
+          calibrationPreparedInput:
+            patch.calibrationPreparedInput ?? previous?.calibrationPreparedInput,
+        }),
     ...(reassessmentEntry === undefined ? {} : { reassessmentEntry }),
     ...(input.run.parentRunRef === undefined ? {} : { parentRunRef: input.run.parentRunRef }),
     assessmentRunRefs: patch.assessmentRunRefs ?? previous?.assessmentRunRefs ?? [],
@@ -1813,60 +1845,6 @@ const auditTrailRefFor = (run: AssessmentGraphRunContextV1) => ({
   },
 });
 
-/** 只读冻结策略与依据的运行策略集，供 A6/A7/A8 复用（不复制领域规则）。 */
-const runtimePoliciesFor = async (input: {
-  readonly ports: AssessmentGraphPortsV1;
-  readonly run: AssessmentGraphRunContextV1;
-  readonly state: AssessmentGraphStateV1;
-  readonly stage: AssessmentStageV1;
-}): Promise<AssessmentRuntimePolicySetV1> => {
-  const occurredAt = input.ports.now().toISOString();
-  const entrySnapshotRef = input.state.entrySnapshotRef;
-  if (entrySnapshotRef?.kind !== "assessment-preparation") {
-    fail(
-      contractInvalid({
-        stage: input.stage,
-        detailCode: "assessment-preparation-entry-missing",
-        occurredAt,
-      }),
-    );
-  }
-  return await readRuntimePolicySetForRun({
-    ports: input.ports,
-    run: input.run,
-    stage: input.stage,
-    preparationSnapshotRef: entrySnapshotRef.assessmentPreparationSnapshotRef,
-    basisReleaseSetRef: await resolveBasisReleaseSetRef({
-      ports: input.ports,
-      run: input.run,
-      state: input.state,
-      stage: input.stage,
-      occurredAt,
-    }),
-  });
-};
-
-/** C19 依据里“度量库”成员 → C27 查询的精确释放引用（成员身份唯一决定，不猜最新）。 */
-const measureLibraryReleaseRefOf = (input: {
-  readonly read: Extract<AssessmentBasisReleaseSetReadResultV1, { readonly kind: "succeeded" }>;
-  readonly stage: AssessmentStageV1;
-  readonly occurredAt: string;
-}): MeasureLibraryReleaseRefV1 => {
-  const member = input.read.configurationMembers.find(
-    (candidate) => candidate.definitionType === "measure-library",
-  );
-  if (member === undefined) {
-    fail(
-      contractInvalid({
-        stage: input.stage,
-        detailCode: "measure-library-member-missing",
-        occurredAt: input.occurredAt,
-      }),
-    );
-  }
-  return { kind: "measure-library-release", reference: member.releaseRef.reference };
-};
-
 /** 入口冻结（design D-03/D-04）：每个入口用自己的冻结事实，不复制识别正文。 */
 export interface AssessmentEntryResolutionV1 {
   readonly entrySnapshotRef: NonNullable<AssessmentGraphStateV1["entrySnapshotRef"]>;
@@ -1874,6 +1852,7 @@ export interface AssessmentEntryResolutionV1 {
   /** 评估准备入口的 A0 阶段结果；分段入口不产生 A0 阶段结果（无对应公共变体）。 */
   readonly stageResult: unknown;
   readonly forecastSnapshot?: ResponseForecastInputSnapshotV1;
+  readonly calibrationPolicy?: WorkflowGraphRunStateV1["calibrationPolicy"];
 }
 
 export const resolveAssessmentEntry = async (input: {
@@ -1895,7 +1874,7 @@ export const resolveAssessmentEntry = async (input: {
         fail(
           entryIncomplete({
             stage: "A0",
-            detailCode: `forecast-policy-${policy.reasonCode}`,
+            detailCode: policy.reasonCode,
             occurredAt,
           }),
         );
@@ -1935,17 +1914,7 @@ export const resolveAssessmentEntry = async (input: {
           occurredAt,
         }),
         forecastPolicyRef: policy.forecastPolicyRef,
-        // 冻结预测命令将使用的那一份授权：入口按预测动作身份（`A2:forecast`）预签发，A2 用
-        // 同一调用身份取回同一上下文。C28 要求快照授权与预测命令授权逐字一致；照抄运行继承的
-        // 上下文做不到——C06 一个上下文只对一个 invocation_id，预测命令必须用自己的身份复验。
-        authorizationContextRef: (
-          await downstreamAuthorizationFor({
-            ports,
-            run,
-            branch: "warning-response.adopt-recommendation",
-            invocationId: actionIdFor(run, "A2:forecast"),
-          })
-        ).authorizationContextRef,
+        authorizationContextRef: run.authorization.authorizationContextRef,
         auditTrailRef: auditTrailRefFor(run),
         createdBy: run.actorId,
         createdAt: run.issuedAt,
@@ -1979,7 +1948,7 @@ export const resolveAssessmentEntry = async (input: {
         fail(
           entryIncomplete({
             stage: "A0",
-            detailCode: `calibration-policy-${policy.reasonCode}`,
+            detailCode: policy.reasonCode,
             occurredAt,
           }),
         );
@@ -2032,6 +2001,11 @@ export const resolveAssessmentEntry = async (input: {
         },
         entryIdentity: snapshotRef.reference,
         stageResult: undefined,
+        calibrationPolicy: {
+          targetReleaseRef: policy.targetReleaseRef,
+          calibrationValidationPolicyRef: policy.calibrationValidationPolicyRef,
+          agentPolicy: policy.agentPolicy,
+        },
       };
     }
     default: {
@@ -2186,6 +2160,12 @@ const stageA0: StageHandlerV1 = async ({ ports, run, state }) => {
     stageResult: entry.stageResult,
     commandKind: "assessment-graph.a0",
     statePatch: { entrySnapshotRef: entry.entrySnapshotRef },
+    ...(entry.forecastSnapshot === undefined
+      ? {}
+      : { cursorPatch: { forecastInputSnapshot: entry.forecastSnapshot } }),
+    ...(entry.calibrationPolicy === undefined
+      ? {}
+      : { cursorPatch: { calibrationPolicy: entry.calibrationPolicy } }),
     extraRows: ({ artifactRefs, runVersionId, auditEntryId, occurredAt: recordedAt }) => [
       WorkflowGraphResultRowV1Schema.parse({
         ...rowBase({
@@ -2228,15 +2208,6 @@ const stageA1: StageHandlerV1 = async ({ ports, run, state }) => {
     occurredAt,
   });
   const read = await readBasisReleaseSet({ ports, run, stage: "A1", basisReleaseSetRef });
-  if (state.entrySnapshotRef?.kind === "assessment-preparation") {
-    await readRuntimePolicySetForRun({
-      ports,
-      run,
-      stage: "A1",
-      preparationSnapshotRef: state.entrySnapshotRef.assessmentPreparationSnapshotRef,
-      basisReleaseSetRef,
-    });
-  }
   const stageResult = AssessmentStageResultV1Schema.parse({
     schemaVersion: "1",
     runRef: run.runRef,
@@ -2255,6 +2226,7 @@ const stageA1: StageHandlerV1 = async ({ ports, run, state }) => {
     cursor,
     stageResult,
     commandKind: "assessment-graph.a1",
+    cursorPatch: { assessmentBasisReleaseSetRef: read.assessmentBasisReleaseSetRef },
     links: (stageResultRef) => runStageLink({ run, stage: "A1", occurredAt, stageResultRef }),
   });
 };
@@ -2265,7 +2237,14 @@ const stageA2: StageHandlerV1 = async ({ ports, run, state }) => {
   assertStageInPlan({ run, stage: "A2", occurredAt });
   const cursor = await readAssessmentCursor({ ports, run });
   if (run.entryMode === "forecast-response") {
-    const entry = await resolveAssessmentEntry({ ports, run, occurredAt });
+    const entry =
+      cursor?.forecastInputSnapshot !== undefined &&
+      state.entrySnapshotRef?.kind === "forecast-input"
+        ? {
+            entrySnapshotRef: state.entrySnapshotRef,
+            forecastSnapshot: cursor.forecastInputSnapshot,
+          }
+        : await resolveAssessmentEntry({ ports, run, occurredAt });
     const snapshot = entry.forecastSnapshot;
     if (snapshot === undefined || entry.entrySnapshotRef.kind !== "forecast-input") {
       fail(contractInvalid({ stage: "A2", detailCode: "forecast-entry-missing", occurredAt }));
@@ -2663,17 +2642,20 @@ const stageA3: StageHandlerV1 = async ({ ports, run, state }) => {
       stage: "A3",
       occurredAt,
     });
-    const policy = await ports.policies.resolveCalibrationPolicy({
-      projectId: run.projectId,
-      basisReleaseSetRef,
-      requiredAt: run.validAt,
-      authorization: run.authorization,
-    });
+    const policy =
+      cursor?.calibrationPolicy === undefined
+        ? await ports.policies.resolveCalibrationPolicy({
+            projectId: run.projectId,
+            basisReleaseSetRef,
+            requiredAt: run.validAt,
+            authorization: run.authorization,
+          })
+        : { kind: "resolved" as const, ...cursor.calibrationPolicy };
     if (policy.kind !== "resolved") {
       fail(
         entryIncomplete({
           stage: "A3",
-          detailCode: `calibration-policy-${policy.reasonCode}`,
+          detailCode: policy.reasonCode,
           occurredAt,
         }),
       );
@@ -2720,6 +2702,14 @@ const stageA3: StageHandlerV1 = async ({ ports, run, state }) => {
       actionSuffix: "A3",
       cursor,
       commandKind: "assessment-graph.a3",
+      cursorPatch: {
+        calibrationPolicy: {
+          targetReleaseRef: policy.targetReleaseRef,
+          calibrationValidationPolicyRef: policy.calibrationValidationPolicyRef,
+          agentPolicy: policy.agentPolicy,
+        },
+        calibrationPreparedInput: preparedInput.result,
+      },
       links: () => [],
     });
   }
@@ -2758,39 +2748,45 @@ const stageA4: StageHandlerV1 = async ({ ports, run, state }) => {
       stage: "A4",
       occurredAt,
     });
-    const policy = await ports.policies.resolveCalibrationPolicy({
-      projectId: run.projectId,
-      basisReleaseSetRef,
-      requiredAt: run.validAt,
-      authorization: run.authorization,
-    });
+    const policy =
+      cursor?.calibrationPolicy === undefined
+        ? await ports.policies.resolveCalibrationPolicy({
+            projectId: run.projectId,
+            basisReleaseSetRef,
+            requiredAt: run.validAt,
+            authorization: run.authorization,
+          })
+        : { kind: "resolved" as const, ...cursor.calibrationPolicy };
     if (policy.kind !== "resolved") {
       fail(
         entryIncomplete({
           stage: "A4",
-          detailCode: `calibration-policy-${policy.reasonCode}`,
+          detailCode: policy.reasonCode,
           occurredAt,
         }),
       );
     }
-    const preparedInput = await ports.calibration.prepareInput({
-      requestId: calibrationInputActionIdFor(run),
-      idempotencyKey: calibrationInputActionIdFor(run),
-      requestedAt: run.issuedAt,
-      projectId: run.projectId,
-      actorId: run.actorId,
-      authorization: await downstreamAuthorizationFor({
-        ports,
-        run,
-        branch: "warning-response.create-calibration-suggestion",
-        invocationId: calibrationInputActionIdFor(run),
-      }),
-      deviationFactRef: await deviationFactRefFor({ ports, run, occurredAt }),
-      basisReleaseSetRef,
-      targetReleaseRef: policy.targetReleaseRef,
-      calibrationValidationPolicyRef: policy.calibrationValidationPolicyRef,
-      agentPolicy: policy.agentPolicy,
-    });
+    const preparedInput =
+      cursor?.calibrationPreparedInput === undefined
+        ? await ports.calibration.prepareInput({
+            requestId: calibrationInputActionIdFor(run),
+            idempotencyKey: calibrationInputActionIdFor(run),
+            requestedAt: run.issuedAt,
+            projectId: run.projectId,
+            actorId: run.actorId,
+            authorization: await downstreamAuthorizationFor({
+              ports,
+              run,
+              branch: "warning-response.create-calibration-suggestion",
+              invocationId: calibrationInputActionIdFor(run),
+            }),
+            deviationFactRef: await deviationFactRefFor({ ports, run, occurredAt }),
+            basisReleaseSetRef,
+            targetReleaseRef: policy.targetReleaseRef,
+            calibrationValidationPolicyRef: policy.calibrationValidationPolicyRef,
+            agentPolicy: policy.agentPolicy,
+          })
+        : { kind: "succeeded" as const, result: cursor.calibrationPreparedInput };
     if (preparedInput.kind !== "succeeded") {
       fail(
         contractInvalid({ stage: "A4", detailCode: "calibration-input-unavailable", occurredAt }),
@@ -2803,6 +2799,7 @@ const stageA4: StageHandlerV1 = async ({ ports, run, state }) => {
       inputSnapshotRef: preparedInput.result.inputSnapshotRef,
       deviationRecordRef: preparedInput.result.deviationRecordRef,
       calibrationValidationPolicyRef: policy.calibrationValidationPolicyRef,
+      agentPolicy: policy.agentPolicy,
     });
     if (task.kind === "failed") {
       return await headToSummary({
@@ -3011,7 +3008,6 @@ const stageA6: StageHandlerV1 = async ({ ports, run, state }) => {
   if (assessmentRecordRef === undefined) {
     fail(contractInvalid({ stage: "A6", detailCode: "assessment-record-missing", occurredAt }));
   }
-  const policies = await runtimePoliciesFor({ ports, run, state, stage: "A6" });
   const opened = await ports.warning.open({
     kind: "open",
     commandId: actionIdFor(run, "A6:warning-open"),
@@ -3027,8 +3023,6 @@ const stageA6: StageHandlerV1 = async ({ ports, run, state }) => {
     }),
     payload: {
       assessmentRecordRef,
-      warningAggregationPolicyRef: policies.warningAggregationPolicyRef,
-      notificationPolicyRef: policies.notificationPolicyRef,
     },
   });
   if (opened.kind === "failed") {
@@ -3130,24 +3124,6 @@ const stageA7: StageHandlerV1 = async ({ ports, run, state }) => {
   if (assessmentRecordRef === undefined || warningResponseTaskRef === undefined) {
     fail(contractInvalid({ stage: "A7", detailCode: "warning-task-missing", occurredAt }));
   }
-  const policies = await runtimePoliciesFor({ ports, run, state, stage: "A7" });
-  const basisRead = await readBasisReleaseSet({
-    ports,
-    run,
-    stage: "A7",
-    basisReleaseSetRef: await resolveBasisReleaseSetRef({
-      ports,
-      run,
-      state,
-      stage: "A7",
-      occurredAt,
-    }),
-  });
-  const measureLibraryReleaseRef = measureLibraryReleaseRefOf({
-    read: basisRead,
-    stage: "A7",
-    occurredAt,
-  });
   const query = await ports.recommendation.measureCandidates({
     queryId: actionIdFor(run, "A7:measure-candidates"),
     projectId: run.projectId,
@@ -3160,7 +3136,7 @@ const stageA7: StageHandlerV1 = async ({ ports, run, state }) => {
       invocationId: actionIdFor(run, "A7:measure-candidates"),
     }),
     kind: "measure-candidates",
-    payload: { assessmentRecordRef, warningResponseTaskRef, measureLibraryReleaseRef },
+    payload: { assessmentRecordRef, warningResponseTaskRef },
   });
   if (query.kind === "waiting") {
     return await waitFor({
@@ -3174,6 +3150,11 @@ const stageA7: StageHandlerV1 = async ({ ports, run, state }) => {
     });
   }
   if (query.kind === "failed") {
+    if (
+      query.error.code === "BUSINESS_BLOCKED" &&
+      query.error.blockerKind === "measure-candidates-unavailable"
+    )
+      fail(toAssessmentGraphError({ stage: "A7", error: query.error, occurredAt }));
     return await headToSummary({
       ports,
       run,
@@ -3192,8 +3173,6 @@ const stageA7: StageHandlerV1 = async ({ ports, run, state }) => {
     actionId: actionIdFor(run, "A7:recommendation-agent-task"),
     queryResultRef,
     warningResponseTaskRef,
-    responseGenerationPolicyRef: policies.responseGenerationPolicyRef,
-    responseAgentPolicyRef: policies.responseAgentPolicyRef,
   });
   if (task.kind === "failed") {
     return await headToSummary({
@@ -3237,7 +3216,6 @@ const stageA7: StageHandlerV1 = async ({ ports, run, state }) => {
       warningResponseTaskRef,
       measureCandidateQueryResultRef: queryResultRef,
       agentTaskResultRef: task.agentTaskResultRef,
-      responseGenerationPolicyRef: policies.responseGenerationPolicyRef,
     },
   });
   if (created.kind === "failed") {
@@ -3300,7 +3278,6 @@ const stageA8: StageHandlerV1 = async ({ ports, run, state }) => {
   if (siteContextRef === undefined) {
     fail(contractInvalid({ stage: "A8", detailCode: "site-context-missing", occurredAt }));
   }
-  const policies = await runtimePoliciesFor({ ports, run, state, stage: "A8" });
   const recorded = await ports.recommendation.validateAndRecord({
     kind: "validate-and-record",
     commandId: actionIdFor(run, "A8:recommendation-record"),
@@ -3316,7 +3293,6 @@ const stageA8: StageHandlerV1 = async ({ ports, run, state }) => {
     }),
     payload: {
       recommendationCandidateRef,
-      responseValidationPolicyRef: policies.responseValidationPolicyRef,
       siteContextRef,
     },
   });
@@ -3760,6 +3736,43 @@ const recordNodeFailure = async (input: {
   const { ports, run, state, stage } = input;
   const occurredAt = ports.now().toISOString();
   const error = toAssessmentGraphError({ stage, error: input.error, occurredAt });
+  const preparationKind = {
+    "scoring-rule-configuration-incomplete": "scoring-configuration",
+    "assessment-configuration-set-incomplete": "scoring-configuration",
+    "assessment-configuration-policy-required": "scoring-configuration",
+    "risk-assessment-configuration-incomplete": "scoring-configuration",
+    "scoring-rule-basis-unavailable": "knowledge",
+    "scoring-rule-set-incomplete": "knowledge",
+    "scoring-rule-policy-required": "scoring-configuration",
+    "required-release-unavailable": "knowledge",
+    "policy-unavailable": "response-configuration",
+    "measure-candidates-unavailable": "response-configuration",
+    "forecast-policy-unavailable": "forecast-configuration",
+    "human-decision-feedback-policy-unavailable": "calibration-configuration",
+    "calibration-policy-unavailable": "calibration-configuration",
+  } as const;
+  const missingKind = preparationKind[error.detailCode as keyof typeof preparationKind];
+  if (missingKind !== undefined && error.code === "ENTRY_REFERENCES_INCOMPLETE") {
+    const cursor = await readAssessmentCursor({ ports, run });
+    const preparationRef =
+      state.entrySnapshotRef?.kind === "assessment-preparation"
+        ? state.entrySnapshotRef.assessmentPreparationSnapshotRef
+        : run.runRef;
+    return await waitFor({
+      ports,
+      run,
+      state,
+      stage,
+      cursor,
+      suffix: `${stage}:business-preparation:${cursor?.runVersionId ?? "initial"}`,
+      waitingRef: {
+        kind: "business-preparation",
+        stage,
+        preparationRef,
+        missingKinds: [missingKind],
+      },
+    });
+  }
   const rows = await ports.registrationStore.listRunRows({
     projectId: run.projectId,
     runId: run.runRef.reference.entityId,
@@ -3927,6 +3940,23 @@ export const createAssessmentGraph = (options: {
           occurredAt: now,
         }),
       );
+    }
+    if (waitingRef.kind === "business-preparation") {
+      const cause = readProperty(resumeValue, "resumeCause");
+      const preparationRef = readProperty(cause, "preparationRef") as
+        import("@riskflow/contracts/ports").BusinessPreparationRef | undefined;
+      if (
+        readProperty(cause, "kind") !== "business-preparation-ready" ||
+        preparationRef?.kind !== waitingRef.preparationRef.kind ||
+        !sameVersionReference(preparationRef.reference, waitingRef.preparationRef.reference)
+      )
+        fail(
+          contractInvalid({
+            stage: state.stage,
+            detailCode: "preparation-reference-mismatch",
+            occurredAt: now,
+          }),
+        );
     }
     return stateAsUpdate(parseAssessmentGraphState({ ...rest, status: "running" }, now));
   });

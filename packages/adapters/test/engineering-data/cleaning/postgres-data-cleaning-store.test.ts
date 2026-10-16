@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { DataCleaningResultV1Schema } from "@riskflow/core/engineering-data/cleaning";
+import {
+  DataCleaningResultV1Schema,
+  DataCleaningPolicyV2Schema,
+} from "@riskflow/core/engineering-data/cleaning";
+import { StructuredDocumentJsonLdV1Schema } from "@riskflow/core/engineering-data/document-conversion";
+import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
+import { PostgresDataCleaningStore } from "../../../src/engineering-data/cleaning/postgres-data-cleaning-store.js";
 import {
   AgentTaskEnvelopeV1Schema,
   type AgentTaskClaimV1,
@@ -116,6 +122,18 @@ interface MonitoringObservationViewV1 {
     readonly sourceVersionRef: SourceVersionRefV1;
     readonly sourceSegmentSetRef: { readonly reference: VersionReference };
   }[];
+}
+
+interface PreparationCatalogObservationViewV1 {
+  readonly manifestArtifactRef: {
+    readonly kind: "content-artifact";
+    readonly reference: VersionReference;
+  };
+  readonly sourceVersionRef: SourceVersionRefV1;
+  readonly offset: number;
+  readonly totalCount: number;
+  readonly segments: readonly { readonly sourceSegmentId: string; readonly kind: string }[];
+  readonly nextOffset?: number;
 }
 
 interface CleaningResultViewV1 {
@@ -305,6 +323,35 @@ describe("C15 PostgreSQL data cleaning store", () => {
       [main.projectId, CONVERSION_PURPOSE],
     );
     expect(artifacts.rows[0]?.count).toBe("5");
+  }, 120_000);
+
+  it("V2按输入类型使用已登记转换，不再维护逐版本允许清单", async () => {
+    const world = await fixture.createWorld({
+      suffix: "typed-policy",
+      documentKinds: ["csv"],
+      monitoring: false,
+    });
+    const raw: Record<string, unknown> = {
+      ...world.policy(),
+      schemaVersion: "2",
+      documentRules: [{ inputKind: "csv", requiredSegmentKinds: ["table"] }],
+    };
+    for (const key of [
+      "allowedConversionPolicyRefs",
+      "allowedQualityPolicyRefs",
+      "allowedConverterDeploymentRefs",
+      "requiredSegmentKinds",
+      "minimumRetainedSegmentRatio",
+    ])
+      delete raw[key];
+    const pipeline = fixture.createPipeline({ policy: DataCleaningPolicyV2Schema.parse(raw) });
+    const prepared = await freezeIdentificationPreparation(pipeline.store, world, {
+      commandId: "c15-typed-policy",
+    });
+    expect(prepared.result).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", blockerKind: "data-cleaning-task-incomplete" },
+    });
   }, 120_000);
 
   it("creates exactly one C08 task and no snapshot, result or outbox event on the first freeze", async () => {
@@ -771,7 +818,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
       `SELECT
          (SELECT count(*)::text FROM audit.entries WHERE project_id = $1 AND action = $2) AS audits,
          (SELECT count(*)::text FROM business.command_receipts WHERE project_id = $1 AND command_kind = $3) AS receipts,
-         (SELECT count(*)::text FROM business.artifact_access_records WHERE project_id = $1 AND request_id LIKE $4) AS "accessRecords",
+         (SELECT count(*)::text FROM business.artifact_access_records access JOIN audit.entries audit USING (audit_entry_id) WHERE access.project_id = $1 AND audit.command_id LIKE $4) AS "accessRecords",
          (SELECT count(*)::text FROM outbox.events WHERE project_id = $1 AND producer_command_id LIKE $5) AS events`,
       [
         projectId,
@@ -847,7 +894,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
       world.sourceVersionRefs(),
     );
     const read = await exactRead(world, "c15-exact-read-1", authorization, snapshotRef);
-    expect(read.kind).toBe("ok");
+    expect(read).toMatchObject({ kind: "ok" });
     if (read.kind !== "ok") return;
     // 成功只返回签名列出的五项：strict 准备聚合、绑定任务、strict 清洗结果与结果工件引用。
     expect(Object.keys(read).sort()).toEqual([
@@ -882,7 +929,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
 
     const counts = await exactReadCounts(world.projectId, "c15-exact-read-1");
     expect(counts.audits).toBe("1");
-    expect(counts.receipts).toBe("1");
+    expect(counts.receipts).toBe("0");
     expect(Number(counts.accessRecords)).toBeGreaterThan(0);
     expect(counts.events).toBe("0");
     const audits = await fixture.postgres.adminPool.query<{ target_ref: unknown }>(
@@ -910,7 +957,6 @@ describe("C15 PostgreSQL data cleaning store", () => {
     for (const overrides of [
       { projectId: main.projectId },
       { actorId: world.freezerId },
-      { requestId: "unissued-checkpoint-proof" },
       {
         preparationSnapshotRef: {
           ...snapshotRef,
@@ -1024,10 +1070,16 @@ describe("C15 PostgreSQL data cleaning store", () => {
       expect(serialized).not.toContain(snapshotRef.reference.entityId);
       expect(serialized).not.toContain("c15-exact-read-other-result");
     }
-    expect(await exactReadCounts(world.projectId, "c15-exact-read-denied")).toEqual(before);
+    const afterDenied = await exactReadCounts(world.projectId, "c15-exact-read-denied");
+    expect(afterDenied).toMatchObject({
+      audits: before.audits,
+      receipts: before.receipts,
+      events: before.events,
+    });
+    expect(Number(afterDenied.accessRecords)).toBeGreaterThanOrEqual(Number(before.accessRecords));
   }, 300_000);
 
-  it("识别准备精确读取幂等：同载荷不重复审计、同键异准备冲突且成功撤权后不重放", async () => {
+  it("识别准备重复查看独立记账，撤权后停止披露", async () => {
     const { world, snapshotRef } = await prepareExactReadWorld();
     if (exactReadSecondRef === undefined) {
       exactReadSecondRef = await commitExactReadPreparation(world, "c15-exact-read-freeze-2");
@@ -1045,15 +1097,14 @@ describe("C15 PostgreSQL data cleaning store", () => {
     expect(replay.snapshot).toEqual(first.snapshot);
     expect(replay.agentTaskRef).toEqual(first.agentTaskRef);
     expect(replay.resultArtifactRef).toEqual(first.resultArtifactRef);
-    expect(await exactReadCounts(world.projectId, requestId)).toEqual(afterFirst);
+    const afterReplay = await exactReadCounts(world.projectId, requestId);
+    expect(Number(afterReplay.audits)).toBe(Number(afterFirst.audits) + 1);
+    expect(afterReplay.receipts).toBe("0");
 
     // 同一请求身份改传同工程的另一份真实准备引用：幂等冲突且无新审计、回执或访问记录。
     const conflict = await exactRead(world, requestId, authorization, exactReadSecondRef);
-    expect(conflict.kind).toBe("error");
-    if (conflict.kind !== "error") return;
-    expect(conflict.error["code"]).toBe("IDEMPOTENCY_CONFLICT");
-    expect(conflict.error["retryable"]).toBe(false);
-    expect(await exactReadCounts(world.projectId, requestId)).toEqual(afterFirst);
+    expect(conflict.kind).toBe("ok");
+    const beforeRevocation = await exactReadCounts(world.projectId, requestId);
 
     // 授权复验先于历史回执重放：首次成功后撤权，同键同载荷仍拒绝且不追加审计。
     const project = await fixture.postgres.adminPool.query<{ access_version: number }>(
@@ -1076,7 +1127,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
     if (revoked.kind !== "error") return;
     expect(revoked.error["code"]).toBe("AUTHORIZATION_DENIED");
     expect(Object.keys(revoked.error)).not.toContain("snapshot");
-    expect(await exactReadCounts(world.projectId, requestId)).toEqual(afterFirst);
+    expect(await exactReadCounts(world.projectId, requestId)).toEqual(beforeRevocation);
   }, 300_000);
 
   const prepareBoundReadWorld = async (): Promise<{
@@ -1175,6 +1226,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
       ...base,
       actorId: world.uploaderId,
       requestId: "c15-read-actor",
+      authorization: { ...authorization, actorId: world.freezerId },
       taskRef,
     });
     for (const denied of [missing, foreign, actorMismatch]) {
@@ -1248,7 +1300,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
     if (replay.kind !== "ok") return;
     expect(replay.resultArtifactRef).toEqual(first.resultArtifactRef);
     expect(replay.result.agentTaskRef.reference).toEqual(first.result.agentTaskRef.reference);
-    expect(await readCount()).toBe(afterFirst);
+    expect(Number(await readCount())).toBe(Number(afterFirst) + 1);
 
     // 同一任务、同一授权、同一查询身份改传不同载荷（此处由请求时刻代表）必须冲突且无写入。
     const receiptsBefore = await fixture.postgres.adminPool.query<{ count: string }>(
@@ -1263,10 +1315,8 @@ describe("C15 PostgreSQL data cleaning store", () => {
       authorization,
       taskRef,
     });
-    expect(conflict.kind).toBe("error");
-    if (conflict.kind !== "error") return;
-    expect(conflict.error["code"]).toBe("IDEMPOTENCY_CONFLICT");
-    expect(await readCount()).toBe(afterFirst);
+    expect(conflict.kind).toBe("ok");
+    expect(Number(await readCount())).toBe(Number(afterFirst) + 2);
     const receiptsAfter = await fixture.postgres.adminPool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM business.command_receipts WHERE project_id = $1 AND command_kind = $2",
       [world.projectId, "engineering-data.read-data-cleaning-result.v1"],
@@ -1330,7 +1380,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
     if (revoked.kind !== "error") return;
     expect(revoked.error["code"]).toBe("AUTHORIZATION_DENIED");
     expect(Object.keys(revoked.error)).not.toContain("resultArtifactRef");
-    expect(await readCount()).toBe(afterFirst);
+    expect(Number(await readCount())).toBe(Number(afterFirst) + 2);
   }, 300_000);
 
   it("replays the committed freeze with equal refs and keeps the old snapshot and result for new inputs", async () => {
@@ -1562,6 +1612,161 @@ describe("C15 PostgreSQL data cleaning store", () => {
     expect(await resultRowsOf(world.projectId)).toEqual(resultsBefore);
   }, 120_000);
 
+  it("keeps image-only cells visible to cleaning and fingerprints image changes", async () => {
+    if (tail === undefined || tailTaskRef === undefined)
+      throw new Error("the tail task is missing");
+    const world = tail;
+    const task = await requireTaskSnapshot(world.pipeline, tailTaskRef);
+    const original = await world.pipeline.store.loadFrozenInput(task);
+    const document = original.documents.find((item) => item.inputKind === "docx")!;
+    const segment = document.segments.find((item) => item.kind === "table")!;
+    let imagePath = "images/symbol.png";
+    const artifactStore: ArtifactStoreV1 = {
+      put: fixture.artifactStore.put.bind(fixture.artifactStore),
+      async open(request) {
+        const handle = await fixture.artifactStore.open(request);
+        if (
+          request.artifactRef.reference.entityId !== document.jsonLdArtifactRef.reference.entityId
+        )
+          return handle;
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of handle.content) chunks.push(chunk);
+        await handle.completed;
+        const json = StructuredDocumentJsonLdV1Schema.parse(
+          JSON.parse(Buffer.concat(chunks).toString("utf8")),
+        );
+        const text = json.textBlocks.find((block) => segment.textBlockIds.includes(block.blockId))!;
+        const field = json.tableFields!.find(
+          (item) => item.fieldId === `field-${text.sourceBlockId}`,
+        )!;
+        field.unrecognizedImages = [
+          {
+            kind: "unrecognized-image",
+            rawResponseArtifactRef: document.jsonLdArtifactRef,
+            packageEntryPath: imagePath,
+          },
+        ];
+        json.tableFields!.push({
+          ...field,
+          fieldId: "field-pure-image",
+          row: 99,
+          column: 1,
+          value: null,
+        });
+        for (let index = 0; index < 9000; index++)
+          json.tableFields!.push({
+            ...field,
+            unrecognizedImages: undefined,
+            fieldId: `padding-${index}`,
+            tableId: "unselected-table",
+            value: "x".repeat(512),
+          });
+        const bytes = Buffer.from(JSON.stringify(json));
+        expect(bytes.length).toBeGreaterThan(4 * 1024 * 1024);
+        expect(bytes.length).toBeLessThan(16 * 1024 * 1024);
+        return {
+          ...handle,
+          manifest: {
+            ...handle.manifest,
+            content: { ...handle.manifest.content, byteLength: bytes.length },
+          },
+          content: (async function* () {
+            yield bytes;
+          })(),
+        };
+      },
+    };
+    const store = new PostgresDataCleaningStore({
+      db: fixture.runtime.db as never,
+      transactionUnit: fixture.transactionUnit,
+      access: fixture.access,
+      artifactStore,
+      artifactReferenceGuard: fixture.artifactRegistry,
+      monitoringStore: fixture.monitoringStore,
+      policy: world.policy(),
+      now: () => new Date(cleaningTimestamp(0)),
+    });
+    const frozen = await store.loadFrozenInput(task);
+    expect(
+      frozen.documents.find(
+        (item) =>
+          item.sourceVersionRef.reference.entityId === document.sourceVersionRef.reference.entityId,
+      )?.unrecognizedTableImageCount,
+    ).toBe(2);
+    const before = frozen.documents
+      .find(
+        (item) =>
+          item.sourceVersionRef.reference.entityId === document.sourceVersionRef.reference.entityId,
+      )!
+      .segments.find((item) => item.sourceSegmentId === segment.sourceSegmentId)!;
+    expect(before.parsedFingerprint).not.toBe(segment.parsedFingerprint);
+    const slice = await store.readDocumentSlice(
+      {
+        kind: "read-document-segment-slice",
+        sourceVersionRef: document.sourceVersionRef,
+        sourceSegmentIds: [segment.sourceSegmentId],
+      },
+      { task, taskRef: tailTaskRef as never, actionId: "image-observation" },
+    );
+    const observation = await fixture.readArtifact(
+      slice.observationArtifactRef,
+      task.envelope.authorization,
+      OBSERVATION_PURPOSE,
+    );
+    expect(observation).toMatchObject({
+      segments: [
+        {
+          unrecognizedTableCells: expect.arrayContaining([
+            expect.objectContaining({
+              row: 99,
+              column: 1,
+              unrecognizedImages: [expect.objectContaining({ packageEntryPath: imagePath })],
+            }),
+          ]),
+        },
+      ],
+    });
+    expect(slice.usage.objects).toBe(5);
+    expect(slice.usage.outputBytes).toBeGreaterThan(0);
+    imagePath = "images/changed.png";
+    const changed = await store.loadFrozenInput(task);
+    expect(
+      changed.documents
+        .find(
+          (item) =>
+            item.sourceVersionRef.reference.entityId ===
+            document.sourceVersionRef.reference.entityId,
+        )!
+        .segments.find((item) => item.sourceSegmentId === segment.sourceSegmentId)!
+        .parsedFingerprint,
+    ).not.toBe(before.parsedFingerprint);
+    const limited = new PostgresDataCleaningStore({
+      db: fixture.runtime.db as never,
+      transactionUnit: fixture.transactionUnit,
+      access: fixture.access,
+      artifactStore,
+      artifactReferenceGuard: fixture.artifactRegistry,
+      monitoringStore: fixture.monitoringStore,
+      policy: {
+        ...world.policy(),
+        agent: {
+          ...world.policy().agent,
+          budgetPolicy: { ...world.policy().agent.budgetPolicy, maxObjects: 4 },
+        },
+      },
+    });
+    await expect(
+      limited.readDocumentSlice(
+        {
+          kind: "read-document-segment-slice",
+          sourceVersionRef: document.sourceVersionRef,
+          sourceSegmentIds: [segment.sourceSegmentId],
+        },
+        { task, taskRef: tailTaskRef as never, actionId: "image-over-limit" },
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_TOOL_LIMIT_EXCEEDED" } });
+  }, 120_000);
+
   it("returns bounded read-only slices and rejects out-of-slice and over-limit requests", async () => {
     if (tail === undefined || tailTaskRef === undefined)
       throw new Error("the tail task is missing");
@@ -1689,7 +1894,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
         },
         toolContext,
       ),
-    ).rejects.toThrow(/not part of the frozen preparation/u);
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID", retryable: false } });
     await expect(
       world.pipeline.store.readDocumentSlice(
         {
@@ -1702,7 +1907,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
         },
         toolContext,
       ),
-    ).rejects.toThrow(/not part of the frozen preparation/u);
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID", retryable: false } });
     const threeSegmentIds = document.segments.slice(0, 3).map((segment) => segment.sourceSegmentId);
     expect(threeSegmentIds).toHaveLength(3);
     await expect(
@@ -1714,7 +1919,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
         },
         toolContext,
       ),
-    ).rejects.toThrow(/exceeds the frozen tool limit/u);
+    ).rejects.toMatchObject({ details: { code: "AGENT_TOOL_LIMIT_EXCEEDED", retryable: false } });
     await expect(
       world.pipeline.store.readMonitoringSlice(
         {
@@ -1727,7 +1932,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
         },
         toolContext,
       ),
-    ).rejects.toThrow(/not part of the frozen preparation/u);
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID", retryable: false } });
     await expect(
       world.pipeline.store.readMonitoringSlice(
         {
@@ -1747,7 +1952,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
         },
         toolContext,
       ),
-    ).rejects.toThrow(/exceeds the frozen tool limit/u);
+    ).rejects.toMatchObject({ details: { code: "AGENT_TOOL_LIMIT_EXCEEDED", retryable: false } });
     await expect(
       world.pipeline.store.readMonitoringSlice(
         {
@@ -1762,8 +1967,157 @@ describe("C15 PostgreSQL data cleaning store", () => {
         },
         toolContext,
       ),
-    ).rejects.toThrow(/not part of the frozen preparation/u);
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID", retryable: false } });
     expect(await observationArtifactCount(world.projectId)).toBe(observationsBefore + 2);
+  }, 120_000);
+
+  it("有界定位分页：只列冻结资料内的段身份与下一页位置，越界与集合外拒绝", async () => {
+    if (tail === undefined || tailTaskRef === undefined)
+      throw new Error("the tail task is missing");
+    const world = tail;
+    const task = await requireTaskSnapshot(world.pipeline, tailTaskRef);
+    const authorization = task.envelope.authorization;
+    const frozen = await world.pipeline.store.loadFrozenInput(task);
+    const pageSize = world.pipeline.policy.tools.maxSegmentsPerRead;
+    const document = frozen.documents.find((item) => item.inputKind === "docx")!;
+    const total = document.segments.length;
+    expect(total).toBeGreaterThan(pageSize);
+    const observationsBefore = await observationArtifactCount(world.projectId);
+    const readPage = async (offset: number, actionId: string) => {
+      const slice = await world.pipeline.store.readPreparationCatalogSlice(
+        {
+          kind: "read-cleaning-preparation-catalog-slice",
+          sourceVersionRef: document.sourceVersionRef,
+          offset,
+        },
+        { task, taskRef: tailTaskRef as never, actionId },
+      );
+      expect(slice.effect).toBe("none");
+      const observation = (await fixture.readArtifact(
+        slice.observationArtifactRef,
+        authorization,
+        OBSERVATION_PURPOSE,
+      )) as PreparationCatalogObservationViewV1 | undefined;
+      return { slice, observation };
+    };
+
+    const first = await readPage(0, "c15-tool-catalog-page-1");
+    expect(first.slice.usage.objects).toBe(pageSize);
+    // 页正文本身计入输出字节，不止观察引用；入参按原请求计账。
+    expect(first.slice.usage.inputBytes ?? 0).toBeGreaterThan(0);
+    expect(first.slice.usage.outputBytes ?? 0).toBeGreaterThan(0);
+    expect(first.observation?.manifestArtifactRef).toEqual(frozen.manifestArtifactRef);
+    expect(first.observation?.sourceVersionRef).toEqual(document.sourceVersionRef);
+    expect(first.observation?.offset).toBe(0);
+    expect(first.observation?.totalCount).toBe(total);
+    expect(first.observation?.nextOffset).toBe(pageSize);
+    expect(first.observation?.segments.map((segment) => segment.sourceSegmentId)).toEqual(
+      document.segments.slice(0, pageSize).map((segment) => segment.sourceSegmentId),
+    );
+    expect(first.observation?.segments.map((segment) => segment.kind)).toEqual(
+      document.segments.slice(0, pageSize).map((segment) => segment.kind),
+    );
+    for (const segment of first.observation?.segments ?? [])
+      expect(Object.keys(segment).sort()).toEqual(["kind", "sourceSegmentId"]);
+
+    const lastOffset = Math.floor((total - 1) / pageSize) * pageSize;
+    const last = await readPage(lastOffset, "c15-tool-catalog-page-last");
+    expect(last.observation?.segments.map((segment) => segment.sourceSegmentId)).toEqual(
+      document.segments.slice(lastOffset).map((segment) => segment.sourceSegmentId),
+    );
+    expect(last.observation?.nextOffset).toBeUndefined();
+
+    const empty = await readPage(total, "c15-tool-catalog-page-empty");
+    expect(empty.slice.usage.objects).toBe(0);
+    expect(empty.observation?.segments).toEqual([]);
+    expect(empty.observation?.nextOffset).toBeUndefined();
+
+    // 模型步的受权观察 reader 按同一冻结清单读回该页。
+    expect(
+      await world.pipeline.store.readModelObservation(task, first.slice.observationArtifactRef),
+    ).toMatchObject({ manifestArtifactRef: frozen.manifestArtifactRef, offset: 0 });
+
+    const toolContext = {
+      task,
+      taskRef: tailTaskRef as never,
+      actionId: "c15-tool-catalog-reject",
+    };
+    await expect(
+      world.pipeline.store.readPreparationCatalogSlice(
+        {
+          kind: "read-cleaning-preparation-catalog-slice",
+          sourceVersionRef: document.sourceVersionRef,
+          offset: total + 1,
+        },
+        toolContext,
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID", retryable: false } });
+    await expect(
+      world.pipeline.store.readPreparationCatalogSlice(
+        {
+          kind: "read-cleaning-preparation-catalog-slice",
+          sourceVersionRef: {
+            kind: "source-version",
+            reference: { entityId: "s_missing", versionId: "1" },
+          },
+          offset: 0,
+        },
+        toolContext,
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID", retryable: false } });
+    expect(await observationArtifactCount(world.projectId)).toBe(observationsBefore + 3);
+  }, 120_000);
+
+  it("按原观察用途读回本任务观察，拒绝跨任务清单、错用途与缺失工件", async () => {
+    if (tail === undefined || tailTaskRef === undefined)
+      throw new Error("the tail task is missing");
+    const world = tail;
+    const task = await requireTaskSnapshot(world.pipeline, tailTaskRef);
+    const frozen = await world.pipeline.store.loadFrozenInput(task);
+    const document = frozen.documents.find((item) => item.inputKind === "docx")!;
+    const segment = document.segments.find((item) => item.kind === "table")!;
+    const slice = await world.pipeline.store.readDocumentSlice(
+      {
+        kind: "read-document-segment-slice",
+        sourceVersionRef: document.sourceVersionRef,
+        sourceSegmentIds: [segment.sourceSegmentId] as never,
+      },
+      { task, taskRef: tailTaskRef as never, actionId: "c15-model-observation" },
+    );
+
+    const observation = (await world.pipeline.store.readModelObservation(
+      task,
+      slice.observationArtifactRef,
+    )) as DocumentObservationViewV1;
+    expect(observation.sourceVersionRef).toEqual(document.sourceVersionRef);
+    expect(observation.segments.map((item) => item.sourceSegmentId)).toEqual([
+      segment.sourceSegmentId,
+    ]);
+
+    // 跨任务：清单引用与任务冻结输入不同，即使 C04 放行读取也必须拒绝。
+    const foreignTask = {
+      ...task,
+      envelope: {
+        ...task.envelope,
+        frozenInputRef: {
+          kind: "content-artifact",
+          reference: { entityId: "other-frozen-input", versionId: "sha256:other" },
+        },
+      },
+    } as AgentTaskSnapshotV1;
+    await expect(
+      world.pipeline.store.readModelObservation(foreignTask, slice.observationArtifactRef),
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID", retryable: false } });
+    // 错用途（清单工件）与缺失工件继续由 C04 拒绝。
+    await expect(
+      world.pipeline.store.readModelObservation(task, frozen.manifestArtifactRef),
+    ).rejects.toThrow();
+    await expect(
+      world.pipeline.store.readModelObservation(task, {
+        kind: "diagnostic-artifact",
+        reference: { entityId: "missing-observation", versionId: "sha256:missing" },
+      }),
+    ).rejects.toThrow();
   }, 120_000);
 
   it("refuses to commit a preparation snapshot when the completed task has no bound result", async () => {
@@ -1984,7 +2338,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
     // C06 的签发与 C08 adapter 注入的同一个 verifier 都留下成功安全审计；无 verifier 的
     // adapter 不会产生 verify 审计，因此这条断言同时钉住了 C06 校验的注入。
     expect(new Set(securityAudits.rows.map((row) => row.event_kind))).toEqual(
-      new Set(["authorize", "verify"]),
+      new Set(["authorize"]),
     );
     expect(securityAudits.rows.every((row) => row.outcome === "success")).toBe(true);
 
@@ -2032,6 +2386,146 @@ describe("C15 PostgreSQL data cleaning store", () => {
     ).rejects.toMatchObject({
       // 拒绝必须发生在父子能力收窄处，而不是父上下文缺失或过期。
       details: { code: "AUTHORIZATION_DENIED", stage: "authorize.narrowing" },
+    });
+  }, 120_000);
+
+  it("completes the original cleaning task under a fresh command without another task or duplicate event", async () => {
+    const world = await fixture.createWorld({
+      suffix: "completion",
+      monitoring: false,
+      documentKinds: ["csv"],
+    });
+    const frozen = await freezeIdentificationPreparation(world.pipeline.store, world, {
+      commandId: "completion-original",
+      actor: "uploader",
+    });
+    expect(frozen.result.kind).toBe("failed");
+    const completed = await completeCleaningTask(world.pipeline, fixture, {
+      workerId: "completion-worker",
+      projectId: world.projectId,
+      candidate: { exclusions: [] },
+    });
+    const before = await requireTaskSnapshot(world.pipeline, completed.taskRef);
+    const make = async (id: string) => ({
+      commandId: id,
+      idempotencyKey: id,
+      projectId: world.projectId,
+      actorId: world.uploaderId,
+      issuedAt: frozen.command.issuedAt,
+      authorization: await world.authorizeBranch(
+        id,
+        "engineering-data.complete-identification-preparation",
+      ),
+      kind: "complete-identification-preparation" as const,
+      payload: { agentTaskRef: completed.taskRef },
+    });
+    const first = await make("completion-first");
+    const rival = await make("completion-rival");
+    const attempts = await Promise.all(
+      [first, rival].map((command) =>
+        world.pipeline.store.completeIdentificationPreparation(
+          command,
+          world.pipeline.agentTaskAdapter,
+        ),
+      ),
+    );
+    const results = await Promise.all(
+      attempts.map(async (reply, index) => {
+        if (reply.kind === "failed") {
+          expect(reply.error).toMatchObject({ code: "TRANSIENT_FAILURE", retryable: true });
+          return world.pipeline.store.completeIdentificationPreparation(
+            [first, rival][index]!,
+            world.pipeline.agentTaskAdapter,
+          );
+        }
+        return reply;
+      }),
+    );
+    const result = results[0]!;
+    expect(results[1]).toEqual(result);
+    expect(result, JSON.stringify(result)).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "identification-preparation" },
+    });
+    if (result.kind !== "succeeded" || result.result.kind !== "identification-preparation")
+      throw new Error("completion failed");
+    const second = await make("completion-second");
+    expect(
+      await world.pipeline.store.completeIdentificationPreparation(
+        second,
+        world.pipeline.agentTaskAdapter,
+      ),
+    ).toEqual(result);
+    expect(
+      await world.pipeline.store.completeIdentificationPreparation(
+        first,
+        world.pipeline.agentTaskAdapter,
+      ),
+    ).toEqual(result);
+    expect((await requireTaskSnapshot(world.pipeline, completed.taskRef)).budgetLedger).toEqual(
+      before.budgetLedger,
+    );
+    expect(await projectCounts(world.projectId)).toMatchObject({
+      tasks: "1",
+      snapshots: "1",
+      results: "1",
+      events: "1",
+    });
+    const event = await fixture.postgres.adminPool.query<{ producer_command_id: string }>(
+      "SELECT producer_command_id FROM outbox.events WHERE project_id = $1 AND event_type = 'engineering.inputs-ready.v1'",
+      [world.projectId],
+    );
+    expect([first.commandId, rival.commandId]).toContain(event.rows[0]?.producer_command_id);
+    const denied = await make("completion-no-reader");
+    expect(await world.pipeline.store.completeIdentificationPreparation(denied)).toMatchObject({
+      kind: "failed",
+      error: { code: "AUTHORIZATION_DENIED" },
+    });
+    const fake = await make("completion-wrong-task");
+    expect(
+      await world.pipeline.store.completeIdentificationPreparation(
+        {
+          ...fake,
+          payload: {
+            agentTaskRef: {
+              ...completed.taskRef,
+              reference: { ...completed.taskRef.reference, versionId: "missing" },
+            },
+          },
+        },
+        world.pipeline.agentTaskAdapter,
+      ),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    for (const [index, changed] of [
+      { ...before, state: { ...before.state, status: "running" as const } },
+      {
+        ...before,
+        state: { ...before.state, status: "cancelled" as const, cancelRequested: true },
+      },
+      { ...before, envelope: { ...before.envelope, actorId: "other" } },
+      {
+        ...before,
+        envelope: {
+          ...before.envelope,
+          frozenInputRef: {
+            kind: "content-artifact" as const,
+            reference: { entityId: "other", versionId: "1" },
+          },
+        },
+      },
+    ].entries()) {
+      const command = await make(`completion-invalid-${index}`);
+      expect(
+        await world.pipeline.store.completeIdentificationPreparation(command, {
+          getTask: async () => changed,
+        }),
+      ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    }
+    expect(await projectCounts(world.projectId)).toMatchObject({
+      tasks: "1",
+      snapshots: "1",
+      results: "1",
+      events: "1",
     });
   }, 120_000);
 

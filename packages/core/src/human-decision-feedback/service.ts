@@ -149,6 +149,18 @@ export interface HumanDecisionFeedbackServicePortsV1 {
     readonly graphVersion: VersionReference;
     readonly retryPolicyRef: VersionReference;
   };
+  readonly resolveFeedbackPolicies?: (input: {
+    readonly projectId: string;
+    readonly requestId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }) => Promise<
+    | {
+        readonly deviationPolicyRef: VersionReference;
+        readonly calibrationAgentPolicyRef: VersionReference;
+      }
+    | undefined
+  >;
   readonly now?: () => Date;
 }
 
@@ -1090,9 +1102,33 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
         "business-blocked",
       );
     }
+    const frozen = await this.#ports.feedbackSnapshots.readSnapshot({
+      projectId: command.projectId,
+      commandKind: "warning-response.record-feedback",
+      idempotencyKey: command.idempotencyKey,
+    });
+    const policies =
+      frozen?.snapshot ??
+      (this.#ports.resolveFeedbackPolicies === undefined
+        ? established.deviationPolicyRef === undefined ||
+          established.calibrationAgentPolicyRef === undefined
+          ? undefined
+          : {
+              deviationPolicyRef: established.deviationPolicyRef,
+              calibrationAgentPolicyRef: established.calibrationAgentPolicyRef,
+            }
+        : await this.#ports.resolveFeedbackPolicies({
+            projectId: command.projectId,
+            requestId: command.commandId,
+            requestedAt: command.issuedAt,
+            authorization,
+          }));
+    if (policies === undefined) {
+      failHumanDecisionFeedback("human-decision-feedback-policy-unavailable", "business-blocked");
+    }
     return {
-      deviationPolicyRef: established.deviationPolicyRef,
-      calibrationAgentPolicyRef: established.calibrationAgentPolicyRef,
+      deviationPolicyRef: policies.deviationPolicyRef,
+      calibrationAgentPolicyRef: policies.calibrationAgentPolicyRef,
       spatialScopeRef: established.spatialScopeRef,
       assessmentBasisReleaseSetRef: established.assessmentBasisReleaseSetRef,
       assessmentInputSnapshotRef: established.assessmentInputSnapshotRef,

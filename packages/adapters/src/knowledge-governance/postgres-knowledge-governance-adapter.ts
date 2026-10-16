@@ -25,11 +25,11 @@ import {
   validateRevisionBase,
   KnowledgeDefinitionV1Schema,
   KnowledgeReleaseDecisionV1Schema,
-  KnowledgeReleaseV1Schema,
+  KnowledgeReleaseV2Schema,
   KnowledgeRevisionV1Schema,
   KnowledgeReviewLinkV1Schema,
   ResolveGovernedReleasesRequestV1Schema,
-  type KnowledgeReleaseV1,
+  type KnowledgeRelease,
   type KnowledgeRevisionV1,
 } from "@riskflow/core/knowledge-governance";
 import {
@@ -84,7 +84,11 @@ import {
   type ReviewDecisionRefV1,
   type ReviewTaskRefV1,
 } from "@riskflow/contracts/ports";
-import { IdentifierSchema, IsoDateTimeSchema } from "@riskflow/contracts/common";
+import {
+  IdentifierSchema,
+  IsoDateTimeSchema,
+  type VersionReference,
+} from "@riskflow/contracts/common";
 import type { DomainEventV1 } from "@riskflow/contracts/events";
 
 import { makePersistenceError, mapPostgresError } from "../postgres/pool.js";
@@ -168,8 +172,10 @@ interface KnowledgeReleaseRow {
   revision_id: string;
   revision_version_id: string;
   revision_ref: JsonColumn;
-  review_task_ref: JsonColumn;
-  review_decision_ref: JsonColumn;
+  review_task_ref: JsonColumn | null;
+  review_decision_ref: JsonColumn | null;
+  publication_origin: JsonColumn | null;
+  derivation_scope_key: string | null;
   effective_from: TimestampColumn;
   restored_from_release_ref: JsonColumn | null;
   reason_code: string | null;
@@ -513,7 +519,8 @@ const reviewLinkFromRow = (row: Selectable<KnowledgeReviewLinkRow>) =>
   });
 
 const releaseFromRow = (row: Selectable<KnowledgeReleaseRow>) =>
-  KnowledgeReleaseV1Schema.parse({
+  KnowledgeReleaseV2Schema.parse({
+    schemaVersion: "2",
     releaseRef: {
       kind: "knowledge-release",
       reference: { entityId: row.release_id, versionId: row.version_id },
@@ -525,8 +532,11 @@ const releaseFromRow = (row: Selectable<KnowledgeReleaseRow>) =>
     projectId: row.project_id,
     definitionType: row.definition_type,
     revisionRef: row.revision_ref,
-    reviewTaskRef: row.review_task_ref,
-    reviewDecisionRef: row.review_decision_ref,
+    publicationOrigin: row.publication_origin ?? {
+      kind: "human-reviewed",
+      reviewTaskRef: row.review_task_ref,
+      reviewDecisionRef: row.review_decision_ref,
+    },
     effectiveFrom: asIso(row.effective_from),
     ...(row.restored_from_release_ref === null
       ? {}
@@ -637,6 +647,32 @@ export interface PostgresKnowledgeGovernanceAdapterOptionsV1 {
   readonly reviewAuthorizationProvider?: KnowledgeGovernanceReviewAuthorizationProviderV1;
 }
 
+export interface DerivedKnowledgeReleaseInput {
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly commandId: string;
+  readonly idempotencyKey: string;
+  readonly issuedAt: string;
+  readonly effectiveFrom: string;
+  readonly authorization: AuthorizationContextV1;
+  readonly definitionType: "retrieval-evidence-base" | "applicable-rule-set";
+  readonly candidateArtifactRef: ContentArtifactRefV1;
+  readonly evidenceReferences: KnowledgeRevisionV1["evidenceReferences"];
+  readonly parentReleaseRefs: readonly KnowledgeReleaseRefV1[];
+  readonly derivationPolicyRef: VersionReference;
+  readonly contextRef: ContractReferenceV1;
+  readonly derivationScopeKey?: string;
+  readonly append: (
+    context: TransactionContextV1,
+    input: {
+      readonly revision: KnowledgeRevisionV1;
+      readonly releaseRef: KnowledgeReleaseRefV1;
+      readonly audit: AtomicCommitV1["audit"];
+      readonly recordedAt: string;
+    },
+  ) => Promise<readonly DomainEventV1[]>;
+}
+
 export class PostgresKnowledgeGovernanceAdapter {
   readonly #db: Kysely<KnowledgeGovernanceDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
@@ -659,6 +695,189 @@ export class PostgresKnowledgeGovernanceAdapter {
     this.#identificationKnowledgePolicy = options.identificationKnowledgePolicy;
     this.#scoringRulesPolicy = options.scoringRulesPolicy;
     this.#reviewAuthorizationProvider = options.reviewAuthorizationProvider;
+  }
+
+  /** C17/C19 确定性组装的内部事务入口，来源是已批准父发布。 */
+  async publishDerivedRelease(input: DerivedKnowledgeReleaseInput): Promise<{
+    readonly releaseRef: KnowledgeReleaseRefV1;
+    readonly revisionRef: KnowledgeRevisionRefV1;
+  }> {
+    const origin = KnowledgeReleaseV2Schema.shape.publicationOrigin.parse({
+      kind: "derived-approved",
+      parentReleaseRefs: input.parentReleaseRefs,
+      derivationPolicyRef: input.derivationPolicyRef,
+      contextRef: input.contextRef,
+    });
+    const identity = sha256CanonicalJson(
+      input.definitionType === "retrieval-evidence-base"
+        ? {
+            projectId: input.projectId,
+            definitionType: input.definitionType,
+            parentReleaseRefs: input.parentReleaseRefs,
+            derivationPolicyRef: input.derivationPolicyRef,
+          }
+        : {
+            projectId: input.projectId,
+            definitionType: input.definitionType,
+            candidateArtifactRef: input.candidateArtifactRef,
+            publicationOrigin: origin,
+            derivationScopeKey: input.derivationScopeKey ?? null,
+          },
+    );
+    const revisionRef = KnowledgeRevisionRefV1Schema.parse({
+      kind: "knowledge-revision",
+      reference: { entityId: `derived-revision:${identity}`, versionId: "1" },
+    });
+    const releaseRef = KnowledgeReleaseRefV1Schema.parse({
+      kind: "knowledge-release",
+      reference: { entityId: `derived-release:${identity}`, versionId: "1" },
+    });
+    const atomic = AtomicCommandV1Schema.parse({
+      projectId: input.projectId,
+      commandKind: "knowledge.publish-derived-release.v2",
+      commandId: input.commandId,
+      idempotencyKey: input.idempotencyKey,
+      actorRef: input.actorId,
+      authorizationContextRef: input.authorization.authorizationContextRef,
+      issuedAt: input.issuedAt,
+      payload: { identity, effectiveFrom: input.effectiveFrom },
+    });
+    await this.#transactionUnit.execute(atomic, async (context) => {
+      const tx = asKnowledgeTransaction(context);
+      await this.#lock(tx, `${input.projectId}:${input.definitionType}`);
+      const existing = await this.#findRelease(tx, input.projectId, releaseRef);
+      const recordedAt = nowIso(this.#now);
+      const audit = auditCommit({
+        command: atomic,
+        targetRef: releaseRef,
+        action: "knowledge.publish-derived-release",
+        occurredAt: input.issuedAt,
+        recordedAt,
+      });
+      if (existing !== undefined) return { resultRef: releaseRef, audit, events: [] };
+      for (const parentRef of input.parentReleaseRefs) {
+        const parent = await this.#findRelease(tx, input.projectId, parentRef);
+        if (parent === undefined)
+          throwLifecycle("BUSINESS_BLOCKED", "derived-parent-release-unavailable", parentRef);
+      }
+      const definitionRow = await tx
+        .selectFrom("business.knowledge_definitions")
+        .selectAll()
+        .where("project_id", "=", input.projectId)
+        .where("definition_type", "=", input.definitionType)
+        .executeTakeFirst();
+      const definitionRef =
+        definitionRow === undefined
+          ? {
+              kind: "knowledge-definition" as const,
+              reference: { entityId: randomId("knowledge-definition"), versionId: "1" },
+            }
+          : definitionFromRow(definitionRow).definitionRef;
+      if (definitionRow === undefined)
+        await tx
+          .insertInto("business.knowledge_definitions")
+          .values({
+            definition_id: definitionRef.reference.entityId,
+            version_id: definitionRef.reference.versionId,
+            project_id: input.projectId,
+            definition_type: input.definitionType,
+            created_by: input.actorId,
+            authorization_context_ref: jsonbValue(input.authorization.authorizationContextRef),
+            command_id: input.commandId,
+            audit_entry_id: audit.auditEntryId,
+            created_at: input.issuedAt,
+            occurred_at: input.issuedAt,
+            recorded_at: recordedAt,
+            persisted_at: recordedAt,
+          })
+          .execute();
+      const revision = KnowledgeRevisionV1Schema.parse({
+        revisionRef,
+        definitionRef,
+        projectId: input.projectId,
+        definitionType: input.definitionType,
+        candidateArtifactRef: input.candidateArtifactRef,
+        evidenceReferences: input.evidenceReferences,
+        artifactIdentityDigest: sha256CanonicalJson(input.candidateArtifactRef),
+        commandId: input.commandId,
+        actorId: input.actorId,
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        occurredAt: input.issuedAt,
+        recordedAt,
+        persistedAt: recordedAt,
+      });
+      await tx
+        .insertInto("business.knowledge_revisions")
+        .values({
+          revision_id: revisionRef.reference.entityId,
+          version_id: revisionRef.reference.versionId,
+          definition_id: definitionRef.reference.entityId,
+          definition_version_id: definitionRef.reference.versionId,
+          project_id: input.projectId,
+          definition_type: input.definitionType,
+          candidate_artifact_entity_id: input.candidateArtifactRef.reference.entityId,
+          candidate_artifact_version_id: input.candidateArtifactRef.reference.versionId,
+          candidate_artifact_ref: jsonbValue(input.candidateArtifactRef),
+          evidence_references: jsonbValue(input.evidenceReferences),
+          base_release_ref: null,
+          base_revision_ref: null,
+          artifact_identity_digest: revision.artifactIdentityDigest,
+          command_id: input.commandId,
+          actor_ref: input.actorId,
+          authorization_context_ref: jsonbValue(input.authorization.authorizationContextRef),
+          audit_entry_id: audit.auditEntryId,
+          occurred_at: input.issuedAt,
+          recorded_at: recordedAt,
+          persisted_at: recordedAt,
+        })
+        .execute();
+      const release = KnowledgeReleaseV2Schema.parse({
+        schemaVersion: "2",
+        publicationOrigin: origin,
+        releaseRef,
+        definitionRef,
+        projectId: input.projectId,
+        definitionType: input.definitionType,
+        revisionRef,
+        effectiveFrom: input.effectiveFrom,
+        commandId: input.commandId,
+        actorId: input.actorId,
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        occurredAt: input.issuedAt,
+        recordedAt,
+      });
+      await tx
+        .insertInto("business.knowledge_releases")
+        .values({
+          release_id: releaseRef.reference.entityId,
+          version_id: releaseRef.reference.versionId,
+          definition_id: definitionRef.reference.entityId,
+          definition_version_id: definitionRef.reference.versionId,
+          project_id: input.projectId,
+          definition_type: input.definitionType,
+          revision_id: revisionRef.reference.entityId,
+          revision_version_id: revisionRef.reference.versionId,
+          revision_ref: jsonbValue(revisionRef),
+          review_task_ref: null,
+          review_decision_ref: null,
+          publication_origin: jsonbValue(release.publicationOrigin),
+          derivation_scope_key: input.derivationScopeKey ?? null,
+          effective_from: input.effectiveFrom,
+          restored_from_release_ref: null,
+          reason_code: null,
+          command_id: input.commandId,
+          actor_ref: input.actorId,
+          authorization_context_ref: jsonbValue(input.authorization.authorizationContextRef),
+          audit_entry_id: audit.auditEntryId,
+          occurred_at: input.issuedAt,
+          recorded_at: recordedAt,
+          persisted_at: recordedAt,
+        })
+        .execute();
+      const events = await input.append(context, { revision, releaseRef, audit, recordedAt });
+      return { resultRef: releaseRef, audit, events: [...events] };
+    });
+    return { releaseRef, revisionRef };
   }
 
   async govern<T extends KnowledgeGovernanceCommandV1>(
@@ -694,11 +913,13 @@ export class PostgresKnowledgeGovernanceAdapter {
   }
 
   async resolveGovernedReleases(input: {
+    readonly invocationId?: string;
     readonly projectId: string;
     readonly requiredDefinitionTypes: readonly string[];
     readonly requiredAt: string;
     readonly asOfRecordedAt: string;
     readonly authorization: AuthorizationContextV1;
+    readonly contextRef?: ContractReferenceV1;
   }) {
     const parsed = ResolveGovernedReleasesRequestV1Schema.safeParse(input);
     if (!parsed.success) {
@@ -724,11 +945,12 @@ export class PostgresKnowledgeGovernanceAdapter {
       await this.#verifyAuthorization(
         valid.authorization,
         valid.projectId,
-        governedReleaseResolutionInvocationId({
-          requiredDefinitionTypes: requiredTypes,
-          requiredAt,
-          asOfRecordedAt,
-        }),
+        valid.invocationId ??
+          governedReleaseResolutionInvocationId({
+            requiredDefinitionTypes: requiredTypes,
+            requiredAt,
+            asOfRecordedAt,
+          }),
         branch,
       );
       const rows = await this.#db
@@ -774,6 +996,7 @@ export class PostgresKnowledgeGovernanceAdapter {
         requiredAt,
         asOfRecordedAt,
         candidates,
+        ...(valid.contextRef === undefined ? {} : { contextRef: valid.contextRef }),
       });
       const members: Array<{
         readonly definitionType: KnowledgeDefinitionTypeV1;
@@ -1568,6 +1791,8 @@ export class PostgresKnowledgeGovernanceAdapter {
             revision_ref: jsonbValue(revision.revisionRef),
             review_task_ref: jsonbValue(approvedProof.reviewTaskRef),
             review_decision_ref: jsonbValue(approvedProof.reviewDecisionRef),
+            publication_origin: null,
+            derivation_scope_key: null,
             effective_from: command.payload.effectiveFrom,
             restored_from_release_ref: null,
             reason_code: null,
@@ -1944,6 +2169,8 @@ export class PostgresKnowledgeGovernanceAdapter {
             revision_ref: jsonbValue(revision.revisionRef),
             review_task_ref: jsonbValue(approvedProof.reviewTaskRef),
             review_decision_ref: jsonbValue(approvedProof.reviewDecisionRef),
+            publication_origin: null,
+            derivation_scope_key: null,
             effective_from: command.issuedAt,
             restored_from_release_ref: jsonbValue(currentHistorical.releaseRef),
             reason_code: command.payload.reasonCode,
@@ -2429,7 +2656,7 @@ export class PostgresKnowledgeGovernanceAdapter {
   }
 
   // 演进基线：不看停用决定，只取命令时刻最近一次已生效的历史发布；运行解析仍走 #currentRelease。
-  #latestRelease(releases: readonly KnowledgeReleaseV1[], requiredAt: string) {
+  #latestRelease(releases: readonly KnowledgeRelease[], requiredAt: string) {
     const requiredTime = Date.parse(requiredAt);
     return releases
       .filter((release) => Date.parse(release.effectiveFrom) <= requiredTime)

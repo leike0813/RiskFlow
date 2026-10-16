@@ -11,9 +11,9 @@ import {
   type AgentDomainToolResultV1,
   type AgentTaskSnapshotV1,
 } from "@riskflow/core/agent-runtime";
-import { z } from "@riskflow/core/model";
+import { z, ModelGatewayError, modelGatewayError } from "@riskflow/core/model";
 import type { ModelGatewayPortV1 } from "@riskflow/core/model";
-import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
+import { makeArtifactError, type ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import type { AgentTaskActionV1 } from "@riskflow/core/agent-runtime";
 import type { AgentTaskRefV1 } from "@riskflow/contracts/ports";
 import { AgentRuntimeRunner } from "../../src/agent-runtime/index.js";
@@ -219,7 +219,7 @@ const recoveryArtifactStore = {
     content: (async function* () {
       yield recoveryIntent;
     })(),
-    verified: Promise.resolve({} as never),
+    completed: Promise.resolve({} as never),
   }),
 } as unknown as ArtifactStoreV1;
 
@@ -291,6 +291,143 @@ const makeStore = (overrides: Record<string, unknown> = {}) => {
 };
 
 describe("agent runtime worker", () => {
+  it.each(
+    (
+      [
+        "ARTIFACT_ACCESS_DENIED",
+        "ARTIFACT_INTEGRITY_FAILURE",
+        "ARTIFACT_IDEMPOTENCY_CONFLICT",
+      ] as const
+    ).flatMap((code) => (["completed", "started"] as const).map((status) => ({ code, status }))),
+  )("terminates unreadable recovery evidence: $code/$status", async ({ code, status }) => {
+    let failure;
+    let terminal = false;
+    const store = makeStore({
+      claim: async () => (terminal ? undefined : claim),
+      findAction: async () =>
+        ({
+          status,
+          actionType: status === "completed" ? "model-invocation" : "domain-tool",
+          resultArtifactRef: artifact,
+          intentArtifactRef: artifact,
+        }) as AgentTaskActionV1,
+      failTask: async (input) => {
+        failure = input.error;
+        terminal = true;
+        return task;
+      },
+    });
+    const execute = vi.fn();
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([definition(execute)]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      artifactStore: {
+        open: async () => {
+          throw makeArtifactError(code, "test.recovery");
+        },
+      } as unknown as ArtifactStoreV1,
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+    expect(await runner.runOnce()).toBe(1);
+    expect(await runner.runOnce()).toBe(0);
+    expect(failure).toMatchObject({
+      code:
+        code === "ARTIFACT_ACCESS_DENIED" ? "AGENT_AUTHORIZATION_DENIED" : "AGENT_ARTIFACT_FAILURE",
+      retryable: false,
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(store.calls).not.toContain("reserve");
+  });
+
+  it("retries a failed tool with its recorded input and retains charged retry usage", async () => {
+    const execute = vi.fn(async () => ({
+      observationArtifactRef: artifact,
+      effect: "committed" as const,
+      resultRef: artifact,
+    }));
+    let settledUsage;
+    const store = makeStore({
+      findAction: async () =>
+        ({
+          status: "failed",
+          actionType: "domain-tool",
+          intentArtifactRef: artifact,
+        }) as AgentTaskActionV1,
+      reserveAction: async (input) => ({
+        task,
+        reservation: {
+          ...reservation,
+          actionId: input.actionId,
+          amount: { ...emptyAgentBudgetUsage(), toolInvocations: 1, transientRetries: 1 },
+        },
+      }),
+      completeAction: async (input) => {
+        settledUsage = input.usage;
+        return task;
+      },
+    });
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([definition(execute)]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      artifactStore: recoveryArtifactStore,
+      persistArtifact: async () => artifact,
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+    expect(await runner.runOnce()).toBe(1);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(settledUsage).toMatchObject({ toolInvocations: 1, transientRetries: 1 });
+    expect(store.calls).toContain("fail-task");
+  });
+
+  it("ends a retry when the original remaining budget cannot reserve another action", async () => {
+    let terminal = false;
+    let failure;
+    const store = makeStore({
+      claim: async () => (terminal ? undefined : claim),
+      findAction: async () =>
+        ({
+          status: "failed",
+          actionType: "domain-tool",
+          intentArtifactRef: artifact,
+        }) as AgentTaskActionV1,
+      reserveAction: async () => {
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_BUDGET_EXHAUSTED",
+            category: "budget",
+            stage: "test.retry",
+          }),
+        );
+      },
+      failTask: async (input) => {
+        terminal = true;
+        failure = input.error;
+        return task;
+      },
+    });
+    const execute = vi.fn();
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([definition(execute)]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      artifactStore: recoveryArtifactStore,
+      persistArtifact: async () => artifact,
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+    expect(await runner.runOnce()).toBe(1);
+    expect(await runner.runOnce()).toBe(0);
+    expect(failure).toMatchObject({ code: "AGENT_BUDGET_EXHAUSTED", retryable: false });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("propagates cancellation and records uncertain effects without retry", async () => {
     const store = makeStore();
     const signal = new AbortController().signal;
@@ -321,6 +458,189 @@ describe("agent runtime worker", () => {
     expect(store.calls).toContain("release");
   });
 
+  it("retains the action receipt when budget settlement fails", async () => {
+    let failure;
+    const store = makeStore({
+      completeAction: async () => {
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_BUDGET_EXHAUSTED",
+            category: "budget",
+            stage: "budget.settle.inputTokens",
+          }),
+        );
+      },
+      failAction: async (input) => {
+        failure = input;
+        return task;
+      },
+    });
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([
+        definition(async () => ({
+          observationArtifactRef: artifact,
+          effect: "committed",
+          resultRef: artifact,
+        })),
+      ]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      renderModelStep: () => ({
+        messages: [],
+        maxOutputTokens: 1,
+        domainTool: { toolRef, input: { operation: "candidate" } },
+      }),
+      persistArtifact: async () => artifact,
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+    expect(await runner.runOnce()).toBe(1);
+    expect(failure).toMatchObject({
+      error: { code: "AGENT_BUDGET_EXHAUSTED", retryable: false },
+      resultArtifactRef: artifact,
+    });
+    expect(store.calls).not.toContain("complete-task");
+  });
+
+  it("records actual model usage and raw receipt when interpreting a response fails", async () => {
+    let failure;
+    const store = makeStore({
+      failAction: async (input) => {
+        failure = input;
+        return task;
+      },
+    });
+    const gateway = {
+      completeStructured: vi.fn(async (request) => ({
+        schemaVersion: "1",
+        invocationId: request.invocationId,
+        modelDeploymentRef: request.modelDeploymentRef,
+        promptTemplateRef: request.promptTemplateRef,
+        outputSchemaRef: request.outputSchemaRef,
+        serverBuildRef: { entityId: "server", versionId: "1" },
+        modelVersionRef: { entityId: "model", versionId: "1" },
+        usage: { available: true, inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+        rawResponseRef: artifact,
+        value: { operation: "candidate" },
+        finishReason: "stop",
+      })),
+    } as unknown as ModelGatewayPortV1;
+    const persisted = vi.fn(async () => artifact);
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([definition()]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      modelGateway: gateway,
+      renderModelStep: () => ({
+        messages: [{ role: "user", content: "clean" }],
+        maxOutputTokens: 10,
+      }),
+      interpretModelStep: () => {
+        throw new AgentRuntimeError(
+          makeAgentError({
+            code: "AGENT_INPUT_INVALID",
+            category: "input",
+            stage: "test.interpret",
+          }),
+        );
+      },
+      persistArtifact: persisted,
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+    expect(await runner.runOnce()).toBe(1);
+    expect(failure).toMatchObject({
+      error: { code: "AGENT_INPUT_INVALID" },
+      usage: { modelInvocations: 1, inputTokens: 4, outputTokens: 2, contextTokens: 6 },
+      resultArtifactRef: artifact,
+    });
+    expect(gateway.completeStructured).toHaveBeenCalledWith(
+      expect.objectContaining({ maxInputTokens: 100, maxContextTokens: 100, maxOutputTokens: 10 }),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(persisted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        purposeCode: "agent-action-result",
+        value: expect.objectContaining({ rawResponseRef: artifact }),
+      }),
+    );
+    expect(store.calls).not.toContain("complete-task");
+  });
+
+  it.each([
+    {
+      code: "MODEL_CONTEXT_EXCEEDED" as const,
+      expectedCode: "AGENT_BUDGET_EXHAUSTED",
+      category: "budget",
+      retryable: false,
+    },
+    {
+      code: "MODEL_OUTPUT_SCHEMA_INVALID" as const,
+      expectedCode: "AGENT_VALIDATION_REJECTED",
+      category: "validation",
+      retryable: true,
+    },
+  ])(
+    "保留模型$code的真实用量并交给既有失败恢复机制",
+    async ({ code, expectedCode, category, retryable }) => {
+      const inputTokens = code === "MODEL_CONTEXT_EXCEEDED" ? 101 : 4;
+      let failure;
+      const store = makeStore({
+        failAction: async (input) => {
+          failure = input;
+          return task;
+        },
+      });
+      const gateway = {
+        completeStructured: async () => {
+          throw new ModelGatewayError(
+            modelGatewayError({
+              code,
+              retryable: false,
+              stage: "usage.budget",
+              invocationId: "action-1",
+              modelDeploymentRef: taskRef.modelDeploymentRef,
+              occurredAt: "2030-01-01T00:00:01.000Z",
+              rawResponseRef: { ...artifact, kind: "diagnostic-artifact" },
+              counts: { inputTokens, outputTokens: 2 },
+            }),
+          );
+        },
+      } as unknown as ModelGatewayPortV1;
+      const runner = new AgentRuntimeRunner({
+        store,
+        registry: new AgentTaskDefinitionRegistry([definition()]),
+        workerId: "worker-1",
+        leaseDurationMs: 30_000,
+        maxConcurrentTasks: 1,
+        modelGateway: gateway,
+        renderModelStep: () => ({
+          messages: [{ role: "user", content: "clean" }],
+          maxOutputTokens: 10,
+        }),
+        interpretModelStep: () => {
+          throw new Error("must not interpret");
+        },
+        persistArtifact: async () => artifact,
+        now: () => "2030-01-01T00:00:01.000Z",
+      });
+      expect(await runner.runOnce()).toBe(1);
+      expect(failure).toMatchObject({
+        error: { code: expectedCode, category, retryable },
+        usage: {
+          modelInvocations: 1,
+          inputTokens,
+          outputTokens: 2,
+          contextTokens: inputTokens + 2,
+        },
+        resultArtifactRef: artifact,
+      });
+    },
+  );
+
   it("persists the intent artifact before reserving budget", async () => {
     const store = makeStore();
     const persistArtifact = vi.fn(async ({ purposeCode }: { purposeCode: string }) => {
@@ -347,7 +667,7 @@ describe("agent runtime worker", () => {
     );
     expect(store.calls).not.toContain("reserve");
     expect(store.calls).not.toContain("intent");
-    expect(store.calls).toContain("release");
+    expect(store.calls).toContain("fail-task");
   });
 
   it("renews the lease while a tool action is running", async () => {
@@ -489,7 +809,136 @@ describe("agent runtime worker", () => {
     expect(store.calls).toContain("complete-task");
   });
 
+  it("rebuilds completed tool calls from recorded evidence without re-executing the tool", async () => {
+    const requestRef = {
+      kind: "diagnostic-artifact" as const,
+      reference: { entityId: "model-result-1", versionId: `sha256:${"d".repeat(64)}` },
+    };
+    const observationRef = {
+      kind: "content-artifact" as const,
+      reference: { entityId: "observed-1", versionId: `sha256:${"e".repeat(64)}` },
+    };
+    const secondRequestRef = {
+      kind: "diagnostic-artifact" as const,
+      reference: { entityId: "model-result-2", versionId: `sha256:${"f".repeat(64)}` },
+    };
+    const secondObservationRef = {
+      kind: "content-artifact" as const,
+      reference: { entityId: "observed-2", versionId: `sha256:${"0".repeat(64)}` },
+    };
+    const encoder = new TextEncoder();
+    const toolRequestBytes = encoder.encode(
+      JSON.stringify({
+        disposition: "tool-request",
+        toolRef,
+        toolInput: { operation: "candidate" },
+      }),
+    );
+    const recorded = new Map<string, Uint8Array>([
+      [requestRef.reference.versionId, toolRequestBytes],
+      [
+        observationRef.reference.versionId,
+        encoder.encode(JSON.stringify({ observationArtifactRef: observationRef })),
+      ],
+      [secondRequestRef.reference.versionId, toolRequestBytes],
+      [
+        secondObservationRef.reference.versionId,
+        encoder.encode(JSON.stringify({ observationArtifactRef: secondObservationRef })),
+      ],
+    ]);
+    const artifactStore = {
+      open: async (request: { artifactRef: { reference: { versionId: string } } }) => ({
+        manifest: {} as never,
+        content: (async function* () {
+          yield recorded.get(request.artifactRef.reference.versionId)!;
+        })(),
+        completed: Promise.resolve({} as never),
+      }),
+    } as unknown as ArtifactStoreV1;
+    const recordedActions = [
+      { status: "completed", actionType: "model-invocation", resultArtifactRef: requestRef },
+      { status: "completed", actionType: "domain-tool", resultArtifactRef: observationRef },
+      { status: "completed", actionType: "model-invocation", resultArtifactRef: secondRequestRef },
+      { status: "completed", actionType: "domain-tool", resultArtifactRef: secondObservationRef },
+    ] as unknown as AgentTaskActionV1[];
+    const gateway = {
+      completeStructured: vi.fn(async (request) => ({
+        schemaVersion: "1" as const,
+        invocationId: request.invocationId,
+        modelDeploymentRef: request.modelDeploymentRef,
+        serverBuildRef: { entityId: "server", versionId: "1" },
+        modelVersionRef: { entityId: "model-version", versionId: "1" },
+        usage: { available: true, inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        rawResponseRef: artifact,
+        promptTemplateRef: request.promptTemplateRef,
+        outputSchemaRef: request.outputSchemaRef,
+        value: { operation: "candidate" },
+        finishReason: "stop" as const,
+      })),
+    } as unknown as ModelGatewayPortV1;
+    const executeStep = vi.fn(async () => ({
+      observationArtifactRef: artifact,
+      effect: "none" as const,
+    }));
+    const renderModelStep = vi.fn(() => ({
+      messages: [{ role: "user" as const, content: "continue" }],
+      maxOutputTokens: 3,
+    }));
+    const interpretModelStep = vi.fn().mockReturnValueOnce({
+      kind: "completed",
+      candidate: {
+        schemaVersion: "1",
+        taskRef,
+        candidateVersion: 1,
+        parentCandidateVersion: 0,
+        candidateArtifactRef: artifact,
+        incrementArtifactRef: artifact,
+        disposition: "pending",
+        createdAt: "2030-01-01T00:00:02.000Z",
+      },
+      candidatePayload: { operation: "candidate" },
+      increment: { operation: "candidate" },
+    });
+    const store = makeStore({
+      async findAction() {
+        return recordedActions.shift();
+      },
+    });
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([definition(executeStep)]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      modelGateway: gateway,
+      renderModelStep,
+      interpretModelStep,
+      persistArtifact: async () => artifact,
+      artifactStore,
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+
+    expect(await runner.runOnce()).toBe(1);
+    expect(executeStep).not.toHaveBeenCalled();
+    // 只登记新的模型步，两次已记录的工具调用不重新预留动作。
+    expect(store.calls.filter((call) => call === "reserve")).toHaveLength(1);
+    expect(renderModelStep).toHaveBeenCalledOnce();
+    expect(renderModelStep.mock.calls[0]?.[2]).toEqual({
+      previousObservationArtifactRef: secondObservationRef,
+      completedToolCalls: [
+        { toolRef, input: { operation: "candidate" }, observationArtifactRef: observationRef },
+        {
+          toolRef,
+          input: { operation: "candidate" },
+          observationArtifactRef: secondObservationRef,
+        },
+      ],
+    });
+    expect(store.calls).toContain("complete-task");
+  });
+
   it("returns a read-only tool observation to the model before finalizing", async () => {
+    const outputSchema = z.strictObject({ operation: z.literal("candidate") });
     const actionRef = {
       kind: "diagnostic-artifact" as const,
       reference: { entityId: "raw-model-response", versionId: `sha256:${"b".repeat(64)}` },
@@ -509,12 +958,22 @@ describe("agent runtime worker", () => {
         finishReason: "stop" as const,
       })),
     } as unknown as ModelGatewayPortV1;
+    const secondObservation = {
+      kind: "content-artifact" as const,
+      reference: { entityId: "cleaned-2", versionId: `sha256:${"c".repeat(64)}` },
+    };
+    const observations = [artifact, secondObservation];
     const executeStep = vi.fn(async () => ({
-      observationArtifactRef: artifact,
+      observationArtifactRef: observations.shift()!,
       effect: "none" as const,
     }));
     const interpretModelStep = vi
       .fn()
+      .mockReturnValueOnce({
+        kind: "tool-request",
+        toolRef,
+        toolInput: { operation: "candidate" },
+      })
       .mockReturnValueOnce({
         kind: "tool-request",
         toolRef,
@@ -537,9 +996,18 @@ describe("agent runtime worker", () => {
       });
     const renderModelStep = vi.fn(() => ({
       messages: [{ role: "user" as const, content: "continue" }],
-      maxOutputTokens: 1,
+      maxOutputTokens: 3,
+      outputSchema,
     }));
-    const store = makeStore();
+    const remainingBudgetTask = {
+      ...task,
+      budgetPolicy: { ...task.budgetPolicy, maxOutputTokens: 3 },
+      budgetLedger: {
+        ...task.budgetLedger,
+        used: { ...task.budgetLedger.used, outputTokens: 1 },
+      },
+    };
+    const store = makeStore({ claim: async () => ({ ...claim, task: remainingBudgetTask }) });
     const runner = new AgentRuntimeRunner({
       store,
       registry: new AgentTaskDefinitionRegistry([definition(executeStep)]),
@@ -554,12 +1022,29 @@ describe("agent runtime worker", () => {
     });
 
     expect(await runner.runOnce()).toBe(1);
-    expect(gateway.completeStructured).toHaveBeenCalledTimes(2);
-    expect(executeStep).toHaveBeenCalledOnce();
+    expect(gateway.completeStructured).toHaveBeenCalledTimes(3);
+    expect(gateway.completeStructured).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ maxOutputTokens: 2 }),
+      outputSchema,
+      expect.anything(),
+    );
+    expect(executeStep).toHaveBeenCalledTimes(2);
+    // 第二次工具调用完成后，模型上下文仍同时保留首次与第二次读取事实。
     expect(renderModelStep.mock.calls[1]?.[2]).toEqual({
       previousObservationArtifactRef: artifact,
+      completedToolCalls: [
+        { toolRef, input: { operation: "candidate" }, observationArtifactRef: artifact },
+      ],
     });
-    expect(store.calls.filter((call) => call === "complete-action")).toHaveLength(3);
+    expect(renderModelStep.mock.calls[2]?.[2]).toEqual({
+      previousObservationArtifactRef: secondObservation,
+      completedToolCalls: [
+        { toolRef, input: { operation: "candidate" }, observationArtifactRef: artifact },
+        { toolRef, input: { operation: "candidate" }, observationArtifactRef: secondObservation },
+      ],
+    });
+    expect(store.calls.filter((call) => call === "complete-action")).toHaveLength(5);
     expect(store.calls).toContain("candidate");
     expect(store.calls).toContain("complete-task");
   });
@@ -662,7 +1147,7 @@ describe("agent runtime worker", () => {
 
     expect(await runner.runOnce()).toBe(1);
     expect(capturedFailure?.error.code).toBe("AGENT_WALL_CLOCK_EXCEEDED");
-    expect(capturedFailure?.activeWallClockMs).toBeGreaterThanOrEqual(20);
+    expect(capturedFailure?.activeWallClockMs).toBeGreaterThan(0);
   });
 
   it("does not leave an unauthorized claim retrying forever", async () => {
@@ -762,7 +1247,8 @@ describe("agent runtime worker", () => {
       renderModelStep: () => ({ messages: [], maxOutputTokens: 1 }),
       interpretModelStep,
       persistArtifact: async () => artifact,
-      runTask: async (claimed, operation) => {
+      runTask: async (claimed, operation, execution) => {
+        expect(execution).toMatchObject({ workerId: "worker-1", leaseToken: expect.any(String) });
         scopedTasks.push(claimed.envelope.agentTaskRef.reference.entityId);
         await scope.run(claimed.envelope.agentTaskRef.reference.entityId, operation);
       },

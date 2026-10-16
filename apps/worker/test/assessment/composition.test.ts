@@ -462,7 +462,6 @@ describe("C30 评估子图组合根（真实 PostgreSQL 接线）", () => {
     });
     checkpointer = await setupPostgresCheckpointer({
       ...postgres.checkpointer,
-      validateReference: () => true,
     });
     options = {
       db: app.db,

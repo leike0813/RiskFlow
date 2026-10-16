@@ -50,6 +50,7 @@ export const REQUIRED_API_PORT_METHODS_V1 = Object.freeze({
   engineeringData: ["apply", "freeze", "read"],
   engineeringDataCatalog: ["read"],
   knowledgeModeling: ["govern", "resolve", "retrieve"],
+  applicableRuleSetAssembly: ["assemble"],
   knowledgeGovernanceRead: ["read"],
   knowledgeRetrievalRead: ["read"],
   riskIdentification: ["plan", "analyze", "finalize"],
@@ -87,6 +88,7 @@ export const REQUIRED_API_PROVIDERS_V1 = Object.freeze({
   contextSource: ["apply", "freeze", "read", "resolveReadQuery"],
   monitoringStore: ["resolveSnapshotQuery"],
   knowledgeModeling: ["govern", "resolve", "retrieve"],
+  applicableRuleSetAssembly: ["assemble"],
   riskIdentification: ["plan", "analyze", "finalize"],
   riskIdentificationRead: ["read"],
   riskAssessment: ["prepare", "evaluate"],
@@ -363,10 +365,12 @@ export const createDeploymentApiPortsV1 = (options) => {
   });
 
   const ports = {
+    ...(options.sourceOriginal === undefined ? {} : { sourceOriginal: options.sourceOriginal }),
     // engineeringData 端口就是同一真实 context-source registry 的原端口。
     engineeringData: options.contextSource,
     engineeringDataCatalog,
     knowledgeModeling: options.knowledgeModeling,
+    applicableRuleSetAssembly: options.applicableRuleSetAssembly,
     knowledgeGovernanceRead,
     knowledgeRetrievalRead,
     riskIdentification: options.riskIdentification,
@@ -379,7 +383,33 @@ export const createDeploymentApiPortsV1 = (options) => {
     calibrationGovernance: options.calibration,
     reviewAudit: options.reviewAudit,
     reviewQueueRead,
-    reviewAuditRead,
+    reviewAuditRead:
+      options.reviewDecisionAvailability === undefined
+        ? reviewAuditRead
+        : {
+            async read(query) {
+              const result = await reviewAuditRead.read(query);
+              if (
+                result.kind !== "succeeded" ||
+                result.result.kind !== "task-detail" ||
+                result.result.status !== "pending"
+              )
+                return result;
+              const allowed = await options.reviewDecisionAvailability(query);
+              return {
+                ...result,
+                result: {
+                  ...result.result,
+                  actions: [
+                    {
+                      branch: "review-audit.decide-review",
+                      availability: allowed ? "allowed" : "denied",
+                    },
+                  ],
+                },
+              };
+            },
+          },
     agentTask: options.agentTask,
     agentTaskRead: options.agentTaskRead,
     workflow: options.workflow,

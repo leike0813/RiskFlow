@@ -372,6 +372,7 @@ class ConsumerDouble implements IdempotentConsumerV1 {
     { status: "pending" | "completed"; resultRef?: ContractReferenceV1 }
   >();
   runs = 0;
+  context: TransactionContextV1 | undefined;
 
   async consume(
     consumerName: string,
@@ -386,6 +387,7 @@ class ConsumerDouble implements IdempotentConsumerV1 {
     if (existing === undefined) this.receipts.set(key, { status: "pending" });
     this.runs += 1;
     const context = {} as unknown as TransactionContextV1;
+    this.context = context;
     const result: ConsumerHandlerResultV1 = await handler(context, event);
     this.receipts.set(key, { status: "completed", resultRef: result.resultRef });
     return ConsumerResultV1Schema.parse({ resultRef: result.resultRef, replayed: false });
@@ -788,6 +790,31 @@ const expectedCollectionName = retrievalCollectionNameFor(
 );
 
 describe("versioned hybrid retrieval projection handler", () => {
+  it("reads the building generation for quality in the consumer transaction", async () => {
+    const consumer = new ConsumerDouble();
+    const store = new GenerationStoreDouble();
+    let checked = false;
+    const { handler } = buildHandler({
+      consumer,
+      store,
+      qualityGate: {
+        async evaluate(input, context) {
+          expect(context).toBeDefined();
+          expect(context).toBe(consumer.context);
+          const generation = await store.readGeneration(input.generationRef);
+          expect(generation?.generationRef).toEqual(input.generationRef);
+          expect(store.statusOf(input.generationRef)).toBe("building");
+          checked = true;
+          return { passed: true, detailCode: "fixture-passed" };
+        },
+      },
+    });
+
+    expect((await handler.handle(eventFor({}))).kind).toBe("projected");
+    expect(checked).toBe(true);
+    expect(store.activations).toHaveLength(1);
+  });
+
   it("projects one dual-index generation with ready, activation and a completed receipt", async () => {
     const { handler, consumer, store, projection } = buildHandler({});
 

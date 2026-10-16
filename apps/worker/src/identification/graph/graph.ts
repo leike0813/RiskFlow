@@ -14,6 +14,8 @@
  * 节点不完成任何副作用，只把状态恢复为 `running`，由路由把控制权交回同一阶段，阶段节点按
  * 业务幂等身份重放；因此 checkpoint 只承载小型引用，业务事实永不来自 checkpoint 正文。
  */
+import { isDeepStrictEqual } from "node:util";
+
 import {
   Annotation,
   Command,
@@ -29,6 +31,8 @@ import {
 import type { VersionReference } from "@riskflow/contracts/common";
 import {
   ContentArtifactRefV1Schema,
+  MODULE_BRANCH_CAPABILITY_V1,
+  type ModuleBranchV1,
   type AgentTaskPortV1,
   type ContentArtifactRefV1,
   type AgentTaskRefV1,
@@ -36,7 +40,6 @@ import {
   type DomainEventRefV1,
   type IdentificationGroupRefV1,
   type IdentificationPreparationSnapshotRefV1,
-  type IdentificationWorkItemRefV1,
   type IdentificationWorkPlanRefV1,
   type KnowledgeModelingPortV1,
   type ReviewDecisionRefV1,
@@ -55,7 +58,7 @@ import {
   type IdentificationStageV1,
 } from "@riskflow/contracts/workflows";
 
-import type { AgentTaskSnapshotV1 } from "@riskflow/core/agent-runtime";
+import { agentTaskRefFor, type AgentTaskSnapshotV1 } from "@riskflow/core/agent-runtime";
 import {
   IdentificationContextError,
   type IdentificationContextService,
@@ -81,6 +84,7 @@ import {
   summarizeIdentificationRun,
   toWaitingRef,
   type IdentificationGraphErrorV1,
+  type IdentificationGraphAuthorizeDownstreamV1,
   type IdentificationGraphPolicySetV1,
   type IdentificationGraphResumeCauseV1,
   type IdentificationGraphProcessNodeFactV1,
@@ -289,6 +293,7 @@ export interface IdentificationGraphRegistrationStorePortV1 {
 
 /** 图节点可用的全部注入端口；任一必需项缺失即拒绝构造（design D-03/D-04）。 */
 export interface IdentificationGraphPortsV1 {
+  readonly authorizeDownstream: IdentificationGraphAuthorizeDownstreamV1;
   readonly transactionUnit: TransactionUnitV1;
   readonly registrationStore: IdentificationGraphRegistrationStorePortV1;
   readonly bodies: IdentificationGraphBodyPortV1;
@@ -324,6 +329,35 @@ export interface IdentificationGraphPortsV1 {
   readonly acceptanceRoutes: IdentificationGraphAcceptanceRouteReaderV1;
   readonly now: () => Date;
 }
+
+export const identificationAuthorizationFor = async (input: {
+  readonly ports: IdentificationGraphPortsV1;
+  readonly run: Pick<
+    IdentificationGraphRunContextV1,
+    "projectId" | "actorId" | "authorization" | "issuedAt" | "issuedInvocationId" | "runRef"
+  >;
+  readonly branch: ModuleBranchV1;
+  readonly invocationId: string;
+}): Promise<AuthorizationContextV1> => {
+  const { run } = input;
+  const authorization = await input.ports.authorizeDownstream({
+    projectId: run.projectId,
+    actorId: run.actorId,
+    invocationId: input.invocationId,
+    branch: input.branch,
+    requestedAt: run.issuedAt,
+    requestedSpatialScopeRefs: run.authorization.spatialScopeRefs,
+    causalRunRef: run.runRef,
+  });
+  if (
+    authorization.projectId !== run.projectId ||
+    authorization.actorId !== run.actorId ||
+    authorization.grantedCapabilities.length !== 1 ||
+    authorization.grantedCapabilities[0] !== MODULE_BRANCH_CAPABILITY_V1[input.branch]
+  )
+    throw new TypeError("IDENTIFICATION_DOWNSTREAM_AUTHORIZATION_INVALID");
+  return authorization;
+};
 
 /** 首次运行输入：通道正文就是完整公开状态。 */
 export interface IdentificationGraphInputV1 {
@@ -656,7 +690,7 @@ const rowBase = (input: {
   runId: input.run.runRef.reference.entityId,
   runVersionId: input.runVersionId,
   commandId: actionIdFor(input.run, input.idempotencySuffix),
-  idempotencyKey: `identification-graph:${input.resultKind}:${input.idempotencySuffix}`,
+  idempotencyKey: `identification-graph:${input.resultKind}:${actionIdFor(input.run, input.idempotencySuffix)}`,
   requestDigest: sha256CanonicalJson({
     resultKind: input.resultKind,
     artifactRef: input.artifactRef,
@@ -777,6 +811,27 @@ export const readCursor = async (input: {
     requestedAt: input.run.issuedAt,
   });
   return latest?.state;
+};
+
+const readStageCursor = async (
+  input: Parameters<typeof readCursor>[0],
+): Promise<IdentificationGraphRunStateV1 | undefined> => {
+  const cursor = await readCursor(input);
+  if (
+    cursor?.status === "cancelled" ||
+    cursor?.status === "completed" ||
+    cursor?.status === "terminal-failure"
+  ) {
+    fail(
+      graphError({
+        code: "VERSION_CONFLICT",
+        stage: cursor.stage,
+        detailCode: "run-already-terminal",
+        occurredAt: input.ports.now().toISOString(),
+      }),
+    );
+  }
+  return cursor;
 };
 
 /** 游标内容 → 游标正文：版本只摘要内容本身，同一内容永远得到同一版本（design D-06）。 */
@@ -1237,31 +1292,28 @@ const resolveReviewAgentRefs = async (input: {
 };
 
 /**
- * 检索审阅 Agent 任务身份：由工程、工作项与冻结审阅策略确定性派生（design D-03）。
+ * 检索审阅任务在冻结候选前复用C08正式身份，由同一启动幂等键派生。
  * 等待、恢复与技术重试都沿用同一身份，不新建替代任务。
  */
 export const retrievalReviewTaskRefFor = (input: {
   readonly projectId: string;
-  readonly workItemRef: IdentificationWorkItemRefV1;
+  readonly idempotencyKey: string;
   readonly refs: RetrievalReviewAgentRefsV1;
-}): AgentTaskRefV1 => ({
-  kind: "agent-task",
-  reference: {
-    entityId: `retrieval-review-task:${input.projectId}:${input.workItemRef.reference.entityId}`,
-    versionId: sha256CanonicalJson({
-      workItemRef: input.workItemRef,
-      reviewPolicyRef: input.refs.policyRef,
-    }),
-  },
-  taskType: "retrieval-review",
-  triggerMode: "embedded",
-  modelDeploymentRef: input.refs.modelDeploymentRef,
-  promptTemplateRef: input.refs.promptTemplateRef,
-  toolPolicyRef: input.refs.toolPolicyRef,
-  budgetPolicyRef: input.refs.budgetPolicyRef,
-  incrementSchemaRef: input.refs.incrementSchemaRef,
-  validationPolicyRef: input.refs.validationPolicyRef,
-});
+}): AgentTaskRefV1 =>
+  agentTaskRefFor({
+    projectId: input.projectId,
+    idempotencyKey: input.idempotencyKey,
+    payload: {
+      taskType: "retrieval-review",
+      triggerMode: "embedded",
+      modelDeploymentRef: input.refs.modelDeploymentRef,
+      promptTemplateRef: input.refs.promptTemplateRef,
+      toolPolicyRef: input.refs.toolPolicyRef,
+      budgetPolicyRef: input.refs.budgetPolicyRef,
+      incrementSchemaRef: input.refs.incrementSchemaRef,
+      validationPolicyRef: input.refs.validationPolicyRef,
+    },
+  });
 
 /** 工序事实：适用性由冻结工序模型的节点与冻结机理发布共同判定，查询依据确定性派生。 */
 export const processNodeFactsOf = (input: {
@@ -1307,7 +1359,7 @@ const stageI0: StageHandlerV1 = async ({ ports, run, state }) => {
   if (mismatch) {
     fail(contractInvalid({ stage: "I0", detailCode: "trigger-context-mismatch", occurredAt }));
   }
-  const cursor = await readCursor({ ports, run });
+  const cursor = await readStageCursor({ ports, run });
   const stageResult = IdentificationStageResultV1Schema.parse({
     schemaVersion: "1",
     runRef: run.runRef,
@@ -1332,7 +1384,7 @@ const stageI0: StageHandlerV1 = async ({ ports, run, state }) => {
 /** I1：解析 C17 识别基础与策略组合，冻结单一输入快照；缺项按类型化等待收口。 */
 const stageI1: StageHandlerV1 = async ({ ports, run, state }) => {
   const occurredAt = ports.now().toISOString();
-  const cursor = await readCursor({ ports, run });
+  const cursor = await readStageCursor({ ports, run });
   const policySet = await ports.policyProvider.resolveExact({
     projectId: run.projectId,
     preparationSnapshotRef: run.preparationSnapshotRef,
@@ -1376,7 +1428,12 @@ const stageI1: StageHandlerV1 = async ({ ports, run, state }) => {
     projectId: run.projectId,
     actorId: run.actorId,
     issuedAt: run.issuedAt,
-    authorization: run.authorization,
+    authorization: await identificationAuthorizationFor({
+      ports,
+      run,
+      branch: "knowledge-modeling.identification-basis",
+      invocationId: actionIdFor(run, "I1:basis"),
+    }),
     payload: { preparationSnapshotRef: run.preparationSnapshotRef, requiredAt: run.validAt },
   });
   if (basis.kind === "waiting") {
@@ -1446,6 +1503,7 @@ const stageI1: StageHandlerV1 = async ({ ports, run, state }) => {
   }
   const policySet2 = IdentificationGraphPolicySetV1Schema.parse(resolvedPolicySet);
   const inputSnapshotRef = identificationInputSnapshotRefFor({
+    identificationRunRef: run.runRef,
     projectId: run.projectId,
     preparationSnapshotRef: run.preparationSnapshotRef,
     policySetRef: policySet2.policySetRef,
@@ -1453,6 +1511,7 @@ const stageI1: StageHandlerV1 = async ({ ports, run, state }) => {
     retrievalEvidenceBaseReleaseRef: resolved.retrievalEvidenceBaseReleaseRef.reference,
   });
   const inputSnapshot = resolveIdentificationInputSnapshot({
+    identificationRunRef: run.runRef,
     preparationSnapshotRef: run.preparationSnapshotRef,
     policySet: policySet2,
     processModelReleaseRef: resolved.processModelReleaseRef.reference,
@@ -1520,7 +1579,7 @@ const stageI1: StageHandlerV1 = async ({ ports, run, state }) => {
 /** I2：从精确工序模型与资料范围生成一次不可变工作计划；缺项整体阻断。 */
 const stageI2: StageHandlerV1 = async ({ ports, run, state }) => {
   const occurredAt = ports.now().toISOString();
-  const cursor = await readCursor({ ports, run });
+  const cursor = await readStageCursor({ ports, run });
   const inputSnapshotRef = state.inputSnapshotRef;
   if (inputSnapshotRef === undefined) {
     fail(contractInvalid({ stage: "I2", detailCode: "input-snapshot-missing", occurredAt }));
@@ -1553,7 +1612,13 @@ const stageI2: StageHandlerV1 = async ({ ports, run, state }) => {
     },
     actorId: run.actorId,
     requestedAt: run.issuedAt,
-    authorization: run.authorization,
+    invocationId: actionIdFor(run, "I2:process-model"),
+    authorization: await identificationAuthorizationFor({
+      ports,
+      run,
+      branch: "knowledge-modeling.identification-basis",
+      invocationId: actionIdFor(run, "I2:process-model"),
+    }),
   });
   if (processModel.kind === "failed") {
     fail(toIdentificationGraphError({ stage: "I2", error: processModel.error, occurredAt }));
@@ -1566,7 +1631,13 @@ const stageI2: StageHandlerV1 = async ({ ports, run, state }) => {
     },
     actorId: run.actorId,
     requestedAt: run.issuedAt,
-    authorization: run.authorization,
+    invocationId: actionIdFor(run, "I2:mechanism"),
+    authorization: await identificationAuthorizationFor({
+      ports,
+      run,
+      branch: "knowledge-modeling.identification-basis",
+      invocationId: actionIdFor(run, "I2:mechanism"),
+    }),
   });
   if (mechanism.kind === "failed") {
     fail(toIdentificationGraphError({ stage: "I2", error: mechanism.error, occurredAt }));
@@ -1706,7 +1777,7 @@ const retrievalArtifactSetOfTask = async (input: {
 /** I3：逐工作项完成必经检索审阅与五项上下文；任务未终结时登记等待并暂停。 */
 const stageI3: StageHandlerV1 = async ({ ports, run, state }) => {
   const occurredAt = ports.now().toISOString();
-  const cursor = await readCursor({ ports, run });
+  const cursor = await readStageCursor({ ports, run });
   if (cursor === undefined) {
     fail(contractInvalid({ stage: "I3", detailCode: "cursor-missing", occurredAt }));
   }
@@ -1719,39 +1790,77 @@ const stageI3: StageHandlerV1 = async ({ ports, run, state }) => {
     fail(contractInvalid({ stage: "I3", detailCode: "input-snapshot-missing", occurredAt }));
   }
   const refs = await resolveReviewAgentRefs({ ports });
-  const taskRef = retrievalReviewTaskRefFor({ projectId: run.projectId, workItemRef, refs });
-  const prepared = await ports.contextService.prepareReview({
+  const taskRef = retrievalReviewTaskRefFor({
     projectId: run.projectId,
-    actorId: run.actorId,
-    requestedAt: run.issuedAt,
-    taskRef,
-    inputSnapshotRef,
-    workItemRef,
-    authorization: run.authorization,
-  });
-  const started = await ports.agentTasks.startTask({
-    kind: "start-task",
-    commandId: actionIdFor(run, `I3:task:${workItemRef.reference.entityId}`),
     idempotencyKey: actionIdFor(run, `I3:task:${workItemRef.reference.entityId}`),
-    projectId: run.projectId,
-    actorId: run.actorId,
-    issuedAt: run.issuedAt,
-    authorization: run.authorization,
-    payload: {
-      taskType: "retrieval-review",
-      triggerMode: "embedded",
-      parentRunRef: run.runRef,
-      frozenInputRef: prepared.candidateSetRef,
-      modelDeploymentRef: refs.modelDeploymentRef,
-      promptTemplateRef: refs.promptTemplateRef,
-      toolPolicyRef: refs.toolPolicyRef,
-      budgetPolicyRef: refs.budgetPolicyRef,
-      incrementSchemaRef: refs.incrementSchemaRef,
-      validationPolicyRef: refs.validationPolicyRef,
-    },
+    refs,
   });
-  if (started.kind === "failed") {
-    fail(toIdentificationGraphError({ stage: "I3", error: started.error, occurredAt }));
+  if (cursor.status === "waiting") {
+    const waiting = cursor.lastWaitingRef;
+    const task = await ports.agentTaskReader.getTask(taskRef);
+    if (
+      waiting?.kind !== "retrieval-review-agent" ||
+      !isDeepStrictEqual(waiting.agentTaskRef, taskRef) ||
+      !isDeepStrictEqual(waiting.workItemRef, workItemRef) ||
+      task === undefined ||
+      task.envelope.projectId !== run.projectId ||
+      task.envelope.actorId !== run.actorId ||
+      !isDeepStrictEqual(task.envelope.agentTaskRef, taskRef) ||
+      !isDeepStrictEqual(task.state.agentTaskRef, taskRef) ||
+      !isDeepStrictEqual(task.envelope.parentRunRef, run.runRef) ||
+      authorizationScopeDigest(task.envelope.authorization) !==
+        authorizationScopeDigest(run.authorization)
+    ) {
+      fail(
+        graphError({
+          code: "AUTHORIZATION_DENIED",
+          stage: "I3",
+          detailCode: "waiting-task-binding-mismatch",
+          retryable: false,
+          occurredAt,
+        }),
+      );
+    }
+  } else {
+    const taskAuthorization = await identificationAuthorizationFor({
+      ports,
+      run,
+      branch: "agent-task.start-task",
+      invocationId: actionIdFor(run, `I3:task:${workItemRef.reference.entityId}`),
+    });
+    const prepared = await ports.contextService.prepareReview({
+      projectId: run.projectId,
+      actorId: run.actorId,
+      requestedAt: run.issuedAt,
+      taskRef,
+      inputSnapshotRef,
+      workItemRef,
+      authorization: taskAuthorization,
+    });
+    const started = await ports.agentTasks.startTask({
+      kind: "start-task",
+      commandId: actionIdFor(run, `I3:task:${workItemRef.reference.entityId}`),
+      idempotencyKey: actionIdFor(run, `I3:task:${workItemRef.reference.entityId}`),
+      projectId: run.projectId,
+      actorId: run.actorId,
+      issuedAt: run.issuedAt,
+      authorization: taskAuthorization,
+      payload: {
+        taskType: "retrieval-review",
+        triggerMode: "embedded",
+        parentRunRef: run.runRef,
+        frozenInputRef: prepared.candidateSetRef,
+        modelDeploymentRef: refs.modelDeploymentRef,
+        promptTemplateRef: refs.promptTemplateRef,
+        toolPolicyRef: refs.toolPolicyRef,
+        budgetPolicyRef: refs.budgetPolicyRef,
+        incrementSchemaRef: refs.incrementSchemaRef,
+        validationPolicyRef: refs.validationPolicyRef,
+      },
+    });
+    if (started.kind === "failed") {
+      fail(toIdentificationGraphError({ stage: "I3", error: started.error, occurredAt }));
+    }
   }
   const task = await retrievalArtifactSetOfTask({ ports, run, stage: "I3", taskRef });
   if (
@@ -1820,7 +1929,12 @@ const stageI3: StageHandlerV1 = async ({ ports, run, state }) => {
     reviewTaskRef: taskRef,
     inputSnapshotRef,
     workItemRef,
-    authorization: run.authorization,
+    authorization: await identificationAuthorizationFor({
+      ports,
+      run,
+      branch: "knowledge-modeling.relationship-context",
+      invocationId: taskRef.reference.entityId,
+    }),
   });
   return await advance({
     ports,
@@ -1848,7 +1962,7 @@ const stageI3: StageHandlerV1 = async ({ ports, run, state }) => {
 /** I4：只对具有正式五项上下文的工作项生成候选（RI-S57 专用推理入口）。 */
 const stageI4: StageHandlerV1 = async ({ ports, run, state }) => {
   const occurredAt = ports.now().toISOString();
-  const cursor = await readCursor({ ports, run });
+  const cursor = await readStageCursor({ ports, run });
   if (cursor === undefined) {
     fail(contractInvalid({ stage: "I4", detailCode: "cursor-missing", occurredAt }));
   }
@@ -1870,7 +1984,12 @@ const stageI4: StageHandlerV1 = async ({ ports, run, state }) => {
     projectId: run.projectId,
     actorId: run.actorId,
     issuedAt: run.issuedAt,
-    authorization: run.authorization,
+    authorization: await identificationAuthorizationFor({
+      ports,
+      run,
+      branch: "risk-identification.assemble-and-infer",
+      invocationId: actionIdFor(run, `I4:${workItemRef.reference.entityId}`),
+    }),
     payload: {
       workItemRef,
       retrievalArtifactSetRef,
@@ -1928,7 +2047,12 @@ const stageI4: StageHandlerV1 = async ({ ports, run, state }) => {
       inputSnapshotRef,
       workItemRef,
       zeroResultRef: analyzedResult.zeroResultRef,
-      authorization: run.authorization,
+      authorization: await identificationAuthorizationFor({
+        ports,
+        run,
+        branch: "risk-identification.assemble-and-infer",
+        invocationId: actionIdFor(run, `I4:${workItemRef.reference.entityId}`),
+      }),
     });
     if (zeroRead.kind !== "read") {
       fail(
@@ -2005,7 +2129,7 @@ const stageI4: StageHandlerV1 = async ({ ports, run, state }) => {
 /** I5：共享确定性校验与有界修正闭环；不可修正失败只封闭该项，不伪装人工复核。 */
 const stageI5: StageHandlerV1 = async ({ ports, run, state }) => {
   const occurredAt = ports.now().toISOString();
-  const cursor = await readCursor({ ports, run });
+  const cursor = await readStageCursor({ ports, run });
   if (cursor === undefined) {
     fail(contractInvalid({ stage: "I5", detailCode: "cursor-missing", occurredAt }));
   }
@@ -2022,7 +2146,12 @@ const stageI5: StageHandlerV1 = async ({ ports, run, state }) => {
     projectId: run.projectId,
     actorId: run.actorId,
     issuedAt: run.issuedAt,
-    authorization: run.authorization,
+    authorization: await identificationAuthorizationFor({
+      ports,
+      run,
+      branch: "risk-identification.repair-and-validate",
+      invocationId: actionIdFor(run, `I5:${workItemRef.reference.entityId}`),
+    }),
     payload: {
       candidateSetRef,
       repairPolicyRef: policySet.repairPolicyRef,
@@ -2138,7 +2267,7 @@ const stageI5: StageHandlerV1 = async ({ ports, run, state }) => {
 /** I6：全部可处理工作项达到 I5 终态后只调用一次全运行合并。 */
 const stageI6: StageHandlerV1 = async ({ ports, run, state }) => {
   const occurredAt = ports.now().toISOString();
-  const cursor = await readCursor({ ports, run });
+  const cursor = await readStageCursor({ ports, run });
   if (cursor === undefined) {
     fail(contractInvalid({ stage: "I6", detailCode: "cursor-missing", occurredAt }));
   }
@@ -2168,7 +2297,12 @@ const stageI6: StageHandlerV1 = async ({ ports, run, state }) => {
     projectId: run.projectId,
     actorId: run.actorId,
     issuedAt: run.issuedAt,
-    authorization: run.authorization,
+    authorization: await identificationAuthorizationFor({
+      ports,
+      run,
+      branch: "risk-identification.merge-run-candidates",
+      invocationId: actionIdFor(run, "I6:merge"),
+    }),
     payload: {
       workPlanRef,
       validatedCandidateSetRefs: cursor.validatedCandidateSetRefs,
@@ -2219,7 +2353,7 @@ const stageI6: StageHandlerV1 = async ({ ports, run, state }) => {
 /** I7：按冻结置信度与强制复核策略为每个分组形成唯一验收路线。 */
 const stageI7: StageHandlerV1 = async ({ ports, run, state }) => {
   const occurredAt = ports.now().toISOString();
-  const cursor = await readCursor({ ports, run });
+  const cursor = await readStageCursor({ ports, run });
   const mergePlanRef = state.mergePlanRef;
   if (cursor === undefined || mergePlanRef === undefined) {
     fail(contractInvalid({ stage: "I7", detailCode: "merge-plan-missing", occurredAt }));
@@ -2232,7 +2366,12 @@ const stageI7: StageHandlerV1 = async ({ ports, run, state }) => {
     projectId: run.projectId,
     actorId: run.actorId,
     issuedAt: run.issuedAt,
-    authorization: run.authorization,
+    authorization: await identificationAuthorizationFor({
+      ports,
+      run,
+      branch: "risk-identification.route-acceptance",
+      invocationId: actionIdFor(run, "I7:route"),
+    }),
     payload: {
       mergePlanRef,
       confidencePolicyRef: policySet.confidencePolicyRef,
@@ -2314,7 +2453,12 @@ const submitGroupAcceptance = async (input: {
     projectId: input.run.projectId,
     actorId: input.run.actorId,
     issuedAt: input.run.issuedAt,
-    authorization: input.run.authorization,
+    authorization: await identificationAuthorizationFor({
+      ports: input.ports,
+      run: input.run,
+      branch: "risk-identification.accept-groups",
+      invocationId: actionIdFor(input.run, `${input.acceptanceSuffix}:accept`),
+    }),
     payload: {
       acceptanceRouteSetRef: input.acceptanceRouteSetRef,
       acceptedGroupRefs: input.routes.map((route) => route.groupRef),
@@ -2373,7 +2517,7 @@ const submitGroupAcceptance = async (input: {
  */
 const stageI8: StageHandlerV1 = async ({ ports, run, state }) => {
   const occurredAt = ports.now().toISOString();
-  const cursor = await readCursor({ ports, run });
+  const cursor = await readStageCursor({ ports, run });
   if (cursor === undefined) {
     fail(contractInvalid({ stage: "I8", detailCode: "cursor-missing", occurredAt }));
   }
@@ -2403,7 +2547,12 @@ const stageI8: StageHandlerV1 = async ({ ports, run, state }) => {
       projectId: run.projectId,
       groupRef: route.groupRef,
       reviewTaskRef: route.reviewTaskRef,
-      authorization: run.authorization,
+      authorization: await identificationAuthorizationFor({
+        ports,
+        run,
+        branch: "review-audit.trace",
+        invocationId: actionIdFor(run, `I8:${route.groupVersionId}`),
+      }),
       invocationId: actionIdFor(run, `I8:${route.groupVersionId}`),
       requestedAt: run.issuedAt,
     });
@@ -2481,7 +2630,7 @@ const identificationRunResultRefFor = (input: {
 /** I9：全部工作项与分组达到稳定终态后形成不可变运行汇总；等待与阻断都不伪装为完成。 */
 const stageI9: StageHandlerV1 = async ({ ports, run, state }) => {
   const occurredAt = ports.now().toISOString();
-  const cursor = await readCursor({ ports, run });
+  const cursor = await readStageCursor({ ports, run });
   const workPlanRef = state.workPlanRef;
   if (cursor === undefined || workPlanRef === undefined) {
     fail(contractInvalid({ stage: "I9", detailCode: "work-plan-missing", occurredAt }));
@@ -2692,7 +2841,7 @@ const recordNodeFailure = async (input: {
   };
   const suffix = `${stage}:failure:${error.detailCode}:attempt-${attempts + 1}`;
   const runStateArtifactId = artifactIdFor("run-state", run.runRef.reference.entityId, suffix);
-  const cursor = await readCursor({ ports, run });
+  const cursor = await readStageCursor({ ports, run });
   const cursorState = cursorBody({
     runId: run.runRef.reference.entityId,
     stage,
@@ -2805,6 +2954,7 @@ const retryBudget = async (
  * DTO 或上游端口。
  */
 const GRAPH_CHECKPOINTER_CONFIG_KEY_V1 = "__pregel_checkpointer" as const;
+const GRAPH_SCRATCHPAD_CONFIG_KEY_V1 = "__pregel_scratchpad" as const;
 
 /**
  * 本图唯一的执行/回读配置构造（design D-01）：线程仍由调用方给出，检查点命名空间固定为根命名空间，
@@ -2818,6 +2968,10 @@ const executableConfig = (
   configurable: {
     ...config.configurable,
     checkpoint_ns: "",
+    checkpoint_id: undefined,
+    checkpoint_map: {},
+    // 独立子运行不能继承父节点的子图调用计数，否则根命名空间会被改写。
+    [GRAPH_SCRATCHPAD_CONFIG_KEY_V1]: undefined,
     [GRAPH_CHECKPOINTER_CONFIG_KEY_V1]: checkpointer,
   },
   durability: "sync",
@@ -2846,6 +3000,12 @@ export const createIdentificationGraph = (options: {
         return stateAsUpdate(await handler({ ports: options.ports, run, state }));
       } catch (error: unknown) {
         if (isGraphBubbleUp(error)) throw error;
+        if (
+          error instanceof IdentificationGraphNodeFailureV1 &&
+          error.error.code === "VERSION_CONFLICT" &&
+          error.error.detailCode === "run-already-terminal"
+        )
+          throw error;
         if (
           typeof error === "object" &&
           error !== null &&

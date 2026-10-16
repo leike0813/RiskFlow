@@ -14,6 +14,7 @@ import {
 import {
   DataCleaningPolicyV1Schema,
   type DataCleaningPolicyV1,
+  type DataCleaningPolicy,
 } from "@riskflow/core/engineering-data/cleaning";
 import {
   ParsedDocumentV1Schema,
@@ -361,7 +362,7 @@ const documentServiceParser = (): DocumentServiceParserV1 => ({
 // ------------------------------------------------------------------ fixture API
 
 export interface CleaningPipelineV1 {
-  readonly policy: DataCleaningPolicyV1;
+  readonly policy: DataCleaningPolicy;
   readonly store: PostgresDataCleaningStore;
   readonly agentTaskAdapter: PostgresAgentTaskAdapter;
 }
@@ -481,7 +482,7 @@ export interface CleaningPipelineServicesV1 {
 export const createCleaningPipelineFor = (
   services: CleaningPipelineServicesV1,
   options: {
-    readonly policy: DataCleaningPolicyV1;
+    readonly policy: DataCleaningPolicy;
     readonly now?: () => Date;
   },
 ): CleaningPipelineV1 => {
@@ -552,7 +553,7 @@ export interface DataCleaningPostgresFixture {
   /** Raw start-seam requests C15 handed to the composition, oldest first. */
   readonly recordedStartCommands: readonly DataCleaningAgentTaskStartRequestV1[];
   createPipeline(options?: {
-    readonly policy?: DataCleaningPolicyV1;
+    readonly policy?: DataCleaningPolicy;
     readonly transactionUnit?: TransactionUnitV1;
   }): CleaningPipelineV1;
   createWorld(options: CleaningWorldOptionsV1): Promise<CleaningWorldV1>;
@@ -656,7 +657,7 @@ export const startDataCleaningFixture = async (
 
   const createPipeline = (
     pipelineOptions: {
-      readonly policy?: DataCleaningPolicyV1;
+      readonly policy?: DataCleaningPolicy;
       readonly transactionUnit?: TransactionUnitV1;
     } = {},
   ): CleaningPipelineV1 =>
@@ -1316,7 +1317,7 @@ export const startDataCleaningFixture = async (
     );
     const chunks: Uint8Array[] = [];
     for await (const chunk of handle.content) chunks.push(chunk);
-    await handle.verified;
+    await handle.completed;
     const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
     const body = new Uint8Array(size);
     let offset = 0;

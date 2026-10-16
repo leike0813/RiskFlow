@@ -6,6 +6,12 @@
  * 版本、命令/幂等/授权摘要与业务/记录/持久化时点，正文只入 C04。
  */
 import { z } from "zod";
+import { ResponseForecastInputSnapshotV1Schema } from "@riskflow/contracts/workflows";
+import {
+  CalibrationInputSnapshotRefV1Schema,
+  CalibrationTargetDefinitionTypeV1Schema,
+} from "../calibration/schema.js";
+import { CalibrationValidationPolicyV1Schema } from "../calibration/service.js";
 
 import {
   IdentifierSchema,
@@ -14,11 +20,13 @@ import {
 } from "@riskflow/contracts/common";
 import {
   AuditTrailRefV1Schema,
+  AssessmentBasisReleaseSetRefV1Schema,
   AuthorizationContextRefV1Schema,
   CalibrationSuggestionRefV1Schema,
   ContentArtifactRefV1Schema,
   ContractReferenceV1Schema,
   DeviationRecordRefV1Schema,
+  KnowledgeReleaseRefV1Schema,
   ResponseRecommendationRefV1Schema,
   ReviewTaskRefV1Schema,
   RiskAssessmentRecordRefV1Schema,
@@ -231,6 +239,23 @@ export const WorkflowGraphRunStateV1Schema = z.strictObject({
    * 历史工件允许缺席以保持原版本可读，读端不得用 `entryIdentity` 反推或编造该版本。
    */
   graphVersion: VersionReferenceSchema.optional(),
+  forecastInputSnapshot: ResponseForecastInputSnapshotV1Schema.optional(),
+  calibrationPolicy: z
+    .strictObject({
+      targetReleaseRef: KnowledgeReleaseRefV1Schema,
+      calibrationValidationPolicyRef: VersionReferenceSchema,
+      agentPolicy: CalibrationValidationPolicyV1Schema,
+    })
+    .optional(),
+  calibrationPreparedInput: z
+    .strictObject({
+      frozenInputRef: ContentArtifactRefV1Schema,
+      inputSnapshotRef: CalibrationInputSnapshotRefV1Schema,
+      deviationRecordRef: DeviationRecordRefV1Schema,
+      targetDefinitionType: CalibrationTargetDefinitionTypeV1Schema,
+    })
+    .optional(),
+  assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema.optional(),
   recordedAt: IsoDateTimeSchema,
 });
 export type WorkflowGraphRunStateV1 = z.infer<typeof WorkflowGraphRunStateV1Schema>;
@@ -268,6 +293,7 @@ export const AssessmentRunProjectionV1Schema = z.strictObject({
   runRef: WorkflowRunRefV1Schema,
   entryMode: WorkflowEntryModeV1Schema,
   status: WorkflowRunStatusV1Schema,
+  waitingRef: WaitingRefV1Schema.optional(),
   stage: WorkflowRunStageV1Schema,
   graphVersion: VersionReferenceSchema,
   /** 产出该运行的主体标识：取登记行，不从当前调用方推断。 */

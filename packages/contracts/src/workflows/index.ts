@@ -103,6 +103,7 @@ export type IdentificationPreparationSnapshotV1 = z.infer<
 
 export const IdentificationInputSnapshotV1Schema = z.strictObject({
   schemaVersion: z.literal("1"),
+  identificationRunRef: WorkflowRunRefV1Schema.optional(),
   preparationSnapshotRef: IdentificationPreparationSnapshotRefV1Schema,
   processModelReleaseRef: ProcessModelReleaseRefV1Schema,
   riskMechanismReleaseRef: RiskMechanismReleaseRefV1Schema,
@@ -173,6 +174,32 @@ export const AssessmentInputSnapshotV1Schema = z.strictObject({
   createdAt: IsoDateTimeSchema,
 });
 export type AssessmentInputSnapshotV1 = z.infer<typeof AssessmentInputSnapshotV1Schema>;
+
+export const AssessmentScoringReferencesSchema = AssessmentInputSnapshotV1Schema.pick({
+  indicatorSystemRef: true,
+  indicatorFieldMappingRef: true,
+  applicableRuleSetRef: true,
+  weightSetRef: true,
+  scoringStrategyRef: true,
+  riskMatrixRef: true,
+  riskAcceptanceThresholdRef: true,
+  monitoringWarningThresholdRef: true,
+  jointTriggerPolicyRef: true,
+});
+export type AssessmentScoringReferences = z.infer<typeof AssessmentScoringReferencesSchema>;
+export const AssessmentInputSnapshotV2Schema = AssessmentInputSnapshotV1Schema.pick({
+  preparationSnapshotRef: true,
+  authorizationContextRef: true,
+  auditTrailRef: true,
+  createdBy: true,
+  createdAt: true,
+}).extend({ schemaVersion: z.literal("2"), ...AssessmentScoringReferencesSchema.shape });
+export type AssessmentInputSnapshotV2 = z.infer<typeof AssessmentInputSnapshotV2Schema>;
+export const AssessmentInputSnapshotSchema = z.discriminatedUnion("schemaVersion", [
+  AssessmentInputSnapshotV1Schema,
+  AssessmentInputSnapshotV2Schema,
+]);
+export type AssessmentInputSnapshot = z.infer<typeof AssessmentInputSnapshotSchema>;
 
 export const ResponseForecastInputSnapshotV1Schema = z.strictObject({
   schemaVersion: z.literal("1"),

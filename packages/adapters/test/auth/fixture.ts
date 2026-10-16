@@ -40,6 +40,7 @@ import * as assessmentEntryCatalogCursorKeysMigration from "../../src/postgres/m
 import * as deploymentOperationsMigration from "../../src/postgres/migrations/platform/deliver-offline-private-deployment-and-operations/000056_deployment_operations.js";
 import * as workflowRunEventsMigration from "../../src/postgres/migrations/workflow/deliver-offline-private-deployment-and-operations/000057_workflow_run_events.js";
 import * as assessmentEntrySnapshotMigration from "../../src/postgres/migrations/workflow/deliver-offline-private-deployment-and-operations/000058_assessment_entry_snapshot_reference.js";
+import * as derivedKnowledgeReleaseMigration from "../../src/postgres/migrations/knowledge-modeling/reduce-defensive-design-overhead/000059_derived_knowledge_release_origin.js";
 
 export interface AuthPostgresFixture extends PostgresTestFixture {
   runMigrations(): Promise<void>;
@@ -48,6 +49,13 @@ export interface AuthPostgresFixture extends PostgresTestFixture {
 export const startAuthPostgresFixture = async (): Promise<AuthPostgresFixture> => {
   const base = await startPostgresFixture();
   const migrationModules = new Map<string, unknown>([
+    [
+      resolve(
+        base.productionMigrationRoot,
+        "knowledge-modeling/reduce-defensive-design-overhead/000059_derived_knowledge_release_origin.ts",
+      ),
+      derivedKnowledgeReleaseMigration,
+    ],
     [
       resolve(
         base.productionMigrationRoot,

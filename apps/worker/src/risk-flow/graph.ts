@@ -26,6 +26,8 @@ import type { VersionReference } from "@riskflow/contracts/common";
 import {
   ContentArtifactRefV1Schema,
   type AuthorizationContextV1,
+  type AgentTaskResultRefV1,
+  type ReviewDecisionRefV1,
   type ContentArtifactRefV1,
   type ContractReferenceV1,
   type IdentificationPreparationSnapshotRefV1,
@@ -43,7 +45,10 @@ import {
   type WorkflowRunRefV1,
   type WorkflowRunStatusV1,
 } from "@riskflow/contracts/ports";
-import type { IdentificationGraphRuntimeV1 } from "@riskflow/core/identification/graph";
+import type {
+  IdentificationGraphRuntimeV1,
+  IdentificationGraphResumeCauseV1,
+} from "@riskflow/core/identification/graph";
 import {
   RiskFlowGraphStateV1Schema,
   type IdentificationGraphStateV1,
@@ -203,6 +208,11 @@ export interface RiskFlowGraphRunContextV1 {
   };
   /** 本次恢复带来的识别准备快照引用（`engineering.inputs-ready.v1`）。 */
   readonly identificationPreparationSnapshotRef?: IdentificationPreparationSnapshotRefV1;
+  readonly identificationResumeCause?: IdentificationGraphResumeCauseV1;
+  readonly businessPreparationResume?: Extract<
+    RiskFlowResumeValueV1,
+    { readonly kind: "business-preparation-ready" }
+  >;
   /**
    * 人工决定等待门（design D2）：只在以 `waitForDecision` 创建运行的**那一次**命令上出现。
    * 恢复路径由已登记行重建运行上下文，因此不再携带该字段——等待意图只在创建时生效，恢复即继续推进。
@@ -215,6 +225,8 @@ export interface RiskFlowGraphRunContextV1 {
 
 /** 恢复值：只携带稳定引用与原因，不携带自由正文（`wait` 节点消费）。 */
 export type RiskFlowResumeValueV1 =
+  | { readonly kind: "agent-task-completed"; readonly agentTaskResultRef: AgentTaskResultRefV1 }
+  | { readonly kind: "review-resolved"; readonly reviewDecisionRef: ReviewDecisionRefV1 }
   | {
       readonly kind: "inputs-ready";
       readonly knowledgePreparationTaskRef?: ContractReferenceV1;
@@ -237,7 +249,11 @@ export type RiskFlowResumeValueV1 =
    * 人工采纳决定已成立（design D2）：只携带精确决定路由引用；运行、建议与空间必须由 C41 的
    * 精确采纳证明先行核对，父图不据引用自行推进等待态运行。
    */
-  | { readonly kind: "human-decision-committed"; readonly routeDecisionRef: RouteDecisionRefV1 };
+  | { readonly kind: "human-decision-committed"; readonly routeDecisionRef: RouteDecisionRefV1 }
+  | {
+      readonly kind: "business-preparation-ready";
+      readonly preparationRef: import("@riskflow/contracts/ports").BusinessPreparationRef;
+    };
 
 /** 首次运行输入：通道正文就是完整公开状态。 */
 export interface RiskFlowGraphInputV1 {
@@ -457,7 +473,9 @@ export const toRiskFlowGraphError = (input: {
     });
   }
   if (error instanceof RiskFlowGraphNodeFailureV1) return error.error;
-  const code = readProperty(error, "code");
+  const upstream =
+    typeof readProperty(error, "code") === "string" ? error : readProperty(error, "error");
+  const code = readProperty(upstream, "code");
   if (typeof code !== "string") {
     return classifyWorkflowGraphFailure({
       stage,
@@ -466,9 +484,9 @@ export const toRiskFlowGraphError = (input: {
       occurredAt,
     });
   }
-  const retryable = readProperty(error, "retryable");
-  const blockerKind = readProperty(error, "blockerKind");
-  const detailCode = readProperty(error, "detailCode");
+  const retryable = readProperty(upstream, "retryable");
+  const blockerKind = readProperty(upstream, "blockerKind");
+  const detailCode = readProperty(upstream, "detailCode");
   return classifyWorkflowGraphFailure({
     stage,
     upstream: { code, retryable: retryable === true },
@@ -731,6 +749,8 @@ export const identificationStartCommandFor = (input: {
     parentRiskFlowRunRef: input.run.runRef,
     preparationSnapshotRef: input.preparationSnapshotRef,
     triggerReasonCode: "risk-flow-run-identification",
+    issuedInvocationId: input.run.commandId,
+    authorizationBranch: input.run.authorizationBranch,
   };
 };
 
@@ -969,7 +989,7 @@ const runStateBody = (input: {
       ? {}
       : { reassessmentEntry: reassessmentEntryOf(input.run, previous, input.run.entryRecordedAt) }),
     // 精确图版本与重评入口同理：每次形成 run-state 工件都写入同一启动值（design D-04）。
-    graphVersion: input.run.graphVersion,
+    graphVersion: previous?.graphVersion ?? input.run.graphVersion,
     ...(identificationRunRef === undefined ? {} : { identificationRunRef }),
     ...(lastStageResultRef === undefined ? {} : { lastStageResultRef }),
     ...(lastRouteDecisionRef === undefined ? {} : { lastRouteDecisionRef }),
@@ -990,7 +1010,7 @@ export const graphStateOf = (
 ): RiskFlowGraphStateV1 =>
   RiskFlowGraphStateV1Schema.parse({
     schemaVersion: "1",
-    graphVersion: { entityId: "risk-flow-graph", versionId: cursor.entryIdentity.versionId },
+    graphVersion: cursor.graphVersion ?? run.graphVersion,
     runRef: run.runRef,
     threadId: run.threadId,
     entryMode: cursor.entryMode,
@@ -1554,7 +1574,7 @@ const aggregateAssessmentSubRuns = async (input: {
   let terminalErrorRef: WorkflowErrorRefV1 | undefined;
   let pending = false;
   for (const childRunRef of input.childRunRefs) {
-    const latest = await ports.registrationStore.readLatestRunState({
+    let latest = await ports.registrationStore.readLatestRunState({
       projectId: run.projectId,
       runId: childRunRef.reference.entityId,
       actorId: run.actorId,
@@ -1567,7 +1587,58 @@ const aggregateAssessmentSubRuns = async (input: {
       evidence.push([refKeyOf(childRunRef), "unregistered", ""]);
       continue;
     }
-    const state = latest.state;
+    let state = latest.state;
+    if (
+      state.status === "waiting" &&
+      state.lastWaitingRef?.kind === "business-preparation" &&
+      run.businessPreparationResume !== undefined &&
+      refKeyOf(state.lastWaitingRef.preparationRef) ===
+        refKeyOf(run.businessPreparationResume.preparationRef)
+    ) {
+      const candidates =
+        run.entryMode !== "identify-and-assess"
+          ? [segmentedAssessmentStartCommandFor({ run })]
+          : ((await readRiskFlowCursor({ ports, run }))?.acceptedRiskRecordRefs.flatMap(
+              (riskRecordRef) =>
+                run.pairing.map((pairing) =>
+                  assessmentStartCommandFor({ run, riskRecordRef, pairing }),
+                ),
+            ) ?? []);
+      const command = candidates.find(
+        (candidate) => refKeyOf(candidate.runRef) === refKeyOf(childRunRef),
+      );
+      if (command === undefined)
+        throw new RiskFlowGraphNodeFailureV1(
+          contractInvalid({
+            stage: "assessment",
+            detailCode: "assessment-sub-run-identity-mismatch",
+            occurredAt: ports.now().toISOString(),
+          }),
+        );
+      await ports.assessmentRuntime.resume({
+        ...command,
+        expectedRunVersionId: state.runVersionId,
+        resumeCause: run.businessPreparationResume,
+      });
+      const resumed = await ports.registrationStore.readLatestRunState({
+        projectId: run.projectId,
+        runId: childRunRef.reference.entityId,
+        actorId: run.actorId,
+        requestedAt: run.issuedAt,
+        invocationId: run.commandId,
+        authorization: run.authorization,
+      });
+      if (resumed === undefined)
+        throw new RiskFlowGraphNodeFailureV1(
+          contractInvalid({
+            stage: "assessment",
+            detailCode: "assessment-sub-run-unavailable",
+            occurredAt: ports.now().toISOString(),
+          }),
+        );
+      latest = resumed;
+      state = resumed.state;
+    }
     evidence.push([refKeyOf(childRunRef), state.status, latest.row.runVersionId]);
     switch (state.status) {
       case "completed":
@@ -1942,9 +2013,31 @@ const stageIdentification: StageHandlerV1 = async ({ ports, run }) => {
       statePatch: {},
     });
   }
-  const outcome = await ports.identificationRuntime.start(
+  let outcome = await ports.identificationRuntime.start(
     identificationStartCommandFor({ run, preparationSnapshotRef: preparation }),
   );
+  if (
+    run.identificationResumeCause !== undefined &&
+    (run.identificationResumeCause.kind === "transient-recovered"
+      ? outcome.state.status === "retryable-failure"
+      : outcome.state.status === "waiting")
+  ) {
+    const commandId = `${run.commandId}:identification-resume`;
+    outcome = await ports.identificationRuntime.resume({
+      projectId: run.projectId,
+      actorId: run.actorId,
+      commandId,
+      idempotencyKey: commandId,
+      issuedAt: run.entryRecordedAt,
+      requestedAt: run.issuedAt,
+      authorization: run.authorization,
+      issuedInvocationId: run.commandId,
+      authorizationBranch: run.authorizationBranch,
+      runRef: outcome.state.runRef,
+      expectedRunVersionId: outcome.runVersionId,
+      resumeCause: run.identificationResumeCause,
+    });
+  }
   const childState = outcome.state;
   const childRunRef = childState.runRef;
   const identificationStageResult = stageResultRefFor({
@@ -2240,7 +2333,6 @@ const stageAssessment: StageHandlerV1 = async ({ ports, run, state }) => {
       status: "terminal-failure",
       actionSuffix,
       commandKind: "risk-flow-graph.assessment",
-      workflowErrorRef: aggregate.terminalErrorRef,
       links: [],
       statePatch: { ...statePatch, lastErrorRef: aggregate.terminalErrorRef },
     });
@@ -2255,7 +2347,6 @@ const stageAssessment: StageHandlerV1 = async ({ ports, run, state }) => {
       status: "retryable-failure",
       actionSuffix,
       commandKind: "risk-flow-graph.assessment",
-      workflowErrorRef: aggregate.retryableErrorRef,
       links: [],
       statePatch: { ...statePatch, lastErrorRef: aggregate.retryableErrorRef },
     });
@@ -2508,23 +2599,23 @@ export const createRiskFlowGraph = (options: {
       const occurredAt = options.ports.now().toISOString();
       const run = readRiskFlowRunContext({ config, occurredAt });
       const state = parseRiskFlowGraphState({ ...stateOfChannels(channels), stage }, occurredAt);
+      let next: RiskFlowGraphStateV1;
       try {
-        return stateAsUpdate(await stageHandlers[stage]({ ports: options.ports, run, state }));
+        next = await stageHandlers[stage]({ ports: options.ports, run, state });
       } catch (error: unknown) {
         if (isGraphBubbleUp(error)) throw error;
         const cursor = await readRiskFlowCursor({ ports: options.ports, run });
         const rows = await readRiskFlowRows({ ports: options.ports, run });
-        return stateAsUpdate(
-          await recordNodeFailure({
-            ports: options.ports,
-            run,
-            cursor,
-            rows,
-            stage,
-            error,
-          }),
-        );
+        next = await recordNodeFailure({
+          ports: options.ports,
+          run,
+          cursor,
+          rows,
+          stage,
+          error,
+        });
       }
+      return stateAsUpdate({ ...next, authorizationContextRef: state.authorizationContextRef });
     });
   }
   graph.addNode(WAIT_NODE_V1, async (channels, config) => {
@@ -2584,7 +2675,7 @@ export const createRiskFlowGraph = (options: {
         { ...config, durability: "sync" },
       ),
     recover: async (state, completedNode, config) => {
-      await compiled.updateState(config, stateAsUpdate(state), completedNode);
+      await compiled.updateState(config, stateAsUpdate(state), NODE_FOR_STAGE_V1[completedNode]);
       if (
         state.status === "completed" ||
         state.status === "cancelled" ||

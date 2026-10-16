@@ -1004,7 +1004,7 @@ class ReportExportService {
     };
   }
 
-  /** 只按 completed 收据登记的精确 C04 引用打开：校验 verified、JSON Schema 与字节上限。 */
+  /** 只按 completed 收据登记的精确 C04 引用打开：校验 completed、JSON Schema 与字节上限。 */
   async #openReportBody(input: {
     readonly projectId: string;
     readonly actorId: string;
@@ -1034,7 +1034,7 @@ class ReportExportService {
       if (handle.manifest.purposeCode !== REPORT_PURPOSE_CODE_V1) return undefined;
       if (handle.manifest.content.byteLength > MAX_REPORT_BODY_BYTES_V1) return undefined;
       const bytes = await readBoundedV1(handle.content, MAX_REPORT_BODY_BYTES_V1);
-      await handle.verified;
+      await handle.completed;
       const decoded: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
       const parsed = ReportArtifactBodyV1Schema.safeParse(decoded);
       if (!parsed.success) return undefined;

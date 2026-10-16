@@ -14,7 +14,8 @@ import {
   DataCleaningDocumentSliceRequestV1Schema,
   DataCleaningIncrementV1Schema,
   DataCleaningMonitoringSliceRequestV1Schema,
-  DataCleaningPolicyV1Schema,
+  DataCleaningPolicySchema,
+  DataCleaningPreparationCatalogSliceRequestV1Schema,
   DataCleaningSettlementV1Schema,
   DataCleaningValidationViewV1Schema,
   type DataCleaningAvailabilityV1,
@@ -27,7 +28,8 @@ import {
   type DataCleaningInputStatusV1,
   type DataCleaningMonitoringSliceRequestV1,
   type DataCleaningMonitoringSelectionReasonV1,
-  type DataCleaningPolicyV1,
+  type DataCleaningPolicy,
+  type DataCleaningPreparationCatalogSliceRequestV1,
   type DataCleaningSettlementV1,
   type DataCleaningValidationViewV1,
 } from "./schema.js";
@@ -86,11 +88,11 @@ const refKey = (value: VersionedReference): string => `${value.entityId}@${value
 export const validateDataCleaningCandidate = (input: {
   readonly candidate: DataCleaningCandidateV1;
   readonly frozen: DataCleaningFrozenInputV1;
-  readonly policy: DataCleaningPolicyV1;
+  readonly policy: DataCleaningPolicy;
 }): DataCleaningValidationViewV1 => {
   const candidate = DataCleaningCandidateV1Schema.parse(input.candidate);
   const frozen = input.frozen;
-  const policy = DataCleaningPolicyV1Schema.parse(input.policy);
+  const policy = DataCleaningPolicySchema.parse(input.policy);
 
   const allowedReasonCodes = new Set(policy.allowedExclusionReasonCodes);
   const protectedKinds = new Set(policy.protectedSegmentKinds);
@@ -251,7 +253,7 @@ interface InputAssessment {
 
 const assessDocument = (input: {
   readonly document: DataCleaningFrozenDocumentV1;
-  readonly policy: DataCleaningPolicyV1;
+  readonly policy: DataCleaningPolicy;
   readonly excludedSegmentIds: ReadonlySet<string>;
 }): InputAssessment => {
   const { document, policy } = input;
@@ -266,16 +268,28 @@ const assessDocument = (input: {
   const retainedRatio = totalCount === 0 ? 0 : retainedCount / totalCount;
 
   const presentKinds = new Set(retained.map((segment) => segment.kind));
-  const missingRequiredSegmentKinds = policy.requiredSegmentKinds
-    .filter((kind) => !presentKinds.has(kind))
-    .sort();
+  const requiredKinds =
+    policy.schemaVersion === "1"
+      ? policy.requiredSegmentKinds
+      : policy.documentRules.find((rule) => rule.inputKind === document.inputKind)
+          ?.requiredSegmentKinds;
+  const missingRequiredSegmentKinds =
+    policy.schemaVersion === "1"
+      ? policy.requiredSegmentKinds.filter((kind) => !presentKinds.has(kind)).sort()
+      : requiredKinds?.some((kind) => presentKinds.has(kind))
+        ? []
+        : [...(requiredKinds ?? [])];
   const reasonCodes: string[] = [];
   let availability: DataCleaningAvailabilityV1;
 
-  if (missingRequiredSegmentKinds.length > 0) {
+  if (
+    requiredKinds === undefined ||
+    retainedCount === 0 ||
+    missingRequiredSegmentKinds.length > 0
+  ) {
     availability = "unavailable";
     reasonCodes.push(DATA_CLEANING_REASON_CODES.requiredSegmentKindMissing);
-  } else if (retainedRatio < policy.minimumRetainedSegmentRatio) {
+  } else if (policy.schemaVersion === "1" && retainedRatio < policy.minimumRetainedSegmentRatio) {
     availability = "unavailable";
     reasonCodes.push(DATA_CLEANING_REASON_CODES.retainedRatioBelowThreshold);
   } else if (excluded.length > 0) {
@@ -309,7 +323,7 @@ const assessDocument = (input: {
 
 const assessMonitoring = (input: {
   readonly monitoring: DataCleaningFrozenMonitoringV1;
-  readonly policy: DataCleaningPolicyV1;
+  readonly policy: DataCleaningPolicy;
   readonly excludedSampleKeys: ReadonlySet<string>;
 }): InputAssessment => {
   const { monitoring, policy } = input;
@@ -376,7 +390,7 @@ const assessMonitoring = (input: {
 export const settleDataCleaningCandidate = (input: {
   readonly candidate: DataCleaningCandidateV1;
   readonly frozen: DataCleaningFrozenInputV1;
-  readonly policy: DataCleaningPolicyV1;
+  readonly policy: DataCleaningPolicy;
 }): DataCleaningSettlementV1 => {
   const validation = validateDataCleaningCandidate(input);
 
@@ -515,10 +529,14 @@ export interface DataCleaningTaskPortV1 {
     input: DataCleaningMonitoringSliceRequestV1,
     context: AgentDomainToolExecutionContextV1,
   ): Promise<AgentDomainToolResultV1>;
+  readPreparationCatalogSlice(
+    input: DataCleaningPreparationCatalogSliceRequestV1,
+    context: AgentDomainToolExecutionContextV1,
+  ): Promise<AgentDomainToolResultV1>;
 }
 
 export interface CreateDataCleaningTaskDefinitionOptionsV1 {
-  readonly policy: DataCleaningPolicyV1;
+  readonly policy: DataCleaningPolicy;
   readonly port: DataCleaningTaskPortV1;
   readonly now?: () => Date;
 }
@@ -526,15 +544,16 @@ export interface CreateDataCleaningTaskDefinitionOptionsV1 {
 export const DATA_CLEANING_TASK_TYPE = "data-cleaning" as const;
 
 /**
- * 组装 `embedded / data-cleaning` 的 C08 任务定义：白名单只含两个有界只读领域工具，
- * 候选只允许引用级排除，正式结果与校验记录由注入端口持久化。
+ * 组装 `embedded / data-cleaning` 的 C08 任务定义：白名单只含有界只读领域工具，声明定位
+ * 工具引用的策略额外注册分页定位；候选只允许引用级排除，正式结果与校验记录由注入端口持久化。
  */
 export const createDataCleaningTaskDefinition = (
   options: CreateDataCleaningTaskDefinitionOptionsV1,
 ): AgentTaskDefinitionV1 => {
-  const policy = DataCleaningPolicyV1Schema.parse(options.policy);
+  const policy = DataCleaningPolicySchema.parse(options.policy);
   const port = options.port;
   const now = options.now ?? (() => new Date());
+  const preparationCatalogToolRef = policy.tools.preparationCatalogToolRef;
 
   const settle = async (task: AgentTaskSnapshotV1, candidate: DataCleaningCandidateV1) => {
     const frozen = await port.loadFrozenInput(task);
@@ -557,6 +576,7 @@ export const createDataCleaningTaskDefinition = (
       allowedToolRefs: [
         policy.tools.documentSegmentToolRef,
         policy.tools.monitoringSnapshotToolRef,
+        ...(preparationCatalogToolRef === undefined ? [] : [preparationCatalogToolRef]),
       ],
       resultFamilies: ["content-artifact"],
     }),
@@ -580,6 +600,25 @@ export const createDataCleaningTaskDefinition = (
             context,
           ),
       },
+      ...(preparationCatalogToolRef === undefined
+        ? []
+        : [
+            {
+              toolRef: preparationCatalogToolRef,
+              budgetUsage: {},
+              execute: (input: unknown, context: AgentDomainToolExecutionContextV1) =>
+                port.readPreparationCatalogSlice(
+                  DataCleaningPreparationCatalogSliceRequestV1Schema.parse(input),
+                  context,
+                ),
+              // 只读分页可安全重做：同动作重放返回同一页与同一观察引用。
+              recover: (input: unknown, context: AgentDomainToolExecutionContextV1) =>
+                port.readPreparationCatalogSlice(
+                  DataCleaningPreparationCatalogSliceRequestV1Schema.parse(input),
+                  context,
+                ),
+            },
+          ]),
     ],
     measureCandidateUsage: (candidate) => ({
       candidates: 1,

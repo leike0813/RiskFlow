@@ -416,6 +416,19 @@ describe("access domain", () => {
     ];
     expect(isAuthorizationSubset(base, child, { scopeNodes: nodes })).toBe(true);
     expect(isAuthorizationSubset(child, base, { scopeNodes: nodes })).toBe(false);
+    expect(
+      isAuthorizationSubset(base, {
+        ...base,
+        spatialScopeRefs: [scope("root", "2")],
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v2" },
+      }),
+    ).toBe(true);
+    expect(
+      isAuthorizationSubset(base, {
+        ...base,
+        spatialScopeRefs: [scope("unrelated", "2")],
+      }),
+    ).toBe(false);
   });
   it("会话自省命令与无 token 元数据契约", () => {
     const command = { kind: "introspect-session", sessionToken: "opaque-token" } as const;

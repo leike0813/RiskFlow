@@ -167,7 +167,7 @@ export const createArtifactStreamServiceV1 = (
               yield frame;
             }
             // 回执只在其字节被完整消费后才 resolve。
-            const receipt = await handle.verified;
+            const receipt = await handle.completed;
             yield encodeArtifactStreamJsonV1(ARTIFACT_STREAM_FRAME_V1.receipt, receipt);
           } catch (error) {
             yield errorFrame(error);

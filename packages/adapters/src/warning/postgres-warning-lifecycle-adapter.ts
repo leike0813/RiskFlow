@@ -15,6 +15,8 @@ import {
   WarningAggregationKeyV1Schema,
   failWarningLifecycle,
   planWarningOpening,
+  WarningAssessmentInputSchema,
+  type WarningAssessmentInput,
   WARNING_LIFECYCLE_SCHEMA_VERSION_V1,
   toWarningModuleError,
   warningLifecycleFailureFrom,
@@ -96,7 +98,7 @@ import {
 } from "@riskflow/contracts/records";
 import { type VersionReference } from "@riskflow/contracts/common";
 import type { AssessmentDownstreamAuthorizerV1 } from "@riskflow/core/risk-assessment/engine";
-import { AssessmentInputSnapshotV1Schema } from "@riskflow/contracts/workflows";
+import { AssessmentInputSnapshotSchema } from "@riskflow/contracts/workflows";
 import {
   WARNING_TRIGGER_TYPE_VALUES,
   WarningTriggerTypeSchema,
@@ -666,7 +668,7 @@ export class PostgresWarningAssessmentContextReader implements WarningAssessment
     readonly requestedAt: string;
     readonly authorization: AuthorizationContextV1;
     readonly assessmentRecordRef: RiskAssessmentRecordRefV1;
-  }): Promise<WarningAssessmentContextV1> {
+  }): Promise<WarningAssessmentInput> {
     const targetRef = input.assessmentRecordRef;
     const authorizedSpatialScopeIds = input.authorization.spatialScopeRefs.map(
       (scope) => scope.reference.entityId,
@@ -718,7 +720,7 @@ export class PostgresWarningAssessmentContextReader implements WarningAssessment
     }
 
     const record = RiskAssessmentRecordSchema.safeParse(row.record_payload);
-    const inputSnapshot = AssessmentInputSnapshotV1Schema.safeParse(row.input_snapshot_payload);
+    const inputSnapshot = AssessmentInputSnapshotSchema.safeParse(row.input_snapshot_payload);
     const riskInputRef = RiskInputVersionRefV1Schema.safeParse(row.risk_input_ref);
     const spatialScopeRef = SpatialScopeRefV1Schema.safeParse(row.spatial_scope_ref);
     if (
@@ -735,7 +737,7 @@ export class PostgresWarningAssessmentContextReader implements WarningAssessment
       failWarningLifecycle("assessment-contract-drift", targetRef);
     }
 
-    const context = WarningAssessmentContextV1Schema.safeParse({
+    const context = WarningAssessmentInputSchema.safeParse({
       schemaVersion: "1",
       projectId: row.project_id,
       assessmentRecordRef: targetRef,
@@ -751,8 +753,6 @@ export class PostgresWarningAssessmentContextReader implements WarningAssessment
           versionId: row.preparation_snapshot_version_id,
         },
       },
-      warningAggregationPolicyRef: inputSnapshot.data.warningAggregationPolicyRef,
-      notificationPolicyRef: inputSnapshot.data.notificationPolicyRef,
       riskInputRef: riskInputRef.data,
       spatialScopeRef: spatialScopeRef.data,
     });
@@ -1157,28 +1157,22 @@ export class PostgresWarningLifecycleAdapter
     const valid = parsed.data;
     try {
       const verified = await this.#verifyCommand(valid, "warning-response.open");
-      const context = await this.#assessmentContext.read({
+      const assessment = await this.#assessmentContext.read({
         requestId: valid.commandId,
         requestedAt: this.#nowIso(),
         authorization: verified,
         assessmentRecordRef: valid.payload.assessmentRecordRef,
       });
-      this.#requireAuthorizedSpatialScope(verified, context.spatialScopeRef);
-      if (
-        !sameVersionReference(
-          valid.payload.warningAggregationPolicyRef,
-          context.warningAggregationPolicyRef,
-        ) ||
-        !sameVersionReference(valid.payload.notificationPolicyRef, context.notificationPolicyRef)
-      ) {
-        failWarningLifecycle("policy-mismatch", valid.payload.assessmentRecordRef);
-      }
+      this.#requireAuthorizedSpatialScope(verified, assessment.spatialScopeRef);
       const policies = await this.#runtimePolicies.read({
         requestId: valid.commandId,
         requestedAt: this.#nowIso(),
         authorization: verified,
-        warningAggregationPolicyRef: valid.payload.warningAggregationPolicyRef,
-        notificationPolicyRef: valid.payload.notificationPolicyRef,
+      });
+      const context = WarningAssessmentContextV1Schema.parse({
+        ...assessment,
+        warningAggregationPolicyRef: policies.warningAggregationPolicy.policyRef,
+        notificationPolicyRef: policies.notificationPolicy.policyRef,
       });
       const recordedAt = this.#nowIso();
       const plan = planWarningOpening({
@@ -1191,8 +1185,6 @@ export class PostgresWarningLifecycleAdapter
       await this.#executeWithRetry(
         this.#atomicCommand(valid, "warning-response.open", {
           assessmentRecordRef: valid.payload.assessmentRecordRef,
-          warningAggregationPolicyRef: valid.payload.warningAggregationPolicyRef,
-          notificationPolicyRef: valid.payload.notificationPolicyRef,
         }),
         async (transactionContext): Promise<AtomicCommitV1> => {
           const transaction = asWarningTransaction(transactionContext);
@@ -1584,8 +1576,6 @@ export class PostgresWarningLifecycleAdapter
       .select(["intent_id", "version_id", "recipient_actor_id", "warning_record_id"])
       .where("project_id", "=", command.projectId)
       .where("warning_record_id", "in", warningIds)
-      .where("notification_policy_entity_id", "=", command.payload.notificationPolicyRef.entityId)
-      .where("notification_policy_version_id", "=", command.payload.notificationPolicyRef.versionId)
       .execute();
     const warningOrder = new Map(
       warningRefs.map((ref, index) => [ref.reference.entityId, index] as const),

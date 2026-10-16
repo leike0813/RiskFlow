@@ -8,25 +8,31 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
+import { Annotation, Command, END, START, StateGraph, interrupt } from "@langchain/langgraph";
 import {
   RiskFlowGraphStateV1Schema,
   type RiskFlowGraphStateV1,
 } from "@riskflow/contracts/workflows";
-import type { IdentificationGraphStartCommandV1 } from "@riskflow/core/identification/graph";
+import type {
+  IdentificationGraphResumeCauseV1,
+  IdentificationGraphStartCommandV1,
+} from "@riskflow/core/identification/graph";
 
 import { setupPostgresCheckpointer } from "../../../../../packages/adapters/test/identification/graph/wiring.js";
 import type { IdentificationGraphRunOutcomeV1 } from "../../../src/identification/graph/index.js";
 
 import {
   AUTHORIZATION_CONTEXT_REF,
+  NODE_CURRENT,
   PARENT_RUN_REF,
   PROJECT_ID,
   SYNTHETIC_SAMPLE_NOTICE,
   WORK_PLAN_ENTITY_ID,
+  agentTaskSnapshot,
   automaticRouteFor,
   reviewDecisionRefFor,
   reviewRouteFor,
+  retrievalArtifactSetRefFor,
   riskRecordRefFor,
   startIdentificationGraphHarness,
   versionRef,
@@ -97,10 +103,10 @@ const parentStateOf = (value: unknown): Record<string, unknown> => {
 const runNestedParent = async (input: {
   readonly harness: IdentificationGraphHarnessV1;
   readonly startCommand: IdentificationGraphStartCommandV1;
+  readonly operation?: () => Promise<IdentificationGraphRunOutcomeV1>;
 }): Promise<NestedParentRunV1> => {
   const checkpointer = await setupPostgresCheckpointer({
     ...input.harness.postgres.checkpointer,
-    validateReference: () => true,
   });
   let childOutcome: IdentificationGraphRunOutcomeV1 | undefined;
   let childThrown: unknown;
@@ -108,7 +114,8 @@ const runNestedParent = async (input: {
   const parent = new StateGraph(parentChannels)
     .addNode("identification", async () => {
       try {
-        const outcome = await input.harness.runtime.start(input.startCommand);
+        const outcome = await (input.operation?.() ??
+          input.harness.runtime.start(input.startCommand));
         childOutcome = outcome;
         return {
           identificationRunRef: outcome.state.runRef,
@@ -160,6 +167,100 @@ describe(`C24 嵌套图边界（真实父/子 StateGraph + 真实 C03 PostgreSQL
 
   afterEach(async () => {
     await harness.close();
+  }, 120_000);
+
+  it("父节点内恢复可重试识别运行沿用自己的检查点", async () => {
+    const run = harness.scope("nested-transient-recovery");
+    const command = harness.startCommand(run);
+    harness.world.basis = "transient";
+    const first = await harness.runtime.start(command);
+    expect(first.state.status).toBe("retryable-failure");
+    harness.world.basis = "succeeded";
+    harness.world.agentTaskStatus.set(NODE_CURRENT, "running");
+    const nested = await runNestedParent({
+      harness,
+      startCommand: command,
+      operation: () =>
+        harness.runtime.resume(
+          harness.resumeCommand(run, {
+            expectedRunVersionId: first.runVersionId,
+            resumeCause: { kind: "transient-recovered" },
+          }),
+        ),
+    });
+    expect(nested.childThrown).toBeUndefined();
+    expect(nested.parentThrown).toBeUndefined();
+    expect(nested.childOutcome?.state.status).toBe("waiting");
+    expect(nested.childOutcome?.state.waitingRef?.kind).toBe("agent-task");
+    expect(
+      (await checkpointNamespacesOf(harness, run.threadId)).map((row) => row.namespace),
+    ).toEqual([""]);
+  }, 120_000);
+
+  it("父等待中断恢复后在同一节点继续真实识别子图", async () => {
+    const run = harness.scope("parent-interrupt-resume");
+    const command = harness.startCommand(run);
+    harness.world.agentTaskStatus.set(NODE_CURRENT, "running");
+    const saver = await setupPostgresCheckpointer({
+      ...harness.postgres.checkpointer,
+    });
+    let outcome: IdentificationGraphRunOutcomeV1 | undefined;
+    let resumeCause: IdentificationGraphResumeCauseV1 | undefined;
+    const parent = new StateGraph(parentChannels)
+      .addNode("identification", async () => {
+        const started = await harness.runtime.start(command);
+        outcome =
+          resumeCause === undefined
+            ? started
+            : await harness.runtime.resume(
+                harness.resumeCommand(run, {
+                  expectedRunVersionId: started.runVersionId,
+                  resumeCause,
+                }),
+              );
+        return {
+          identificationRunRef: outcome.state.runRef,
+          status: outcome.state.status === "waiting" ? ("waiting" as const) : ("running" as const),
+          waitingRefs: outcome.state.waitingRef === undefined ? [] : [outcome.state.waitingRef],
+        };
+      })
+      .addNode("wait", (state) => {
+        interrupt(state.waitingRefs[0]);
+        return { status: "running" as const, waitingRefs: [] };
+      })
+      .addEdge(START, "identification")
+      .addConditionalEdges("identification", (state) => (state.status === "waiting" ? "wait" : END))
+      .addEdge("wait", "identification")
+      .compile({ checkpointer: saver });
+    try {
+      await parent.invoke(parentInitialState(), { ...PARENT_CONFIG, durability: "sync" });
+      expect(outcome?.state.status).toBe("waiting");
+      const waiting = outcome!.state.waitingRef;
+      if (waiting?.kind !== "agent-task") throw new Error("task waiting required");
+      harness.world.agentTaskStatus.set(NODE_CURRENT, "completed");
+      const task = agentTaskSnapshot(waiting.agentTaskRef, {
+        status: "completed",
+        incrementRef: retrievalArtifactSetRefFor(waiting.agentTaskRef).reference,
+        parentRunRef: run.runRef,
+      });
+      if (task?.state.resultRef === undefined) throw new Error("completed task result required");
+      resumeCause = {
+        kind: "agent-task-completed",
+        agentTaskRef: waiting.agentTaskRef,
+        agentTaskResultRef: task.state.resultRef,
+      };
+      await parent.invoke(new Command({ resume: resumeCause }), {
+        ...PARENT_CONFIG,
+        durability: "sync",
+      });
+      expect(outcome?.state.status).toBe("completed");
+      expect(outcome?.state.agentTaskRefs).toContainEqual(waiting.agentTaskRef);
+      expect(
+        (await checkpointNamespacesOf(harness, run.threadId)).map((row) => row.namespace),
+      ).toEqual([""]);
+    } finally {
+      await saver.end();
+    }
   }, 120_000);
 
   it("嵌套识别运行进入人工复核等待：父图登记自身等待、子检查点归属原子运行", async () => {
@@ -432,10 +533,9 @@ describe(`C24 嵌套图边界（真实父/子 StateGraph + 真实 C03 PostgreSQL
         kind: "approve-unchanged",
         ref: reviewDecisionRefFor(REVIEW_GROUP),
       });
-      // 撤权后推进被拒：启动命令在命令级授权复验处拒绝；恢复在受保护游标读取处按不披露语义拒绝，
-      // 无权方无法借错误类别判断该运行是否存在（既有 C24 读取语义，不由本 change 改写）。
+      // D-53：恢复与启动均先核验控制来源，无权方在任何游标读取前被统一拒绝。
       await expect(harness.runtime.resume(resumeCommand)).rejects.toMatchObject({
-        error: { code: "INPUT_NOT_READY", retryable: false },
+        error: { code: "AUTHORIZATION_DENIED", retryable: false },
       });
       await expect(harness.runtime.start(harness.startCommand(run))).rejects.toMatchObject({
         error: { code: "AUTHORIZATION_DENIED", retryable: false },

@@ -69,9 +69,9 @@ export const PRODUCTION_BASIS_REQUESTED_AT = new Date().toISOString();
 
 /** 合成适用性三元组：与 C19 规则编制的三维域一致（合成样本、待甲方复核）。 */
 export const PRODUCTION_BASIS_APPLICABILITY = {
-  constructionMethod: "盾构法",
-  stratumCondition: "软土地层",
-  engineeringStage: "盾构掘进",
+  constructionMethod: "variable-diameter-shield",
+  stratumCondition: "soft-soil",
+  engineeringStage: "expansion-preparation",
 } as const;
 
 export const PRODUCTION_BASIS_POLICY: ScoringRulesPolicyV1 = {
@@ -316,7 +316,12 @@ export const startProductionAssessmentBasisFixture =
         },
       },
       configuration: {
+        readPublishedConfigurationMember: (input) =>
+          configuration.readPublishedConfigurationMember(input),
         resolveConfigurationSet: (request) => configuration.resolveConfigurationSet(request),
+      },
+      derivedPublisher: {
+        publishDerivedRelease: (input) => governanceRef.current!.publishDerivedRelease(input),
       },
       governedReleases: {
         // C16 解析用自己派生的哈希 invocationId 复验 `knowledge-modeling.assessment-basis`。
@@ -881,10 +886,7 @@ export const startProductionAssessmentBasisFixture =
           `C19 assembleApplicableRuleSetRevision failed: ${JSON.stringify(assembled).slice(0, 800)}`,
         );
       }
-      const applicableRuleSetReleaseRef = await approveAndPublish({
-        world,
-        revisionRef: assembled.applicableRuleSetRevisionRef,
-      });
+      const applicableRuleSetReleaseRef = assembled.applicableRuleSetReleaseRef;
 
       // 4. C19 公共解析：返回实际依据引用，供 C25 冻结与正式评估消费。
       const resolved = (await scoringRules.resolve({

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { ArtifactPutCommandV1Schema } from "@riskflow/core/artifacts";
+import { ArtifactPutCommandV1Schema, type ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import type {
   ApplicabilityMetadataSnapshotRefV1,
   AuthorizationContextV1,
@@ -27,8 +27,177 @@ import {
   startEngineeringContextSourceFixture,
   type EngineeringContextSourcePostgresFixture,
 } from "./context-source/fixture.js";
+import {
+  completeCleaningTask,
+  startDataCleaningFixture,
+  type DataCleaningPostgresFixture,
+  type CleaningWorldV1,
+} from "./cleaning/fixture.js";
 
 const now = "2030-01-01T00:00:00.000Z";
+
+describe("C32 正式清洗目录读取", () => {
+  let fixture: DataCleaningPostgresFixture;
+  let world: CleaningWorldV1;
+  beforeAll(async () => {
+    fixture = await startDataCleaningFixture();
+    world = await fixture.createWorld({
+      suffix: "c32-cleaning-catalog",
+      documentKinds: ["docx", "csv"],
+      monitoring: false,
+    });
+    const command = await world.freezeCommand("c32-cleaning-catalog-freeze", { actor: "uploader" });
+    const pending = await world.pipeline.store.freezeIdentificationPreparation(command);
+    expect(pending).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    await completeCleaningTask(world.pipeline, fixture, {
+      workerId: "c32-cleaning-catalog-worker",
+      projectId: world.projectId,
+    });
+    expect(await world.pipeline.store.freezeIdentificationPreparation(command)).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "identification-preparation" },
+    });
+  }, 180_000);
+  afterAll(async () => fixture?.close());
+
+  const read = async (
+    id: string,
+    refs: readonly SourceVersionRefV1[],
+    artifactStore: ArtifactStoreV1 = fixture.artifactStore,
+  ) => {
+    const authorization = await world.authorizeBranch(id, "engineering-data.source-catalog", refs);
+    const adapter = new PostgresEngineeringDataCatalogAdapter({
+      db: fixture.runtime.db,
+      access: fixture.access,
+      artifactStore,
+      resolvers: {
+        resolveReadQuery: (query, options) => fixture.registry.resolveReadQuery(query, options),
+        resolveSnapshotQuery: (query, options) =>
+          fixture.monitoringStore.resolveSnapshotQuery(query, options),
+      },
+    });
+    return adapter.read({
+      kind: "source-catalog",
+      queryId: id,
+      projectId: world.projectId,
+      actorId: authorization.actorId,
+      authorization,
+      requestedAt: now,
+      payload: { pageSize: 50 },
+    });
+  };
+
+  it("当前精确资料授权读取正式可用状态，缺父资料资格时不显示可用", async () => {
+    const result = await read("c32-cleaning-current-grants", world.sourceVersionRefs());
+    expect(result.kind).toBe("succeeded");
+    if (result.kind !== "succeeded" || result.result.kind !== "source-catalog") return;
+    expect(result.result.items).toHaveLength(2);
+    expect(result.result.items).toEqual(
+      expect.arrayContaining(
+        world.sourceVersionRefs().map((sourceVersionRef) =>
+          expect.objectContaining({
+            sourceVersionRef,
+            cleaningAvailability: "available",
+            cleaningExclusionCount: 0,
+          }),
+        ),
+      ),
+    );
+    const partial = await read(
+      "c32-cleaning-missing-parent",
+      world.sourceVersionRefs().slice(0, 1),
+    );
+    expect(partial.kind).toBe("succeeded");
+    if (partial.kind !== "succeeded" || partial.result.kind !== "source-catalog") return;
+    expect(partial.result.items).toHaveLength(1);
+    expect(partial.result.items[0]?.cleaningAvailability).toBeUndefined();
+  });
+
+  it.each(["denied", "missing", "integrity"])("工件%s时不投影清洗成功", async (failure) => {
+    const result = await read("c32-cleaning-artifact-" + failure, world.sourceVersionRefs(), {
+      put: fixture.artifactStore.put.bind(fixture.artifactStore),
+      open: async (request) => {
+        if (failure !== "integrity") throw new Error(failure);
+        const handle = await fixture.artifactStore.open(request);
+        const verified = handle.completed.then(() => {
+          throw new Error("integrity");
+        });
+        void verified.catch(() => undefined);
+        return {
+          ...handle,
+          completed: verified,
+        };
+      },
+    });
+    expect(result.kind).toBe("succeeded");
+    if (result.kind !== "succeeded" || result.result.kind !== "source-catalog") return;
+    expect(result.result.items).toHaveLength(2);
+    for (const item of result.result.items) expect(item.cleaningAvailability).toBeUndefined();
+  });
+
+  it("登记行的精确资料身份不匹配时拒绝", async () => {
+    const source = world.sourceVersionRefs()[0]!;
+    try {
+      await fixture.postgres.adminPool.query(
+        "UPDATE business.source_versions SET source_version_ref = $2 WHERE source_version_id = $1",
+        [
+          source.reference.entityId,
+          { ...source, reference: { ...source.reference, versionId: "other" } },
+        ],
+      );
+      expect(await read("c32-cleaning-source-identity", world.sourceVersionRefs())).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+    } finally {
+      await fixture.postgres.adminPool.query(
+        "UPDATE business.source_versions SET source_version_ref = $2 WHERE source_version_id = $1",
+        [source.reference.entityId, source],
+      );
+    }
+  });
+
+  it("工程撤权后原目录授权不再可用", async () => {
+    const id = "c32-cleaning-revoked";
+    const authorization = await world.authorizeBranch(id, "engineering-data.source-catalog");
+    const project = await fixture.postgres.adminPool.query<{ access_version: number }>(
+      "SELECT access_version FROM business.access_projects WHERE project_id = $1",
+      [world.projectId],
+    );
+    await fixture.access.administerProject({
+      kind: "suspend-project",
+      projectId: world.projectId,
+      commandId: id + "-suspend",
+      idempotencyKey: id + "-suspend",
+      expectedVersion: {
+        entityId: world.projectId,
+        versionId: String(project.rows[0]!.access_version),
+      },
+      authorizationContextRef: fixture.administrationContextRef,
+    });
+    const adapter = new PostgresEngineeringDataCatalogAdapter({
+      db: fixture.runtime.db,
+      access: fixture.access,
+      artifactStore: fixture.artifactStore,
+      resolvers: {
+        resolveReadQuery: (query, options) => fixture.registry.resolveReadQuery(query, options),
+        resolveSnapshotQuery: (query, options) =>
+          fixture.monitoringStore.resolveSnapshotQuery(query, options),
+      },
+    });
+    expect(
+      await adapter.read({
+        kind: "source-catalog",
+        queryId: id,
+        projectId: world.projectId,
+        actorId: authorization.actorId,
+        authorization,
+        requestedAt: now,
+        payload: { pageSize: 50 },
+      }),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+  });
+});
 
 describe("C32 PostgreSQL engineering data catalog adapter", () => {
   let fixture: EngineeringContextSourcePostgresFixture;

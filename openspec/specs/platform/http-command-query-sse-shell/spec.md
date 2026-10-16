@@ -292,9 +292,9 @@ HTTP 和 SSE MUST 原样保留既有请求/结果中的工程、实体身份、�
 
 ### Requirement: HTTP 壳层必须登记唯一的预警确认入口
 
-系统 MUST 在既有闭合业务路由清单中登记 `POST /api/v1/projects/:projectId/commands/warning-response.acknowledge`。该入口 MUST 使用预警处置 `acknowledge` 分支的精确请求 Schema、既有预警处置记录结果 Schema 和 `WarningResponsePortV1.record` 唯一分派；路由所需能力 MUST 从 `warning-response.acknowledge` 的公共 branch-capability 映射取得。运行时注册与 OpenAPI MUST 继续由同一活动路由元数据派生，不得增加专用 handler、第二套路由表、通用 `execute` 或平行确认入口。
+系统 MUST 在既有闭合业务路由清单中登记 `POST /api/v1/projects/:projectId/commands/warning-response.acknowledge`，使用预警处置 `acknowledge` 分支的精确请求 Schema、既有记录结果 Schema 与 `WarningResponsePortV1.record` 唯一分派。运行时注册与 OpenAPI MUST 继续由同一活动路由元数据派生；能力映射与禁止的并行入口见场景。
 
-HTTP 请求 MUST 只接受既有 v1 命令传输信封字段及 `{ warningRecordRef, warningResponseTaskRef }` strict payload。操作者、工程和版本化授权上下文 MUST 由会话 Cookie、路径工程、闭合 branch 与已声明空间/资料范围在服务端组装，客户端不得提交或覆盖；HTTP 层 MUST 原样传递命令标识、业务幂等键、发起时间和 payload，并原样校验/返回公共结果联合。授权失败与目标不存在对无权调用方 MUST 保持不可区分，HTTP 层不得自行读取或改变预警、任务、评估或处置事实。
+HTTP 请求 MUST 只接受既有 v1 命令传输信封字段及 `{ warningRecordRef, warningResponseTaskRef }` strict payload；操作者、工程和版本化授权上下文 MUST 在服务端由会话 Cookie、路径工程、闭合 branch 与已声明空间/资料范围组装，客户端不得提交或覆盖。HTTP 层原样传递与返回公共信封和结果联合，不得自行读取或改变预警、任务、评估或处置事实；授权失败与目标不存在对无权调用方 MUST 不可区分。
 
 #### Scenario: C26 或 C34 通过公共 HTTP 入口确认预警
 - **WHEN** 获授权客户端向 `warning-response.acknowledge` 路由提交合法 v1 命令信封及预警/任务精确引用 payload
@@ -310,20 +310,23 @@ HTTP 请求 MUST 只接受既有 v1 命令传输信封字段及 `{ warningRecord
 - **WHEN** 验证者检查运行时路由清单、活动 port 路由、branch-capability 映射与生成的 OpenAPI
 - **THEN** `warning-response.acknowledge` 仅出现为既有 v1 command 路径，绑定 `acknowledge` domain kind、`warning-response.record` 能力和预警处置 `record` 方法
 - **AND** 不存在只在文档、只在运行时或绕过闭合路由清单的确认入口
+- **AND** 路由所需能力 MUST 从 `warning-response.acknowledge` 的公共 branch-capability 映射取得，不得增加专用 handler、第二套路由表或平行确认入口
 
 #### Scenario: HTTP 重试不建立第二套幂等状态
 - **WHEN** 客户端以相同命令标识、业务幂等键和 payload 重试确认，或复用同一业务幂等键提交不同引用
 - **THEN** HTTP 壳层把请求交给既有公共幂等边界并原样映射其重放结果或不可重试冲突
 - **AND** HTTP 层不缓存、合并、改写或重复执行确认命令
+- **AND** HTTP 层 MUST 原样传递命令标识、业务幂等键、发起时间和 payload，并原样校验/返回公共结果联合
 
 ### Requirement: C32 只读查询分支必须登记在闭合路由清单
 
-系统 MUST 在既有闭合业务路由清单中以 `POST /api/v1/projects/:projectId/queries/<branch>` 形态登记七条只读 query branch：`engineering-data.context-read`、`engineering-data.source-catalog`、`engineering-data.monitoring-catalog`、`engineering-data.read-result`、`knowledge-modeling.governance-read`、`knowledge-modeling.retrieval-result`、`projection.result-read`。每条 branch MUST 映射到精确请求 Schema、结果 Schema、唯一 port 方法和既有能力位（`engineering-data.read`、`knowledge-modeling.read`、`knowledge-modeling.retrieve`、`projection.query`），不得新增能力枚举值。运行时注册与 OpenAPI MUST 继续由同一活动路由元数据派生；对应端口未注入时该 branch MUST 不激活且不出现于 OpenAPI。（横切 RI-S1～RI-S6；RA-S1～RA-S7）
+系统 MUST 在既有闭合业务路由清单中以 `POST /api/v1/projects/:projectId/queries/<branch>` 形态登记七条只读 query branch，每条 MUST 映射到精确请求 Schema、结果 Schema、唯一 port 方法和既有能力位，不得新增能力枚举值。运行时注册与 OpenAPI MUST 继续由同一活动路由元数据派生；对应端口未注入时该 branch MUST 不激活且不出现于 OpenAPI。（横切 RI-S1～RI-S6；RA-S1～RA-S7）
 
 #### Scenario: 路由目录、能力映射与 OpenAPI 一致
 
 - **WHEN** 验证者检查活动路由清单、branch-capability 映射与生成的 OpenAPI
 - **THEN** 七条 branch 的路径、请求/结果 Schema、能力位与激活状态三者一致，不存在清单外查询入口
+- **AND** 七条 branch 精确为 `engineering-data.context-read`、`engineering-data.source-catalog`、`engineering-data.monitoring-catalog`、`engineering-data.read-result`、`knowledge-modeling.governance-read`、`knowledge-modeling.retrieval-result`、`projection.result-read`，能力位只取 `engineering-data.read`、`knowledge-modeling.read`、`knowledge-modeling.retrieve`、`projection.query`
 
 #### Scenario: 端口未注入时 branch 不激活
 

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { makeArtifactError } from "@riskflow/core/artifacts";
 
 import { describe, expect, it } from "vitest";
 
@@ -15,12 +16,14 @@ import {
 } from "../src/index.js";
 import { MODULE_BRANCH_CAPABILITY_V1 } from "@riskflow/contracts/ports";
 import type {
+  ApplicableRuleSetAssemblyPortV1,
   EngineeringDataPortV1,
   HumanDecisionFeedbackCommandV1,
   HumanDecisionFeedbackPortV1,
   ProjectionPortV1,
   WarningResponsePortV1,
   WarningResponseRecordSuccessV1,
+  WorkflowPortV1,
 } from "@riskflow/contracts/ports";
 import { AccessErrorV1Schema, AccessServiceError } from "@riskflow/core/access";
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
@@ -32,6 +35,128 @@ import {
 } from "../src/operations.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
+
+describe("登记资料原件HTTP", () => {
+  it("transmits the exact authorized version and closes the handle, with a matching OpenAPI route", async () => {
+    const closed: string[] = [];
+    const branches: string[] = [];
+    const sourceVersionRef = {
+      kind: "source-version" as const,
+      reference: { entityId: "source", versionId: "old" },
+    };
+    const app = buildApi({
+      access: accessStub((branch) => branches.push(branch)),
+      publicOrigin: ORIGIN,
+      ports: {
+        sourceOriginal: {
+          read: async () => {
+            throw new Error("unused");
+          },
+          open: async (query) => {
+            expect(query.payload.sourceVersionRef).toEqual(sourceVersionRef);
+            return {
+              info: {
+                kind: "source-original",
+                sourceVersionRef,
+                sourceName: "方案",
+                registeredBy: "actor",
+                registeredAt: NOW,
+                deliveryKind: "file-upload",
+                fileName: "方案.pdf",
+                mediaType: "application/pdf",
+                byteLength: 4,
+                previewKind: "pdf",
+              },
+              content: (async function* () {
+                yield Buffer.from("%PDF");
+              })(),
+              close: async () => {
+                closed.push("closed");
+              },
+            };
+          },
+        },
+      },
+    });
+    try {
+      const result = await app.inject({
+        method: "GET",
+        url: "/api/v1/projects/project/sources/source/versions/old/original?disposition=attachment",
+        headers: { cookie: `${HTTP_COOKIE_NAME_V1}=token` },
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.rawPayload).toEqual(Buffer.from("%PDF"));
+      expect(result.headers["cache-control"]).toBe("no-store");
+      expect(result.headers["content-disposition"]).toContain("attachment");
+      expect(branches).toEqual(["engineering-data.source-original-read"]);
+      expect(closed.length).toBeGreaterThan(0);
+      const openapi = await app.inject({ method: "GET", url: "/api/v1/openapi.json" });
+      expect(
+        openapi.json().paths[
+          "/api/v1/projects/{projectId}/sources/{sourceId}/versions/{versionId}/original"
+        ].get,
+      ).toBeDefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([
+    ["ARTIFACT_ACCESS_DENIED", 404],
+    ["ARTIFACT_TOO_LARGE", 413],
+    ["ARTIFACT_INTEGRITY_FAILURE", 500],
+  ] as const)("fails closed for %s", async (code, status) => {
+    let opened = 0;
+    const app = buildApi({
+      access: accessStub(),
+      publicOrigin: ORIGIN,
+      ports: {
+        sourceOriginal: {
+          read: async () => {
+            throw new Error("unused");
+          },
+          open: async () => {
+            opened++;
+            throw makeArtifactError(code, "original-test");
+          },
+        },
+      },
+    });
+    const url = "/api/v1/projects/project/sources/source/versions/1/original";
+    try {
+      expect((await app.inject({ method: "GET", url })).statusCode).toBe(401);
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url,
+            headers: { cookie: `${HTTP_COOKIE_NAME_V1}=token`, "sec-fetch-site": "cross-site" },
+          })
+        ).statusCode,
+      ).toBe(400);
+      expect(
+        (
+          await app.inject({
+            method: "GET",
+            url,
+            headers: { cookie: `${HTTP_COOKIE_NAME_V1}=token`, range: "bytes=0-1" },
+          })
+        ).statusCode,
+      ).toBe(400);
+      expect(opened).toBe(0);
+      const response = await app.inject({
+        method: "GET",
+        url,
+        headers: { cookie: `${HTTP_COOKIE_NAME_V1}=token` },
+      });
+      expect(response.statusCode).toBe(status);
+      expect(response.json().code).toBeDefined();
+      expect(response.body).not.toContain("%PDF");
+    } finally {
+      await app.close();
+    }
+  });
+});
 const ORIGIN = "https://ui.example";
 const scope = {
   kind: "spatial-scope" as const,
@@ -287,6 +412,28 @@ const projectionPort = (onSubscribe: (request: unknown) => void): ProjectionPort
     return { kind: "succeeded", result: { eventRefs: [] } };
   },
   export: async () => {
+    throw new Error("unused");
+  },
+});
+
+const workflowPort = (onResume: (command: unknown) => void): WorkflowPortV1 => ({
+  startRun: async () => {
+    throw new Error("unused");
+  },
+  resumeRun: async (command) => {
+    onResume(command);
+    return {
+      kind: "succeeded",
+      result: {
+        workflowRunRef: {
+          kind: "workflow-run",
+          reference: { entityId: "run", versionId: "1" },
+        },
+        disposition: "created",
+      },
+    };
+  },
+  cancelRun: async () => {
     throw new Error("unused");
   },
 });
@@ -563,6 +710,182 @@ describe("C09 HTTP shell", () => {
       "engineering-data.write",
     ]);
     expect(response.json().kind).toBe("succeeded");
+    await app.close();
+  });
+
+  it("forwards the identification-preparation-ready resume cause through the shared strict schema", async () => {
+    const resumed: Record<string, unknown>[] = [];
+    const app = buildApi({
+      access: accessStub(),
+      ports: {
+        workflow: workflowPort((command) => resumed.push(command as Record<string, unknown>)),
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const runRef = { kind: "workflow-run", reference: { entityId: "run", versionId: "1" } };
+    const snapshotRef = {
+      kind: "identification-preparation-snapshot",
+      reference: { entityId: "preparation", versionId: "1" },
+    };
+    const post = (resumeCause: unknown) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/commands/workflow.resume-run",
+        headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+        payload: {
+          schemaVersion: "1",
+          commandId: "command-resume",
+          idempotencyKey: "idempotency-resume",
+          issuedAt: NOW,
+          requestedSpatialScopeRefs: [scope],
+          requestedSourceVersionRefs: [],
+          payload: { workflowRunRef: runRef, expectedStateVersion: "state-v1", resumeCause },
+        },
+      });
+
+    const accepted = await post({
+      kind: "identification-preparation-ready",
+      identificationPreparationSnapshotRef: snapshotRef,
+    });
+    expect(accepted.statusCode).toBe(200);
+    // 路由与端口共用同一份公共 Schema：端口收到的就是命令提交的精确准备引用。
+    expect(resumed[0]).toMatchObject({
+      kind: "resume-run",
+      projectId: "project",
+      actorId: "actor",
+      payload: {
+        workflowRunRef: runRef,
+        expectedStateVersion: "state-v1",
+        resumeCause: {
+          kind: "identification-preparation-ready",
+          identificationPreparationSnapshotRef: snapshotRef,
+        },
+      },
+    });
+
+    // 额外字段、缺失引用与错误引用类型都在授权和端口调用之前按契约失败。
+    for (const resumeCause of [
+      {
+        kind: "identification-preparation-ready",
+        identificationPreparationSnapshotRef: snapshotRef,
+        knowledgePreparationTaskRef: {
+          kind: "knowledge-preparation-task",
+          reference: { entityId: "task", versionId: "1" },
+        },
+      },
+      { kind: "identification-preparation-ready" },
+      {
+        kind: "identification-preparation-ready",
+        identificationPreparationSnapshotRef: {
+          kind: "knowledge-preparation-task",
+          reference: { entityId: "task", versionId: "1" },
+        },
+      },
+    ]) {
+      const rejected = await post(resumeCause);
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json().code).toBe("CONTRACT_INVALID");
+    }
+    expect(resumed).toHaveLength(1);
+    await app.close();
+  });
+
+  it("routes the identification-preparation completion through the same freeze port and keeps the payload closed", async () => {
+    const agentTaskRef = {
+      kind: "agent-task" as const,
+      reference: { entityId: "task", versionId: "1" },
+      taskType: "data-cleaning" as const,
+      triggerMode: "embedded" as const,
+      modelDeploymentRef: { entityId: "model", versionId: "1" },
+      promptTemplateRef: { entityId: "prompt", versionId: "1" },
+      toolPolicyRef: { entityId: "tools", versionId: "1" },
+      budgetPolicyRef: { entityId: "budget", versionId: "1" },
+      incrementSchemaRef: { entityId: "increment", versionId: "1" },
+      validationPolicyRef: { entityId: "validation", versionId: "1" },
+    };
+    const freezeCalls: Record<string, unknown>[] = [];
+    const authorizedBranches: string[] = [];
+    const app = buildApi({
+      access: accessStub((branch) => authorizedBranches.push(branch)),
+      ports: {
+        engineeringData: {
+          apply: async () => {
+            throw new Error("unused");
+          },
+          freeze: async (command) => {
+            freezeCalls.push(command as Record<string, unknown>);
+            return {
+              kind: "succeeded",
+              result: {
+                kind: "identification-preparation",
+                identificationPreparationSnapshotRef: {
+                  kind: "identification-preparation-snapshot",
+                  reference: { entityId: "snapshot", versionId: "1" },
+                },
+              },
+            };
+          },
+          read: async () => {
+            throw new Error("unused");
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const post = (payload: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/commands/engineering-data.complete-identification-preparation",
+        headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+        payload: {
+          schemaVersion: "1",
+          commandId: "command-complete",
+          idempotencyKey: "idempotency-complete",
+          issuedAt: NOW,
+          requestedSpatialScopeRefs: [scope],
+          requestedSourceVersionRefs: [],
+          payload,
+        },
+      });
+
+    const succeeded = await post({ agentTaskRef });
+    expect(succeeded.statusCode).toBe(200);
+    // 完成命令以自身身份调用既有 freeze 端口，成功结果仍取原 identification-preparation 形状。
+    expect(succeeded.json()).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "identification-preparation" },
+    });
+    expect(freezeCalls[0]).toMatchObject({
+      kind: "complete-identification-preparation",
+      commandId: "command-complete",
+      projectId: "project",
+      actorId: "actor",
+      issuedAt: NOW,
+      payload: { agentTaskRef },
+    });
+    expect(authorizedBranches).toEqual(["engineering-data.complete-identification-preparation"]);
+
+    for (const payload of [
+      {},
+      agentTaskRef,
+      {
+        agentTaskRef,
+        identificationPreparationSnapshotRef: {
+          kind: "identification-preparation-snapshot",
+          reference: { entityId: "snapshot", versionId: "1" },
+        },
+      },
+    ]) {
+      const rejected = await post(payload);
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json().code).toBe("CONTRACT_INVALID");
+    }
+    expect(authorizedBranches).toHaveLength(1);
+    expect(freezeCalls).toHaveLength(1);
     await app.close();
   });
 
@@ -2426,5 +2749,216 @@ describe("C35 有界窄读与系统面路由", () => {
     expect(seen.map((entry) => entry.actorId).sort()).toEqual(["session-a", "session-b"]);
     for (const entry of seen) expect(entry.source).toBe(entry.actorId);
     await app.close();
+  });
+});
+
+describe("C19 applicable-rule-set assembly route", () => {
+  const assemblyPayload = () => ({
+    preparationSnapshotRef: {
+      kind: "assessment-preparation-snapshot" as const,
+      reference: { entityId: "preparation", versionId: "1" },
+    },
+    requiredAt: NOW,
+    scoringPolicyRef: { entityId: "scoring-policy", versionId: "1" },
+    assemblyPolicyRef: { entityId: "scoring-policy", versionId: "1" },
+    compatibilityRef: { entityId: "scoring-policy", versionId: "1" },
+    configurationSetRef: { entityId: "configuration-set", versionId: "1" },
+  });
+
+  const assemblyBody = (commandId: string, payload: Record<string, unknown>) => ({
+    schemaVersion: "1",
+    commandId,
+    idempotencyKey: `idempotency-${commandId}`,
+    issuedAt: NOW,
+    requestedSpatialScopeRefs: [scope],
+    requestedSourceVersionRefs: [],
+    payload,
+  });
+
+  const postAssembly = (
+    app: ReturnType<typeof buildApi>,
+    commandId: string,
+    payload: Record<string, unknown>,
+  ) =>
+    app.inject({
+      method: "POST",
+      url: "/api/v1/projects/project/commands/knowledge-modeling.assemble-applicable-rule-set",
+      headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+      payload: assemblyBody(commandId, payload),
+    });
+
+  it("keeps the branch inactive and out of OpenAPI until the narrow port is injected", async () => {
+    const app = appFor();
+    expect((await postAssembly(app, "command-absent", assemblyPayload())).statusCode).toBe(404);
+    const spec = (await app.inject({ method: "GET", url: "/api/v1/openapi.json" })).json() as {
+      paths: Record<string, unknown>;
+    };
+    expect(
+      spec.paths[
+        "/api/v1/projects/{projectId}/commands/knowledge-modeling.assemble-applicable-rule-set"
+      ],
+    ).toBeUndefined();
+    await app.close();
+  });
+
+  it("dispatches succeeded, waiting and failed outcomes with the envelope identity", async () => {
+    const calls: Parameters<ApplicableRuleSetAssemblyPortV1["assemble"]>[0][] = [];
+    const authorizedBranches: string[] = [];
+    const assemblyPort: ApplicableRuleSetAssemblyPortV1 = {
+      assemble: async (command) => {
+        calls.push(command);
+        if (command.commandId === "command-wait") {
+          return {
+            kind: "waiting",
+            waiting: {
+              kind: "user-confirmation",
+              userConfirmationRef: {
+                kind: "user-confirmation",
+                reference: { entityId: "confirmation", versionId: "1" },
+              },
+            },
+          };
+        }
+        if (command.commandId === "command-fail") {
+          return {
+            kind: "failed",
+            error: {
+              code: "STALE_VERSION",
+              category: "concurrency",
+              retryable: false,
+              targetRef: {
+                kind: "assessment-preparation-snapshot",
+                reference: { entityId: "preparation", versionId: "1" },
+              },
+              stageCode: "assemble-applicable-rule-set",
+              occurredAt: NOW,
+              causalRunId: command.commandId,
+            },
+          };
+        }
+        return {
+          kind: "succeeded",
+          result: {
+            applicableRuleSetRevisionRef: {
+              kind: "knowledge-revision",
+              reference: { entityId: "revision", versionId: "1" },
+            },
+            applicableRuleSetArtifactRef: {
+              kind: "content-artifact",
+              reference: { entityId: "artifact", versionId: "1" },
+            },
+            applicableRuleSetReleaseRef: {
+              kind: "knowledge-release",
+              reference: { entityId: "release", versionId: "1" },
+            },
+            assessmentBasisReleaseSetRef: {
+              kind: "assessment-basis-release-set",
+              reference: { entityId: "basis", versionId: "1" },
+            },
+          },
+        };
+      },
+    };
+    const app = buildApi({
+      access: accessStub((branch) => authorizedBranches.push(branch)),
+      ports: { applicableRuleSetAssembly: assemblyPort },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+    const succeeded = await postAssembly(app, "command-ok", assemblyPayload());
+    expect(succeeded.statusCode).toBe(200);
+    expect(succeeded.json()).toMatchObject({
+      kind: "succeeded",
+      result: {
+        applicableRuleSetRevisionRef: { kind: "knowledge-revision" },
+        applicableRuleSetArtifactRef: { kind: "content-artifact" },
+      },
+    });
+    // 工程、主体与记录时间边界只取服务端信封，payload 原样透传。
+    expect(calls[0]).toMatchObject({
+      kind: "assemble-applicable-rule-set",
+      projectId: "project",
+      actorId: "actor",
+      issuedAt: NOW,
+      payload: assemblyPayload(),
+    });
+
+    const waiting = await postAssembly(app, "command-wait", assemblyPayload());
+    expect(waiting.statusCode).toBe(202);
+    expect(waiting.json()).toMatchObject({
+      kind: "waiting",
+      waiting: { kind: "user-confirmation" },
+    });
+
+    const failed = await postAssembly(app, "command-fail", assemblyPayload());
+    expect(failed.statusCode).toBe(409);
+    expect(failed.json().code).toBe("STALE_VERSION");
+
+    expect(authorizedBranches).toEqual([
+      "knowledge-modeling.assemble-applicable-rule-set",
+      "knowledge-modeling.assemble-applicable-rule-set",
+      "knowledge-modeling.assemble-applicable-rule-set",
+    ]);
+    await app.close();
+  });
+
+  it("denies a caller without the govern capability and rejects caller-supplied applicability", async () => {
+    const baseAccess = accessStub();
+    const restrictedAccess: LocalIdentityAccessV1 = {
+      ...baseAccess,
+      authorize: async (request) => {
+        const decision = await baseAccess.authorize(request);
+        return {
+          ...decision,
+          context: { ...decision.context, grantedCapabilities: ["knowledge-modeling.read"] },
+        };
+      },
+    };
+    const calls: unknown[] = [];
+    const app = buildApi({
+      access: restrictedAccess,
+      ports: {
+        applicableRuleSetAssembly: {
+          assemble: async (command) => {
+            calls.push(command);
+            throw new Error("should not be reached");
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const unauthorized = await postAssembly(app, "command-denied", assemblyPayload());
+    expect(unauthorized.statusCode).toBe(404);
+    expect(unauthorized.json().code).toBe("NOT_FOUND");
+    expect(calls).toHaveLength(0);
+
+    const granted = buildApi({
+      access: accessStub(),
+      ports: {
+        applicableRuleSetAssembly: {
+          assemble: async (command) => {
+            calls.push(command);
+            throw new Error("should not be reached");
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    // 调用方自报适用性在严格信封处即被拒绝，不进入端口。
+    const forged = await postAssembly(granted, "command-forged", {
+      ...assemblyPayload(),
+      applicability: { riskState: "normal" },
+    });
+    expect(forged.statusCode).toBe(400);
+    expect(forged.json().code).toBe("CONTRACT_INVALID");
+    expect(calls).toHaveLength(0);
+    await app.close();
+    await granted.close();
   });
 });

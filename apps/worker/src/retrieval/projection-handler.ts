@@ -76,13 +76,16 @@ export interface HybridRetrievalPolicyProviderV1 {
 
 /** 固定数据集质量门禁；构建只有在门禁通过后才能 ready。 */
 export interface HybridRetrievalBuildQualityGateV1 {
-  evaluate(input: {
-    readonly projectId: string;
-    readonly generationRef: RetrievalGenerationRefV1;
-    readonly manifest: RetrievalIndexManifestV1;
-    readonly reconciliation: RetrievalReconciliationV1;
-    readonly policy: HybridRetrievalPolicyV1;
-  }): Promise<{ readonly passed: boolean; readonly detailCode: string }>;
+  evaluate(
+    input: {
+      readonly projectId: string;
+      readonly generationRef: RetrievalGenerationRefV1;
+      readonly manifest: RetrievalIndexManifestV1;
+      readonly reconciliation: RetrievalReconciliationV1;
+      readonly policy: HybridRetrievalPolicyV1;
+    },
+    context?: TransactionContextV1,
+  ): Promise<{ readonly passed: boolean; readonly detailCode: string }>;
 }
 
 /** 组合根的 C06 受信来源：为投影构建签发工程级调用上下文。 */
@@ -663,13 +666,16 @@ export class VersionedHybridRetrievalProjectionHandler {
       });
     }
 
-    const gate = await qualityGate.evaluate({
-      projectId,
-      generationRef,
-      manifest,
-      reconciliation,
-      policy,
-    });
+    const gate = await qualityGate.evaluate(
+      {
+        projectId,
+        generationRef,
+        manifest,
+        reconciliation,
+        policy,
+      },
+      context,
+    );
     if (!gate.passed) {
       return reject({
         stage: "quality",

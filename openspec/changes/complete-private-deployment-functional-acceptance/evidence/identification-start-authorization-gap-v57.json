@@ -1,0 +1,22 @@
+{
+  "at": "2026-10-15T12:29:24.846Z",
+  "parentRunRef": {
+    "kind": "workflow-run",
+    "reference": {
+      "entityId": "risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9",
+      "versionId": "035157af5173eb1e3025be0da1894fa9e5722fd386597b6193bea4ab0a53fde6"
+    }
+  },
+  "childCommandId": "c30-identification-start:f721543756acc5e7eee3a0539460759b1f3b00d937f5f8d3ad289d125f63da16",
+  "currentParentBranch": "workflow.resume-run",
+  "c24HardcodedBranch": "workflow.start-run",
+  "failure": {
+    "name": "TypeError",
+    "message": "DEPLOYMENT_AUTHORIZATION_BRANCH_REJECTED"
+  },
+  "currentParentAuthorizationStillValid": true,
+  "checkpointPreparationBindingSucceeded": true,
+  "noChildStartInvoked": true,
+  "noModelOrTaskCreated": true,
+  "noWorkflowRetryInvoked": true
+}

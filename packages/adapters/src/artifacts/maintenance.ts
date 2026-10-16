@@ -559,7 +559,7 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
         requiredCapability,
       );
       let content = manifestContent;
-      let verified: Promise<unknown> | undefined;
+      let completed: Promise<unknown> | undefined;
       if (content === undefined) {
         const read = await this.#store.open({
           schemaVersion: "1",
@@ -574,7 +574,7 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
           authorization: request.authorization,
         });
         content = read.content;
-        verified = read.verified;
+        completed = read.completed;
       }
       let header: ArtifactHashManifestHeaderV1 | undefined;
       let trailerSeen = false;
@@ -667,7 +667,7 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
         throw makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "reconcile.header");
       if (`sha256:${contentHash.digest("hex")}` !== request.hashManifestRef.reference.versionId)
         throw makeArtifactError("ARTIFACT_RECOVERY_BLOCKED", "reconcile.manifest-hash");
-      if (verified !== undefined) await verified;
+      if (completed !== undefined) await completed;
       for await (const manifest of snapshot.listManifests(
         this.#policy.maintenanceBatchSize,
         request.hashManifestRef,

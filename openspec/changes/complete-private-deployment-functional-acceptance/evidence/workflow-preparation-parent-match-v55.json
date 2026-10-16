@@ -1,0 +1,78 @@
+{
+  "at": "2026-10-15T11:47:20.959Z",
+  "runRef": {
+    "kind": "workflow-run",
+    "reference": {
+      "entityId": "risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9",
+      "versionId": "035157af5173eb1e3025be0da1894fa9e5722fd386597b6193bea4ab0a53fde6"
+    }
+  },
+  "stateVersion": "f936919032c9ffd52c8377c7c93e556f7c387a79570328cdaddfdebef2c6f58c",
+  "stage": "identification",
+  "status": "waiting",
+  "waitingRef": {
+    "kind": "knowledge-preparation",
+    "knowledgePreparationTaskRef": {
+      "kind": "knowledge-preparation-task",
+      "reference": {
+        "entityId": "knowledge-preparation-task:identification:risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:035157af5173eb1e3025be0da1894fa9",
+        "versionId": "5291999f6723371d788d3c58d62ec298f956fd36dd826fb15409c9f5efc8bac7"
+      }
+    }
+  },
+  "graphVersion": {
+    "entityId": "physical-risk-flow-graph",
+    "versionId": "physical-20261014-v1"
+  },
+  "preparationSnapshotRef": {
+    "kind": "identification-preparation-snapshot",
+    "reference": {
+      "entityId": "identification-preparation-50efff5ad17336023281c241aba94e153465e03a",
+      "versionId": "1"
+    }
+  },
+  "sourceVersionRefs": [
+    {
+      "kind": "source-version",
+      "reference": {
+        "entityId": "s_5dc5c9ccc11f02fdffe6e9b4218476e2",
+        "versionId": "1"
+      }
+    },
+    {
+      "kind": "source-version",
+      "reference": {
+        "entityId": "s_aa553650b4856364e80e2d4ed0850308",
+        "versionId": "1"
+      }
+    },
+    {
+      "kind": "source-version",
+      "reference": {
+        "entityId": "s_92d8f49300cd46308999e50bb4f6d347",
+        "versionId": "1"
+      }
+    },
+    {
+      "kind": "source-version",
+      "reference": {
+        "entityId": "s_a904784fc4508a33cfbfb4a16d423146",
+        "versionId": "1"
+      }
+    },
+    {
+      "kind": "source-version",
+      "reference": {
+        "entityId": "s_e6aa70288c7d5fb3298d0845b3b97834",
+        "versionId": "1"
+      }
+    }
+  ],
+  "sourceCount": 5,
+  "projectRevisionMatches": true,
+  "spatialScopesMatch": true,
+  "sourceVersionsMatch": true,
+  "noPreparationBindingInRunRows": true,
+  "taskCount": 10,
+  "noWorkflowAdvance": true
+}

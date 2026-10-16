@@ -745,6 +745,12 @@ export interface PostgresResponseLifecycleContextReaderOptionsV1 {
   readonly monitoring: AssessmentMonitoringReaderV1;
   readonly measureReleases: ResponseLifecycleMeasureReleaseReaderV1;
   readonly authorizeDownstream: ResponseLifecycleDownstreamAuthorizerV1;
+  readonly readStagePolicy?: (input: {
+    readonly projectId: string;
+    readonly requestId: string;
+    readonly releaseRef: VersionReference;
+    readonly authorization: AuthorizationContextV1;
+  }) => Promise<{ readonly body: unknown; readonly sha256: string } | undefined>;
 }
 
 /** C28 私有只读端口实现：先授权，再按精确引用投影 C27 建议链、C25 评估与 C19/C04 成员。 */
@@ -755,6 +761,7 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
   readonly #monitoring: AssessmentMonitoringReaderV1;
   readonly #measureReleases: ResponseLifecycleMeasureReleaseReaderV1;
   readonly #authorizeDownstream: ResponseLifecycleDownstreamAuthorizerV1;
+  readonly #readStagePolicy: PostgresResponseLifecycleContextReaderOptionsV1["readStagePolicy"];
 
   constructor(options: PostgresResponseLifecycleContextReaderOptionsV1) {
     this.#db = options.db as unknown as Kysely<ResponseLifecycleDatabase>;
@@ -763,6 +770,7 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
     this.#monitoring = options.monitoring;
     this.#measureReleases = options.measureReleases;
     this.#authorizeDownstream = options.authorizeDownstream;
+    this.#readStagePolicy = options.readStagePolicy;
   }
 
   async readPublishedMeasureReleases(input: {
@@ -1098,6 +1106,7 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
       readonly reference: VersionReference;
     };
     readonly definitionTypes: readonly string[];
+    readonly policyRef?: VersionReference;
   }): Promise<readonly ResponseLifecycleBasisMemberV1[]> {
     const authorization = input.authorization;
     const targetRef: LifecycleTargetRefV1 = {
@@ -1153,9 +1162,39 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
     const members: ResponseLifecycleBasisMemberV1[] = [];
     for (const definitionType of input.definitionTypes) {
       const member = basisResult.data.configurationMembers.find(
-        (candidate) => candidate.definitionType === definitionType,
+        (candidate) =>
+          candidate.definitionType === definitionType &&
+          ((definitionType !== "forecast-policy" && definitionType !== "deviation-policy") ||
+            input.policyRef === undefined ||
+            sameRef(candidate.releaseRef.reference, input.policyRef)),
       );
       if (member === undefined) {
+        if (
+          (definitionType === "forecast-policy" || definitionType === "deviation-policy") &&
+          input.policyRef !== undefined &&
+          this.#readStagePolicy !== undefined
+        ) {
+          const policy = await this.#readStagePolicy({
+            projectId: authorization.projectId,
+            requestId: `${input.requestId}:${definitionType}`,
+            releaseRef: input.policyRef,
+            authorization: basisAuthorization,
+          });
+          if (policy === undefined)
+            failResponseLifecycle("response-forecast-policy-unavailable", targetRef);
+          const parsed = (
+            definitionType === "forecast-policy"
+              ? ForecastPolicyDocumentV1Schema
+              : DeviationPolicyDocumentV1Schema
+          ).safeParse(policy.body);
+          if (!parsed.success)
+            failResponseLifecycle("response-lifecycle-contract-drift", targetRef);
+          members.push({
+            member: { definitionType, releaseRef: { reference: input.policyRef } },
+            content: parsed.data,
+          });
+          continue;
+        }
         failResponseLifecycle("response-forecast-policy-unavailable", targetRef);
       }
       const artifactRef = {
@@ -1296,7 +1335,7 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
       }
       chunks.push(chunk);
     }
-    await handle.verified;
+    await handle.completed;
     const buffer = new Uint8Array(byteLength);
     let offset = 0;
     for (const chunk of chunks) {
@@ -1584,14 +1623,7 @@ export class PostgresResponseLifecycleAdapter
     const targetRef = snapshot.responseRecommendationRef;
     try {
       const verified = await this.#verify(valid, ADOPTION_BRANCH_V1);
-      // C30 冻结且不扩大的授权：快照必须由同一次已验证授权与同一路由决定形成。
-      if (
-        !sameRef(
-          snapshot.authorizationContextRef.reference,
-          valid.authorization.authorizationContextRef.reference,
-        ) ||
-        !sameRef(snapshot.adoptionDecisionRef.reference, binding.routeDecisionRef.reference)
-      ) {
+      if (!sameRef(snapshot.adoptionDecisionRef.reference, binding.routeDecisionRef.reference)) {
         failResponseLifecycle("response-forecast-input-mismatch", targetRef);
       }
       this.#assertBinding(binding, valid, verified, targetRef);
@@ -1630,6 +1662,7 @@ export class PostgresResponseLifecycleAdapter
         authorization: verified,
         basisReleaseSetRef: context.basisReleaseSetRef,
         definitionTypes: [...FORECAST_POLICY_MEMBER_TYPES_V1],
+        policyRef: snapshot.forecastPolicyRef,
       });
       const policyMember = memberDocument(
         members,
@@ -2202,18 +2235,6 @@ export class PostgresResponseLifecycleAdapter
       const authorizedScopeIds = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
       if (
         !sameRef(
-          valid.feedbackInputSnapshot.authorizationContextRef.reference,
-          publicCommand.authorization.authorizationContextRef.reference,
-        )
-      ) {
-        failResponseLifecycle(
-          "response-lifecycle-authorization-required",
-          payload.executionRecordRef,
-          "AUTHORIZATION_DENIED",
-        );
-      }
-      if (
-        !sameRef(
           payload.executionRecordRef.reference,
           valid.feedbackInputSnapshot.executionRecordRef.reference,
         )
@@ -2312,6 +2333,8 @@ export class PostgresResponseLifecycleAdapter
         feedbackArtifactRef: payload.feedbackArtifactRef,
         actualAssessmentRecordRef: valid.actualAssessmentRecordRef,
         forecast,
+        deviationPolicyRef: valid.feedbackInputSnapshot.deviationPolicyRef,
+        calibrationAgentPolicyRef: valid.feedbackInputSnapshot.calibrationAgentPolicyRef,
         spatialScopeRef: {
           kind: "spatial-scope",
           reference: {
@@ -2597,6 +2620,9 @@ export class PostgresResponseLifecycleAdapter
         authorization: verified,
         basisReleaseSetRef,
         definitionTypes: [...DEVIATION_MEMBER_TYPES_V1],
+        ...(feedbackRecord.data.deviationPolicyRef === undefined
+          ? {}
+          : { policyRef: feedbackRecord.data.deviationPolicyRef }),
       });
       const policyMember = memberDocument(
         members,

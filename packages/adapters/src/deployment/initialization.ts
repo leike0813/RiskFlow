@@ -199,7 +199,6 @@ export const initializeDeploymentV1 = async (
   try {
     const checkpointer = await setupPostgresCheckpointer({
       ...input.checkpointerConnection,
-      validateReference: () => false,
     });
     await checkpointer.end();
   } catch {

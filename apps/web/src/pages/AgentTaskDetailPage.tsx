@@ -6,10 +6,9 @@
  * 列表/详情/启动上下文由 Provider 单在途刷新，行动、候选与校验在用户打开本视图后按游标分页读取，
  * 不再建立第二套轮询或第二份缓存。
  *
- * 深链按 URL 的精确身份（实体标识 + 身份版本）定位，不做「最新」查找；
- * 身份在当前任务列表页内不存在时呈现诚实缺席态，不用其它任务的事实填充。
+ * 深链按 URL 的任务标识与版本直接读取，共享 Provider 管理选择和刷新。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import AppShell from "../components/AppShell";
@@ -17,13 +16,13 @@ import { DataTable, type DataTableColumn } from "../components/DataTable";
 import { Icon } from "../components/icons";
 import { useEngineering, usePageQuery, useProjectPath } from "../api/engineering";
 import {
+  type AgentReadFailureView,
   readAgentCandidateValidation,
   readAgentTaskActions,
   readAgentTaskCandidates,
   type AgentLaunchContextView,
   type AgentTaskDetailView,
   type AgentTaskRefView,
-  type AgentTaskSummaryView,
 } from "../api/agentAuditOperations";
 import { useAgentTask } from "../agent/AgentTaskProvider";
 import {
@@ -50,6 +49,33 @@ import "./AgentWorkbenchPage.css";
 const label = (labels: Readonly<Record<string, string>>, value: string): string =>
   labels[value] ?? value;
 
+function AgentTaskReadCard(props: {
+  readonly loading: boolean;
+  readonly failure?: AgentReadFailureView | undefined;
+  readonly onRetry: () => void;
+}): ReactElement {
+  const { loading, failure, onRetry } = props;
+  return (
+    <AgentCard title="任务详情">
+      <AgentEmpty>
+        {failure === undefined ? "正在读取任务详情…" : `读取失败（${failure.code}）。`}
+      </AgentEmpty>
+      {failure?.diagnosticRef === undefined ? null : (
+        <AgentFields>
+          <AgentField label="诊断编号">
+            <ArtifactRefText value={failure.diagnosticRef} />
+          </AgentField>
+        </AgentFields>
+      )}
+      <div className="agd-header-actions">
+        <button type="button" className="agd-refresh" onClick={onRetry} disabled={loading}>
+          {loading ? "读取中…" : "重试读取"}
+        </button>
+      </div>
+    </AgentCard>
+  );
+}
+
 export default function AgentTaskDetailPage() {
   const params = useParams<{ taskId: string }>();
   const [searchParams] = useSearchParams();
@@ -57,39 +83,30 @@ export default function AgentTaskDetailPage() {
   const projectPath = useProjectPath();
   const taskId = params.taskId ?? "";
   const taskVersion = searchParams.get("taskVersion") ?? "";
-  const { list, taskRef, detail, launchContext, openTask, refreshNow, error, loading } =
-    useAgentTask();
+  const { taskRef, detail, launchContext, openTask, refreshNow, loading, failure } = useAgentTask();
 
-  // 精确身份：实体标识与身份版本同时相等才算命中，命中后才把该任务设为共享选择。
-  const exact: AgentTaskSummaryView | undefined = useMemo(
+  const located = useMemo(
     () =>
-      list?.items.find(
-        (item) =>
-          item.agentTaskRef.reference.entityId === taskId &&
-          item.agentTaskRef.reference.versionId === taskVersion,
-      ),
-    [list, taskId, taskVersion],
+      taskId === "" || taskVersion === ""
+        ? undefined
+        : {
+            kind: "agent-task" as const,
+            reference: { entityId: taskId, versionId: taskVersion },
+          },
+    [taskId, taskVersion],
   );
 
   useEffect(() => {
-    if (exact === undefined) return;
+    if (located === undefined) return;
     if (
       taskRef !== undefined &&
-      taskRef.reference.entityId === exact.agentTaskRef.reference.entityId &&
-      taskRef.reference.versionId === exact.agentTaskRef.reference.versionId
+      taskRef.reference.entityId === located.reference.entityId &&
+      taskRef.reference.versionId === located.reference.versionId
     ) {
       return;
     }
-    openTask(exact.agentTaskRef);
-  }, [exact, openTask, taskRef]);
-
-  const selected: AgentTaskRefView | undefined =
-    exact !== undefined &&
-    taskRef !== undefined &&
-    taskRef.reference.entityId === exact.agentTaskRef.reference.entityId &&
-    taskRef.reference.versionId === exact.agentTaskRef.reference.versionId
-      ? taskRef
-      : undefined;
+    openTask(located);
+  }, [located, openTask, taskRef]);
 
   // 详情必须属于深链指向的精确身份：切换选择后 Provider 重新读取期间，迟到或上一任务的
   // 详情不得被当作当前任务的事实呈现。
@@ -114,7 +131,7 @@ export default function AgentTaskDetailPage() {
       agentContext={
         projectId === null
           ? []
-          : [projectId, ...(selected === undefined ? [] : [selected.reference.entityId])]
+          : [projectId, ...(located === undefined ? [] : [located.reference.entityId])]
       }
     >
       <div className="page agd-page">
@@ -134,34 +151,23 @@ export default function AgentTaskDetailPage() {
           </div>
         </header>
 
-        {taskId === "" || taskVersion === "" ? (
-          <AgentCard title="任务引用">
-            <AgentEmpty>深链缺少任务标识或身份版本，无法定位精确任务。</AgentEmpty>
-          </AgentCard>
-        ) : exact === undefined ? (
-          <AgentCard title="任务引用">
-            {list === undefined ? (
-              <AgentEmpty>正在读取当前工程的 Agent 任务列表…</AgentEmpty>
-            ) : (
-              <AgentEmpty>
-                当前任务列表页内没有该精确引用（{taskId} · {taskVersion}）。本列表按游标分页，
-                该任务不在当前已读取的一页中，请返回工作台重新选择。
-              </AgentEmpty>
-            )}
-          </AgentCard>
-        ) : currentDetail === undefined ? (
-          <AgentCard title="任务详情">
-            <AgentEmpty>
-              {error !== undefined ? `读取任务详情失败（${error}）。` : "正在读取任务详情…"}
-            </AgentEmpty>
-          </AgentCard>
-        ) : (
+        {currentDetail !== undefined ? (
           <TaskContent
             detail={currentDetail}
             projectId={projectId ?? ""}
-            launchContext={selected === undefined ? undefined : launchContext}
+            launchContext={located === undefined ? undefined : launchContext}
             pagingKey={pagingKey}
             onLaunched={refreshNow}
+          />
+        ) : taskId === "" || taskVersion === "" ? (
+          <AgentCard title="任务引用">
+            <AgentEmpty>深链缺少任务标识或身份版本，无法定位精确任务。</AgentEmpty>
+          </AgentCard>
+        ) : (
+          <AgentTaskReadCard
+            loading={loading}
+            {...(failure === undefined ? {} : { failure })}
+            onRetry={refreshNow}
           />
         )}
       </div>
@@ -337,18 +343,17 @@ const actionColumns: DataTableColumn[] = [
   },
   {
     key: "intentArtifactRef",
-    title: "意图工件",
-    render: (row) => {
-      const intent = (
-        row.intentArtifactRef as { reference: { entityId: string; versionId: string } }
-      ).reference;
-      return (
-        <span className="mono">
-          {intent.entityId} · {intent.versionId}
-        </span>
-      );
-    },
+    title: "行动输入引用",
+    render: (row) => <ArtifactRefText value={row.intentArtifactRef} />,
   },
+  {
+    key: "resultRef",
+    title: "行动结果",
+    render: (row) =>
+      row.resultRef === undefined ? "—" : <ArtifactRefText value={row.resultRef} />,
+  },
+  { key: "inputTokens", title: "输入 Token", width: 100, align: "right" },
+  { key: "outputTokens", title: "输出 Token", width: 100, align: "right" },
   {
     key: "errorCode",
     title: "错误码",
@@ -457,7 +462,7 @@ function CandidateSection({
         {candidates.state.kind === "error"
           ? `读取候选失败（${candidates.state.error.code}）。`
           : candidates.state.kind === "forbidden"
-            ? "当前角色不具备读取该任务候选的权限。"
+            ? "无法读取该任务的候选，请确认访问权限。"
             : "正在读取候选…"}
       </AgentEmpty>
     );
@@ -552,10 +557,11 @@ function CandidateSection({
 }
 
 function ArtifactRefText({ value }: { readonly value: unknown }) {
-  const ref = value as { reference: { entityId: string; versionId: string } };
+  // 类别与精确版本一起呈现：只留 entityId 会把「哪类工具/工件」丢掉。
+  const ref = value as { kind: string; reference: { entityId: string; versionId: string } };
   return (
     <span className="mono">
-      {ref.reference.entityId} · {ref.reference.versionId}
+      {ref.kind} {ref.reference.entityId} · {ref.reference.versionId}
     </span>
   );
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { sql, type Kysely, type Transaction } from "kysely";
 
 import type {
@@ -19,6 +20,7 @@ import {
   AgentTaskRefV1Schema,
   ContentArtifactRefV1Schema,
   EngineeringFreezeResultV1Schema,
+  EngineeringFreezeCommandV1Schema,
   IdentificationPreparationSnapshotRefV1Schema,
   MonitoringSeriesRefV1Schema,
   RouteDecisionRefV1Schema,
@@ -31,7 +33,7 @@ import {
   IdentificationPreparationSnapshotV1Schema,
   type IdentificationPreparationSnapshotV1,
 } from "@riskflow/contracts/workflows";
-import { canonicalJson, sha256CanonicalJson } from "@riskflow/core/persistence";
+import { canonicalJson, sha256CanonicalJson, type JsonValue } from "@riskflow/core/persistence";
 import type {
   AtomicCommitV1,
   TransactionContextV1,
@@ -43,7 +45,11 @@ import type {
   AgentTaskDefinitionV1,
   AgentTaskSnapshotV1,
 } from "@riskflow/core/agent-runtime";
-import { emptyAgentBudgetUsage } from "@riskflow/core/agent-runtime";
+import {
+  AgentRuntimeError,
+  emptyAgentBudgetUsage,
+  makeAgentError,
+} from "@riskflow/core/agent-runtime";
 import {
   ACCESS_POLICY_REF_V1,
   AccessServiceError,
@@ -65,7 +71,7 @@ import {
   DataCleaningAvailabilityV1Schema,
   DataCleaningCandidateV1Schema,
   DataCleaningFrozenInputV1Schema,
-  DataCleaningPolicyV1Schema,
+  DataCleaningPolicySchema,
   DataCleaningResultV1Schema,
   createDataCleaningTaskDefinition,
   type CleaningPreparationManifestV1,
@@ -76,7 +82,8 @@ import {
   type DataCleaningFrozenMonitoringV1,
   type DataCleaningFrozenSegmentV1,
   type DataCleaningMonitoringSliceRequestV1,
-  type DataCleaningPolicyV1,
+  type DataCleaningPolicy,
+  type DataCleaningPreparationCatalogSliceRequestV1,
   type DataCleaningResultV1,
   type DataCleaningSettlementV1,
   type DataCleaningTaskPortV1,
@@ -88,16 +95,19 @@ import {
   SourceSegmentKindV1Schema,
   SourceSegmentLocatorV1Schema,
 } from "@riskflow/core/engineering-data/context-source";
-import { StructuredDocumentJsonLdV1Schema } from "@riskflow/core/engineering-data/document-conversion";
+import {
+  STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1,
+  StructuredDocumentJsonLdV1Schema,
+  type StructuredDocumentJsonLdV1,
+} from "@riskflow/core/engineering-data/document-conversion";
 import { getPostgresTransaction } from "../../postgres/transaction-unit.js";
+import { makePersistenceError } from "../../postgres/pool.js";
 import type { PostgresDatabase } from "../../postgres/types.js";
 import type { PostgresMonitoringStoreV1 } from "../monitoring/postgres-monitoring-store.js";
 
 const SCHEMA_VERSION = "1" as const;
 const RESULT_COMMAND_KIND = "engineering-data.data-cleaning-result.v1";
-const BOUND_RESULT_READ_COMMAND_KIND = "engineering-data.read-data-cleaning-result.v1";
 const PREPARATION_COMMAND_KIND = "engineering-data.identification-preparation.v1";
-const PREPARATION_READ_COMMAND_KIND = "engineering-data.read-identification-preparation.v1";
 const MANIFEST_PURPOSE = "engineering-data.data-cleaning-preparation-manifest";
 /** C04 读取按工件自身的 purposeCode 授权，C12 的 JSON-LD 必须用其写入时的用途码读取。 */
 const CONVERSION_PURPOSE = "engineering-data.structured-document-conversion";
@@ -111,7 +121,30 @@ const EVIDENCE_ACCESS_BRANCH = "engineering-data.evidence-access" as const;
 const MONITORING_BRANCH = "engineering-data.monitoring-snapshot" as const;
 const FREEZE_CAPABILITY = "engineering-data.freeze" as const;
 const MAX_MANIFEST_BYTES = 1_048_576;
-const MAX_JSON_LD_BYTES = 16_777_216;
+
+const tableImageLookup = (document: StructuredDocumentJsonLdV1) => {
+  const fields = document.tableFields ?? [];
+  const fieldsById = new Map(fields.map((field) => [field.fieldId, field]));
+  const blocksById = new Map(document.textBlocks.map((block) => [block.blockId, block]));
+  const imagesByTable = new Map<string, typeof fields>();
+  for (const field of fields)
+    if (field.unrecognizedImages !== undefined) {
+      const images = imagesByTable.get(field.tableId) ?? [];
+      images.push(field);
+      imagesByTable.set(field.tableId, images);
+    }
+  return (blockIds: readonly string[]) => {
+    const tableIds = new Set(
+      blockIds.flatMap((id) => {
+        const block = blocksById.get(id);
+        const field =
+          block === undefined ? undefined : fieldsById.get(`field-${block.sourceBlockId}`);
+        return field === undefined ? [] : [field.tableId];
+      }),
+    );
+    return [...tableIds].flatMap((id) => imagesByTable.get(id) ?? []);
+  };
+};
 const MAX_OBSERVATION_BYTES = 4_194_304;
 
 /** 冻结准备命令的稳定身份，读写事实与授权都从它派生。 */
@@ -202,6 +235,8 @@ interface DataCleaningResultRow {
   project_id: string;
   agent_task_ref: unknown;
   result_artifact_ref: unknown;
+  manifest_artifact_ref: unknown;
+  result_payload: unknown;
 }
 
 interface PreparationSnapshotRow {
@@ -238,6 +273,10 @@ export interface DataCleaningAgentTaskStartRequestV1 {
   readonly requestedSourceVersionRefs: readonly SourceVersionRefV1[];
 }
 
+export interface DataCleaningTaskReaderV1 {
+  getTask(taskRef: AgentTaskRefV1): Promise<AgentTaskSnapshotV1 | undefined>;
+}
+
 export interface PostgresDataCleaningStoreOptions {
   readonly db: Kysely<PostgresDatabase>;
   readonly transactionUnit: TransactionUnitV1;
@@ -248,7 +287,7 @@ export interface PostgresDataCleaningStoreOptions {
   readonly startAgentTask: (
     request: DataCleaningAgentTaskStartRequestV1,
   ) => Promise<StartAgentTaskResultV1>;
-  readonly policy: DataCleaningPolicyV1;
+  readonly policy: DataCleaningPolicy;
   readonly now?: () => Date;
 }
 
@@ -331,6 +370,22 @@ const artifactSortKey = (value: {
   kind: string;
   reference: { entityId: string; versionId: string };
 }) => `${value.kind}/${value.reference.entityId}/${value.reference.versionId}`;
+
+/** 已知的集合外与工具上限边界定型为非重试错误，避免未知异常缺省分类掩盖拒绝原因。 */
+const sliceRejection = (
+  task: AgentTaskSnapshotV1,
+  stage: string,
+  code: "AGENT_INPUT_INVALID" | "AGENT_TOOL_LIMIT_EXCEEDED",
+): AgentRuntimeError =>
+  new AgentRuntimeError(
+    makeAgentError({
+      code,
+      category: code === "AGENT_TOOL_LIMIT_EXCEEDED" ? "tool" : "input",
+      retryable: false,
+      stage,
+      taskRef: task.envelope.agentTaskRef,
+    }),
+  );
 
 const one = (bytes: Uint8Array): AsyncIterable<Uint8Array> =>
   (async function* () {
@@ -460,7 +515,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
   readonly #startAgentTask: (
     request: DataCleaningAgentTaskStartRequestV1,
   ) => Promise<StartAgentTaskResultV1>;
-  readonly #policy: DataCleaningPolicyV1;
+  readonly #policy: DataCleaningPolicy;
   readonly #now: () => Date;
 
   constructor(options: PostgresDataCleaningStoreOptions) {
@@ -471,7 +526,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     this.#artifactGuard = options.artifactReferenceGuard;
     this.#monitoringStore = options.monitoringStore;
     this.#startAgentTask = options.startAgentTask;
-    this.#policy = DataCleaningPolicyV1Schema.parse(options.policy);
+    this.#policy = DataCleaningPolicySchema.parse(options.policy);
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -552,6 +607,193 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
 
   // -------------------------------------------------------------- task contract
 
+  async completeIdentificationPreparation(
+    command: Extract<EngineeringFreezeCommandV1, { kind: "complete-identification-preparation" }>,
+    tasks?: DataCleaningTaskReaderV1,
+  ): Promise<EngineeringFreezeResultV1> {
+    try {
+      const parsed = EngineeringFreezeCommandV1Schema.safeParse(command);
+      if (!parsed.success || parsed.data.kind !== "complete-identification-preparation") {
+        return failed(moduleError("UNSUPPORTED_CONTRACT", command.commandId));
+      }
+      const prepared = await this.#readCompletedPreparation(
+        command,
+        command.payload.agentTaskRef,
+        tasks,
+      );
+      return await this.#finalizePreparation(
+        command,
+        command,
+        prepared.digest,
+        prepared.manifest,
+        prepared.manifestArtifactRef,
+        prepared.task.envelope.agentTaskRef,
+      );
+    } catch (error) {
+      return failed(this.#mapError(error, command.commandId));
+    }
+  }
+
+  /** 事件组合只获得已验证快照的原受理身份，过期身份不提供执行资格。 */
+  async readPreparationCompletionOrigin(
+    input: IdentificationPreparationReadRequestV1,
+    tasks: DataCleaningTaskReaderV1,
+  ): Promise<{
+    readonly originalCommandId: string;
+    readonly manifestArtifactRef: ContentArtifactRefV1;
+    readonly taskAuthorization: EngineeringFreezeCommandV1["authorization"];
+  }> {
+    const context: CleaningCommandContext = {
+      ...input,
+      commandId: input.requestId,
+      idempotencyKey: input.requestId,
+      issuedAt: input.requestedAt,
+    };
+    await this.#verify(context, "engineering-data.complete-identification-preparation", [], []);
+    const row = await this.#db
+      .selectFrom("business.identification_preparation_snapshots")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("snapshot_id", "=", input.preparationSnapshotRef.reference.entityId)
+      .where("version_id", "=", input.preparationSnapshotRef.reference.versionId)
+      .executeTakeFirst();
+    if (row === undefined) boundResultDenied(input.requestId);
+    const prepared = await this.#readCompletedPreparation(
+      context,
+      AgentTaskRefV1Schema.parse(row.agent_task_ref),
+      tasks,
+    );
+    const snapshot = IdentificationPreparationSnapshotV1Schema.parse(row.snapshot_payload);
+    if (
+      row.snapshot_id !== `identification-preparation-${prepared.digest.slice(0, 40)}` ||
+      !sameVersion(
+        ContentArtifactRefV1Schema.parse(row.cleaning_result_artifact_ref).reference,
+        prepared.resultArtifactRef.reference,
+      ) ||
+      !sameVersion(
+        snapshot.authorizationContextRef.reference,
+        input.authorization.authorizationContextRef.reference,
+      )
+    )
+      boundResultDenied(input.requestId);
+    return {
+      originalCommandId: prepared.manifest.commandId,
+      manifestArtifactRef: prepared.manifestArtifactRef,
+      taskAuthorization: prepared.task.envelope.authorization,
+    };
+  }
+
+  async #readCompletedPreparation(
+    context: CleaningCommandContext,
+    taskRef: AgentTaskRefV1,
+    tasks?: DataCleaningTaskReaderV1,
+  ) {
+    const branch = "engineering-data.complete-identification-preparation" as const;
+    if (context.authorization.invocation.kind !== "human") boundResultDenied(context.commandId);
+    await this.#verify(context, branch, [], []);
+    const task = await tasks?.getTask(taskRef);
+    if (
+      task === undefined ||
+      task.state.status !== "completed" ||
+      task.state.cancelRequested ||
+      task.envelope.projectId !== context.projectId ||
+      task.envelope.actorId !== context.actorId ||
+      task.envelope.taskType !== "data-cleaning" ||
+      task.envelope.triggerMode !== "embedded" ||
+      canonicalJson(task.envelope.agentTaskRef) !== canonicalJson(taskRef)
+    )
+      boundResultDenied(context.commandId);
+    const agent = this.#policy.agent;
+    if (canonicalJson(task.budgetPolicy) !== canonicalJson(agent.budgetPolicy))
+      boundResultDenied(context.commandId);
+    for (const key of [
+      "modelDeploymentRef",
+      "promptTemplateRef",
+      "toolPolicyRef",
+      "budgetPolicyRef",
+      "incrementSchemaRef",
+      "validationPolicyRef",
+    ] as const) {
+      if (!sameVersion(task.envelope[key], agent[key])) boundResultDenied(context.commandId);
+    }
+    const row = await this.#db
+      .selectFrom("business.data_cleaning_results")
+      .selectAll()
+      .where("project_id", "=", context.projectId)
+      .where(sql<boolean>`agent_task_ref = ${JSON.stringify(taskRef)}::jsonb`)
+      .executeTakeFirst();
+    if (row === undefined) boundResultDenied(context.commandId);
+    const indexedResult = DataCleaningResultV1Schema.parse(row.result_payload);
+    const sourceRefs = indexedResult.inputs.flatMap((input) =>
+      input.sourceVersionRef === undefined ? [] : [input.sourceVersionRef],
+    );
+    await this.#verify(context, branch, indexedResult.spatialScopeRefs, sourceRefs);
+    const manifestArtifactRef = ContentArtifactRefV1Schema.parse(row.manifest_artifact_ref);
+    if (canonicalJson(manifestArtifactRef) !== canonicalJson(task.envelope.frozenInputRef))
+      boundResultDenied(context.commandId);
+    const manifest = CleaningPreparationManifestV1Schema.parse(
+      await this.#readJson(
+        taskRef,
+        manifestArtifactRef,
+        context.authorization,
+        MANIFEST_PURPOSE,
+        MAX_MANIFEST_BYTES,
+        `${context.commandId}:completion-manifest`,
+      ),
+    );
+    if (
+      manifest.projectId !== context.projectId ||
+      manifest.actorId !== context.actorId ||
+      !sameVersion(manifest.dataProcessingPolicyRef, this.#policy.policyRef)
+    )
+      boundResultDenied(context.commandId);
+    await this.#verify(
+      context,
+      branch,
+      manifest.spatialScopeRefs,
+      manifest.documents.map((d) => d.sourceVersionRef),
+    );
+    const digest = sha256CanonicalJson({
+      schemaVersion: SCHEMA_VERSION,
+      projectId: manifest.projectId,
+      idempotencyKey: manifest.idempotencyKey,
+      manifest,
+    });
+    const bound = await this.#readBoundResult(
+      context,
+      taskRef,
+      `${context.commandId}:completion-result`,
+    );
+    if (bound.kind === "error") boundResultDenied(context.commandId);
+    const result = bound.result;
+    if (canonicalJson(result) !== canonicalJson(indexedResult))
+      boundResultDenied(context.commandId);
+    if (
+      result.manifestDigest !== digest ||
+      canonicalJson(result.manifestArtifactRef) !== canonicalJson(manifestArtifactRef) ||
+      task.state.resultRef === undefined ||
+      !("incrementRef" in task.state.resultRef) ||
+      canonicalJson(task.state.resultRef.incrementRef) !== canonicalJson(bound.resultArtifactRef) ||
+      !sameVersion(result.policyRef, this.#policy.policyRef) ||
+      canonicalJson(result.projectRevisionRef) !== canonicalJson(manifest.projectRevisionRef) ||
+      canonicalJson(result.spatialScopeRefs) !== canonicalJson(manifest.spatialScopeRefs) ||
+      canonicalJson(result.documentConversionRefs) !==
+        canonicalJson(manifest.documents.map((d) => d.conversionRef)) ||
+      canonicalJson(result.sourceSegmentSetRefs) !==
+        canonicalJson(manifest.documents.map((d) => d.sourceSegmentSetRef)) ||
+      canonicalJson(result.monitoringSnapshotRef ?? null) !==
+        canonicalJson(manifest.monitoring?.monitoringSnapshotRef ?? null)
+    )
+      boundResultDenied(context.commandId);
+    return {
+      task,
+      manifest,
+      manifestArtifactRef,
+      digest,
+      resultArtifactRef: bound.resultArtifactRef,
+    };
+  }
+
   async loadFrozenInput(task: AgentTaskSnapshotV1): Promise<DataCleaningFrozenInputV1> {
     const taskRef = task.envelope.agentTaskRef;
     const authorization = task.envelope.authorization;
@@ -594,6 +836,45 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       documents,
       ...(monitoring === undefined ? {} : { monitoring }),
     });
+  }
+
+  /** 读取身份按工件隔离，并复验观察自带的清单引用与任务冻结输入一致，拒绝跨任务观察。 */
+  async readModelObservation(
+    task: AgentTaskSnapshotV1,
+    artifactRef: ArtifactRefV1,
+  ): Promise<JsonValue> {
+    const taskRef = task.envelope.agentTaskRef;
+    const observation = await this.#readJson(
+      taskRef,
+      artifactRef,
+      task.envelope.authorization as EngineeringFreezeCommandV1["authorization"],
+      OBSERVATION_PURPOSE,
+      MAX_OBSERVATION_BYTES,
+      `${taskRef.reference.entityId}:${artifactSortKey(artifactRef)}`,
+    );
+    const manifestArtifactRef =
+      typeof observation === "object" && observation !== null
+        ? ContentArtifactRefV1Schema.safeParse(
+            (observation as { readonly manifestArtifactRef?: unknown }).manifestArtifactRef,
+          )
+        : undefined;
+    const frozenInputRef = ContentArtifactRefV1Schema.safeParse(task.envelope.frozenInputRef);
+    if (
+      manifestArtifactRef === undefined ||
+      !manifestArtifactRef.success ||
+      !frozenInputRef.success ||
+      artifactSortKey(manifestArtifactRef.data) !== artifactSortKey(frozenInputRef.data)
+    )
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_INPUT_INVALID",
+          category: "input",
+          retryable: false,
+          stage: "worker.cleaning.model-observation.scope",
+          taskRef,
+        }),
+      );
+    return observation as JsonValue;
   }
 
   async persistValidationArtifact(input: {
@@ -690,15 +971,27 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     const key = referenceKey(input.sourceVersionRef);
     const document = frozen.documents.find((item) => referenceKey(item.sourceVersionRef) === key);
     if (document === undefined) {
-      throw new TypeError("requested source version is not part of the frozen preparation");
+      throw sliceRejection(
+        context.task,
+        "worker.cleaning.document-slice.scope",
+        "AGENT_INPUT_INVALID",
+      );
     }
     if (input.sourceSegmentIds.length > this.#policy.tools.maxSegmentsPerRead) {
-      throw new RangeError("requested segment slice exceeds the frozen tool limit");
+      throw sliceRejection(
+        context.task,
+        "worker.cleaning.document-slice.limit",
+        "AGENT_TOOL_LIMIT_EXCEEDED",
+      );
     }
     const requested = new Set<string>(input.sourceSegmentIds);
     const selected = document.segments.filter((segment) => requested.has(segment.sourceSegmentId));
     if (selected.length !== requested.size) {
-      throw new RangeError("requested segment is not part of the frozen preparation");
+      throw sliceRejection(
+        context.task,
+        "worker.cleaning.document-slice.segment",
+        "AGENT_INPUT_INVALID",
+      );
     }
     const jsonLd = StructuredDocumentJsonLdV1Schema.parse(
       JSON.parse(
@@ -707,7 +1000,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
           document.jsonLdArtifactRef,
           context.task.envelope.authorization,
           CONVERSION_PURPOSE,
-          MAX_JSON_LD_BYTES,
+          STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1,
         ),
       ) as unknown,
     );
@@ -716,41 +1009,90 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       jsonLd.evidenceFragments.map((fragment) => [fragment.sourceSegmentId, fragment]),
     );
     const protectedKinds = new Set<string>(this.#policy.protectedSegmentKinds);
+    let imageObjects = 0;
+    const imagesForBlocks = tableImageLookup(jsonLd);
+    const tableImages = new Map(
+      selected.map((segment) => {
+        const fields = imagesForBlocks(segment.textBlockIds);
+        imageObjects += fields.reduce(
+          (sum, field) => sum + 1 + field.unrecognizedImages!.length,
+          0,
+        );
+        return [segment.sourceSegmentId, fields];
+      }),
+    );
+    if (selected.length + imageObjects > this.#policy.agent.budgetPolicy.maxObjects)
+      throw sliceRejection(
+        context.task,
+        "worker.cleaning.document-slice.limit",
+        "AGENT_TOOL_LIMIT_EXCEEDED",
+      );
+    const observation = {
+      schemaVersion: SCHEMA_VERSION,
+      manifestArtifactRef: frozen.manifestArtifactRef,
+      sourceVersionRef: document.sourceVersionRef,
+      conversionRef: document.conversionRef,
+      jsonLdArtifactRef: document.jsonLdArtifactRef,
+      sourceSegmentSetRef: document.sourceSegmentSetRef,
+      inputKind: document.inputKind,
+      segments: selected.map((segment) => {
+        const fragment = evidenceBySegment.get(segment.sourceSegmentId);
+        const blocks = (fragment?.textBlockIds ?? segment.textBlockIds)
+          .map((blockId) => blocksById.get(blockId))
+          .flatMap((block) => (block === undefined ? [] : [block]));
+        return {
+          sourceSegmentId: segment.sourceSegmentId,
+          kind: segment.kind,
+          locator: segment.locator,
+          numericProtection: protectedKinds.has(segment.kind) ? "protected" : "exposable",
+          ...((tableImages.get(segment.sourceSegmentId)?.length ?? 0) === 0
+            ? {}
+            : {
+                unrecognizedTableCells: tableImages.get(segment.sourceSegmentId)!.map((field) => ({
+                  fieldId: field.fieldId,
+                  tableId: field.tableId,
+                  sheet: field.sheet,
+                  row: field.row,
+                  column: field.column,
+                  ...(field.mergedRange === undefined ? {} : { mergedRange: field.mergedRange }),
+                  unrecognizedImages: field.unrecognizedImages,
+                })),
+              }),
+          textBlocks: blocks.map((block) => ({
+            blockId: block.blockId,
+            text: block.text,
+            ...(block.confidence === undefined ? {} : { confidence: block.confidence }),
+          })),
+        };
+      }),
+    };
+    const inputBytes = Buffer.byteLength(canonicalJson(input));
+    const outputBytes = Buffer.byteLength(canonicalJson(observation));
+    if (
+      outputBytes >
+        Math.min(MAX_OBSERVATION_BYTES, this.#policy.agent.budgetPolicy.maxOutputBytes) ||
+      inputBytes > this.#policy.agent.budgetPolicy.maxInputBytes
+    )
+      throw sliceRejection(
+        context.task,
+        "worker.cleaning.document-slice.limit",
+        "AGENT_TOOL_LIMIT_EXCEEDED",
+      );
     const observationRef = await this.#putDiagnostic(taskContext(context.task), {
       artifactId: `${context.actionId}:document-slice`,
       purposeCode: OBSERVATION_PURPOSE,
-      value: {
-        schemaVersion: SCHEMA_VERSION,
-        manifestArtifactRef: frozen.manifestArtifactRef,
-        sourceVersionRef: document.sourceVersionRef,
-        conversionRef: document.conversionRef,
-        jsonLdArtifactRef: document.jsonLdArtifactRef,
-        sourceSegmentSetRef: document.sourceSegmentSetRef,
-        inputKind: document.inputKind,
-        segments: selected.map((segment) => {
-          const fragment = evidenceBySegment.get(segment.sourceSegmentId);
-          const blocks = (fragment?.textBlockIds ?? segment.textBlockIds)
-            .map((blockId) => blocksById.get(blockId))
-            .flatMap((block) => (block === undefined ? [] : [block]));
-          return {
-            sourceSegmentId: segment.sourceSegmentId,
-            kind: segment.kind,
-            locator: segment.locator,
-            numericProtection: protectedKinds.has(segment.kind) ? "protected" : "exposable",
-            textBlocks: blocks.map((block) => ({
-              blockId: block.blockId,
-              text: block.text,
-              ...(block.confidence === undefined ? {} : { confidence: block.confidence }),
-            })),
-          };
-        }),
-      },
+      value: observation,
       parentArtifactRefs: [frozen.manifestArtifactRef, document.jsonLdArtifactRef],
     });
     return {
       observationArtifactRef: observationRef,
       effect: "none",
-      usage: { ...emptyAgentBudgetUsage(), objects: selected.length },
+      usage: {
+        ...emptyAgentBudgetUsage(),
+        objects: selected.length + imageObjects,
+        inputBytes,
+        outputBytes,
+      },
     };
   }
 
@@ -761,22 +1103,38 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     const frozen = await this.loadFrozenInput(context.task);
     const monitoring = frozen.monitoring;
     if (monitoring === undefined) {
-      throw new TypeError("frozen preparation has no monitoring input");
+      throw sliceRejection(
+        context.task,
+        "worker.cleaning.monitoring-slice.scope",
+        "AGENT_INPUT_INVALID",
+      );
     }
     if (
       referenceKey(input.monitoringSnapshotRef) !== referenceKey(monitoring.monitoringSnapshotRef)
     ) {
-      throw new RangeError("requested monitoring snapshot is not part of the frozen preparation");
+      throw sliceRejection(
+        context.task,
+        "worker.cleaning.monitoring-slice.scope",
+        "AGENT_INPUT_INVALID",
+      );
     }
     if (input.sampleVersionRefs.length > this.#policy.tools.maxMonitoringItemsPerRead) {
-      throw new RangeError("requested monitoring slice exceeds the frozen tool limit");
+      throw sliceRejection(
+        context.task,
+        "worker.cleaning.monitoring-slice.limit",
+        "AGENT_TOOL_LIMIT_EXCEEDED",
+      );
     }
     const requested = new Set(input.sampleVersionRefs.map((ref) => referenceKey(ref)));
     const members = monitoring.members.filter((member) =>
       requested.has(referenceKey(member.sampleVersionRef)),
     );
     if (members.length !== requested.size) {
-      throw new RangeError("requested monitoring sample is not part of the frozen preparation");
+      throw sliceRejection(
+        context.task,
+        "worker.cleaning.monitoring-slice.sample",
+        "AGENT_INPUT_INVALID",
+      );
     }
     const samples = await this.#readSampleVersions(
       context.task.envelope.projectId,
@@ -810,6 +1168,69 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       observationArtifactRef: observationRef,
       effect: "none",
       usage: { ...emptyAgentBudgetUsage(), objects: members.length },
+    };
+  }
+
+  /**
+   * 有界定位分页：复用冻结输入，只返回冻结资料内的精确段身份与下一页位置；
+   * offset 等于段数时返回空页，越界、集合外或不合法偏移一律按输入边界拒绝。
+   */
+  async readPreparationCatalogSlice(
+    input: DataCleaningPreparationCatalogSliceRequestV1,
+    context: AgentDomainToolExecutionContextV1,
+  ): Promise<AgentDomainToolResultV1> {
+    const frozen = await this.loadFrozenInput(context.task);
+    const key = referenceKey(input.sourceVersionRef);
+    const document = frozen.documents.find((item) => referenceKey(item.sourceVersionRef) === key);
+    if (document === undefined) {
+      throw sliceRejection(
+        context.task,
+        "worker.cleaning.preparation-catalog.scope",
+        "AGENT_INPUT_INVALID",
+      );
+    }
+    const total = document.segments.length;
+    if (!Number.isSafeInteger(input.offset) || input.offset < 0 || input.offset > total) {
+      throw sliceRejection(
+        context.task,
+        "worker.cleaning.preparation-catalog.offset",
+        "AGENT_INPUT_INVALID",
+      );
+    }
+    const page = document.segments.slice(
+      input.offset,
+      input.offset + this.#policy.tools.maxSegmentsPerRead,
+    );
+    const nextOffset = input.offset + page.length;
+    const value = {
+      schemaVersion: SCHEMA_VERSION,
+      manifestArtifactRef: frozen.manifestArtifactRef,
+      sourceVersionRef: document.sourceVersionRef,
+      offset: input.offset,
+      totalCount: total,
+      segments: page.map((segment) => ({
+        sourceSegmentId: segment.sourceSegmentId,
+        kind: segment.kind,
+      })),
+      // 末页不给出 nextOffset，模型据 totalCount 判断该资料已列举完毕。
+      ...(nextOffset < total ? { nextOffset } : {}),
+    };
+    const observationRef = await this.#putDiagnostic(taskContext(context.task), {
+      artifactId: `${context.actionId}:preparation-catalog-slice`,
+      purposeCode: OBSERVATION_PURPOSE,
+      value,
+      parentArtifactRefs: [frozen.manifestArtifactRef],
+    });
+    return {
+      observationArtifactRef: observationRef,
+      effect: "none",
+      usage: {
+        ...emptyAgentBudgetUsage(),
+        objects: page.length,
+        // 与 runner 的通用工具计量同口径：真实输入/输出字节照原预算计账。
+        inputBytes: new TextEncoder().encode(canonicalJson(input)).byteLength,
+        outputBytes: new TextEncoder().encode(canonicalJson(value)).byteLength,
+      },
     };
   }
 
@@ -849,33 +1270,27 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         boundResultDenied(input.requestId);
       }
       const recordedAt = this.#now().toISOString();
-      await this.#transactionUnit.execute(
-        atomicCommandFor(context, PREPARATION_READ_COMMAND_KIND, {
-          projectId: input.projectId,
-          actorId: input.actorId,
-          authorizationContextRef: input.authorization.authorizationContextRef,
-          requestedAt: input.requestedAt,
-          preparationSnapshotRef: input.preparationSnapshotRef,
-        }),
-        async (): Promise<AtomicCommitV1> => ({
-          resultRef: input.preparationSnapshotRef,
-          audit: {
-            auditEntryId: `${input.requestId}:read-exact-preparation`,
-            projectId: input.projectId,
-            action: "engineering-data.read-identification-preparation",
-            targetRef: input.preparationSnapshotRef,
-            actorRef: input.actorId,
-            authorizationContextRef: input.authorization.authorizationContextRef,
-            occurredAt: input.requestedAt,
-            recordedAt,
-            version: input.preparationSnapshotRef.reference,
-            commandId: input.requestId,
-            idempotencyKey: context.idempotencyKey,
-          },
-          events: [],
-        }),
-        { isolationLevel: "repeatable read" },
-      );
+      const accessId = randomUUID();
+      await this.#db
+        .insertInto("audit.entries")
+        .values({
+          audit_entry_id: accessId,
+          project_id: input.projectId,
+          action: "engineering-data.read-identification-preparation",
+          target_ref: input.preparationSnapshotRef as unknown as JsonValue,
+          actor_ref: input.actorId,
+          authorization_context_ref: authorization.authorizationContextRef as unknown as JsonValue,
+          occurred_at: input.requestedAt,
+          recorded_at: recordedAt,
+          persisted_at: sql`clock_timestamp()`,
+          version_ref: input.preparationSnapshotRef.reference as unknown as JsonValue,
+          command_id: input.requestId,
+          idempotency_key: accessId,
+          run_id: null,
+          thread_id: null,
+          reason_ref: null,
+        })
+        .execute();
       return {
         kind: "ok",
         snapshot,
@@ -885,12 +1300,9 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       };
     } catch (error) {
       const errorCode = (error as Error & { code?: unknown }).code;
-      // 工件不可见与行/绑定失配同形；同请求改传其它载荷保持幂等冲突语义。
+      // 工件不可见与行/绑定失配使用相同的拒绝结果。
       if (errorCode === "ARTIFACT_ACCESS_DENIED") {
         return { kind: "error", error: moduleError("AUTHORIZATION_DENIED", input.requestId) };
-      }
-      if (errorCode === "IDEMPOTENCY_CONFLICT") {
-        return { kind: "error", error: moduleError("IDEMPOTENCY_CONFLICT", input.requestId) };
       }
       return { kind: "error", error: this.#mapError(error, input.requestId) };
     }
@@ -1020,7 +1432,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
   /**
    * 公共只读接缝（IP-11）：固定按 `engineering-data.evidence-access` 复验 C06 后复用私有
    * `#readBoundResult` 的单点查询、strict parse、受权工件读取与任务—结果绑定，再以
-   * requestId/规范载荷写既有 C03 只追加读取回执/审计。缺失、跨工程、撤权、未授权与绑定
+   * requestId 关联独立的只追加访问审计。缺失、跨工程、撤权、未授权与绑定
    * 失配统一为同一个不可枚举拒绝；瞬时技术失败保持可重试语义。
    */
   async readBoundResult(
@@ -1053,39 +1465,31 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       const bound = await this.#readBoundResult(
         { ...context, authorization: decision.context },
         input.taskRef,
-        // 本接缝按契约由调用方提交自身命令身份（见 `DataCleaningBoundResultReadRequestV1`），
-        // 读取身份就必须用该身份：清洗结果工件已由冻结收口路径以任务身份占位，若这里再落回
-        // 任务身份，同一工件在两个不同授权上下文下的第二次读取会被 C04 访问记录以幂等冲突
-        // 拒绝。准备快照读取已按同一约定传入自身 `requestId`。
         input.requestId,
       );
       if (bound.kind === "error") boundResultDenied(input.requestId);
-      const recordedAt = this.#now().toISOString();
-      await this.#transactionUnit.execute(
-        atomicCommandFor(context, BOUND_RESULT_READ_COMMAND_KIND, {
-          taskRef: input.taskRef,
-          resultArtifactRef: bound.resultArtifactRef,
-          requestedAt: input.requestedAt,
-        }),
-        async (): Promise<AtomicCommitV1> => ({
-          resultRef: bound.resultArtifactRef,
-          audit: {
-            auditEntryId: `${input.requestId}:read-bound-result`,
-            projectId: input.projectId,
-            action: "engineering-data.read-data-cleaning-result",
-            targetRef: bound.resultArtifactRef,
-            actorRef: input.actorId,
-            authorizationContextRef: input.authorization.authorizationContextRef,
-            occurredAt: input.requestedAt,
-            recordedAt,
-            version: bound.resultArtifactRef.reference,
-            commandId: input.requestId,
-            idempotencyKey: context.idempotencyKey,
-          },
-          events: [],
-        }),
-        { isolationLevel: "repeatable read" },
-      );
+      const accessId = randomUUID();
+      await this.#db
+        .insertInto("audit.entries")
+        .values({
+          audit_entry_id: accessId,
+          project_id: input.projectId,
+          action: "engineering-data.read-data-cleaning-result",
+          target_ref: bound.resultArtifactRef as unknown as JsonValue,
+          actor_ref: input.actorId,
+          authorization_context_ref: decision.context
+            .authorizationContextRef as unknown as JsonValue,
+          version_ref: bound.resultArtifactRef.reference as unknown as JsonValue,
+          occurred_at: input.requestedAt,
+          recorded_at: this.#now().toISOString(),
+          persisted_at: sql`clock_timestamp()`,
+          command_id: input.requestId,
+          idempotency_key: accessId,
+          run_id: null,
+          thread_id: null,
+          reason_ref: null,
+        })
+        .execute();
       return { kind: "ok", result: bound.result, resultArtifactRef: bound.resultArtifactRef };
     } catch (error) {
       return { kind: "error", error: this.#mapError(error, input.requestId) };
@@ -1094,7 +1498,10 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
 
   async #finalizePreparation(
     context: CleaningCommandContext,
-    command: Extract<EngineeringFreezeCommandV1, { kind: "identification-preparation" }>,
+    command: Extract<
+      EngineeringFreezeCommandV1,
+      { kind: "identification-preparation" | "complete-identification-preparation" }
+    >,
     digest: string,
     manifest: CleaningPreparationManifestV1,
     manifestArtifactRef: ContentArtifactRefV1,
@@ -1116,7 +1523,19 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         }),
       );
     }
-    const bound = await this.#readBoundResult(context, agentTaskRef);
+    const completing = command.kind === "complete-identification-preparation";
+    if (completing)
+      await this.#verify(
+        context,
+        "engineering-data.complete-identification-preparation",
+        manifest.spatialScopeRefs,
+        manifest.documents.map((d) => d.sourceVersionRef),
+      );
+    const bound = await this.#readBoundResult(
+      context,
+      agentTaskRef,
+      completing ? `${command.commandId}:completion-result` : undefined,
+    );
     if (bound.kind === "error") return failed(bound.error);
     const result = bound.result;
 
@@ -1153,7 +1572,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         : undefined;
 
     const coverageDecisionArtifactRef = await this.#putContent(context, {
-      artifactId: `data-cleaning-coverage-${digest.slice(0, 40)}`,
+      artifactId: `data-cleaning-coverage-${digest.slice(0, 40)}${completing ? `-${sha256CanonicalJson(command.commandId).slice(0, 24)}` : ""}`,
       purposeCode: DECISION_PURPOSE,
       value: {
         schemaVersion: SCHEMA_VERSION,
@@ -1180,7 +1599,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       parentArtifactRefs: [manifestArtifactRef, bound.resultArtifactRef],
     });
     const excludedSegmentDecisionArtifactRef = await this.#putContent(context, {
-      artifactId: `data-cleaning-exclusions-${digest.slice(0, 40)}`,
+      artifactId: `data-cleaning-exclusions-${digest.slice(0, 40)}${completing ? `-${sha256CanonicalJson(command.commandId).slice(0, 24)}` : ""}`,
       purposeCode: DECISION_PURPOSE,
       value: {
         schemaVersion: SCHEMA_VERSION,
@@ -1233,12 +1652,71 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     });
 
     await this.#transactionUnit.execute(
-      atomicCommandFor(context, PREPARATION_COMMAND_KIND, {
-        manifestDigest: digest,
-        projectRevisionRef: manifest.projectRevisionRef,
-        sourceVersionRefs: snapshot.sourceVersionRefs,
-      }),
+      atomicCommandFor(
+        context,
+        completing
+          ? "engineering-data.complete-identification-preparation.v1"
+          : PREPARATION_COMMAND_KIND,
+        {
+          manifestDigest: digest,
+          projectRevisionRef: manifest.projectRevisionRef,
+          sourceVersionRefs: snapshot.sourceVersionRefs,
+        },
+      ),
       async (transactionContext) => {
+        if (completing)
+          await this.#verify(
+            context,
+            "engineering-data.complete-identification-preparation",
+            manifest.spatialScopeRefs,
+            manifest.documents.map((d) => d.sourceVersionRef),
+          );
+        const transaction = asTransaction(transactionContext);
+        // 追加表不授予UPDATE；事务锁按精确任务串行化，不修改结果行或隔离级别。
+        await sql`select pg_advisory_xact_lock(hashtextextended(${`${context.projectId}:${referenceKey(agentTaskRef)}`}, 0))`.execute(
+          transaction,
+        );
+        await transaction
+          .selectFrom("business.data_cleaning_results")
+          .select("result_id")
+          .where("project_id", "=", context.projectId)
+          .where(sql<boolean>`agent_task_ref = ${JSON.stringify(agentTaskRef)}::jsonb`)
+          .executeTakeFirstOrThrow();
+        const existing = await transaction
+          .selectFrom("business.identification_preparation_snapshots")
+          .selectAll()
+          .where("project_id", "=", context.projectId)
+          .where("snapshot_id", "=", snapshotRef.reference.entityId)
+          .where("version_id", "=", "1")
+          .executeTakeFirst();
+        const action = completing
+          ? "engineering-data.complete-identification-preparation"
+          : "engineering-data.identification-preparation";
+        if (existing !== undefined) {
+          if (
+            canonicalJson(existing.agent_task_ref) !== canonicalJson(agentTaskRef) ||
+            canonicalJson(existing.cleaning_result_artifact_ref) !==
+              canonicalJson(bound.resultArtifactRef)
+          )
+            boundResultDenied(command.commandId);
+          return {
+            resultRef: snapshotRef,
+            audit: {
+              auditEntryId,
+              projectId: context.projectId,
+              action,
+              targetRef: snapshotRef,
+              actorRef: context.actorId,
+              authorizationContextRef: context.authorization.authorizationContextRef,
+              occurredAt: context.issuedAt,
+              recordedAt,
+              version: snapshotRef.reference,
+              commandId: command.commandId,
+              idempotencyKey: command.idempotencyKey,
+            },
+            events: [],
+          } satisfies AtomicCommitV1;
+        }
         // 工件 guard 继续校验原 C04 内容工件身份；公开快照只保存上文的 route-decision 投影。
         for (const decisionArtifactRef of [
           coverageDecisionArtifactRef,
@@ -1253,8 +1731,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
             authorization: context.authorization,
           });
         }
-        const transaction = asTransaction(transactionContext);
-        await transaction
+        const inserted = await transaction
           .insertInto("business.identification_preparation_snapshots")
           .values({
             snapshot_id: snapshotRef.reference.entityId,
@@ -1272,13 +1749,17 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
             audit_entry_id: auditEntryId,
           } as never)
           .onConflict((conflict) => conflict.columns(["snapshot_id", "version_id"]).doNothing())
-          .execute();
+          .returning("snapshot_id")
+          .executeTakeFirst();
+        // repeatable-read 中等待锁的并发事务可能看不到首次提交；重投重新读取正式快照。
+        if (inserted === undefined)
+          throw makePersistenceError("TRANSACTION_FAILED", "preparation.concurrent-commit", true);
         return {
           resultRef: snapshotRef,
           audit: {
             auditEntryId,
             projectId: context.projectId,
-            action: "engineering-data.identification-preparation",
+            action,
             targetRef: snapshotRef,
             actorRef: context.actorId,
             authorizationContextRef: context.authorization.authorizationContextRef,
@@ -1330,7 +1811,10 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
 
   async #verify(
     context: CleaningCommandContext,
-    branch: typeof PREPARATION_BRANCH | typeof MONITORING_BRANCH,
+    branch:
+      | typeof PREPARATION_BRANCH
+      | typeof MONITORING_BRANCH
+      | "engineering-data.complete-identification-preparation",
     spatialScopeRefs: readonly { reference: { entityId: string; versionId: string } }[],
     sourceVersionRefs: readonly SourceVersionRefV1[],
   ): Promise<void> {
@@ -1342,7 +1826,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         dataCleaningError: moduleError("AUTHORIZATION_DENIED", context.commandId),
       });
     }
-    await this.#access.verify({
+    const verified = await this.#access.verify({
       authorizationContextRef: context.authorization.authorizationContextRef,
       invocationId: context.commandId,
       projectId: context.projectId,
@@ -1351,6 +1835,12 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       requestedSourceVersionRefs: [...sourceVersionRefs] as never,
       requestedAt: context.authorization.decidedAt,
     });
+    if (
+      branch === "engineering-data.complete-identification-preparation" &&
+      (verified.redacted ||
+        canonicalJson(verified.context) !== canonicalJson(context.authorization))
+    )
+      boundResultDenied(context.commandId);
   }
 
   async #resolveDocuments(
@@ -1372,6 +1862,8 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       const candidates = rows.filter((row) => {
         const parsed = SourceVersionRefV1Schema.safeParse(row.source_version_ref);
         if (!parsed.success || referenceKey(parsed.data) !== versionKey) return false;
+        if (this.#policy.schemaVersion === "2")
+          return this.#policy.documentRules.some((rule) => rule.inputKind === row.input_kind);
         return (
           this.#policy.allowedConversionPolicyRefs.some((ref) =>
             sameVersion(ref, row.conversion_policy_ref as VersionReference),
@@ -1573,11 +2065,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
   async #readBoundResult(
     context: CleaningCommandContext,
     taskRef: AgentTaskRefV1,
-    /**
-     * C04 读取身份作用域：缺省按任务身份读取，冻结收口与既有调用方行为不变。精确准备读取
-     * 必须传入自身 `requestId`，否则同一个结果工件已被冻结路径以同一读取身份占位，C04
-     * 访问记录会以幂等冲突拒绝第二次不同上下文的读取。
-     */
+    /** 关联触发读取的任务或查询，实际文件访问由 C04 分配独立编号。 */
     readScope: string = taskRef.reference.entityId,
   ): Promise<
     | {
@@ -1705,7 +2193,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       document.jsonLdArtifactRef,
       authorization,
       CONVERSION_PURPOSE,
-      MAX_JSON_LD_BYTES,
+      STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1,
     );
     const jsonLd = StructuredDocumentJsonLdV1Schema.parse(JSON.parse(raw) as unknown);
     const rows = await this.#db
@@ -1719,12 +2207,14 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     const evidenceBySegment = new Map(
       jsonLd.evidenceFragments.map((fragment) => [fragment.sourceSegmentId, fragment]),
     );
+    const imagesForBlocks = tableImageLookup(jsonLd);
     const segments: DataCleaningFrozenSegmentV1[] = rows.map((row) => {
       const sourceSegmentId = SourceSegmentIdV1Schema.parse(row.source_segment_id);
       const textBlockIds = [...(evidenceBySegment.get(sourceSegmentId)?.textBlockIds ?? [])];
       const blocks = textBlockIds
         .map((blockId) => blocksById.get(blockId))
         .flatMap((block) => (block === undefined ? [] : [block]));
+      const images = imagesForBlocks(textBlockIds);
       return {
         sourceSegmentId,
         kind: SourceSegmentKindV1Schema.parse(row.kind),
@@ -1733,6 +2223,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         parsedFingerprint: sha256CanonicalJson({
           segment: sourceSegmentId,
           blocks: blocks.map((block) => ({ blockId: block.blockId, text: block.text })),
+          ...(images.length === 0 ? {} : { unrecognizedTableCells: images }),
         }),
       };
     });
@@ -1743,6 +2234,14 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       sourceSegmentSetRef: document.sourceSegmentSetRef,
       inputKind: document.inputKind,
       jsonLdFingerprint: sha256CanonicalJson(raw),
+      ...((jsonLd.tableFields ?? []).some((field) => field.unrecognizedImages !== undefined)
+        ? {
+            unrecognizedTableImageCount: (jsonLd.tableFields ?? []).reduce(
+              (sum, field) => sum + (field.unrecognizedImages?.length ?? 0),
+              0,
+            ),
+          }
+        : {}),
       segments,
     };
   }
@@ -1914,7 +2413,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
 
   async #readJson(
     taskRef: AgentTaskRefV1,
-    artifactRefValue: ContentArtifactRefV1,
+    artifactRefValue: ArtifactRefV1,
     authorization: EngineeringFreezeCommandV1["authorization"],
     purposeCode: string,
     maxBytes: number,
@@ -1934,7 +2433,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
 
   async #readBytes(
     taskRef: AgentTaskRefV1,
-    artifactRefValue: ContentArtifactRefV1,
+    artifactRefValue: ArtifactRefV1,
     authorization: EngineeringFreezeCommandV1["authorization"],
     purposeCode: string,
     maxBytes: number,
@@ -1958,12 +2457,12 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     let size = 0;
     for await (const chunk of handle.content) {
       size += chunk.byteLength;
-      if (size > maxBytes || size > MAX_OBSERVATION_BYTES) {
+      if (size > maxBytes) {
         throw new RangeError("frozen artifact exceeds the bounded read limit");
       }
       chunks.push(chunk);
     }
-    await handle.verified;
+    await handle.completed;
     const buffer = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) {

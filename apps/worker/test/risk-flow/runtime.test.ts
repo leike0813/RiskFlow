@@ -13,18 +13,25 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
 import type { ArtifactStorePolicyV1 } from "@riskflow/core/artifacts";
 import {
+  AgentTaskRefV1Schema,
+  AgentTaskResultRefV1Schema,
   AuthorizationContextV1Schema,
   ModuleErrorV1Schema,
+  ReviewDecisionRefV1Schema,
+  type AgentTaskRefV1,
+  type AgentTaskResultRefV1,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type HumanDecisionProofPortV1,
   type HumanDecisionProofQueryV1,
   type ModuleBranchV1,
+  type ResumeCauseV1,
+  type ResumeWorkflowRunCommandV1,
   type StandardizedRiskRecordRefV1,
   type StartWorkflowRunCommandV1,
   type WaitingRefV1,
@@ -34,10 +41,13 @@ import {
 } from "@riskflow/contracts/ports";
 import {
   IdentificationGraphStateV1Schema,
+  IdentificationPreparationSnapshotV1Schema,
+  RiskFlowGraphStateV1Schema,
   type IdentificationGraphStateV1,
 } from "@riskflow/contracts/workflows";
 import type {
   IdentificationGraphRunOutcomeV1,
+  IdentificationGraphResumeCommandV1,
   IdentificationGraphRuntimeV1,
   IdentificationGraphStartCommandV1,
 } from "@riskflow/core/identification/graph";
@@ -85,7 +95,10 @@ import {
   type RiskFlowStartCommandV1,
   type RiskFlowAssessmentPairingV1,
   type RiskSpatialPairingResolverV1,
+  type RiskFlowGraphRuntimeOptionsV1,
 } from "../../src/risk-flow/index.js";
+import { IdentificationGraphRunErrorV1 } from "../../src/identification/graph/index.js";
+import { toRiskFlowGraphError } from "../../src/risk-flow/graph.js";
 
 const PROJECT_ID = "project-c30-runtime";
 const ACTOR_ID = "actor-c30-runtime";
@@ -275,10 +288,53 @@ const createIdentificationRuntimeStub = (options: {
   readonly reviewWaiting?: WaitingRefV1;
 }) => {
   const commands: IdentificationGraphStartCommandV1[] = [];
+  const resumes: IdentificationGraphResumeCommandV1[] = [];
   const runRefs = new Map<string, WorkflowRunRefV1>();
+  const outcomes = new Map<string, IdentificationGraphRunOutcomeV1>();
+  const startOutcomes: IdentificationGraphRunOutcomeV1[] = [];
   let acceptedRiskRecordRefs: readonly StandardizedRiskRecordRefV1[] =
     options.acceptedRiskRecordRefs ?? [];
   let reviewWaiting: WaitingRefV1 | undefined = options.reviewWaiting;
+  let retryableFailure = false;
+  /** 子运行状态正文：启动与恢复共用；恢复已离开等待，因此不再携带等待引用。 */
+  const stateOf = (input: {
+    readonly graphVersion: IdentificationGraphStartCommandV1["graphVersion"];
+    readonly parentRiskFlowRunRef: IdentificationGraphStartCommandV1["parentRiskFlowRunRef"];
+    readonly runRef: WorkflowRunRefV1;
+    readonly threadId: string;
+    readonly triggerReasonCode: string;
+    readonly authorizationContextRef: AuthorizationContextV1["authorizationContextRef"];
+    readonly preparationSnapshotRef: IdentificationGraphStartCommandV1["preparationSnapshotRef"];
+    readonly status: "running" | "waiting" | "retryable-failure";
+    readonly waiting?: WaitingRefV1;
+  }): IdentificationGraphStateV1 =>
+    IdentificationGraphStateV1Schema.parse({
+      schemaVersion: "1",
+      graphVersion: input.graphVersion,
+      parentRiskFlowRunRef: input.parentRiskFlowRunRef,
+      runRef: input.runRef,
+      threadId: input.threadId,
+      triggerType: "manual",
+      triggerReasonCode: input.triggerReasonCode,
+      authorizationContextRef: input.authorizationContextRef,
+      preparationSnapshotRef: input.preparationSnapshotRef,
+      status: input.status,
+      ...(input.status === "retryable-failure"
+        ? {
+            lastErrorRef: {
+              kind: "workflow-error",
+              reference: { entityId: "synthetic-child-error", versionId: "v1" },
+            },
+          }
+        : {}),
+      stage: "I5",
+      agentTaskRefs: [],
+      acceptedRiskRecordRefs: [...acceptedRiskRecordRefs],
+      reviewTaskRefs: [],
+      rejectedGroupRefs: [],
+      failedWorkItemRefs: [],
+      ...(input.waiting === undefined ? {} : { waitingRef: input.waiting }),
+    });
   const runtime: IdentificationGraphRuntimeV1 = {
     start: async (command) => {
       commands.push(command);
@@ -292,35 +348,53 @@ const createIdentificationRuntimeStub = (options: {
           },
         } satisfies WorkflowRunRefV1);
       runRefs.set(command.commandId, runRef);
-      const state: IdentificationGraphStateV1 = IdentificationGraphStateV1Schema.parse({
-        schemaVersion: "1",
-        graphVersion: command.graphVersion,
-        parentRiskFlowRunRef: command.parentRiskFlowRunRef,
-        runRef,
-        threadId: `identification-run-thread:${sha(command.commandId).slice(0, 24)}`,
-        triggerType: "manual",
-        triggerReasonCode: command.triggerReasonCode,
-        authorizationContextRef: command.authorization.authorizationContextRef,
-        preparationSnapshotRef: command.preparationSnapshotRef,
-        status: reviewWaiting === undefined ? "running" : "waiting",
-        stage: "I5",
-        agentTaskRefs: [],
-        acceptedRiskRecordRefs: [...acceptedRiskRecordRefs],
-        reviewTaskRefs: [],
-        rejectedGroupRefs: [],
-        failedWorkItemRefs: [],
-        ...(reviewWaiting === undefined ? {} : { waitingRef: reviewWaiting }),
-      });
-      return {
-        state,
+      const outcome = {
+        state: stateOf({
+          graphVersion: command.graphVersion,
+          parentRiskFlowRunRef: command.parentRiskFlowRunRef,
+          runRef,
+          threadId: `identification-run-thread:${sha(command.commandId).slice(0, 24)}`,
+          triggerReasonCode: command.triggerReasonCode,
+          authorizationContextRef: command.authorization.authorizationContextRef,
+          preparationSnapshotRef: command.preparationSnapshotRef,
+          status: retryableFailure
+            ? "retryable-failure"
+            : reviewWaiting === undefined
+              ? "running"
+              : "waiting",
+          ...(reviewWaiting === undefined ? {} : { waiting: reviewWaiting }),
+        }),
         runVersionId: sha(
           `identification-run-version:${command.commandId}:${sha256CanonicalJson(acceptedRiskRecordRefs)}`,
         ),
         disposition: "created",
       } satisfies IdentificationGraphRunOutcomeV1;
+      outcomes.set(refKey(runRef), outcome);
+      startOutcomes.push(outcome);
+      return outcome;
     },
-    resume: async () => {
-      throw new TypeError("identification stub resume is outside this slice's evidence");
+    resume: async (command) => {
+      resumes.push(command);
+      const started = outcomes.get(refKey(command.runRef));
+      if (started === undefined) {
+        throw new TypeError("identification stub resume has no matching started run");
+      }
+      const outcome = {
+        state: stateOf({
+          graphVersion: started.state.graphVersion,
+          parentRiskFlowRunRef: started.state.parentRiskFlowRunRef,
+          runRef: started.state.runRef,
+          threadId: started.state.threadId,
+          triggerReasonCode: started.state.triggerReasonCode,
+          authorizationContextRef: command.authorization.authorizationContextRef,
+          preparationSnapshotRef: started.state.preparationSnapshotRef,
+          status: "running",
+        }),
+        runVersionId: sha(`identification-resume-version:${command.commandId}`),
+        disposition: "resumed",
+      } satisfies IdentificationGraphRunOutcomeV1;
+      outcomes.set(refKey(outcome.state.runRef), outcome);
+      return outcome;
     },
     cancel: async () => {
       throw new TypeError("identification stub cancel is outside this slice's evidence");
@@ -329,11 +403,17 @@ const createIdentificationRuntimeStub = (options: {
   return {
     runtime,
     commands,
+    resumes,
+    /** 每次 `start` 返回的完整结果（含父运行据以恢复的子运行版本）。 */
+    startOutcomes,
     setAcceptedRiskRecordRefs: (refs: readonly StandardizedRiskRecordRefV1[]) => {
       acceptedRiskRecordRefs = refs;
     },
     setReviewWaiting: (waiting: WaitingRefV1 | undefined) => {
       reviewWaiting = waiting;
+    },
+    setRetryableFailure: (failure: boolean) => {
+      retryableFailure = failure;
     },
   };
 };
@@ -606,12 +686,29 @@ const startHarness = async (
       authorization: access.port,
       now: () => clock.now(),
     });
-    // 故障注入：`validateReference` 拒绝阶段结果引用时，prepare 之后的检查点写入失败，
+    // 故障注入：阶段提交后的进度保存失败，
     // 业务事实已提交而持久检查点停留在上一阶段（design D-08 的“业务领先”情形）。
+    const startupAuthorizationContexts = new Map<string, string>();
     const checkpointer: PostgresCheckpointer = await setupPostgresCheckpointer({
       ...postgres.checkpointer,
-      validateReference: (reference) =>
-        options.checkpointStageResultsUsable !== false || reference.kind !== "stage-result",
+      validateState: ({ state }) => {
+        if (RiskFlowGraphStateV1Schema.safeParse(state).success) {
+          const runKey = refKey(state.runRef);
+          const authorizationKey = refKey(state.authorizationContextRef);
+          if (!startupAuthorizationContexts.has(runKey)) {
+            startupAuthorizationContexts.set(runKey, authorizationKey);
+          }
+          if (
+            state.graphVersion.entityId !== GRAPH_VERSION.entityId ||
+            state.graphVersion.versionId !== GRAPH_VERSION.versionId ||
+            startupAuthorizationContexts.get(runKey) !== authorizationKey
+          )
+            return false;
+        }
+        return (
+          options.checkpointStageResultsUsable !== false || state.lastStageResultRef === undefined
+        );
+      },
     });
     const identification = createIdentificationRuntimeStub({});
     const pairingSpaces = new Map<string, typeof SPACE_A | typeof SPACE_B>();
@@ -838,6 +935,65 @@ describe("C30 父运行图运行时（真实 PostgreSQL + 真实 LangGraph + 真
     return await applyPreparation(run.runRef);
   };
 
+  it("配置准备完成只恢复绑定该准备的评估子运行", async () => {
+    const waiting: WaitingRefV1 = {
+      kind: "business-preparation",
+      stage: "A1",
+      preparationRef: {
+        kind: "assessment-preparation-snapshot",
+        reference: { entityId: "prepared-response", versionId: "1" },
+      },
+      missingKinds: ["scoring-configuration"],
+    };
+    harness.assessment.commands.length = 0;
+    harness.assessment.setStatus("waiting", waiting);
+    const run = startCommandFor({
+      runKey: "business-preparation",
+      entryMode: "assess",
+      frozenRefs: IDENTIFY_FROZEN_REFS,
+      pairing: [
+        pairingOf({ space: SPACE_A, applicability: APPLICABILITY_A, monitoring: MONITORING_A }),
+      ],
+    });
+    const started = await harness.riskFlowRuntime.start(run);
+    expect(started.status).toBe("waiting");
+    const child = harness.assessment.commands[0]!;
+    const original = harness.assessment.runtime.resume;
+    const resumed = vi.fn(async (command) => ({
+      runRef: command.runRef,
+      runVersionId: command.expectedRunVersionId,
+      status: "waiting" as const,
+      stage: "A1" as const,
+      assessmentRunRefs: [],
+      lastWaitingRef: waiting,
+    }));
+    harness.assessment.runtime.resume = resumed;
+    try {
+      const result = await harness.riskFlowRuntime.resume({
+        projectId: run.projectId,
+        actorId: run.actorId,
+        authorization: authorizationFor("workflow.resume", [SPACE_A, SPACE_B]),
+        commandId: "business-preparation-resume",
+        idempotencyKey: "business-preparation-resume",
+        issuedAt: TIMESTAMP,
+        validAt: TIMESTAMP,
+        runRef: run.runRef,
+        expectedRunVersionId: started.runVersionId,
+        resumeCause: { kind: "business-preparation-ready", preparationRef: waiting.preparationRef },
+      });
+      expect(result.status).toBe("waiting");
+      expect(resumed).toHaveBeenCalledOnce();
+      expect(resumed.mock.calls[0]?.[0]).toMatchObject({
+        runRef: child.runRef,
+        resumeCause: { preparationRef: waiting.preparationRef },
+      });
+    } finally {
+      harness.assessment.runtime.resume = original;
+      harness.assessment.setStatus("waiting", USER_CONFIRMATION_WAITING);
+      harness.assessment.commands.length = 0;
+    }
+  });
+
   it("R1/S4 每条风险只使用本风险空间的配对上下文", async () => {
     const riskA = riskRecordRef("a");
     const riskB = riskRecordRef("b");
@@ -1054,6 +1210,260 @@ describe("C30 父运行图运行时（真实 PostgreSQL + 真实 LangGraph + 真
     expect(state?.lastWaitingRef).toBeUndefined();
   }, 120_000);
 
+  const bindingSnapshot = () =>
+    IdentificationPreparationSnapshotV1Schema.parse({
+      schemaVersion: "1",
+      projectRevisionRef: PROJECT_REVISION_REF,
+      spatialScopeRefs: [SPACE_A, SPACE_B],
+      sourceVersionRefs: [SOURCE_VERSION_REF],
+      includedSourceSegmentSetRefs: [
+        { kind: "source-segment-set", reference: { entityId: "segments-c30", versionId: "v1" } },
+      ],
+      excludedSegmentDecisionRefs: [],
+      dataProcessingPolicyRef: { entityId: "cleaning-policy", versionId: "v1" },
+      dataProcessingToolRef: { entityId: "cleaning-tool", versionId: "v1" },
+      dataProcessingModelRef: { entityId: "cleaning-model", versionId: "v1" },
+      coverageDecisionRef: {
+        kind: "route-decision",
+        reference: { entityId: "coverage", versionId: "v1" },
+      },
+      authorizationContextRef: authorizationFor("workflow.resume", [SPACE_A, SPACE_B])
+        .authorizationContextRef,
+      auditTrailRef: {
+        kind: "audit-trail",
+        reference: { entityId: "preparation-audit", versionId: "v1" },
+      },
+      createdBy: ACTOR_ID,
+      createdAt: TIMESTAMP,
+    });
+  const bindingStart = (key: string) => {
+    const command = startCommandFor({
+      runKey: key,
+      frozenRefs: IDENTIFY_FROZEN_REFS,
+      pairing: [
+        pairingOf({ space: SPACE_A, applicability: APPLICABILITY_A, monitoring: MONITORING_A }),
+        pairingOf({ space: SPACE_B, applicability: APPLICABILITY_B, monitoring: MONITORING_B }),
+      ],
+    });
+    return {
+      ...command,
+      ...workflowRunIdentityFor({
+        projectId: PROJECT_ID,
+        entryMode: command.entryMode,
+        entryIdentity: command.entryIdentity,
+        graphVersion: GRAPH_VERSION,
+      }),
+    };
+  };
+  const bindingRuntime = (reader?: RiskFlowGraphRuntimeOptionsV1["identificationPreparation"]) =>
+    createRiskFlowGraphRuntime({
+      ports: harness.ports,
+      graph: harness.graph,
+      authorization: harness.runtimeAuthorization.port,
+      humanDecisionProof: harness.humanDecisionProof.port,
+      ...(reader === undefined ? {} : { identificationPreparation: reader }),
+      now: () => clock.now(),
+    });
+  const bindingCommand = (runRef: WorkflowRunRefV1, stateVersion: string, key: string) => ({
+    kind: "resume-run" as const,
+    commandId: `binding:${key}`,
+    idempotencyKey: `binding:${key}`,
+    projectId: PROJECT_ID,
+    actorId: ACTOR_ID,
+    issuedAt: TIMESTAMP,
+    authorization: authorizationFor("workflow.resume", [SPACE_A, SPACE_B]),
+    payload: {
+      workflowRunRef: runRef,
+      expectedStateVersion: stateVersion,
+      resumeCause: {
+        kind: "identification-preparation-ready" as const,
+        identificationPreparationSnapshotRef: PREPARATION_REF,
+      },
+    },
+  });
+
+  it.each([
+    "revision",
+    "scope",
+    "sources",
+    "extra-source",
+    "actor",
+    "monitoring",
+    "unavailable",
+    "missing-reader",
+    "stale",
+    "revoked",
+    "cancelled",
+    "run-version",
+  ])(
+    "D-51 %s 准备绑定失败不推进原运行",
+    async (reason) => {
+      const run = bindingStart(`binding-denied-${reason}`);
+      harness.identification.setAcceptedRiskRecordRefs([]);
+      harness.identification.setReviewWaiting(undefined);
+      const waiting = await harness.riskFlowRuntime.start(run);
+      if (reason === "cancelled")
+        await harness.riskFlowRuntime.cancel({
+          ...run,
+          expectedRunVersionId: waiting.runVersionId,
+          reasonCode: "user-cancelled",
+        });
+      const snapshot = bindingSnapshot();
+      if (reason === "revision") snapshot.projectRevisionRef.reference.versionId = "wrong";
+      if (reason === "scope") snapshot.spatialScopeRefs = [SPACE_A];
+      if (reason === "sources") snapshot.sourceVersionRefs = [];
+      if (reason === "extra-source")
+        snapshot.sourceVersionRefs.push({
+          ...SOURCE_VERSION_REF,
+          reference: { entityId: "governance-source", versionId: "v1" },
+        });
+      if (reason === "actor") snapshot.createdBy = "other-actor";
+      if (reason === "monitoring")
+        snapshot.monitoringSnapshotRef = {
+          ...MONITORING_A,
+          reference: { entityId: "other-monitoring", versionId: "v1" },
+        };
+      const read = vi.fn(async () =>
+        reason === "unavailable"
+          ? { kind: "error" as const, retryable: false }
+          : { kind: "ok" as const, snapshot },
+      );
+      const runtime = bindingRuntime(reason === "missing-reader" ? undefined : { read });
+      const rowsBefore = await rowsOf(run.runRef);
+      const startsBefore = harness.identification.commands.length;
+      const command = bindingCommand(
+        run.runRef,
+        reason === "stale" ? "stale-version" : waiting.runVersionId,
+        reason,
+      );
+      if (reason === "run-version")
+        command.payload.workflowRunRef = {
+          ...run.runRef,
+          reference: { ...run.runRef.reference, versionId: sha("wrong-run-version") },
+        };
+      if (reason === "revoked") harness.runtimeAuthorization.revoke();
+      try {
+        expect(await runtime.workflowPort.resumeRun(command)).toMatchObject({
+          kind: "failed",
+          error: { retryable: false },
+        });
+      } finally {
+        harness.runtimeAuthorization.restore();
+      }
+      expect(await rowsOf(run.runRef)).toEqual(rowsBefore);
+      expect(harness.identification.commands).toHaveLength(startsBefore);
+      const binding = await postgres.adminPool.query(
+        "SELECT result_ref FROM business.command_receipts WHERE project_id = $1 AND command_kind = 'workflow.bind-identification-preparation' AND idempotency_key = $2",
+        [PROJECT_ID, `workflow-preparation-binding:${run.runRef.reference.entityId}`],
+      );
+      expect(binding.rows).toHaveLength(0);
+    },
+    120_000,
+  );
+
+  it("D-51 正式恢复绑定匹配准备，保留图及监测并拒绝陈旧重投和替换", async () => {
+    const run = bindingStart("binding-success");
+    harness.identification.setAcceptedRiskRecordRefs([]);
+    harness.identification.setReviewWaiting({
+      kind: "user-confirmation",
+      userConfirmationRef: {
+        kind: "user-confirmation",
+        reference: { entityId: "binding-child-confirmation", versionId: "v1" },
+      },
+    });
+    const waiting = await harness.riskFlowRuntime.start(run);
+    const snapshot = bindingSnapshot();
+    snapshot.spatialScopeRefs.reverse();
+    const read = vi.fn(async () => ({ kind: "ok" as const, snapshot }));
+    const runtime = bindingRuntime({ read });
+    const command = bindingCommand(run.runRef, waiting.runVersionId, "success");
+    const startsBefore = harness.identification.commands.length;
+    const result = await runtime.workflowPort.resumeRun(command);
+    expect(result.kind, JSON.stringify(result)).toBe("waiting");
+    expect(harness.identification.commands).toHaveLength(startsBefore + 1);
+    expect(harness.identification.commands.at(-1)?.preparationSnapshotRef).toEqual(PREPARATION_REF);
+    expect(harness.identification.commands.at(-1)).toMatchObject({
+      issuedInvocationId: command.commandId,
+      authorizationBranch: "workflow.resume-run",
+    });
+    expect(read.mock.calls[0]?.[0]).toMatchObject({
+      preparationSnapshotRef: PREPARATION_REF,
+      spatialScopeRefs: [SPACE_A, SPACE_B],
+      sourceVersionRefs: [SOURCE_VERSION_REF],
+    });
+    const after = await readLatestState(harness, run.runRef, "workflow.resume");
+    expect(after?.graphVersion).toEqual(GRAPH_VERSION);
+    const rowsAfter = await rowsOf(run.runRef);
+    expect(
+      rowsAfter.some(
+        (row) =>
+          row.resultKind === "entry-snapshot" &&
+          row.frozenRefs.some((ref) => ref.kind === "identification-preparation-snapshot"),
+      ),
+    ).toBe(true);
+    const audit = await postgres.adminPool.query(
+      "SELECT command_id, target_ref FROM audit.entries WHERE project_id = $1 AND action = 'workflow.bind-identification-preparation' AND run_id = $2",
+      [PROJECT_ID, run.runRef.reference.entityId],
+    );
+    expect(audit.rows).toEqual([{ command_id: command.commandId, target_ref: PREPARATION_REF }]);
+    expect(await runtime.workflowPort.resumeRun(command)).toMatchObject({
+      kind: "failed",
+      error: { code: "STALE_VERSION" },
+    });
+    const replacement = bindingCommand(run.runRef, after!.runVersionId, "replacement");
+    replacement.payload.resumeCause.identificationPreparationSnapshotRef = {
+      ...PREPARATION_REF,
+      reference: { entityId: "other-preparation", versionId: "v1" },
+    };
+    expect(await runtime.workflowPort.resumeRun(replacement)).toMatchObject({ kind: "failed" });
+    expect(await rowsOf(run.runRef)).toEqual(rowsAfter);
+    expect(harness.identification.commands).toHaveLength(startsBefore + 1);
+  }, 120_000);
+
+  it("D-51 两个不同准备并发恢复只成立一个绑定和识别子运行", async () => {
+    const run = bindingStart("binding-concurrent");
+    harness.identification.setAcceptedRiskRecordRefs([]);
+    harness.identification.setReviewWaiting(USER_CONFIRMATION_WAITING);
+    const waiting = await harness.riskFlowRuntime.start(run);
+    let entered = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runtime = bindingRuntime({
+      read: async () => {
+        if (++entered === 2) release();
+        await barrier;
+        return { kind: "ok", snapshot: bindingSnapshot() };
+      },
+    });
+    const a = bindingCommand(run.runRef, waiting.runVersionId, "concurrent-a");
+    const b = bindingCommand(run.runRef, waiting.runVersionId, "concurrent-b");
+    b.payload.resumeCause.identificationPreparationSnapshotRef = {
+      ...PREPARATION_REF,
+      reference: { entityId: "second-valid-preparation", versionId: "v1" },
+    };
+    const startsBefore = harness.identification.commands.length;
+    const results = await Promise.all([
+      runtime.workflowPort.resumeRun(a),
+      runtime.workflowPort.resumeRun(b),
+    ]);
+    expect(results.filter((result) => result.kind === "waiting")).toHaveLength(1);
+    expect(results.find((result) => result.kind === "failed")).toMatchObject({
+      kind: "failed",
+      error: { retryable: false },
+    });
+    expect(harness.identification.commands).toHaveLength(startsBefore + 1);
+    const audit = await postgres.adminPool.query(
+      "SELECT target_ref FROM audit.entries WHERE project_id = $1 AND action = 'workflow.bind-identification-preparation' AND run_id = $2",
+      [PROJECT_ID, run.runRef.reference.entityId],
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]?.target_ref).toEqual(
+      harness.identification.commands.at(-1)?.preparationSnapshotRef,
+    );
+  }, 120_000);
+
   it("R4/S1 inputs-ready 恢复复用已提交结果，不产生第二个识别子运行或重复登记行", async () => {
     harness.assessment.commands.length = 0;
     harness.identification.commands.length = 0;
@@ -1187,7 +1597,7 @@ describe("C30 父运行图运行时（真实 PostgreSQL + 真实 LangGraph + 真
         runRef: run.runRef,
         threadId: run.threadId,
         entryMode: run.entryMode,
-        authorizationContextRef: forged.authorization.authorizationContextRef,
+        authorizationContextRef: run.authorization.authorizationContextRef,
         status: "terminal-failure",
         stage: "result-summary",
         assessmentRunRefs: [],
@@ -1396,11 +1806,357 @@ describe("C30 父运行图运行时（真实 PostgreSQL + 真实 LangGraph + 真
     ).toEqual(rowsBefore.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`));
     expect(await auditCount()).toBe(auditBefore);
   }, 120_000);
+
+  it("D55 显式批次隔离同输入运行，同批次重投且同键换批次拒绝", async () => {
+    const command: StartWorkflowRunCommandV1 = {
+      kind: "start-run",
+      commandId: "d55-start-a",
+      idempotencyKey: "d55-start-a",
+      projectId: PROJECT_ID,
+      actorId: ACTOR_ID,
+      issuedAt: TIMESTAMP,
+      authorization: authorizationFor("workflow.start", [SPACE_A, SPACE_B]),
+      payload: {
+        entryMode: "identify-and-assess",
+        executionBatchId: "batch-a",
+        graphVersion: GRAPH_VERSION,
+        retryPolicyRef: RETRY_POLICY_REF,
+        projectRevisionRef: PROJECT_REVISION_REF,
+        spatialScopeRefs: [SPACE_A, SPACE_B],
+        sourceVersionRefs: [SOURCE_VERSION_REF],
+        assessmentContexts: [
+          { spatialScopeRef: SPACE_A, applicabilityMetadataSnapshotRef: APPLICABILITY_A },
+          { spatialScopeRef: SPACE_B, applicabilityMetadataSnapshotRef: APPLICABILITY_B },
+        ],
+      },
+    };
+    const first = await harness.riskFlowRuntime.workflowPort.startRun(command);
+    expect(first.kind, JSON.stringify(first)).toBe("waiting");
+    if (first.kind !== "waiting") return;
+    const rowsBefore = await rowsOf(first.workflowRunRef);
+    expect(await harness.riskFlowRuntime.workflowPort.startRun(command)).toEqual(first);
+    expect(await rowsOf(first.workflowRunRef)).toEqual(rowsBefore);
+    const payload = { ...command.payload, executionBatchId: "batch-b" };
+    expect(
+      await harness.riskFlowRuntime.workflowPort.startRun({ ...command, payload }),
+    ).toMatchObject({ kind: "failed" });
+    const second = await harness.riskFlowRuntime.workflowPort.startRun({
+      ...command,
+      commandId: "d55-start-b",
+      idempotencyKey: "d55-start-b",
+      payload,
+    });
+    expect(second.kind).toBe("waiting");
+    if (second.kind !== "waiting") return;
+    expect(second.workflowRunRef).not.toEqual(first.workflowRunRef);
+    const firstRow = (await rowsOf(first.workflowRunRef)).find((r) => r.threadId !== undefined);
+    const secondRow = (await rowsOf(second.workflowRunRef)).find((r) => r.threadId !== undefined);
+    expect(secondRow?.threadId).not.toBe(firstRow?.threadId);
+    expect(await rowsOf(first.workflowRunRef)).toEqual(rowsBefore);
+  }, 120_000);
+
+  it("D57 公共技术恢复将原retryable识别子运行交给C24.resume", async () => {
+    const run = startCommandFor({
+      runKey: "d57-child-retry",
+      frozenRefs: IDENTIFY_FROZEN_REFS,
+      pairing: [
+        pairingOf({ space: SPACE_A, applicability: APPLICABILITY_A, monitoring: MONITORING_A }),
+      ],
+    });
+    harness.identification.setAcceptedRiskRecordRefs([]);
+    harness.identification.setReviewWaiting(undefined);
+    harness.identification.resumes.length = 0;
+    harness.identification.setRetryableFailure(true);
+    try {
+      await harness.riskFlowRuntime.start(run);
+      await expect(applyPreparation(run.runRef)).resolves.toMatchObject({
+        status: "retryable-failure",
+      });
+      const failed = await readLatestState(harness, run.runRef, "workflow.resume");
+      expect(failed?.status).toBe("retryable-failure");
+      const command = publicResumeCommandFor({
+        runRef: run.runRef,
+        stateVersion: failed!.runVersionId,
+        key: "child-transient",
+        resumeCause: {
+          kind: "transient-recovered",
+          workflowErrorRef: failed!.lastErrorRef!,
+          diagnosticArtifactRef: {
+            kind: "diagnostic-artifact",
+            reference: { entityId: "synthetic-recovery-diagnostic", versionId: "v1" },
+          },
+        },
+      });
+      const resumed = await harness.riskFlowRuntime.workflowPort.resumeRun(command);
+      expect(resumed.kind, JSON.stringify(resumed)).toBe("succeeded");
+      expect(harness.identification.resumes).toHaveLength(1);
+      const child = harness.identification.resumes[0]!;
+      const latest = harness.identification.startOutcomes.at(-1)!;
+      expect(child).toMatchObject({
+        runRef: latest.state.runRef,
+        expectedRunVersionId: latest.runVersionId,
+        issuedInvocationId: command.commandId,
+        authorizationBranch: "workflow.resume-run",
+        resumeCause: { kind: "transient-recovered" },
+      });
+    } finally {
+      harness.identification.setRetryableFailure(false);
+    }
+  }, 120_000);
+
+  /** 识别阶段停在某个已知等待任务上的父运行：启动 → 绑定准备 → C24.start 返回该等待。 */
+  const startWaitingOnIdentificationTask = async (input: {
+    readonly key: string;
+    readonly waitingFor: (runRef: WorkflowRunRefV1) => WaitingRefV1;
+  }) => {
+    harness.identification.commands.length = 0;
+    harness.identification.resumes.length = 0;
+    harness.identification.setAcceptedRiskRecordRefs([]);
+    const run = startCommandFor({
+      runKey: input.key,
+      frozenRefs: IDENTIFY_FROZEN_REFS,
+      pairing: [
+        pairingOf({ space: SPACE_A, applicability: APPLICABILITY_A, monitoring: MONITORING_A }),
+      ],
+    });
+    const waiting = input.waitingFor(run.runRef);
+    harness.identification.setReviewWaiting(waiting);
+    const started = await harness.riskFlowRuntime.start(run);
+    expect(started.lastWaitingRef?.kind).toBe("knowledge-preparation");
+    const applied = await applyPreparation(run.runRef);
+    // 父运行如实登记子运行等待的同一任务，且尚未转交任何恢复结果。
+    expect(applied.lastWaitingRef).toEqual(waiting);
+    expect(harness.identification.resumes).toEqual([]);
+    const assessmentBefore = harness.assessment.commands.length;
+    return { run, waiting, stateVersion: applied.runVersionId, assessmentBefore };
+  };
+
+  it.each([
+    { code: "AUTHORIZATION_DENIED", retryable: false },
+    { code: "CHECKPOINT_INCONSISTENT", retryable: false },
+    { code: "RETRYABLE_INFRASTRUCTURE_FAILURE", retryable: true },
+  ] as const)("D79 父恢复保留C24运行异常分类 $code", async ({ code, retryable }) => {
+    const { agentTaskRef, result } = completedAgentTaskResultFixture();
+    const { run, stateVersion, assessmentBefore } = await startWaitingOnIdentificationTask({
+      key: `d79-${code}`,
+      waitingFor: () => ({ kind: "agent-task", agentTaskRef }),
+    });
+    const failure = new IdentificationGraphRunErrorV1({
+      schemaVersion: "1",
+      code,
+      retryable,
+      stage: "I4",
+      detailCode: "child-stable-failure",
+      occurredAt: TIMESTAMP,
+    });
+    expect(
+      toRiskFlowGraphError({ stage: "identification", error: failure, occurredAt: TIMESTAMP }),
+    ).toMatchObject({
+      code,
+      retryable,
+      stage: "identification",
+      detailCode: "child-stable-failure",
+    });
+    const resumeChild = harness.identification.runtime.resume;
+    harness.identification.runtime.resume = async () => {
+      throw failure;
+    };
+    try {
+      const outcome = await harness.riskFlowRuntime.workflowPort.resumeRun(
+        publicResumeCommandFor({
+          runRef: run.runRef,
+          stateVersion,
+          key: `d79-${code}`,
+          resumeCause: { kind: "agent-task-completed", agentTaskResultRef: result },
+        }),
+      );
+      expect(outcome.kind).toBe("failed");
+      const state = await readLatestState(harness, run.runRef, "workflow.resume");
+      expect(state?.status).toBe(retryable ? "retryable-failure" : "terminal-failure");
+      expect(state?.lastErrorRef?.reference.entityId).toContain("child-stable-failure");
+      expect(harness.assessment.commands).toHaveLength(assessmentBefore);
+    } finally {
+      harness.identification.runtime.resume = resumeChild;
+    }
+  });
+
+  it.each([false, true])(
+    "D54 公共 workflow.resume-run 转交完整任务结果，父先技术失败：%s",
+    async (failOnce) => {
+      const { agentTaskRef, result } = completedAgentTaskResultFixture();
+      const { run, waiting, stateVersion, assessmentBefore } =
+        await startWaitingOnIdentificationTask({
+          key: `d54-agent-task-${failOnce}`,
+          waitingFor: () => ({ kind: "agent-task", agentTaskRef }),
+        });
+      let command = publicResumeCommandFor({
+        runRef: run.runRef,
+        stateVersion,
+        key: `agent-task-${failOnce}`,
+        resumeCause: { kind: "agent-task-completed", agentTaskResultRef: result },
+      });
+
+      if (failOnce) {
+        const resumeChild = harness.identification.runtime.resume;
+        harness.identification.runtime.resume = async () => {
+          throw new TypeError("injected child resume failure before effects");
+        };
+        try {
+          expect((await harness.riskFlowRuntime.workflowPort.resumeRun(command)).kind).toBe(
+            "failed",
+          );
+        } finally {
+          harness.identification.runtime.resume = resumeChild;
+        }
+        const failed = await readLatestState(harness, run.runRef, "workflow.resume");
+        expect(failed?.status).toBe("retryable-failure");
+        expect(harness.identification.resumes).toHaveLength(0);
+        command = publicResumeCommandFor({
+          runRef: run.runRef,
+          stateVersion: failed!.runVersionId,
+          key: "agent-task-after-technical-failure",
+          resumeCause: { kind: "agent-task-completed", agentTaskResultRef: result },
+        });
+      }
+      const outcome = await harness.riskFlowRuntime.workflowPort.resumeRun(command);
+      expect(outcome.kind, JSON.stringify(outcome)).toBe("succeeded");
+
+      // 恰恰一次 C24 恢复，且逐项保留任务、结果版本与产物引用，未被截断或重造。
+      expect(harness.identification.resumes).toHaveLength(1);
+      const child = harness.identification.resumes[0]!;
+      expect(child.resumeCause).toEqual({
+        kind: "agent-task-completed",
+        agentTaskRef,
+        agentTaskResultRef: result,
+      });
+      // 同一等待任务：转交的任务就是父运行按其等待事实登记的那一个。
+      expect(child.resumeCause).toMatchObject({ agentTaskRef: waiting.agentTaskRef });
+      // 精确子运行与版本：只沿用 C24.start 交给父运行的那一个。
+      const childStart = harness.identification.startOutcomes.at(-1)!;
+      expect(child.runRef).toEqual(childStart.state.runRef);
+      expect(child.expectedRunVersionId).toBe(childStart.runVersionId);
+      // 父控制身份与分支：本次公开恢复命令的签发身份，不是子运行自己的入口。
+      expect(child).toMatchObject({
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        issuedInvocationId: command.commandId,
+        authorizationBranch: "workflow.resume-run",
+        authorization: command.authorization,
+      });
+      // 转交后父可观察状态按真实子结果收口：本替身恢复为运行中且无已验收风险。
+      const state = await readLatestState(harness, run.runRef, "workflow.resume");
+      expect(state?.status).toBe("completed");
+      expect(state?.identificationRunRef).toEqual(childStart.state.runRef);
+      expect(state?.lastWaitingRef).toBeUndefined();
+      expect(state?.resultRef).toBeDefined();
+      expect(harness.assessment.commands).toHaveLength(assessmentBefore);
+    },
+    120_000,
+  );
+
+  it("D54 review-resolved 恢复沿用精确 C24 子运行与原公开命令身份", async () => {
+    const reviewDecisionRef = ReviewDecisionRefV1Schema.parse({
+      kind: "review-decision",
+      reference: { entityId: "review-decision-c30-d54", versionId: "v1" },
+    });
+    const { run, stateVersion } = await startWaitingOnIdentificationTask({
+      key: "d54-review-resolved",
+      waitingFor: (runRef) => ({
+        kind: "review",
+        reviewTaskRef: {
+          kind: "review-task",
+          reference: { entityId: "review-task-c30-d54", versionId: "v1" },
+          reviewType: "identification-group",
+          targetRef: {
+            kind: "identification-group",
+            reference: { entityId: "identification-group-c30-d54", versionId: "v1" },
+          },
+          waitingRunRef: runRef,
+        },
+      }),
+    });
+    const command = publicResumeCommandFor({
+      runRef: run.runRef,
+      stateVersion,
+      key: "review-resolved",
+      resumeCause: { kind: "review-resolved", reviewDecisionRef },
+    });
+
+    expect((await harness.riskFlowRuntime.workflowPort.resumeRun(command)).kind).toBe("succeeded");
+    expect(harness.identification.resumes).toHaveLength(1);
+    const child = harness.identification.resumes[0]!;
+    expect(child.resumeCause).toEqual({ kind: "review-resolved", reviewDecisionRef });
+    const childStart = harness.identification.startOutcomes.at(-1)!;
+    expect(child.runRef).toEqual(childStart.state.runRef);
+    expect(child.expectedRunVersionId).toBe(childStart.runVersionId);
+    expect(child).toMatchObject({
+      issuedInvocationId: command.commandId,
+      authorizationBranch: "workflow.resume-run",
+      authorization: command.authorization,
+    });
+    const state = await readLatestState(harness, run.runRef, "workflow.resume");
+    expect(state?.status).toBe("completed");
+    expect(state?.identificationRunRef).toEqual(childStart.state.runRef);
+  }, 120_000);
 });
+
+/** D54 公共 `workflow.resume-run` 命令：恢复原因就是事件正文，父运行必须原样转交。 */
+const publicResumeCommandFor = (input: {
+  readonly runRef: WorkflowRunRefV1;
+  readonly stateVersion: string;
+  readonly key: string;
+  readonly resumeCause: ResumeCauseV1;
+}): ResumeWorkflowRunCommandV1 => ({
+  kind: "resume-run",
+  commandId: `c30-d54-resume:${input.key}`,
+  idempotencyKey: `c30-d54-resume:${input.key}`,
+  projectId: PROJECT_ID,
+  actorId: ACTOR_ID,
+  issuedAt: TIMESTAMP,
+  authorization: authorizationFor("workflow.resume", [SPACE_A, SPACE_B]),
+  payload: {
+    workflowRunRef: input.runRef,
+    expectedStateVersion: input.stateVersion,
+    resumeCause: input.resumeCause,
+  },
+});
+
+/** 合成样本：D54 恢复所用的已启动检索复核任务与完成结果引用，不代表真实业务数据。 */
+const completedAgentTaskResultFixture = (): {
+  readonly agentTaskRef: AgentTaskRefV1;
+  readonly result: AgentTaskResultRefV1;
+} => {
+  const agentTaskRef = AgentTaskRefV1Schema.parse({
+    kind: "agent-task",
+    reference: { entityId: "agent-task-c30-d54", versionId: "v1" },
+    taskType: "retrieval-review",
+    triggerMode: "embedded",
+    modelDeploymentRef: { entityId: "model-deployment-c30-d54", versionId: "v1" },
+    promptTemplateRef: { entityId: "prompt-template-c30-d54", versionId: "v1" },
+    toolPolicyRef: { entityId: "tool-policy-c30-d54", versionId: "v1" },
+    budgetPolicyRef: { entityId: "budget-policy-c30-d54", versionId: "v1" },
+    incrementSchemaRef: { entityId: "increment-schema-c30-d54", versionId: "v1" },
+    validationPolicyRef: { entityId: "validation-policy-c30-d54", versionId: "v1" },
+  });
+  return {
+    agentTaskRef,
+    result: AgentTaskResultRefV1Schema.parse({
+      kind: "agent-task-result",
+      reference: { entityId: "agent-task-result-c30-d54", versionId: "v1" },
+      status: "completed",
+      agentTaskRef,
+      incrementRef: {
+        kind: "retrieval-artifact-set",
+        reference: { entityId: "retrieval-artifact-set-c30-d54", versionId: "v1" },
+      },
+    }),
+  };
+};
 
 describe("C30 父运行图运行时（检查点写入失败后恢复对账）", () => {
   let postgres: PostgresTestFixture;
   let harness: RiskFlowHarnessV1;
+  const checkpointOptions = { checkpointStageResultsUsable: false };
 
   beforeAll(async () => {
     postgres = await startPostgresFixture();
@@ -1409,7 +2165,7 @@ describe("C30 父运行图运行时（检查点写入失败后恢复对账）", 
       migrationRoot: postgres.productionMigrationRoot,
       additionalMigrationRoots: [postgres.fixtureMigrationRoot],
     });
-    harness = await startHarness(postgres, { checkpointStageResultsUsable: false });
+    harness = await startHarness(postgres, checkpointOptions);
   }, 300_000);
 
   afterAll(async () => {
@@ -1417,92 +2173,40 @@ describe("C30 父运行图运行时（检查点写入失败后恢复对账）", 
     await postgres?.close().catch(() => undefined);
   }, 120_000);
 
-  it("R4/S2 业务领先且无法由登记事实证明时以 CHECKPOINT_INCONSISTENT 零补写封闭", async () => {
+  it("已登记准备事实领先检查点时从原运行恢复到真实等待点", async () => {
     const run = startCommandFor({
-      runKey: "checkpoint-lag",
+      runKey: "checkpoint-provable-recovery",
       frozenRefs: IDENTIFY_FROZEN_REFS,
       pairing: [
         pairingOf({ space: SPACE_A, applicability: APPLICABILITY_A, monitoring: MONITORING_A }),
       ],
     });
-    harness.identification.setAcceptedRiskRecordRefs([]);
-    harness.identification.setReviewWaiting(undefined);
-    // 检查点写入 failure：prepare 的业务事实已提交，持久检查点仍停在准备前状态。
+    checkpointOptions.checkpointStageResultsUsable = false;
     await expect(harness.riskFlowRuntime.start(run)).rejects.toMatchObject({
-      error: { code: "RETRYABLE_INFRASTRUCTURE_FAILURE", retryable: true },
+      error: { code: "RETRYABLE_INFRASTRUCTURE_FAILURE" },
     });
-    const rowsBeforeLoss = await harness.adapter.registrationStore.listRunRows({
-      projectId: PROJECT_ID,
-      runId: run.runRef.reference.entityId,
-    });
-    expect(rowsBeforeLoss.some((row) => row.resultKind === "stage-result")).toBe(true);
     const cursor = await readLatestState(harness, run.runRef, "workflow.resume");
     expect(cursor?.stage).toBe("identification");
-
-    // 证明该领先的登记事实丢失（引用无法回读）：业务领先但无法证明。
-    await postgres.adminPool.query(
-      "DELETE FROM business.workflow_graph_results WHERE project_id = $1 AND run_id = $2 AND result_kind = 'stage-result'",
-      [PROJECT_ID, run.runRef.reference.entityId],
-    );
-    const rowsBefore = await harness.adapter.registrationStore.listRunRows({
-      projectId: PROJECT_ID,
-      runId: run.runRef.reference.entityId,
-    });
-    const linksBefore = await harness.adapter.registrationStore.listRunLinks({
-      projectId: PROJECT_ID,
-      runId: run.runRef.reference.entityId,
-    });
-    const auditBefore = await postgres.adminPool.query<{ count: string }>(
-      "SELECT count(*)::text AS count FROM audit.entries WHERE project_id = $1 AND action LIKE 'risk-flow-%'",
-      [PROJECT_ID],
-    );
-
-    await expect(
-      harness.riskFlowRuntime.resume({
+    checkpointOptions.checkpointStageResultsUsable = true;
+    try {
+      const recovered = await harness.riskFlowRuntime.resume({
         projectId: PROJECT_ID,
         actorId: ACTOR_ID,
         authorization: authorizationFor("workflow.resume", [SPACE_A, SPACE_B]),
-        commandId: "c30-resume-checkpoint-lag",
-        idempotencyKey: "c30-resume-checkpoint-lag",
+        commandId: "c30-recover-committed-prepare",
+        idempotencyKey: "c30-recover-committed-prepare",
         issuedAt: TIMESTAMP,
         validAt: TIMESTAMP,
         runRef: run.runRef,
-        expectedRunVersionId: cursor?.runVersionId ?? "",
-        resumeCause: { kind: "reevaluate", reasonCode: "checkpoint-lag" },
-      }),
-    ).rejects.toMatchObject({
-      error: {
-        code: "CHECKPOINT_INCONSISTENT",
-        retryable: false,
-        detailCode: "checkpoint-inconsistent",
-      },
-    });
-
-    // 零补写：不补造阶段结果、不新增登记行/链边/审计，也不推进业务状态。
-    expect(
-      (
-        await harness.adapter.registrationStore.listRunRows({
-          projectId: PROJECT_ID,
-          runId: run.runRef.reference.entityId,
-        })
-      ).map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`),
-    ).toEqual(rowsBefore.map((row) => `${row.resultKind}/${row.resultId}/${row.resultVersionId}`));
-    expect(
-      (
-        await harness.adapter.registrationStore.listRunLinks({
-          projectId: PROJECT_ID,
-          runId: run.runRef.reference.entityId,
-        })
-      ).map((link) => link.linkId),
-    ).toEqual(linksBefore.map((link) => link.linkId));
-    const auditAfter = await postgres.adminPool.query<{ count: string }>(
-      "SELECT count(*)::text AS count FROM audit.entries WHERE project_id = $1 AND action LIKE 'risk-flow-%'",
-      [PROJECT_ID],
-    );
-    expect(auditAfter.rows[0]?.count).toBe(auditBefore.rows[0]?.count);
-    const after = await readLatestState(harness, run.runRef, "workflow.resume");
-    expect(after?.runVersionId).toBe(cursor?.runVersionId);
-    expect(after?.stage).toBe("identification");
+        expectedRunVersionId: cursor!.runVersionId,
+        resumeCause: { kind: "reevaluate", reasonCode: "checkpoint-write-recovered" },
+      });
+      expect(recovered.runRef).toEqual(run.runRef);
+      expect(recovered.status).toBe("waiting");
+      expect(recovered.lastWaitingRef?.kind).toBe("knowledge-preparation");
+    } finally {
+      checkpointOptions.checkpointStageResultsUsable = false;
+    }
   }, 120_000);
 });
 

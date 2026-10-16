@@ -8,6 +8,8 @@ export default tseslint.config(
       "**/dist/**",
       "**/coverage/**",
       ".scratch/**",
+      ".agents/**",
+      ".claude/**",
       "demo/**",
       "openspec/**",
       "references/**",

@@ -36,8 +36,9 @@ const projectId = "project-rail-01";
 const approval = {
   approvedBy: "operator-01",
   approvedAt: "2030-01-01T00:00:00.000Z",
-  releaseId: "release-2030-01",
 };
+/** 旧配置的批准元数据带软件 release；加载时归一丢弃，不与软件 release 绑定。 */
+const legacyApproval = { ...approval, releaseId: "release-2030-01" };
 
 const acceptancePolicy = {
   schemaVersion: "1" as const,
@@ -121,6 +122,53 @@ const hybridRetrievalPolicy = {
   projectionCompatibilityRef: { entityId: "projection-compatibility", versionId: "v1" },
 };
 
+/** D-08：审阅预算正文在目录中按身份唯一登记，供 V2 审阅策略引用。 */
+const retrievalReviewBudget = {
+  schemaVersion: "1" as const,
+  policyRef: { entityId: "retrieval-review-budget", versionId: "v1" },
+  modelDeploymentRef: { entityId: "review-model", versionId: "v1" },
+  promptTemplateRef: { entityId: "review-prompt", versionId: "v1" },
+  toolPolicyRef: { entityId: "review-tools", versionId: "v1" },
+  maxModelInvocations: 4,
+  maxToolInvocations: 6,
+  maxContextTokens: 8192,
+  maxInputBytes: 65_536,
+  maxOutputBytes: 65_536,
+  maxCandidates: 8,
+  maxObjects: 64,
+  maxSupplementarySearches: 2,
+  maxCorrections: 1,
+  maxTransientRetries: 1,
+  maxConcurrentActions: 2,
+  maxWallClockMs: 600_000,
+};
+
+/** V2 只留预算引用与候选/补搜业务参数；模型、提示与工具引用由预算解析。 */
+const retrievalReviewPolicyV2 = {
+  schemaVersion: "2" as const,
+  policyRef: { entityId: "retrieval-review-policy", versionId: "v2" },
+  definitionRef: { entityId: "retrieval-review-definition", versionId: "v1" },
+  incrementSchemaRef: { entityId: "retrieval-review-increment", versionId: "v1" },
+  validationPolicyRef: { entityId: "retrieval-review-validation", versionId: "v1" },
+  readFrozenResultToolRef: { entityId: "read-frozen-result", versionId: "v1" },
+  resupplementToolRef: { entityId: "bounded-resupplement", versionId: "v1" },
+  budgetPolicyRef: retrievalReviewBudget.policyRef,
+  maxCandidateMembers: 32,
+  maxResupplements: 2,
+  allowedSupplementIntentCodes: ["expand-mechanism"],
+  modelMaxOutputTokens: 2048,
+};
+
+/** 归一后的运行接口对象：原 V1 形状，预算正文与模型/提示/工具引用来自预算。 */
+const normalizedRetrievalReviewPolicy = {
+  ...retrievalReviewPolicyV2,
+  schemaVersion: "1" as const,
+  budgetPolicy: retrievalReviewBudget,
+  modelDeploymentRef: retrievalReviewBudget.modelDeploymentRef,
+  promptTemplateRef: retrievalReviewBudget.promptTemplateRef,
+  toolPolicyRef: retrievalReviewBudget.toolPolicyRef,
+};
+
 const measured = (
   overrides: Record<string, unknown> = {},
   provenance: {
@@ -165,7 +213,7 @@ const catalogEntry = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-const buildCatalog = (entries: readonly unknown[]) =>
+const buildCatalog = (entries: readonly unknown[], budgetPolicies?: readonly unknown[]) =>
   DeploymentPolicyCatalogV1Schema.parse({
     schemaVersion: 1,
     catalogRef: { entityId: "policy-catalog", versionId: "v1" },
@@ -177,6 +225,23 @@ const buildCatalog = (entries: readonly unknown[]) =>
       ],
     },
     entries,
+    ...(budgetPolicies === undefined ? {} : { budgetPolicies }),
+  });
+
+const reviewEntry = (overrides: Record<string, unknown> = {}) =>
+  catalogEntry({
+    policyType: "retrieval-review",
+    policyRef: retrievalReviewPolicyV2.policyRef,
+    body: retrievalReviewPolicyV2,
+    ...overrides,
+  });
+
+const budgetEntry = (overrides: Record<string, unknown> = {}) =>
+  catalogEntry({
+    policyType: "agent-task-budget",
+    policyRef: retrievalReviewBudget.policyRef,
+    body: retrievalReviewBudget,
+    ...overrides,
   });
 
 describe("策略 catalog", () => {
@@ -596,6 +661,107 @@ describe("策略 catalog", () => {
       expect(JSON.stringify(error)).not.toContain("acceptancePolicyRef");
     }
   });
+
+  it("批准只绑定批准者与时间，旧配置的 releaseId 归一丢弃且仍可解析", () => {
+    const catalog = buildCatalog([
+      catalogEntry(),
+      catalogEntry({
+        policyType: "retry",
+        policyRef: { entityId: "retry-policy", versionId: "v1" },
+        body: retryPolicy,
+        approval: legacyApproval,
+      }),
+    ]);
+    expect(catalog.entries.map((entry) => entry.approval)).toEqual([approval, approval]);
+
+    // 旧配置与软件 release 不同也能解析，批准不再与软件 release 相等。
+    const reader = createDeploymentPolicyCatalogReaderV1(catalog);
+    expect(
+      reader.resolve({
+        projectId,
+        policyType: "retry",
+        policyRef: { entityId: "retry-policy", versionId: "v1" },
+      }).maxAttempts,
+    ).toBe(3);
+
+    // 批准者与批准时间仍必填，未知批准字段仍拒绝。
+    expect(() =>
+      buildCatalog([catalogEntry({ approval: { approvedAt: approval.approvedAt } })]),
+    ).toThrow();
+    expect(() =>
+      buildCatalog([catalogEntry({ approval: { approvedBy: approval.approvedBy } })]),
+    ).toThrow();
+    expect(() =>
+      buildCatalog([catalogEntry({ approval: { ...approval, reason: "x" } })]),
+    ).toThrow();
+  });
+});
+
+describe("检索审阅策略单一预算引用", () => {
+  it("V2 只引用预算身份，解析归一为原 V1 运行接口", () => {
+    const reader = createDeploymentPolicyCatalogReaderV1(
+      buildCatalog([reviewEntry()], [budgetEntry()]),
+    );
+    const policy = createDeploymentPolicyResolversV1(reader).retrievalReview({
+      projectId,
+      policyRef: retrievalReviewPolicyV2.policyRef,
+    });
+    expect(policy).toEqual(normalizedRetrievalReviewPolicy);
+    expect(Object.isFrozen(policy)).toBe(true);
+    expect(Object.isFrozen(policy.budgetPolicy)).toBe(true);
+  });
+
+  it("V1 历史正文继续按原含义解析，不要求预算集合", () => {
+    const reader = createDeploymentPolicyCatalogReaderV1(
+      buildCatalog([reviewEntry({ body: normalizedRetrievalReviewPolicy })]),
+    );
+    expect(
+      createDeploymentPolicyResolversV1(reader).retrievalReview({
+        projectId,
+        policyRef: normalizedRetrievalReviewPolicy.policyRef,
+      }),
+    ).toEqual(normalizedRetrievalReviewPolicy);
+  });
+
+  it("缺预算、重复预算与超出预算的漂移都是结构化配置错误", () => {
+    const codeOf = (run: () => unknown): string | undefined => {
+      try {
+        run();
+        return undefined;
+      } catch (error) {
+        return (error as DeploymentPolicyError).code;
+      }
+    };
+    expect(codeOf(() => createDeploymentPolicyCatalogReaderV1(buildCatalog([reviewEntry()])))).toBe(
+      DEPLOYMENT_POLICY_ERROR_V1.missing,
+    );
+    expect(
+      codeOf(() =>
+        createDeploymentPolicyCatalogReaderV1(
+          buildCatalog([reviewEntry()], [budgetEntry(), budgetEntry()]),
+        ),
+      ),
+    ).toBe(DEPLOYMENT_POLICY_ERROR_V1.duplicate);
+    for (const body of [
+      {
+        ...retrievalReviewPolicyV2,
+        modelMaxOutputTokens: retrievalReviewBudget.maxContextTokens + 1,
+      },
+      { ...retrievalReviewPolicyV2, maxCandidateMembers: retrievalReviewBudget.maxObjects + 1 },
+      {
+        ...retrievalReviewPolicyV2,
+        maxResupplements: retrievalReviewBudget.maxSupplementarySearches + 1,
+      },
+    ]) {
+      expect(
+        codeOf(() =>
+          createDeploymentPolicyCatalogReaderV1(
+            buildCatalog([reviewEntry({ body })], [budgetEntry()]),
+          ),
+        ),
+      ).toBe(DEPLOYMENT_POLICY_ERROR_V1.refMismatch);
+    }
+  });
 });
 
 describe("检索质量门禁", () => {
@@ -989,7 +1155,7 @@ describe("现场上下文精确窄读", () => {
           content: (async function* () {
             yield bytes;
           })(),
-          verified: verified ?? Promise.resolve({ schemaVersion: "1" }),
+          completed: verified ?? Promise.resolve({ schemaVersion: "1" }),
         } as unknown as ArtifactReadHandleV1;
         return handle;
       },

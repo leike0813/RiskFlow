@@ -305,6 +305,10 @@ export const WarningAssessmentContextV1Schema = z
     }
   });
 export type WarningAssessmentContextV1 = z.infer<typeof WarningAssessmentContextV1Schema>;
+export const WarningAssessmentInputSchema = z
+  .strictObject(WarningAssessmentContextV1Schema.shape)
+  .omit({ warningAggregationPolicyRef: true, notificationPolicyRef: true });
+export type WarningAssessmentInput = z.infer<typeof WarningAssessmentInputSchema>;
 
 /* -------------------------------------------------------------------------- */
 /* 处置任务、通知意图、投递与确认（D-05、D-07、D-08）                           */

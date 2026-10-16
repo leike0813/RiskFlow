@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type { EvidenceReference, VersionReference } from "@riskflow/contracts/common";
 import { DomainEventV1Schema, type DomainEventV1 } from "@riskflow/contracts/events";
@@ -65,7 +65,6 @@ import {
   identificationGroupRefFor,
   identificationRunRefFor,
   mergePlanRefFor,
-  modelContextResultIdFor,
   routeDecisionRefFor,
   validatedCandidateSetRefFor,
   validationSnapshotRefFor,
@@ -100,9 +99,12 @@ import type {
   IdentificationReviewRevisionFieldsV1,
   IdentificationReviewRevisionOutcomeV1,
   IdentificationReviewRevisionRequestV1,
+  IdentificationWorkPlanExactV1,
   RiskCandidateFinalizationServiceOptionsV1,
   RiskCandidateFinalizationAuthorizationPortV1,
   RiskCandidateFinalizationResultStoreV1,
+  RiskCandidateModelOutcomeV1,
+  RiskCandidateModelUsageV1,
   RiskCandidateRepairFeedbackV1,
   RiskCandidateZeroResultReadOutcomeV1,
   RiskCandidateZeroResultReadRequestV1,
@@ -111,7 +113,17 @@ import type {
 
 export const RISK_CANDIDATE_ARTIFACT_MAX_BYTES_V1 = 8 * 1024 * 1024;
 const STAGE_PREFIX = "identification-candidate-finalization";
+const artifactBytesOf = (value: unknown): Uint8Array =>
+  new TextEncoder().encode(JSON.stringify(value));
+const candidateArtifactIdFor = (candidate: RiskCandidateV1): string =>
+  `${STAGE_PREFIX}:candidate:${candidate.candidateId}:v${candidate.candidateVersion}`;
 const CONTENT_REF_KIND = "content-artifact";
+const identificationRunOfWorkPlan = (projectId: string, plan: IdentificationWorkPlanExactV1) =>
+  plan.inputSnapshot.identificationRunRef ??
+  identificationRunRefFor({
+    projectId,
+    workPlanEntityId: plan.workPlanRef.reference.entityId,
+  });
 
 const CANDIDATE_NON_BLANK_FIELDS = ["riskSource", "riskFactor", "riskEvent"] as const;
 
@@ -288,6 +300,34 @@ const generationBudgetExceeded = (input: {
   input.usage.outputBytes > input.policy.budget.maxOutputBytes ||
   input.usage.elapsedMs > input.policy.budget.maxWallClockMs;
 
+/** D-10：每个实际模型响应先结算；token、输出字节与墙钟按本次发生累加，修正轮次随尝试前进。 */
+const accumulateCandidateUsage = (
+  usage: RiskCandidateSetV1["usage"],
+  response: {
+    readonly usage: RiskCandidateModelUsageV1;
+    readonly elapsedMs: number;
+  },
+  repairRounds: number,
+): RiskCandidateSetV1["usage"] => ({
+  modelInvocations: usage.modelInvocations + 1,
+  inputTokens: usage.inputTokens + response.usage.inputTokens,
+  outputTokens: usage.outputTokens + response.usage.outputTokens,
+  totalTokens: usage.totalTokens + response.usage.totalTokens,
+  outputBytes: usage.outputBytes + response.usage.outputBytes,
+  elapsedMs: usage.elapsedMs + response.elapsedMs,
+  repairRounds,
+});
+
+/** 原修正循环的硬预算判定：修正轮次、总 token、输出字节与墙钟任一耗尽即停止尝试。 */
+const repairBudgetExhausted = (input: {
+  readonly usage: RiskCandidateSetV1["usage"];
+  readonly policy: RiskCandidateGenerationPolicyV1;
+}): boolean =>
+  input.usage.repairRounds >= input.policy.budget.maxRepairRounds ||
+  input.usage.totalTokens >= input.policy.budget.maxTotalTokens ||
+  input.usage.outputBytes >= input.policy.budget.maxOutputBytes ||
+  input.usage.elapsedMs >= input.policy.budget.maxWallClockMs;
+
 const asContentRef = (reference: VersionReference): ContractReferenceV1 => ({
   kind: CONTENT_REF_KIND,
   reference,
@@ -319,7 +359,7 @@ export const uniqueEvidenceReferences = (
   [
     ...new Map(
       references.map((reference) => [
-        `${reference.locator.sourceSegmentId} ${reference.sourceVersion.entityId} ${reference.sourceVersion.versionId}`,
+        `${reference.locator.sourceSegmentId}\u0000${reference.sourceVersion.entityId}\u0000${reference.sourceVersion.versionId}`,
         reference,
       ]),
     ).values(),
@@ -1028,7 +1068,7 @@ const readCandidateArtifactJson = async (
       throw new RangeError("artifact exceeds the bounded read");
     chunks.push(chunk);
   }
-  await handle.verified;
+  await handle.completed;
   const buffer = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) {
@@ -1292,7 +1332,7 @@ export class RiskCandidateFinalizationService {
         additionalSourceAccessGrantRefs: [],
       }),
       (async function* () {
-        yield new TextEncoder().encode(JSON.stringify(input.value));
+        yield artifactBytesOf(input.value);
       })(),
     );
     return result.artifactRef.reference;
@@ -1485,7 +1525,6 @@ export class RiskCandidateFinalizationService {
     readonly projectId: string;
     readonly workItemRef: RiskCandidateSetV1["workItemRef"];
     readonly modelContextArtifactSetRef: VersionReference;
-    readonly retrievalArtifactSetRef: VersionReference;
     readonly nodeId: string;
     readonly inputSnapshotRef: RiskCandidateSetV1["inputSnapshotRef"];
     readonly outputs: readonly ModelOutputResult[];
@@ -1504,7 +1543,7 @@ export class RiskCandidateFinalizationService {
   }): readonly RiskCandidateV1[] {
     return input.outputs.map((output, index) => {
       const parent = input.parentCandidates?.[index];
-      return {
+      return RiskCandidateV1Schema.parse({
         candidateId:
           parent?.candidateId ??
           `${input.candidateSetEntityId}:candidate:${String(index + 1).padStart(3, "0")}`,
@@ -1524,7 +1563,6 @@ export class RiskCandidateFinalizationService {
           kind: "model-context-artifact-set" as const,
           reference: input.modelContextArtifactSetRef,
         },
-        retrievalArtifactSetRef: input.retrievalArtifactSetRef,
         nodeId: input.nodeId,
         output,
         modelDeploymentRef: input.modelDeploymentRef,
@@ -1534,7 +1572,7 @@ export class RiskCandidateFinalizationService {
         rawResponseRef: { kind: "diagnostic-artifact" as const, reference: input.rawResponseRef },
         invocationId: input.invocationId,
         generatedAt: input.generatedAt,
-      };
+      });
     });
   }
 
@@ -1549,7 +1587,7 @@ export class RiskCandidateFinalizationService {
   }): Promise<ReadonlyMap<string, VersionReference>> {
     const refs = new Map<string, VersionReference>();
     for (const candidate of input.candidates) {
-      const artifactId = `${STAGE_PREFIX}:candidate:${candidate.candidateId}:v${candidate.candidateVersion}`;
+      const artifactId = candidateArtifactIdFor(candidate);
       const reference = await this.#putArtifact({
         artifactId,
         projectId: input.projectId,
@@ -1563,6 +1601,35 @@ export class RiskCandidateFinalizationService {
       refs.set(
         candidateEvaluationKey(candidate.candidateId, candidate.candidateVersion),
         reference,
+      );
+    }
+    return refs;
+  }
+
+  async #readCandidateArtifactRefs(input: {
+    readonly candidates: readonly RiskCandidateV1[];
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<ReadonlyMap<string, VersionReference>> {
+    const refs = new Map<string, VersionReference>();
+    for (const candidate of input.candidates) {
+      const artifactRef = {
+        entityId: candidateArtifactIdFor(candidate),
+        versionId: `sha256:${createHash("sha256").update(artifactBytesOf(candidate)).digest("hex")}`,
+      };
+      await this.#readArtifactJson({
+        artifactRef,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        authorization: input.authorization,
+        purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.candidateSet,
+      });
+      refs.set(
+        candidateEvaluationKey(candidate.candidateId, candidate.candidateVersion),
+        artifactRef,
       );
     }
     return refs;
@@ -1594,7 +1661,7 @@ export class RiskCandidateFinalizationService {
       workItemEntityId: input.workItemRef.reference.entityId,
     });
     return {
-      value: {
+      value: RiskCandidateSetV1Schema.parse({
         schemaVersion: RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1,
         projectId: input.projectId,
         inputSnapshotRef: input.modelContext.inputSnapshotRef,
@@ -1630,7 +1697,7 @@ export class RiskCandidateFinalizationService {
         authorizationScopeDigest: input.scopeDigest,
         authorizationContextRef: input.authorizationContextRef,
         generatedAt: input.generatedAt,
-      },
+      }),
       digest,
       candidateArtifactRefs: input.candidateArtifactRefs,
       candidateSetEntityId,
@@ -1675,12 +1742,11 @@ export class RiskCandidateFinalizationService {
     }
     const modelContext = modelContextRead.read.payload;
     if (
-      !sameRef(modelContext.inputSnapshotRef.reference, command.payload.workItemRef.reference) &&
-      modelContextResultIdFor({
-        projectId: command.projectId,
-        workItemEntityId: command.payload.workItemRef.reference.entityId,
-        retrievalArtifactSetEntityId: command.payload.retrievalArtifactSetRef.reference.entityId,
-      }) === undefined
+      !sameRef(modelContext.workItemRef.reference, command.payload.workItemRef.reference) ||
+      !sameRef(
+        modelContext.retrievalArtifactSetRef.reference,
+        command.payload.retrievalArtifactSetRef.reference,
+      )
     ) {
       throw new RiskCandidateFinalizationError(
         blocked({
@@ -1752,33 +1818,75 @@ export class RiskCandidateFinalizationService {
         zeroResultRef: priorZeroResult.zeroResultRef,
       };
     }
-    const modelOutcome = await options.model.generateCandidates({
-      projectId: command.projectId,
-      actorId: command.actorId,
-      invocationId: `${command.commandId}:generate`,
-      requestedAt: occurredAt,
-      deadlineAt,
-      modelContext,
-      modelDeploymentRef: command.payload.modelDeploymentRef,
-      promptTemplateRef: command.payload.promptTemplateRef,
-      outputSchemaRef: generationPolicy.outputSchemaRef,
-      budgetPolicyRef: generationPolicy.budgetPolicyRef,
-      budget: generationPolicy.budget,
-      maxOutputTokens: generationPolicy.budget.maxTotalTokens,
-      authorization: current,
-    });
-    if (modelOutcome.kind === "failed") {
-      throw new RiskCandidateFinalizationError(modelOutcome.error);
-    }
-    const initialUsage: RiskCandidateSetV1["usage"] = {
-      modelInvocations: 1,
-      inputTokens: modelOutcome.usage.inputTokens,
-      outputTokens: modelOutcome.usage.outputTokens,
-      totalTokens: modelOutcome.usage.totalTokens,
-      outputBytes: modelOutcome.usage.outputBytes,
-      elapsedMs: modelOutcome.elapsedMs,
+    // D-10：JSON/Schema 输出错误是可修正结构错误；在原模型、提示与剩余修正/token/墙钟预算内
+    // 重生成，每次实际响应先结算真实用量与原响应引用，不伪造候选，也不新建第二套重试策略。
+    const rawResponseRefs: VersionReference[] = [];
+    let initialUsage: RiskCandidateSetV1["usage"] = {
+      modelInvocations: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      outputBytes: 0,
+      elapsedMs: 0,
       repairRounds: 0,
     };
+    let modelOutcome: Extract<RiskCandidateModelOutcomeV1, { kind: "succeeded" }> | undefined;
+    while (modelOutcome === undefined) {
+      const attempt = await options.model.generateCandidates({
+        projectId: command.projectId,
+        actorId: command.actorId,
+        invocationId:
+          initialUsage.modelInvocations === 0
+            ? `${command.commandId}:generate`
+            : `${command.commandId}:generate:${initialUsage.modelInvocations + 1}`,
+        requestedAt: this.#now().toISOString(),
+        deadlineAt,
+        modelContext,
+        modelDeploymentRef: command.payload.modelDeploymentRef,
+        promptTemplateRef: command.payload.promptTemplateRef,
+        outputSchemaRef: generationPolicy.outputSchemaRef,
+        budgetPolicyRef: generationPolicy.budgetPolicyRef,
+        budget: generationPolicy.budget,
+        maxOutputTokens: Math.max(
+          1,
+          generationPolicy.budget.maxTotalTokens - initialUsage.totalTokens,
+        ),
+        authorization: current,
+        ...(initialUsage.modelInvocations === 0
+          ? {}
+          : {
+              repair: {
+                attempt: initialUsage.modelInvocations + 1,
+                parentCandidates: [],
+                failures: [],
+                outputError: { reasonCode: CANDIDATE_VALIDATION_REASON_CODES_V1.schemaInvalid },
+                previousRawResponseRefs: rawResponseRefs.map((reference) => ({
+                  kind: "diagnostic-artifact" as const,
+                  reference,
+                })),
+              },
+            }),
+      });
+      if (attempt.kind === "failed") {
+        throw new RiskCandidateFinalizationError(attempt.error);
+      }
+      rawResponseRefs.push(attempt.rawResponseRef.reference);
+      initialUsage = accumulateCandidateUsage(initialUsage, attempt, initialUsage.modelInvocations);
+      if (attempt.kind === "succeeded") {
+        modelOutcome = attempt;
+        continue;
+      }
+      if (repairBudgetExhausted({ usage: initialUsage, policy: generationPolicy })) {
+        throw new RiskCandidateFinalizationError(
+          blocked({
+            causalRunId: command.commandId,
+            occurredAt: this.#now().toISOString(),
+            blockerKind: CANDIDATE_VALIDATION_REASON_CODES_V1.budgetExhausted,
+            blockerRef: command.payload.workItemRef,
+          }),
+        );
+      }
+    }
     if (
       generationBudgetExceeded({
         candidateCount: modelOutcome.outputs.length,
@@ -1894,7 +2002,6 @@ export class RiskCandidateFinalizationService {
       projectId: command.projectId,
       workItemRef: command.payload.workItemRef,
       modelContextArtifactSetRef: modelContextRead.read.modelContextArtifactSetRef.reference,
-      retrievalArtifactSetRef: command.payload.retrievalArtifactSetRef.reference,
       nodeId: modelContext.nodeId,
       inputSnapshotRef: modelContext.inputSnapshotRef,
       outputs: modelOutcome.outputs,
@@ -1924,7 +2031,7 @@ export class RiskCandidateFinalizationService {
       generationPolicy,
       round: 1,
       parentCandidateSetRef: undefined,
-      rawResponseRefs: [modelOutcome.rawResponseRef.reference],
+      rawResponseRefs,
       usage: initialUsage,
       candidates,
       acceptedCandidates: [],
@@ -2102,16 +2209,16 @@ export class RiskCandidateFinalizationService {
 
     let candidateSet = initialSet;
     let candidateSetRef = command.payload.candidateSetRef;
-    let candidateArtifactRefs = await this.#persistCandidates({
+    let candidateArtifactRefs = await this.#readCandidateArtifactRefs({
       candidates: candidateSet.candidates,
       projectId: command.projectId,
       actorId: command.actorId,
-      issuedAt: occurredAt,
-      commandId: command.commandId,
+      requestedAt: occurredAt,
       authorization: current,
     });
     let rawResponseRefs = candidateSet.rawResponseRefs.map((ref) => ref.reference);
     let usage = { ...candidateSet.usage };
+    let outputError: RiskCandidateRepairFeedbackV1["outputError"];
     let evaluation = evaluateCandidateSet({
       candidateSet,
       candidateArtifactRefs,
@@ -2134,11 +2241,7 @@ export class RiskCandidateFinalizationService {
           }),
         );
       }
-      const exhausted =
-        usage.repairRounds >= generationPolicy.budget.maxRepairRounds ||
-        usage.totalTokens >= generationPolicy.budget.maxTotalTokens ||
-        usage.outputBytes >= generationPolicy.budget.maxOutputBytes ||
-        usage.elapsedMs >= generationPolicy.budget.maxWallClockMs;
+      const exhausted = repairBudgetExhausted({ usage, policy: generationPolicy });
       const firstFailure = evaluation.entries
         .flatMap((entry) => entry.checks)
         .find((entry) => !entry.passed);
@@ -2221,6 +2324,7 @@ export class RiskCandidateFinalizationService {
           attempt: round,
           parentCandidates: candidateSet.candidates,
           failures,
+          ...(outputError === undefined ? {} : { outputError }),
           previousRawResponseRefs: rawResponseRefs.map((reference) => ({
             kind: "diagnostic-artifact" as const,
             reference,
@@ -2230,6 +2334,15 @@ export class RiskCandidateFinalizationService {
       if (modelOutcome.kind === "failed") {
         throw new RiskCandidateFinalizationError(modelOutcome.error);
       }
+      usage = accumulateCandidateUsage(usage, modelOutcome, round);
+      rawResponseRefs = [...rawResponseRefs, modelOutcome.rawResponseRef.reference];
+      if (modelOutcome.kind === "output-schema-invalid") {
+        // D-10：本轮响应已按真实用量结算；原循环在原模型/提示与剩余预算内重生成同一批
+        // 父候选，不伪造候选，也不把格式错误升级为终态。
+        outputError = { reasonCode: CANDIDATE_VALIDATION_REASON_CODES_V1.schemaInvalid };
+        continue;
+      }
+      outputError = undefined;
       if (modelOutcome.outputs.length !== repairParents.length) {
         throw new RiskCandidateFinalizationError(
           terminalFailure({
@@ -2239,15 +2352,6 @@ export class RiskCandidateFinalizationService {
           }),
         );
       }
-      usage = {
-        modelInvocations: usage.modelInvocations + 1,
-        inputTokens: usage.inputTokens + modelOutcome.usage.inputTokens,
-        outputTokens: usage.outputTokens + modelOutcome.usage.outputTokens,
-        totalTokens: usage.totalTokens + modelOutcome.usage.totalTokens,
-        outputBytes: usage.outputBytes + modelOutcome.usage.outputBytes,
-        elapsedMs: usage.elapsedMs + modelOutcome.elapsedMs,
-        repairRounds: round,
-      };
       if (
         generationBudgetExceeded({
           candidateCount: accepted.length + modelOutcome.outputs.length,
@@ -2264,14 +2368,12 @@ export class RiskCandidateFinalizationService {
           }),
         );
       }
-      rawResponseRefs = [...rawResponseRefs, modelOutcome.rawResponseRef.reference];
       const generatedAt = this.#now().toISOString();
       const repairedCandidates = this.#buildCandidates({
         candidateSetEntityId: candidateSetRef.reference.entityId,
         projectId: command.projectId,
         workItemRef: row.workItemRef,
         modelContextArtifactSetRef: candidateSet.modelContextArtifactSetRef.reference,
-        retrievalArtifactSetRef: candidateSet.retrievalArtifactSetRef.reference,
         nodeId: candidateSet.nodeId,
         inputSnapshotRef: candidateSet.inputSnapshotRef,
         outputs: modelOutcome.outputs,
@@ -2757,10 +2859,7 @@ export class RiskCandidateFinalizationService {
       vectors: embedding.vectors,
       policy: mergePolicy,
     });
-    const identificationRunRef = identificationRunRefFor({
-      projectId: command.projectId,
-      workPlanEntityId: command.payload.workPlanRef.reference.entityId,
-    });
+    const identificationRunRef = identificationRunOfWorkPlan(command.projectId, workPlan.read);
     const groupRequests: ArtifactPersistRequestV1[] = [];
     const groupEntries: MergePlanV1["groups"] = [];
     let memberTotal = 0;
@@ -2860,6 +2959,7 @@ export class RiskCandidateFinalizationService {
       reference: candidate.candidateRef,
     }));
     const mergePlanDigest = sha256CanonicalJson({
+      identificationRunRef: identificationRunRef.reference,
       workPlanRef: command.payload.workPlanRef.reference,
       validatedCandidateSetRefs: command.payload.validatedCandidateSetRefs.map(
         (ref) => ref.reference,
@@ -3051,6 +3151,28 @@ export class RiskCandidateFinalizationService {
       purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.mergePlan,
       authorization: current,
     });
+    const workPlan = await options.workPlanReader.readExact({
+      projectId: command.projectId,
+      actorId: command.actorId,
+      requestedAt: occurredAt,
+      workPlanRef: mergePlan.workPlanRef,
+      authorization: current,
+    });
+    if (
+      workPlan.kind === "failed" ||
+      !sameRef(workPlan.read.inputSnapshotRef.reference, mergePlan.inputSnapshotRef.reference)
+    ) {
+      throw new RiskCandidateFinalizationError(
+        blocked({
+          causalRunId: command.commandId,
+          occurredAt,
+          blockerKind:
+            workPlan.kind === "failed" ? workPlan.detailCode : "work-plan-input-mismatch",
+          blockerRef: mergePlan.workPlanRef,
+        }),
+      );
+    }
+    const identificationRunRef = identificationRunOfWorkPlan(command.projectId, workPlan.read);
     const confidencePolicy = await options.policyProvider.resolveConfidence({
       projectId: command.projectId,
       inputSnapshotRef: mergePlan.inputSnapshotRef,
@@ -3392,7 +3514,7 @@ export class RiskCandidateFinalizationService {
               kind: "evidence-snapshot",
               reference: evidenceSnapshotRef.reference,
             },
-            waitingRunRef: mergePlan.identificationRunRef,
+            waitingRunRef: identificationRunRef,
             reviewPolicyRef: forcedReviewPolicy.reviewPolicyRef,
           },
         }),
@@ -3417,7 +3539,7 @@ export class RiskCandidateFinalizationService {
         groupRef: entry.groupRef,
         compositeConfidence: confidenceOutcome.confidence,
         reviewTaskRef: reviewResult.result.reviewTaskRef,
-        waitingRunRef: mergePlan.identificationRunRef,
+        waitingRunRef: identificationRunRef,
         validationSnapshotRef,
         evidenceSnapshotRef,
         reviewPolicyRef: forcedReviewPolicy.reviewPolicyRef,
@@ -3425,6 +3547,7 @@ export class RiskCandidateFinalizationService {
       });
     }
     const routeSetDigest = sha256CanonicalJson({
+      identificationRunRef: identificationRunRef.reference,
       mergePlanRef: command.payload.mergePlanRef.reference,
       confidencePolicyRef: confidencePolicy.policyRef,
       forcedReviewPolicyRef: forcedReviewPolicy.policyRef,
@@ -3453,7 +3576,7 @@ export class RiskCandidateFinalizationService {
       schemaVersion: RISK_CANDIDATE_FINALIZATION_SCHEMA_VERSION_V1,
       projectId: command.projectId,
       workPlanRef: mergePlan.workPlanRef,
-      identificationRunRef: mergePlan.identificationRunRef,
+      identificationRunRef,
       inputSnapshotRef: mergePlan.inputSnapshotRef,
       policySetRef: mergePlan.policySetRef,
       mergePlanRef: command.payload.mergePlanRef,
@@ -4443,7 +4566,6 @@ export class RiskCandidateFinalizationService {
     const resolvedSimulation = validationPolicy.simulationConstraint?.policyRef;
     if (
       !sameRef(validationPolicy.policyRef, sourceValidation.validationPolicyRef) ||
-      !sameRef(validationPolicy.policySetRef.reference, sourceSet.policySetRef.reference) ||
       !sameRef(
         validationPolicy.ruleValidationPolicyRef,
         sourceValidation.ruleValidationPolicyRef,

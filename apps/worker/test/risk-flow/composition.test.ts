@@ -307,7 +307,6 @@ const startFixture = async (): Promise<CompositionFixtureV1> => {
     });
     const checkpointer = await setupPostgresCheckpointer({
       ...postgres.checkpointer,
-      validateReference: () => true,
     });
     const access = createAccessStub(authorizationFor("workflow.start"));
     const humanDecisionProof = createHumanDecisionProofStub();

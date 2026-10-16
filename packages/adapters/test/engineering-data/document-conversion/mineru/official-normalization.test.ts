@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { normalizeOfficialMineruLayout } from "../../../../src/engineering-data/document-conversion/mineru/official-normalization.js";
 import { MineruConfigV1Schema } from "../../../../src/engineering-data/document-conversion/mineru/schema.js";
-import { makeConfig, makeRequest } from "./fixture.js";
+import { makeConfig, makeRequest, rawRef } from "./fixture.js";
 
 type FixtureSpan = {
   type: string;
@@ -103,6 +103,94 @@ describe("official MinerU layout mapping", () => {
       serviceBuild: null,
       normalization: { tier: null },
     });
+  });
+
+  it("preserves chart annotations and geometry without reading image payloads as text", () => {
+    const value = layout();
+    const body: FixtureBlock = {
+      type: "chart_body",
+      index: 0,
+      bbox: [30, 20, 270, 100],
+      lines: [{ spans: [{ type: "chart", image_path: "images/chart-only.png" }] }],
+    };
+    value.pdf_info[0]!.para_blocks.push({
+      type: "chart",
+      index: 2,
+      bbox: [30, 20, 270, 180],
+      blocks: [
+        body,
+        {
+          type: "chart_caption",
+          index: 1,
+          bbox: [30, 110, 270, 140],
+          lines: [{ spans: [{ type: "text", content: "监测曲线" }] }],
+        },
+        {
+          type: "chart_footnote",
+          index: 2,
+          bbox: [30, 150, 270, 180],
+          lines: [{ spans: [{ type: "text", content: "测点说明" }] }],
+        },
+      ],
+    });
+    const result = normalizeOfficialMineruLayout(value, makeRequest(), config, source);
+    expect(result.parsedDocument.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "caption",
+          text: "监测曲线",
+          coordinate: {
+            kind: "page",
+            pageNumber: 1,
+            x: 30,
+            y: expect.closeTo(110, 8),
+            width: 240,
+            height: expect.closeTo(30, 8),
+          },
+        }),
+        expect.objectContaining({ kind: "caption", text: "测点说明" }),
+      ]),
+    );
+    expect(result.parsedDocument.blocks.some((block) => block.text.includes("chart-only"))).toBe(
+      false,
+    );
+    body.lines![0]!.spans = [{ type: "text", content: "unrecognized chart data" }];
+    expect(() => normalizeOfficialMineruLayout(value, makeRequest(), config, source)).toThrow(
+      expect.objectContaining({ code: "MINERU_PROTOCOL_INVALID" }),
+    );
+  });
+
+  it("retains mixed and image-only table cells without inventing text", () => {
+    const value = layout();
+    value.pdf_info[0]!.para_blocks[1]!.blocks![0]!.lines![0]!.spans[0]!.html =
+      '<table><tr><td>测点<img src="symbol.png"/></td><td><img src="symbol.png"/></td></tr></table>';
+    const image = {
+      kind: "unrecognized-image" as const,
+      rawResponseArtifactRef: rawRef("official-result-zip"),
+      packageEntryPath: "images/symbol.png",
+    };
+    const result = normalizeOfficialMineruLayout(value, makeRequest(), config, source, () => image);
+    const cells = result.parsedDocument.blocks.filter((block) => block.kind === "cell");
+    expect(cells).toEqual([
+      expect.objectContaining({ text: "测点", row: 1, column: 1, unrecognizedImages: [image] }),
+      expect.objectContaining({
+        text: "",
+        value: null,
+        row: 1,
+        column: 2,
+        unrecognizedImages: [image],
+      }),
+    ]);
+    expect(result.parsedDocument.blocks.some((block) => block.text.includes("symbol.png"))).toBe(
+      false,
+    );
+    expect(() => normalizeOfficialMineruLayout(value, makeRequest(), config, source)).toThrow();
+    for (const markup of ['<img src="symbol.png" alt="x"/>', '<img src="symbol.png"></img>']) {
+      value.pdf_info[0]!.para_blocks[1]!.blocks![0]!.lines![0]!.spans[0]!.html = `<table><tr><td>${markup}</td></tr></table>`;
+      expect(() =>
+        normalizeOfficialMineruLayout(value, makeRequest(), config, source, () => image),
+      ).toThrow();
+    }
   });
 
   it("scales rendered image geometry into actual source pixels", () => {

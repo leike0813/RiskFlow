@@ -859,7 +859,7 @@ describe("C36 质量评估写入路径", () => {
     });
     const chunks: Uint8Array[] = [];
     for await (const chunk of readBack.content) chunks.push(chunk);
-    const receipt = await readBack.verified;
+    const receipt = await readBack.completed;
     expect(`sha256:${receipt.content.hash.value}`).toBe(
       result.reportArtifactRef.reference.versionId,
     );
@@ -1663,7 +1663,7 @@ describe("C36 数据集计算 CLI", () => {
     });
     const cliChunks: Uint8Array[] = [];
     for await (const chunk of cliRead.content) cliChunks.push(chunk);
-    const cliReceipt = await cliRead.verified;
+    const cliReceipt = await cliRead.completed;
     expect(`sha256:${cliReceipt.content.hash.value}`).toBe(
       output.reportArtifactRef.reference.versionId,
     );

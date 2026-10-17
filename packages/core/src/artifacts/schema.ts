@@ -68,6 +68,14 @@ const sortedUnique = <T>(schema: z.ZodType<T>, key: (value: T) => string, minimu
       }
     });
 
+const normalizeSortedUnique = <T>(values: readonly T[], key: (value: T) => string): T[] =>
+  [...values]
+    .sort((left, right) => compareKeys(key(left), key(right)))
+    .filter((value, index, all) => index === 0 || key(all[index - 1]!) !== key(value));
+
+const normalizedSet = <T>(schema: z.ZodType<T>, key: (value: T) => string) =>
+  z.array(schema).transform((values) => normalizeSortedUnique(values, key));
+
 export const ARTIFACT_KIND_V1_VALUES = ["content", "diagnostic"] as const;
 export const ArtifactKindV1Schema = z.enum(ARTIFACT_KIND_V1_VALUES);
 export type ArtifactKindV1 = z.infer<typeof ArtifactKindV1Schema>;
@@ -147,10 +155,10 @@ export const ArtifactPutCommandV1Schema = z
     mediaType: text,
     expectedHash: ArtifactHashV1Schema.optional(),
     expectedByteLength: nonNegativeSafeInteger.optional(),
-    parentArtifactRefs: sortedUnique(ArtifactRefV1Schema, referenceKey),
-    evidenceReferences: sortedUnique(EvidenceReferenceSchema, evidenceKey),
-    additionalSpatialScopeRefs: sortedUnique(SpatialScopeRefV1Schema, referenceKey),
-    additionalSourceAccessGrantRefs: sortedUnique(SourceAccessGrantRefV1Schema, referenceKey),
+    parentArtifactRefs: normalizedSet(ArtifactRefV1Schema, referenceKey),
+    evidenceReferences: normalizedSet(EvidenceReferenceSchema, evidenceKey),
+    additionalSpatialScopeRefs: normalizedSet(SpatialScopeRefV1Schema, referenceKey),
+    additionalSourceAccessGrantRefs: normalizedSet(SourceAccessGrantRefV1Schema, referenceKey),
   })
   .superRefine((command, context) => {
     if (command.projectId !== command.authorization.projectId) {
@@ -845,20 +853,11 @@ export const evidenceReferencesSha256 = (
 ): string => sha256CanonicalJson(references);
 
 export const normalizeArtifactReferences = <T extends ArtifactRefV1>(values: readonly T[]): T[] =>
-  [...values]
-    .sort((left, right) => compareKeys(referenceKey(left), referenceKey(right)))
-    .filter(
-      (value, index, all) => index === 0 || referenceKey(all[index - 1]!) !== referenceKey(value),
-    );
+  normalizeSortedUnique(values, referenceKey);
 
 export const normalizeEvidenceReferences = <T extends z.infer<typeof EvidenceReferenceSchema>>(
   values: readonly T[],
-): T[] =>
-  [...values]
-    .sort((left, right) => compareKeys(evidenceKey(left), evidenceKey(right)))
-    .filter(
-      (value, index, all) => index === 0 || evidenceKey(all[index - 1]!) !== evidenceKey(value),
-    );
+): T[] => normalizeSortedUnique(values, evidenceKey);
 
 export const normalizeArtifactAccessSnapshot = (
   snapshot: Omit<

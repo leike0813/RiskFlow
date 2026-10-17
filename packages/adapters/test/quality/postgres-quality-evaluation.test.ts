@@ -1145,6 +1145,35 @@ describe("C36 页面查询投影", () => {
     expect(exact.kind === "succeeded" && exact.result.qualitySummaries).toHaveLength(1);
   }, 300_000);
 
+  it("接受长质量游标并继续读取下一页", async () => {
+    const cursor = Buffer.from(
+      JSON.stringify({
+        projectId: authorization.projectId,
+        projectRevisionRef: { entityId: "quality-revision", versionId: "r1" },
+        createdAt: "2099-01-01T00:00:00.000Z",
+        reportArtifactId: "z".repeat(600),
+        reportArtifactVersionId: "1",
+      }),
+      "utf8",
+    ).toString("base64url");
+    expect(cursor.length).toBeGreaterThan(512);
+
+    const nextPage = await queryProjection().query(
+      queryEnvelope(
+        {
+          queryType: "quality-evaluation",
+          selector: { ...qualityListSelector, pageSize: 1, cursor },
+        },
+        "quality-query-long-cursor",
+      ),
+    );
+
+    expect(nextPage.kind).toBe("succeeded");
+    if (nextPage.kind !== "succeeded") return;
+    expect(nextPage.result.qualitySummaries).toHaveLength(1);
+    expect(nextPage.result.nextCursor).toBeDefined();
+  }, 300_000);
+
   it("无权、跨空间、跨工程、不存在与非法游标统一同形拒绝，旧查询类型不被接管", async () => {
     const projection = queryProjection();
     const otherProject = "other-quality-project";

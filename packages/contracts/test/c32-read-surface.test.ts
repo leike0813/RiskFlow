@@ -8,6 +8,7 @@ import {
   KnowledgeRetrievalReadQueryV1Schema,
   KnowledgeRetrievalReadSuccessV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
+  ProjectionResultReadPageV1Schema,
   ProjectionResultReadQueryV1Schema,
 } from "../src/ports/index.js";
 
@@ -169,9 +170,38 @@ describe("KnowledgeRetrievalReadQueryV1Schema / ProjectionResultReadQueryV1Schem
       }).success,
     ).toBe(true);
   });
+
+  it("接受长读取游标", () => {
+    expect(
+      ProjectionResultReadQueryV1Schema.safeParse({
+        ...queryBase,
+        kind: "result-read",
+        payload: { queryResultRef: versionRef("query-result"), cursor: "c".repeat(600) },
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe("C32 成功结果判别联合", () => {
+  it("接受长目录结果游标", () => {
+    expect(
+      EngineeringDataCatalogSuccessV1Schema.safeParse({
+        kind: "source-catalog",
+        items: [],
+        totalCount: 0,
+        nextCursor: "c".repeat(600),
+      }).success,
+    ).toBe(true);
+    expect(
+      ProjectionResultReadPageV1Schema.safeParse({
+        kind: "page",
+        queryType: "trace-chain",
+        items: [],
+        nextCursor: "d".repeat(600),
+      }).success,
+    ).toBe(true);
+  });
+
   it("工程上下文读成功形状", () => {
     const parsed = EngineeringDataCatalogSuccessV1Schema.safeParse({
       kind: "context-read",

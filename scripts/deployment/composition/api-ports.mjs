@@ -17,6 +17,7 @@
  */
 
 import { clearTimeout, setTimeout } from "node:timers";
+import { createRegisteredResourceAuthorizerV1 } from "../../../packages/adapters/dist/auth/index.js";
 import { createPostgresEngineeringDataCatalogAdapter } from "../../../packages/adapters/dist/engineering-data/catalog/index.js";
 import { createPostgresKnowledgeGovernanceReadAdapter } from "../../../packages/adapters/dist/knowledge-governance/index.js";
 import { createPostgresKnowledgeRetrievalReadAdapter } from "../../../packages/adapters/dist/identification/context/index.js";
@@ -116,7 +117,6 @@ export const REQUIRED_API_PROVIDERS_V1 = Object.freeze({
   ],
   workflowBodies: ["readBody"],
   riskRecordTrace: ["readBatch"],
-  resultReadAuthorization: ["issueResultReadAuthorization"],
   runEvents: ["subscribe", "subscribeWithSourceAuthorization"],
   projectPolicies: ["resolveProject"],
   systemOperations: ["probe", "readModelVersions"],
@@ -210,6 +210,7 @@ export const createDeploymentApiReadProvidersV1 = (options) => {
     registrationStore: options.workflowRegistrationStore,
     bodies: options.workflowBodies,
     authorization: options.access,
+    authorizeResource: createRegisteredResourceAuthorizerV1(options.access),
     riskRecordTrace: options.riskRecordTrace,
   };
   const projectionRead = createPostgresWorkflowProjection(projectionStores);
@@ -218,9 +219,9 @@ export const createDeploymentApiReadProvidersV1 = (options) => {
     transactionUnit: options.transactionUnit,
     artifactStore: options.artifactStore,
     registrationStore: options.workflowRegistrationStore,
-    resultRead: projectionRead.resultRead,
+    resultRead: projectionRead.authorizedResultRead,
     authorization: options.access,
-    resultReadAuthorization: options.resultReadAuthorization,
+    authorizeResource: projectionStores.authorizeResource,
     exportPolicies,
   });
   const projection = createPostgresWorkflowProjection({

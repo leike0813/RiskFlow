@@ -341,6 +341,8 @@ export class PostgresRiskRecordTraceReader implements RiskRecordTraceReadPortV1 
     readonly requestedAt: string;
   }): Promise<AuthorizationContextV1 | undefined> {
     if (input.authorization.projectId !== input.projectId) return undefined;
+    const capability = MODULE_BRANCH_CAPABILITY_V1[input.branch];
+    if (capability !== "projection.query" && capability !== "projection.export") return undefined;
     if (input.authorization.grantedCapabilities.length !== 1) return undefined;
     try {
       const decision = await this.#authorization.verify({
@@ -358,7 +360,7 @@ export class PostgresRiskRecordTraceReader implements RiskRecordTraceReadPortV1 
         verified.projectId !== input.projectId ||
         verified.actorId !== input.authorization.actorId ||
         verified.grantedCapabilities.length !== 1 ||
-        verified.grantedCapabilities[0] !== TRACE_READ_CAPABILITY_V1
+        verified.grantedCapabilities[0] !== MODULE_BRANCH_CAPABILITY_V1[input.branch]
       ) {
         return undefined;
       }

@@ -5,7 +5,6 @@ import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/a
 import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
-  normalizeEvidenceReferences,
   type ArtifactRefV1,
   type ArtifactStoreV1,
 } from "@riskflow/core/artifacts";
@@ -2145,7 +2144,7 @@ export class PostgresCalibrationAdapter
         purposeCode: input.purposeCode,
         mediaType: input.mediaType,
         parentArtifactRefs: input.parentArtifactRefs,
-        evidenceReferences: normalizeEvidenceReferences(input.evidenceReferences),
+        evidenceReferences: input.evidenceReferences,
         additionalSpatialScopeRefs: [],
         additionalSourceAccessGrantRefs: [],
       }),

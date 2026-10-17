@@ -2323,16 +2323,6 @@ export const createDeploymentApiV1 = async (input) => {
         db: foundation.runtime.db,
         authorization: access,
       }),
-      resultReadAuthorization: {
-        issueResultReadAuthorization: (query) =>
-          authorizationScope.authorizeDownstream({
-            projectId: query.projectId,
-            actorId: query.actorId,
-            branch: "projection.result-read",
-            invocationId: query.invocationId,
-            requestedSpatialScopeRefs: query.spatialScopeRefs,
-          }),
-      },
       runEvents: foundation.runEvents,
       projectPolicies: host.policies,
       retrievalRelationshipResults: identification.compositions.context.adapter,

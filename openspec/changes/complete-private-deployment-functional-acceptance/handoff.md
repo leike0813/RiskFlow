@@ -2,6 +2,10 @@
 
 用户要求边验收边记录过度防御设计，统一维护[evidence/defensive-design-ledger.md](evidence/defensive-design-ledger.md)；按DD-ID记录证据、影响、修复状态、优化方向和必须保留的约束，不另建分散台账。
 
+## 减负接续
+
+`simplify-trusted-business-flows` 已完成已有查询/报告范围解析、工件集合规范化、日常重复验真与游标门槛减负；工程结果见其 verification。相关483项测试、报告浏览器2项通过，包含未携来源声明的新报告生成。改动尚未提交、归档或部署，旧证据不改写。范围判权、工件去重及内部读取以该 change 的 design 为准；本验收 change 继续负责实际业务、Electron及现场功能取证，tasks 仍按真实证据推进。台账中 DD-04、DD-06 与原 C31 500 不因新 change 存在而视为解决。
+
 ## 当前接续：v162已运行，浏览器90项曾全绿，真实Electron及报告/SSE修复继续
 
 当前正式`functional-workspace-20261017-d175-v162`，API session38765/Worker21315，均已返回running；配置/清单`deployment-d175-v162.json`、`release-d175-v162.json`，制品5804277字节，SHA-256 `264ee77b201b39170ef9ab565d43f98436fce1b976d118e51acc4c45f10f811b`，tracked源码/测试diff `99c8a0953d1799c2be87e2fc7ec203a01b356cd7e08e85502dcadbc01bcffad7`。tar比较/预检通过，模型/策略/图/迁移/站点不变，v161均正常stopped/count0。随后D176只改桌面测试helper，运行时代码未改，最终测试身份需重核。

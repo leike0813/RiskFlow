@@ -63,7 +63,6 @@ const providers = (overrides = {}) => {
     ]),
     workflowBodies: stub(["readBody"]),
     riskRecordTrace: stub(["readBatch"]),
-    resultReadAuthorization: stub(["issueResultReadAuthorization"]),
     runEvents: stub(["subscribe", "subscribeWithSourceAuthorization"]),
     projectPolicies: {
       reader: { listProjectIds: () => ["project-a"] },

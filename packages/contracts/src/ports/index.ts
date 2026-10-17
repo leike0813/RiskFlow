@@ -2187,7 +2187,7 @@ export const QualityEvaluationQuerySelectorV1Schema = z.discriminatedUnion("mode
     mode: z.literal("list"),
     projectRevisionRef: ProjectRevisionRefV1Schema,
     pageSize: z.number().int().positive().max(QUALITY_EVALUATION_PAGE_SIZE_MAX),
-    cursor: z.string().max(512).optional(),
+    cursor: z.string().optional(),
   }),
   z.strictObject({
     mode: z.literal("exact"),
@@ -2918,7 +2918,7 @@ export const ProjectionQuerySuccessV1Schema = z
       .array(QualityEvaluationSummaryV1Schema)
       .max(QUALITY_EVALUATION_PAGE_SIZE_MAX)
       .optional(),
-    nextCursor: z.string().max(512).optional(),
+    nextCursor: z.string().optional(),
   })
   .superRefine((success, context) => {
     if (success.nextCursor !== undefined && success.qualitySummaries === undefined) {
@@ -3415,7 +3415,7 @@ export interface HumanDecisionProofPortV1 {
 
 const C32_READ_PAGE_SIZE_MAX_V1 = 50;
 const c32ReadPageSize = z.number().int().min(1).max(C32_READ_PAGE_SIZE_MAX_V1);
-const c32ReadCursor = z.string().min(1).max(512);
+const c32ReadCursor = z.string().min(1);
 const c32ReadText = z.string().trim().min(1).max(500);
 const c32FiniteNumber = z.number().finite();
 const c32NonNegativeInt = z.number().int().nonnegative();
@@ -4191,7 +4191,7 @@ export const ProjectionResultReadPageV1Schema = z.strictObject({
   kind: z.literal("page"),
   queryType: z.enum(["run-view", "trace-chain", "association-graph", "risk-overview"]),
   items: z.array(ProjectionResultItemV1Schema),
-  nextCursor: z.string().max(512).optional(),
+  nextCursor: z.string().optional(),
 });
 export type ProjectionResultReadPageV1 = z.infer<typeof ProjectionResultReadPageV1Schema>;
 

@@ -2817,6 +2817,10 @@ describe("C36 质量评估查询契约", () => {
       qualityQuery({ mode: "list", projectRevisionRef, pageSize: 1, cursor: "cursor-value" })
         .success,
     ).toBe(true);
+    expect(
+      qualityQuery({ mode: "list", projectRevisionRef, pageSize: 1, cursor: "c".repeat(600) })
+        .success,
+    ).toBe(true);
     expect(qualityQuery({ mode: "exact", reportArtifactRef: reportRef }).success).toBe(true);
     for (const selector of [
       { mode: "list", projectRevisionRef, pageSize: 0 },
@@ -2846,6 +2850,13 @@ describe("C36 质量评估查询契约", () => {
         nextCursor: "cursor-value",
       }).success,
     ).toBe(false);
+    expect(
+      ProjectionQuerySuccessV1Schema.safeParse({
+        queryResultRef: version("query-result"),
+        qualitySummaries: [],
+        nextCursor: "c".repeat(600),
+      }).success,
+    ).toBe(true);
     expect(ProjectionQuerySuccessV1Schema.safeParse({}).success).toBe(false);
   });
 

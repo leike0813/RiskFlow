@@ -171,6 +171,44 @@ describe("content-addressed artifact schemas", () => {
     ).toBe(false);
   });
 
+  it("normalizes put collections after validating entries without mutating input", () => {
+    const parent = (entityId: string) => ({
+      kind: "content-artifact" as const,
+      reference: { entityId, versionId: `sha256:${"1".repeat(64)}` },
+    });
+    const evidenceV2 = {
+      ...evidence,
+      sourceVersion: { entityId: evidence.sourceVersion.entityId, versionId: "v2" },
+    };
+    const scope = {
+      kind: "spatial-scope" as const,
+      reference: { entityId: "scope-1", versionId: "v1" },
+    };
+    const grant = {
+      kind: "source-access-grant" as const,
+      reference: { entityId: "grant-1", versionId: "v1" },
+    };
+    const collections = {
+      parentArtifactRefs: [parent("parent-2"), parent("parent-1"), parent("parent-1")],
+      evidenceReferences: [evidenceV2, evidence, evidence],
+      additionalSpatialScopeRefs: [scope, scope],
+      additionalSourceAccessGrantRefs: [grant, grant],
+    };
+    const parsed = ArtifactPutCommandV1Schema.parse({ ...makePut(), ...collections });
+
+    expect(parsed.parentArtifactRefs.map((ref) => ref.reference.entityId)).toEqual([
+      "parent-1",
+      "parent-2",
+    ]);
+    expect(parsed.evidenceReferences).toEqual([evidence, evidenceV2]);
+    expect(parsed.additionalSpatialScopeRefs).toEqual([scope]);
+    expect(parsed.additionalSourceAccessGrantRefs).toEqual([grant]);
+    expect(collections.parentArtifactRefs).toHaveLength(3);
+    expect(collections.evidenceReferences).toHaveLength(3);
+    expect(collections.additionalSpatialScopeRefs).toHaveLength(2);
+    expect(collections.additionalSourceAccessGrantRefs).toHaveLength(2);
+  });
+
   it("keeps content and diagnostic references distinct", () => {
     expect(ArtifactRefV1Schema.safeParse(artifactRef).success).toBe(true);
     expect(

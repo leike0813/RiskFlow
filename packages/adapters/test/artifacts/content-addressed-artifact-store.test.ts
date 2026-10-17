@@ -5,6 +5,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readFile,
   rm,
   stat,
   statfs,
@@ -744,6 +745,35 @@ describe("content-addressed artifact store", () => {
       "SELECT count(*)::text AS count FROM audit.entries WHERE action = 'artifact.put'",
     );
     expect(Number(audits.rows[0]?.count)).toBe(3);
+  });
+
+  it("reuses an existing same-length object without isolating it and leaves full verification to maintenance", async () => {
+    const content = encoder.encode("same bytes");
+    const first = await fixture.store.put(
+      putCommand("existing-object", { artifactId: "artifact-existing-object" }),
+      chunks(content),
+    );
+    const objectPath = fixture.store.objectPathForTesting(first.manifest.content.hash);
+    const corrupted = encoder.encode("bad! bytes");
+    expect(corrupted.byteLength).toBe(content.byteLength);
+    await writeFile(objectPath, corrupted, { mode: 0o600 });
+
+    try {
+      const reused = await fixture.store.put(
+        putCommand("reuse-existing-object", { artifactId: "artifact-reuse-existing-object" }),
+        chunks(content),
+      );
+
+      expect(reused.deduplicated).toBe(true);
+      await expect(readFile(objectPath)).resolves.toEqual(Buffer.from(corrupted));
+      await expectArtifactError(
+        fixture.store.verifyObjectForMaintenance(first.manifest.content),
+        "ARTIFACT_INTEGRITY_FAILURE",
+      );
+      await expect(readFile(objectPath)).resolves.toEqual(Buffer.from(corrupted));
+    } finally {
+      await writeFile(objectPath, content, { mode: 0o600 });
+    }
   });
 
   it("keeps a dedicated read-only snapshot stable across keyset batches", async () => {

@@ -101,8 +101,8 @@ describe("C34 评估候选输入接缝", () => {
       operation: "entry-context",
       projectRevisionRef: ref("project-revision", "p".repeat(600)),
       spatialScopeRef,
-      applicabilityCursor: "applicability-cursor",
-      externalEventCursor: "external-cursor",
+      applicabilityCursor: "c".repeat(600),
+      externalEventCursor: "d".repeat(600),
       pageSize: 50,
     });
     expect(RiskAssessmentReadQueryV1Schema.safeParse(value).success).toBe(true);
@@ -114,17 +114,11 @@ describe("C34 评估候选输入接缝", () => {
     ).toBe(false);
   });
 
-  it("目录结果保持 512 字符游标上限", () => {
-    const result = { kind: "external-event-catalog", items: [], nextCursor: "c".repeat(512) };
+  it("目录结果接受长游标", () => {
+    const result = { kind: "external-event-catalog", items: [], nextCursor: "c".repeat(600) };
     expect(
       AssessmentEntryContextReadResultV1Schema.safeParse({ kind: "succeeded", result }).success,
     ).toBe(true);
-    expect(
-      AssessmentEntryContextReadResultV1Schema.safeParse({
-        kind: "succeeded",
-        result: { ...result, nextCursor: "c".repeat(513) },
-      }).success,
-    ).toBe(false);
   });
 
   it("来源定位复用原评估读授权，只接受空间且结果最多 256 项", () => {

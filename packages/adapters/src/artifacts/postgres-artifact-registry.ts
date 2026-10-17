@@ -523,10 +523,12 @@ export class PostgresArtifactRegistry {
     return reader;
   }
 
-  async readManifest(
+  async #readManifestRecord(
     projectId: string,
     artifactRef: ArtifactRefV1,
-  ): Promise<ArtifactManifestV1 | undefined> {
+  ): Promise<
+    { readonly manifest: ArtifactManifestV1; readonly manifestSha256: string } | undefined
+  > {
     const parsedRef = ArtifactRefV1Schema.safeParse(artifactRef);
     if (!parsedRef.success) throw makeArtifactError("ARTIFACT_INPUT_INVALID", "registry.reference");
     try {
@@ -547,35 +549,17 @@ export class PostgresArtifactRegistry {
       if (refKey(manifest.artifactRef) !== refKey(parsedRef.data)) {
         throw makeArtifactError("ARTIFACT_REGISTRY_FAILURE", "registry.reference-consistency");
       }
-      return manifest;
+      return { manifest, manifestSha256: row.manifest_sha256 };
     } catch (error) {
       throw readError(error, "registry.read");
     }
   }
 
-  async readManifestDigest(
+  async readManifest(
     projectId: string,
     artifactRef: ArtifactRefV1,
-  ): Promise<string | undefined> {
-    const parsedRef = ArtifactRefV1Schema.safeParse(artifactRef);
-    if (!parsedRef.success) throw makeArtifactError("ARTIFACT_INPUT_INVALID", "registry.reference");
-    try {
-      const row = await this.#db
-        .selectFrom("business.artifact_manifests")
-        .select(["manifest_sha256"])
-        .where("project_id", "=", projectId)
-        .where("artifact_id", "=", parsedRef.data.reference.entityId)
-        .where(
-          "artifact_kind",
-          "=",
-          parsedRef.data.kind === "content-artifact" ? "content" : "diagnostic",
-        )
-        .where("version_id", "=", parsedRef.data.reference.versionId)
-        .executeTakeFirst();
-      return row?.manifest_sha256;
-    } catch (error) {
-      throw readError(error, "registry.digest");
-    }
+  ): Promise<ArtifactManifestV1 | undefined> {
+    return (await this.#readManifestRecord(projectId, artifactRef))?.manifest;
   }
 
   async readCompletedPutResult(
@@ -594,16 +578,13 @@ export class PostgresArtifactRegistry {
         throw makeArtifactError("ARTIFACT_IDEMPOTENCY_CONFLICT", "registry.put-replay");
       if (receipt.completed_at === null || receipt.result_ref === null) return undefined;
       const artifactRef = parseJson(ArtifactRefV1Schema, receipt.result_ref, "registry.replay-ref");
-      const manifest = await this.readManifest(command.projectId, artifactRef);
-      if (manifest === undefined)
+      const stored = await this.#readManifestRecord(command.projectId, artifactRef);
+      if (stored === undefined)
         throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "registry.replay-manifest");
-      const manifestDigest = await this.readManifestDigest(command.projectId, artifactRef);
-      if (manifestDigest === undefined || manifestDigest !== manifestSha256(manifest))
-        throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "registry.replay-digest");
       return ArtifactPutResultV1Schema.parse({
         artifactRef,
-        manifest,
-        manifestSha256: manifestDigest,
+        manifest: stored.manifest,
+        manifestSha256: stored.manifestSha256,
         replayed: true,
         deduplicated: true,
       });
@@ -638,12 +619,6 @@ export class PostgresArtifactRegistry {
         throw error;
       }
       snapshots.push(parent.access);
-      const parentDigest = await this.readManifestDigest(value.projectId, parentRef);
-      if (parentDigest === undefined || parentDigest !== manifestSha256(parent)) {
-        throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "registry.parent-digest", [
-          parentRef,
-        ]);
-      }
       evidenceGroups.push(parent.evidenceReferences);
     }
     const access = mergeArtifactAccessSnapshots(snapshots);
@@ -679,8 +654,7 @@ export class PostgresArtifactRegistry {
     if (
       !parsedCommand.success ||
       !parsedManifest.success ||
-      !/^[0-9a-f]{64}$/u.test(manifestDigest) ||
-      (parsedManifest.success && manifestSha256(parsedManifest.data) !== manifestDigest)
+      !/^[0-9a-f]{64}$/u.test(manifestDigest)
     ) {
       throw makeArtifactError("ARTIFACT_INPUT_INVALID", "registry.register");
     }
@@ -738,7 +712,6 @@ export class PostgresArtifactRegistry {
                 ]);
               throw error;
             }
-            assertManifestDigest(parentRow, parent);
           }
           await transaction
             .insertInto("business.artifact_manifests")
@@ -769,20 +742,16 @@ export class PostgresArtifactRegistry {
         }),
       );
       await this.#failpoint("database.commit");
-      const stored = await this.readManifest(value.projectId, validManifest.artifactRef);
+      const stored = await this.#readManifestRecord(value.projectId, validManifest.artifactRef);
       if (stored === undefined)
         throw makeArtifactError("ARTIFACT_REGISTRY_FAILURE", "registry.register-readback");
-      const storedDigest = await this.readManifestDigest(
-        value.projectId,
-        validManifest.artifactRef,
-      );
-      if (storedDigest === undefined || (!receipt.replayed && storedDigest !== manifestDigest)) {
+      if (!receipt.replayed && stored.manifestSha256 !== manifestDigest) {
         throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "registry.register-digest");
       }
       return {
         replayed: receipt.replayed || !inserted,
-        manifest: stored,
-        manifestSha256: storedDigest,
+        manifest: stored.manifest,
+        manifestSha256: stored.manifestSha256,
       };
     } catch (error) {
       throw readError(error, "registry.register");
@@ -923,7 +892,6 @@ export class PostgresArtifactRegistry {
         value.requiredCapability,
         value.authorization,
       );
-      assertManifestDigest(row, manifest);
       return ArtifactReferenceCheckResultV1Schema.parse({
         artifactRef: manifest.artifactRef,
         manifestSha256: row.manifest_sha256,

@@ -2283,7 +2283,7 @@ class WorkflowGraphPersistence {
     return result.artifactRef;
   }
 
-  /** 读 C04 正文：先按当前授权复验，再按精确 `artifactRef` 打开并核对摘要与判别种类。 */
+  /** 同次业务入口已授权，按精确引用读取 C04 正文。 */
   async readBody(input: {
     readonly projectId: string;
     readonly artifactRef: ContentArtifactRefV1;
@@ -2292,23 +2292,12 @@ class WorkflowGraphPersistence {
     readonly invocationId: string;
     readonly authorization: AuthorizationContextV1;
   }): Promise<WorkflowGraphArtifactBodyV1 | undefined> {
-    const verified = await this.verifyAuthorization({
-      authorization: input.authorization,
-      projectId: input.projectId,
-      actorId: input.actorId,
-      // 身份由调用方按签发方同一导出函数给出：端口内部固定派生会让不同授权上下文
-      // 争抢同一个 `invocation_id`，同一工件的第二次读取必然冲突（design D1/D2）。
-      invocationId: input.invocationId,
-      requestedAt: input.requestedAt,
-    });
-    if (verified === undefined) return undefined;
-    return await this.#openBody({
-      projectId: input.projectId,
-      artifactRef: input.artifactRef,
-      actorId: verified.actorId,
-      requestedAt: input.requestedAt,
-      authorization: verified,
-    });
+    if (
+      input.authorization.projectId !== input.projectId ||
+      input.authorization.actorId !== input.actorId
+    )
+      return undefined;
+    return await this.#openBody(input);
   }
 
   async #openBody(input: {

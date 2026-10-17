@@ -38,6 +38,7 @@ import {
 import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
 import { sha256CanonicalJson } from "@riskflow/core/persistence";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
+import type { RegisteredResourceAuthorizerV1 } from "../auth/deployment-authorization.js";
 import {
   type WorkflowGraphArtifactBodyV1,
   type WorkflowGraphBodyPortV1,
@@ -46,6 +47,7 @@ import {
   type WorkflowGraphResultRowV1,
   type WorkflowGraphRunResultV1,
   type WorkflowGraphRunStateV1,
+  type WorkflowQueryRegistrationV1,
 } from "@riskflow/core/workflow";
 
 import {
@@ -82,7 +84,7 @@ const auditTrailRefOf = (auditEntryId: string) => ({
   reference: { entityId: auditEntryId, versionId: "1" },
 });
 
-/** 稳定游标（design D-06）：绑定查询引用、排序键与授权摘要，并带不可伪造的摘要后缀。 */
+/** 游标绑定查询引用、排序键和登记范围；当前权限独立检查。 */
 const encodeCursor = (input: {
   readonly queryResultRef: { readonly entityId: string; readonly versionId: string };
   readonly sortKey: string;
@@ -192,9 +194,9 @@ export interface PostgresWorkflowProjectionOptionsV1 {
   readonly registrationStore: WorkflowGraphRegistrationStoreV1;
   /** C04 正文端口：运行汇总只读状态正文，不复制领域事实。 */
   readonly bodies: WorkflowGraphBodyPortV1;
-  /** C05 当前授权复验端口：每次受保护读写前按当前 actor/工程/空间/资料范围复验；
-   *  正文读取前另以配对派生身份进程内重签发（`authorize`，见 `#readBodyAuthorized`）。 */
-  readonly authorization: Pick<LocalIdentityAccessV1, "verify" | "authorize">;
+  /** 新查询的业务入口检查；精确对象按登记范围检查。 */
+  readonly authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly authorizeResource: RegisteredResourceAuthorizerV1;
   /** C22 公开批读：旧 trace-chain 可省略；C31 风险记录图/报告缺失时显式失败。 */
   readonly riskRecordTrace?: RiskRecordTraceReadPortV1;
   /**
@@ -210,6 +212,8 @@ export interface PostgresWorkflowProjectionOptionsV1 {
 }
 
 export interface PostgresWorkflowProjectionV1 {
+  /** 同属报告服务在业务入口已授权后使用。 */
+  readonly authorizedResultRead: ProjectionResultReadPortV1;
   readonly queryProjection: ProjectionPortV1;
   readonly resultRead: ProjectionResultReadPortV1;
 }
@@ -218,7 +222,8 @@ class WorkflowGraphProjection {
   readonly #db: ProjectionQueryExecutorV1;
   readonly #store: WorkflowGraphRegistrationStoreV1;
   readonly #bodies: WorkflowGraphBodyPortV1;
-  readonly #authorization: Pick<LocalIdentityAccessV1, "verify" | "authorize">;
+  readonly #authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly #authorizeResource: RegisteredResourceAuthorizerV1;
   readonly #trace: RiskRecordTraceReadPortV1 | undefined;
   readonly #reportExport:
     | {
@@ -234,6 +239,7 @@ class WorkflowGraphProjection {
     this.#store = options.registrationStore;
     this.#bodies = options.bodies;
     this.#authorization = options.authorization;
+    this.#authorizeResource = options.authorizeResource;
     this.#trace = options.riskRecordTrace;
     this.#reportExport = options.reportExport;
     this.#now = options.now ?? (() => new Date());
@@ -523,29 +529,47 @@ class WorkflowGraphProjection {
     if (registration === undefined) {
       return { kind: "failed", error: this.#notFound("read-page") };
     }
-    const verified = await this.#verify({
+    const verified = await this.#authorizeResource({
       authorization: parsed.data.authorization,
-      projectId: parsed.data.projectId,
-      actorId: parsed.data.authorization.actorId,
+      resourceAuthorizationContextRef: registration.authorizationContextRef,
       invocationId: parsed.data.queryId,
       branch: "projection.result-read",
-      requestedAt: parsed.data.requestedAt,
-      spatialScopeRefs:
-        registration.spatialScopeRef === undefined ? [] : [registration.spatialScopeRef],
-    });
+      ...(registration.spatialScopeRef === undefined
+        ? {}
+        : { spatialScopeRefs: [registration.spatialScopeRef] }),
+    }).catch(() => undefined);
     if (verified === undefined) {
       return { kind: "failed", error: this.#notFound("read-page") };
     }
-    const scopeDigest = authorizationScopeDigest(verified);
-    if (scopeDigest !== registration.authorizationScopeDigest) {
-      // 后续撤权使历史查询不可见；历史业务事实与审计不变。
+    return this.#readRegisteredPage({ ...parsed.data, authorization: verified }, registration);
+  }
+
+  async readAuthorizedPage(
+    request: ProjectionResultReadRequestV1,
+  ): Promise<ProjectionResultReadResultV1> {
+    const registration = await this.#store.readQuery({
+      projectId: request.projectId,
+      queryResultId: request.queryResultRef.reference.entityId,
+      queryResultVersionId: request.queryResultRef.reference.versionId,
+    });
+    if (registration === undefined) return { kind: "failed", error: this.#notFound("read-page") };
+    return this.#readRegisteredPage(request, registration);
+  }
+
+  async #readRegisteredPage(
+    request: ProjectionResultReadRequestV1,
+    registration: WorkflowQueryRegistrationV1,
+  ): Promise<ProjectionResultReadResultV1> {
+    if (request.authorization.projectId !== registration.projectId)
       return { kind: "failed", error: this.#notFound("read-page") };
-    }
-    const limit = Math.min(Math.max(parsed.data.limit, 1), MAX_PAGE_SIZE_V1);
+    const queryResultRef = request.queryResultRef;
+    const verified = request.authorization;
+    const scopeDigest = registration.authorizationScopeDigest;
+    const limit = Math.min(Math.max(request.limit, 1), MAX_PAGE_SIZE_V1);
     let sortKey: string | undefined;
-    if (parsed.data.cursor !== undefined) {
+    if (request.cursor !== undefined) {
       const decoded = decodeCursor({
-        cursor: parsed.data.cursor,
+        cursor: request.cursor,
         queryResultRef: queryResultRef.reference,
         scopeDigest,
       });
@@ -574,7 +598,7 @@ class WorkflowGraphProjection {
         limit,
         sortKey,
         authorization: verified,
-        invocationId: parsed.data.queryId,
+        invocationId: request.queryId,
       });
     }
     if (registration.queryType === "risk-overview") {
@@ -584,7 +608,7 @@ class WorkflowGraphProjection {
         limit,
         sortKey,
         authorization: verified,
-        invocationId: parsed.data.queryId,
+        invocationId: request.queryId,
       });
     }
     if (registration.queryType !== "trace-chain") {
@@ -596,7 +620,7 @@ class WorkflowGraphProjection {
       limit,
       sortKey,
       authorization: verified,
-      invocationId: parsed.data.queryId,
+      invocationId: request.queryId,
     });
   }
 
@@ -812,7 +836,9 @@ class WorkflowGraphProjection {
         riskRecordRefs: [...input.refs],
         requestedAt: this.#now().toISOString(),
         invocationId: input.invocationId,
-        branch: input.branch,
+        branch: input.authorization.grantedCapabilities.includes("projection.export")
+          ? "projection.export"
+          : input.branch,
         authorization: input.authorization,
       });
     } catch {
@@ -1430,12 +1456,7 @@ class WorkflowGraphProjection {
     return row === undefined ? undefined : workflowGraphResultRowFromDb(row);
   }
 
-  /**
-   * 正文读取的进程内重签发（D6 裁决）：HTTP 等外部入口签发的上下文不配对 `readBody` 的
-   * 派生复验身份；沿用质量评估模块 `issueReadAuthorization` 先例，以同一导出派生函数与
-   * `projection.query` 分支重新 `authorize` 签发配对上下文（系统调用、收窄自当前已复验
-   * 上下文），再以该上下文读正文。签发或读取失败一律按不可读收口，不放宽可见性判断。
-   */
+  /** 同次业务读取复用入口决定，正文仍由 C04 检查用途和来源限制。 */
   async #readBodyAuthorized(input: {
     readonly projectId: string;
     readonly artifactRef: ContentArtifactRefV1;
@@ -1443,45 +1464,19 @@ class WorkflowGraphProjection {
     readonly authorization: AuthorizationContextV1;
     readonly runRef: { readonly entityId: string; readonly versionId: string };
   }): Promise<WorkflowGraphArtifactBodyV1 | undefined> {
-    // 身份纳入本次读取所依据的授权上下文：C06 对重复 `invocationId` 走重放路径并比对
-    // `parent_context_id`，而本端口每次读取的父上下文都由本次 `queryId` 复验得来、必然不同。
-    // 只按 operation+工程+工件派生会让同一工件的第二次读取与第一次争抢同一身份，
-    // 以 `IDEMPOTENCY_CONFLICT` 收口（design D1）。
     const invocationId = workflowGraphReadInvocationIdV1({
       operation: "body-read",
       projectId: input.projectId,
       targetId: input.artifactRef.reference.entityId,
     });
-    const scopedInvocationId = `${invocationId}:${input.authorization.authorizationContextRef.reference.entityId}`;
-    let issued: AuthorizationContextV1;
-    try {
-      const decision = await this.#authorization.authorize({
-        invocationId: scopedInvocationId,
-        projectId: input.projectId,
-        branch: "projection.query",
-        requestedSpatialScopeRefs: [],
-        requestedSourceVersionRefs: [],
-        requestedAt: this.#now().toISOString(),
-        invocation: {
-          kind: "system",
-          systemActorId: input.authorization.actorId,
-          reasonCode: "projection-body-read",
-        },
-        parentContext: input.authorization,
-        causalRunRef: { kind: "workflow-run", reference: input.runRef },
-      });
-      issued = decision.context;
-    } catch {
-      return undefined;
-    }
     try {
       return await this.#bodies.readBody({
         projectId: input.projectId,
         artifactRef: input.artifactRef,
         actorId: input.actorId,
         requestedAt: this.#now().toISOString(),
-        invocationId: scopedInvocationId,
-        authorization: issued,
+        invocationId,
+        authorization: input.authorization,
       });
     } catch {
       return undefined;
@@ -1525,6 +1520,9 @@ export const createPostgresWorkflowProjection = (
 ): PostgresWorkflowProjectionV1 => {
   const projection = new WorkflowGraphProjection(options);
   return {
+    authorizedResultRead: {
+      readPage: (request) => projection.readAuthorizedPage(request),
+    },
     queryProjection: {
       query: (request) => projection.query(request),
       subscribe: (request) => projection.subscribe(request),

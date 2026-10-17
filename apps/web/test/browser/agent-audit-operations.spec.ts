@@ -524,7 +524,6 @@ test("Agent 任务读显示已登记任务的状态与预算，慢读下最多�
 });
 
 test("报告导出：登记策略、范围预览与真实 JSON 下载，下载后对象 URL 被释放", async ({ page }) => {
-  const reportSources = [server.sourceA.sourceVersionRef];
   const reportReads = [];
   page.on("request", (request) => {
     if (request.url().endsWith("/queries/projection.report-read"))
@@ -553,11 +552,6 @@ test("报告导出：登记策略、范围预览与真实 JSON 下载，下载�
       sourceKind: "query-result",
       sourceId: audit().reportQueryResultRef.entityId,
       sourceVersion: audit().reportQueryResultRef.versionId,
-      assessmentSources: JSON.stringify({
-        projectId: server.projectId,
-        revisionId: null,
-        refs: reportSources.map((source) => source.reference),
-      }),
     }),
   );
   await expect(page.getByRole("heading", { name: "报告导出", level: 1 })).toBeVisible();
@@ -596,10 +590,22 @@ test("报告导出：登记策略、范围预览与真实 JSON 下载，下载�
   const body = JSON.parse(failure);
   expect(body.format).toBe("json");
   expect(body.queryResultRef.reference.entityId).toBe(audit().reportQueryResultRef.entityId);
+  const generated = await submitQueryRequest(page, "projection.export", {
+    sourceRef: { kind: "query-result", reference: audit().reportQueryResultRef },
+    exportPolicyRef: audit().reportExportPolicyRef,
+  });
+  expect(generated.status).toBe(200);
+  expect(generated.body.kind).toBe("succeeded");
+  const generatedArtifact = await submitQueryRequest(page, "projection.report-read", {
+    kind: "artifact",
+    exportArtifactRef: generated.body.result.exportArtifactRef,
+  });
+  expect(generatedArtifact.status).toBe(200);
+  expect(generatedArtifact.body.result.body.items).toEqual(body.items);
   for (const kind of ["history", "preview", "artifact"]) {
     const reads = reportReads.filter((request) => request.payload.kind === kind);
     expect(reads.length).toBeGreaterThan(0);
-    for (const request of reads) expect(request.requestedSourceVersionRefs).toEqual(reportSources);
+    for (const request of reads) expect(request.requestedSourceVersionRefs).toEqual([]);
   }
 
   // 下载期间页面持有的对象 URL 尚未撤销（否则浏览器取不到文件），

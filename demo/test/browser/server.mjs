@@ -23,6 +23,7 @@ import { buildApi } from "../../../apps/api/dist/index.js";
 import {
   bootstrapInitialSystemAdministrator,
   createPostgresLocalIdentityAccess,
+  createRegisteredResourceAuthorizerV1,
 } from "../../../packages/adapters/dist/auth/index.js";
 import { createContentAddressedArtifactStore } from "../../../packages/adapters/dist/artifacts/index.js";
 import { createPostgresEngineeringDataCatalogAdapter } from "../../../packages/adapters/dist/engineering-data/catalog/index.js";
@@ -2780,10 +2781,12 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
     // `projection.export`：这是同属一个组合根的循环依赖。按生产适配器测试同一解法拆成两步：
     // 先建不带导出的读投影只为取得 `resultRead`，再建注入导出服务的最终投影。
     // 两个投影共享同一个 `db`、同一个 `registrationStore` 与同一套工件，没有第二份事实。
+    const authorizeResource = createRegisteredResourceAuthorizerV1(access);
     const projectionReader = createPostgresWorkflowProjection({
       db: appRuntime.db,
       registrationStore: workflow.registrationStore,
       bodies: workflow.bodies,
+      authorizeResource,
       authorization: access,
       riskRecordTrace: createPostgresRiskRecordTraceReader({
         db: appRuntime.db,
@@ -2795,28 +2798,9 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       transactionUnit,
       artifactStore,
       registrationStore: workflow.registrationStore,
-      resultRead: projectionReader.resultRead,
+      resultRead: projectionReader.authorizedResultRead,
       authorization: access,
-      // `projection.export` 上下文无法在模块内收窄成 `projection.result-read`，配对签发由
-      // 组合根按请求主体的真实会话向 C06 重新申请；没有真实会话就没有导出能力。
-      resultReadAuthorization: {
-        issueResultReadAuthorization: async (request) => {
-          const sessionToken = sessionTokensByAccountId.get(request.actorId);
-          if (sessionToken === undefined) {
-            throw new Error(`无真实会话可签发配对结果读上下文：${request.actorId}`);
-          }
-          const decision = await access.authorize({
-            invocation: { kind: "human-session", sessionToken },
-            invocationId: request.invocationId,
-            projectId: request.projectId,
-            branch: "projection.result-read",
-            requestedSpatialScopeRefs: [...request.spatialScopeRefs],
-            requestedSourceVersionRefs: [],
-            requestedAt: request.requestedAt,
-          });
-          return decision.context;
-        },
-      },
+      authorizeResource,
       // 导出策略由部署冻结：缺省空集合＝无导出能力，这里显式登记合成策略（待甲方复核）。
       exportPolicies: [DEMO_REPORT_EXPORT_POLICY],
     });
@@ -2824,6 +2808,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       db: appRuntime.db,
       registrationStore: workflow.registrationStore,
       bodies: workflow.bodies,
+      authorizeResource,
       authorization: access,
       // 真实 C22 窄读：投影的追溯链/关联图/总览在补证据定位时经它复验授权并对账范围摘要。
       riskRecordTrace: createPostgresRiskRecordTraceReader({

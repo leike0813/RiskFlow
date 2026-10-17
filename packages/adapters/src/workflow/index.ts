@@ -20,7 +20,6 @@ export {
   createPostgresReportExport,
   type PostgresReportExportOptionsV1,
   type PostgresReportExportV1,
-  type ReportResultReadAuthorizationIssuerV1,
 } from "./postgres-report-export.js";
 export {
   createPostgresRunEventReaderV1,

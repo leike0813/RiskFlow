@@ -7,6 +7,7 @@ import {
   bootstrapInitialSystemAdministrator,
   createSessionToken,
   createPostgresLocalIdentityAccess,
+  createRegisteredResourceAuthorizerV1,
   decodeAndVerifySessionToken,
   derivePassword,
   makeDummyCredential,
@@ -2567,6 +2568,37 @@ describe.sequential("local identity and project authorization", () => {
     expect(humanSource!.parentContextRef).toBeUndefined();
     expect(humanSource!.causalRunRef).toBeUndefined();
     expect(humanSource!.sourceVersionRefs).toEqual([sourceTwo]);
+    const entry = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken },
+      invocationId: "registered-query-entry",
+      projectId: "project-a",
+      branch: "projection.result-read",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    expect(entry.context.sourceAccessGrantRefs).toHaveLength(0);
+    const authorizeResource = createRegisteredResourceAuthorizerV1(access!);
+    const resourceInput = {
+      authorization: entry.context,
+      resourceAuthorizationContextRef: human.contextRef,
+      branch: "projection.result-read" as const,
+      invocationId: "registered-query-resource",
+    };
+    const resource = await authorizeResource(resourceInput);
+    expect(resource?.sourceAccessGrantRefs).toEqual(human.context.sourceAccessGrantRefs);
+    expect(resource?.sourceAccessGrantRefs.length).toBeGreaterThan(0);
+    await fixture!.adminPool.query(
+      "UPDATE business.local_accounts SET status = 'disabled' WHERE account_id = $1",
+      [entry.context.actorId],
+    );
+    try {
+      await expect(authorizeResource(resourceInput)).rejects.toBeDefined();
+    } finally {
+      await fixture!.adminPool.query(
+        "UPDATE business.local_accounts SET status = 'active' WHERE account_id = $1",
+        [entry.context.actorId],
+      );
+    }
     await expect(
       access!.readDeploymentAuthorizationSource({
         authorizationContextRef: human.contextRef,

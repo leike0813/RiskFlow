@@ -98,8 +98,7 @@ const encodeCursor = (cursor: QualityCursorV1): string =>
   Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
 
 const decodeCursor = (value: string): QualityCursorV1 | undefined => {
-  if (value.length === 0 || value.length > 512 || !/^[A-Za-z0-9_-]+$/u.test(value))
-    return undefined;
+  if (value.length === 0 || !/^[A-Za-z0-9_-]+$/u.test(value)) return undefined;
   try {
     const bytes = Buffer.from(value, "base64url");
     if (bytes.toString("base64url") !== value) return undefined;

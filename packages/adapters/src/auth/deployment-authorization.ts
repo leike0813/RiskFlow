@@ -1,5 +1,10 @@
 import type { Kysely } from "kysely";
-import type { AuthorizationContextV1 } from "@riskflow/contracts/ports";
+import type {
+  AuthorizationContextV1,
+  AuthorizationContextRefV1,
+  ModuleBranchV1,
+  SpatialScopeRefV1,
+} from "@riskflow/contracts/ports";
 import { ModuleBranchV1Schema } from "@riskflow/contracts/ports";
 import {
   branchCapability,
@@ -89,3 +94,38 @@ export const createDeploymentAuthorizationAdapterV1 = (
 });
 
 export type DeploymentAuthorizationDecisionV1 = AuthorizationDecisionV1;
+
+export type RegisteredResourceAuthorizerV1 = (input: {
+  readonly authorization: AuthorizationContextV1;
+  readonly resourceAuthorizationContextRef: AuthorizationContextRefV1;
+  readonly branch: ModuleBranchV1;
+  readonly invocationId: string;
+  readonly spatialScopeRefs?: readonly SpatialScopeRefV1[];
+}) => Promise<AuthorizationContextV1 | undefined>;
+
+/** 历史快照只定位对象范围；访问资格取当前账号与授权事实。 */
+export const createRegisteredResourceAuthorizerV1 =
+  (
+    access: Pick<
+      PostgresLocalIdentityAccess,
+      "readDeploymentAuthorizationSource" | "authorizeBusinessAction"
+    >,
+  ): RegisteredResourceAuthorizerV1 =>
+  async (input) => {
+    const source = await access.readDeploymentAuthorizationSource({
+      projectId: input.authorization.projectId,
+      authorizationContextRef: input.resourceAuthorizationContextRef,
+    });
+    if (source === undefined) return undefined;
+    const decision = await access.authorizeBusinessAction({
+      projectId: input.authorization.projectId,
+      actorId: input.authorization.actorId,
+      capability: branchCapability(input.branch),
+      branch: input.branch,
+      invocationId: input.invocationId,
+      requestedSpatialScopeRefs: input.spatialScopeRefs ?? source.context.spatialScopeRefs,
+      requestedSourceVersionRefs: source.sourceVersionRefs,
+      authorizationContextRef: input.authorization.authorizationContextRef,
+    });
+    return decision.redacted ? undefined : decision.context;
+  };

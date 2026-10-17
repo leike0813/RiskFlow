@@ -6,7 +6,6 @@ import {
   open,
   readdir,
   realpath,
-  rename,
   rm,
   stat,
   type FileHandle,
@@ -178,7 +177,6 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
   readonly #rootDirectory: string;
   readonly #stagingDirectory: string;
   readonly #objectsDirectory: string;
-  readonly #quarantineDirectory: string;
   readonly #policy: ArtifactStorePolicyV1;
   readonly #registry: PostgresArtifactRegistry;
   readonly #now: () => Date;
@@ -196,7 +194,6 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
     this.#rootDirectory = resolve(options.rootDirectory);
     this.#stagingDirectory = join(this.#rootDirectory, "staging");
     this.#objectsDirectory = join(this.#rootDirectory, "objects", "sha256");
-    this.#quarantineDirectory = join(this.#rootDirectory, "quarantine");
     const parsedPolicy = ArtifactStorePolicyV1Schema.parse(options.policy);
     this.#policy = Object.freeze({
       ...parsedPolicy,
@@ -300,16 +297,16 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
     }
   }
 
-  async #quarantineExisting(path: string, hash: string): Promise<void> {
-    const runDirectory = join(this.#quarantineDirectory, `integrity-${randomUUID()}`);
-    await mkdir(runDirectory, { recursive: true, mode: 0o700 });
-    const destination = join(runDirectory, hash);
-    try {
-      await rename(path, destination);
-      await syncDirectory(runDirectory);
-      await syncDirectory(this.#quarantineDirectory);
-    } catch {
-      // Keep the original object for operator recovery when isolation itself fails.
+  async #assertReusableObject(path: string, expected: ArtifactContentIdentityV1): Promise<void> {
+    const details = await lstat(path).catch((error: unknown) => {
+      if (isMissing(error)) throw error;
+      throw mapFileError(error, "object.lstat");
+    });
+    if (details.isSymbolicLink() || !details.isFile()) {
+      throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "object.type");
+    }
+    if (details.size !== expected.byteLength) {
+      throw makeArtifactError("ARTIFACT_INTEGRITY_FAILURE", "object.length");
     }
   }
 
@@ -335,13 +332,7 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
     await mkdir(objectDirectory, { recursive: true, mode: 0o700 });
     await assertDirectory(objectDirectory, "object.directory");
     try {
-      await lstat(objectPath);
-      try {
-        await this.#verifyObject(objectPath, content);
-      } catch (error) {
-        await this.#quarantineExisting(objectPath, content.hash.value);
-        throw error;
-      }
+      await this.#assertReusableObject(objectPath, content);
       return true;
     } catch (error) {
       if (!isMissing(error)) {
@@ -365,13 +356,8 @@ export class FilesystemArtifactStore implements ArtifactStoreV1 {
       return false;
     } catch (error) {
       if (isNodeError(error) && error.code === "EEXIST") {
-        try {
-          await this.#verifyObject(objectPath, content);
-          return true;
-        } catch (verifyError) {
-          await this.#quarantineExisting(objectPath, content.hash.value);
-          throw verifyError;
-        }
+        await this.#assertReusableObject(objectPath, content);
+        return true;
       }
       throw mapFileError(error, "object.link");
     }

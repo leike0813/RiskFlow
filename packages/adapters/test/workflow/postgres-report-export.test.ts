@@ -442,6 +442,7 @@ const compose = (
     registrationStore: fixture.workflow.registrationStore,
     bodies: fixture.workflow.bodies,
     authorization: fixture.access.port,
+    authorizeResource: async ({ branch }) => (await fixture.access.port.verify({ branch })).context,
     riskRecordTrace,
     now: () => new Date(TIMESTAMP),
   };
@@ -451,12 +452,9 @@ const compose = (
     transactionUnit: overrides.transactionUnit ?? fixture.transactionUnit,
     artifactStore: overrides.artifactStore ?? fixture.artifactStore,
     registrationStore: fixture.workflow.registrationStore,
-    resultRead: reader.resultRead,
+    resultRead: reader.authorizedResultRead,
     authorization: fixture.access.port,
-    // C06 无法把 `projection.export` 上下文收窄成 `projection.query`，配对签发由组合根注入。
-    resultReadAuthorization: {
-      issueResultReadAuthorization: async () => authorizationFor("projection.result-read"),
-    },
+    authorizeResource: projectionOptions.authorizeResource,
     ...(overrides.policies === undefined ? {} : { exportPolicies: overrides.policies }),
     now: () => new Date(TIMESTAMP),
   });
@@ -887,6 +885,8 @@ describe("C35 报告导出适配器", () => {
       registrationStore: fixture.workflow.registrationStore,
       bodies: fixture.workflow.bodies,
       authorization: fixture.access.port,
+      authorizeResource: async ({ branch }) =>
+        (await fixture.access.port.verify({ branch })).context,
       riskRecordTrace,
       now: () => new Date(TIMESTAMP),
     });

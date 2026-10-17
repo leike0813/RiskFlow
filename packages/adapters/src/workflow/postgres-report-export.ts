@@ -39,7 +39,7 @@ import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import { ArtifactPutCommandV1Schema, ArtifactReadRequestV1Schema } from "@riskflow/core/artifacts";
 import type { TransactionUnitV1 } from "@riskflow/core/persistence";
 import { sha256CanonicalJson } from "@riskflow/core/persistence";
-import { authorizationScopeDigest } from "@riskflow/core/retrieval";
+import type { RegisteredResourceAuthorizerV1 } from "../auth/deployment-authorization.js";
 import {
   REPORT_EXPORT_PAGE_SIZE_DEFAULT_V1,
   ReportArtifactBodyV1Schema,
@@ -68,7 +68,6 @@ const EXPORT_GENERATED_ACTION_V1 = "projection.export.generated";
 const REPORT_PURPOSE_CODE_V1 = "riskflow-report";
 const REPORT_MEDIA_TYPE_V1 = "application/json";
 const EXPORT_CAPABILITY_V1 = "projection.export";
-const RESULT_READ_CAPABILITY_V1 = "projection.query";
 /** `readPage` 单页上限；导出按剩余条目预算再收窄。 */
 const PROJECTION_PAGE_LIMIT_V1 = 100;
 /** 工件正文读取的硬上限：策略 `maxBytes` 上限本身即 8MiB。 */
@@ -79,16 +78,6 @@ const HISTORY_PAGE_SIZE_DEFAULT_V1 = 25;
 const referenceKey = (value: {
   readonly reference: { readonly entityId: string; readonly versionId: string };
 }): string => `${value.reference.entityId}/${value.reference.versionId}`;
-
-const containsReferences = (
-  parent: readonly {
-    readonly reference: { readonly entityId: string; readonly versionId: string };
-  }[],
-  child: readonly {
-    readonly reference: { readonly entityId: string; readonly versionId: string };
-  }[],
-): boolean =>
-  child.every((item) => parent.some((scope) => referenceKey(scope) === referenceKey(item)));
 
 /** 条目族即策略可选章节；链边项不属于报告章节，任何策略都不会导出它。 */
 const sectionOfItem = (item: ProjectionResultItemV1): ReportExportSectionV1 | undefined =>
@@ -116,24 +105,6 @@ const reportIdentityV1 = (input: {
     exportPolicyRef: input.exportPolicyRef,
   });
 
-/**
- * C31 `readPage` 的配对签发方（design D-09）。
- *
- * `readPage` 按 `projection.result-read` 分支复验，而导出入口持有的是 `projection.export`
- * 上下文：C06 的 `authorize` 收窄要求子上下文能力是父上下文的子集，`projection.query`
- * 并不属于 `projection.export`，因此该上下文无法在模块内派生。组合根注入本端口，
- * 由它按当前会话为同一主体签发配对的 `projection.result-read` 上下文；缺省即没有导出能力。
- */
-export interface ReportResultReadAuthorizationIssuerV1 {
-  issueResultReadAuthorization(input: {
-    readonly invocationId: string;
-    readonly projectId: string;
-    readonly actorId: string;
-    readonly requestedAt: string;
-    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
-  }): Promise<AuthorizationContextV1>;
-}
-
 export interface PostgresReportExportOptionsV1 {
   /** 传 `runtime.db` 即可；类型为 `Kysely<PostgresDatabase>`。 */
   readonly db: unknown;
@@ -144,7 +115,7 @@ export interface PostgresReportExportOptionsV1 {
   /** 同一所属 C31 projection 的读取端口：预览、生成与范围复验都只经它分页。 */
   readonly resultRead: ProjectionResultReadPortV1;
   readonly authorization: Pick<LocalIdentityAccessV1, "verify">;
-  readonly resultReadAuthorization: ReportResultReadAuthorizationIssuerV1;
+  readonly authorizeResource: RegisteredResourceAuthorizerV1;
   /** 部署组合根显式注入的不可变导出策略；缺省空集合＝无导出能力。 */
   readonly exportPolicies?: readonly unknown[];
   readonly now?: () => Date;
@@ -165,7 +136,7 @@ class ReportExportService {
   readonly #store: WorkflowGraphRegistrationStoreV1;
   readonly #resultRead: ProjectionResultReadPortV1;
   readonly #authorization: Pick<LocalIdentityAccessV1, "verify">;
-  readonly #resultReadAuthorization: ReportResultReadAuthorizationIssuerV1;
+  readonly #authorizeResource: RegisteredResourceAuthorizerV1;
   readonly #policies: readonly ReportExportPolicyV1[];
   readonly #now: () => Date;
 
@@ -176,7 +147,7 @@ class ReportExportService {
     this.#store = options.registrationStore;
     this.#resultRead = options.resultRead;
     this.#authorization = options.authorization;
-    this.#resultReadAuthorization = options.resultReadAuthorization;
+    this.#authorizeResource = options.authorizeResource;
     this.#policies = (options.exportPolicies ?? []).flatMap((policy) => {
       const parsed = ReportExportPolicyV1Schema.safeParse(policy);
       return parsed.success ? [parsed.data] : [];
@@ -309,53 +280,6 @@ class ReportExportService {
     return scope.success ? scope.data : undefined;
   }
 
-  /**
-   * 配对的 `projection.result-read` 上下文：签发后按工程、主体、能力与范围子集复检，
-   * 签发方给出越权上下文即按不可读收口，不放宽 `readPage` 自身的复验。
-   */
-  async #pageContext(input: {
-    readonly projectId: string;
-    readonly actorId: string;
-    readonly invocationId: string;
-    readonly requestedAt: string;
-    readonly parent: AuthorizationContextV1;
-    readonly spatialScopeRefs: readonly SpatialScopeRefV1[];
-  }): Promise<AuthorizationContextV1 | undefined> {
-    let issued: AuthorizationContextV1;
-    try {
-      issued = await this.#resultReadAuthorization.issueResultReadAuthorization({
-        invocationId: input.invocationId,
-        projectId: input.projectId,
-        actorId: input.actorId,
-        requestedAt: input.requestedAt,
-        spatialScopeRefs: input.spatialScopeRefs,
-      });
-    } catch {
-      return undefined;
-    }
-    if (
-      issued.projectId !== input.projectId ||
-      issued.actorId !== input.actorId ||
-      issued.grantedCapabilities.length !== 1 ||
-      issued.grantedCapabilities[0] !== RESULT_READ_CAPABILITY_V1 ||
-      !containsReferences(input.parent.spatialScopeRefs, issued.spatialScopeRefs) ||
-      !containsReferences(input.parent.sourceAccessGrantRefs, issued.sourceAccessGrantRefs)
-    ) {
-      return undefined;
-    }
-    return issued;
-  }
-
-  /** 配对签发按登记空间收窄；登记未冻结空间时按当前导出范围收窄。 */
-  #pageSpatialScopes(
-    registration: { readonly spatialScopeRef?: SpatialScopeRefV1 | undefined },
-    verified: AuthorizationContextV1,
-  ): readonly SpatialScopeRefV1[] {
-    return registration.spatialScopeRef === undefined
-      ? [...verified.spatialScopeRefs]
-      : [registration.spatialScopeRef];
-  }
-
   async #readOnePage(input: {
     readonly projectId: string;
     readonly invocationId: string;
@@ -375,15 +299,6 @@ class ReportExportService {
       }
     | { readonly ok: false }
   > {
-    const pageAuthorization = await this.#pageContext({
-      projectId: input.projectId,
-      actorId: input.verified.actorId,
-      invocationId: input.invocationId,
-      requestedAt: input.requestedAt,
-      parent: input.verified,
-      spatialScopeRefs: this.#pageSpatialScopes(input.registration, input.verified),
-    });
-    if (pageAuthorization === undefined) return { ok: false };
     let result: Awaited<ReturnType<ProjectionResultReadPortV1["readPage"]>>;
     try {
       result = await this.#resultRead.readPage({
@@ -393,7 +308,7 @@ class ReportExportService {
         queryId: input.invocationId,
         limit: input.limit,
         ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-        authorization: pageAuthorization,
+        authorization: input.verified,
       });
     } catch {
       return { ok: false };
@@ -407,7 +322,7 @@ class ReportExportService {
   }
 
   /**
-   * 有限全量分页（design D-09）：每页重新复验当前导出授权，按策略 `maxPages/maxItems` 硬收口，
+   * 同次导出分页复用入口决定，按策略 `maxPages/maxItems` 硬收口，
    * 游标重复视为未证明结束直接失败；不裁半份报告、不返回部分成功。
    */
   async #readAllPages(input: {
@@ -426,16 +341,7 @@ class ReportExportService {
     const seenCursors = new Set<string>();
     let cursor: string | undefined;
     for (let page = 1; page <= input.policy.maxPages; page += 1) {
-      const verified = await this.#verify({
-        authorization: input.authorization,
-        projectId: input.projectId,
-        invocationId: input.queryId,
-        branch: "projection.export",
-        requestedAt: input.requestedAt,
-      });
-      if (verified === undefined) {
-        return { ok: false, error: this.#notFound("report-export-page") };
-      }
+      const verified = input.authorization;
       const remaining = input.policy.maxItems - items.length;
       if (remaining < 1) {
         return { ok: false, error: this.#blocked("report-export", "export-items-exceeded") };
@@ -569,32 +475,27 @@ class ReportExportService {
   }
 
   /**
-   * 来源当前权限复验：按原绑定 `sourceRef` 重新解析登记，并以配对签发的结果读取上下文
-   * 比较授权摘要。登记缺失或范围已收窄都按不可读收窄，不使用生成时的旧授权快照。
+   * 按原绑定 sourceRef 取得冻结资源，历史授权只定位范围，当前账号决定读取资格。
    */
-  async #sourceStillVisible(input: {
+  async #sourceAuthorization(input: {
     readonly projectId: string;
     readonly actorId: string;
     readonly invocationId: string;
     readonly requestedAt: string;
     readonly sourceRef: QueryResultRefV1;
     readonly parent: AuthorizationContextV1;
-  }): Promise<boolean> {
+  }): Promise<AuthorizationContextV1 | undefined> {
     const registration = await this.#registrationFor(input.projectId, input.sourceRef);
-    if (!registration.ok) return false;
-    const pageAuthorization = await this.#pageContext({
-      projectId: input.projectId,
-      actorId: input.actorId,
+    if (!registration.ok) return undefined;
+    return this.#authorizeResource({
+      authorization: input.parent,
+      resourceAuthorizationContextRef: registration.registration.authorizationContextRef,
       invocationId: input.invocationId,
-      requestedAt: input.requestedAt,
-      parent: input.parent,
-      spatialScopeRefs: this.#pageSpatialScopes(registration.registration, input.parent),
-    });
-    if (pageAuthorization === undefined) return false;
-    return (
-      authorizationScopeDigest(pageAuthorization) ===
-      registration.registration.authorizationScopeDigest
-    );
+      branch: "projection.export",
+      ...(registration.registration.spatialScopeRef === undefined
+        ? {}
+        : { spatialScopeRefs: [registration.registration.spatialScopeRef] }),
+    }).catch(() => undefined);
   }
 
   /** 生成导出（design D-09）：绑定事务 → 有限全量分页 → C04 耐久化 → 尾事务。 */
@@ -606,7 +507,7 @@ class ReportExportService {
       return { kind: "failed", error: this.#blocked("report-export", "export-request-invalid") };
     }
     const { projectId, actorId, queryId, requestedAt, payload } = parsed.data;
-    const verified = await this.#verify({
+    let verified = await this.#verify({
       authorization: parsed.data.authorization,
       projectId,
       invocationId: queryId,
@@ -631,6 +532,15 @@ class ReportExportService {
       return { kind: "failed", error: this.#notFound("report-export") };
     }
     const registration = found.registration;
+    verified = await this.#sourceAuthorization({
+      projectId,
+      actorId,
+      invocationId: queryId,
+      requestedAt,
+      sourceRef,
+      parent: verified,
+    });
+    if (verified === undefined) return { kind: "failed", error: this.#notFound("report-export") };
     if (!policy.queryTypes.includes(registration.queryType as ReportExportQueryTypeV1)) {
       return {
         kind: "failed",
@@ -712,7 +622,7 @@ class ReportExportService {
       requestedAt,
       sourceRef,
       policy,
-      authorization: parsed.data.authorization,
+      authorization: verified,
       registration,
     });
     if (!pages.ok) {
@@ -777,12 +687,13 @@ class ReportExportService {
     };
 
     // 写工件后再次复验当前导出授权：绑定与尾之间被撤权时按失败收口。
-    const beforeTail = await this.#verify({
-      authorization: parsed.data.authorization,
+    const beforeTail = await this.#sourceAuthorization({
+      parent: verified,
       projectId,
+      actorId,
       invocationId: queryId,
-      branch: "projection.export",
       requestedAt,
+      sourceRef,
     });
     if (beforeTail === undefined) {
       return { kind: "failed", error: this.#notFound("report-export-complete") };
@@ -898,7 +809,16 @@ class ReportExportService {
         error: this.#blocked("report-preview", "export-query-type-unsupported"),
       };
     }
-    const scope = this.#scopeOf(registration, envelope.verified);
+    const verified = await this.#sourceAuthorization({
+      projectId: envelope.projectId,
+      actorId: envelope.actorId,
+      invocationId: envelope.queryId,
+      requestedAt: envelope.requestedAt,
+      sourceRef,
+      parent: envelope.verified,
+    });
+    if (verified === undefined) return { kind: "failed", error: this.#notFound("report-preview") };
+    const scope = this.#scopeOf(registration, verified);
     if (scope === undefined) {
       return { kind: "failed", error: this.#blocked("report-preview", "export-scope-unavailable") };
     }
@@ -910,7 +830,7 @@ class ReportExportService {
       sourceRef,
       limit: REPORT_EXPORT_PAGE_SIZE_DEFAULT_V1,
       cursor: undefined,
-      verified: envelope.verified,
+      verified,
       registration,
     });
     if (!page.ok) {
@@ -953,7 +873,7 @@ class ReportExportService {
     if (!completed.ok) {
       return { kind: "failed", error: this.#notFound("report-artifact") };
     }
-    const visible = await this.#sourceStillVisible({
+    const visible = await this.#sourceAuthorization({
       projectId: envelope.projectId,
       actorId: envelope.actorId,
       invocationId: `${envelope.queryId}:artifact-source`,
@@ -971,7 +891,7 @@ class ReportExportService {
       requestedAt: envelope.requestedAt,
       invocationId: `${envelope.queryId}:artifact-body`,
       contentRef: completed.contentRef,
-      verified: envelope.verified,
+      verified: visible,
     });
     if (body === undefined) {
       return { kind: "failed", error: this.#notFound("report-artifact-body") };
@@ -1121,7 +1041,7 @@ class ReportExportService {
       ) {
         continue;
       }
-      const visible = await this.#sourceStillVisible({
+      const visible = await this.#sourceAuthorization({
         projectId: envelope.projectId,
         actorId: envelope.actorId,
         invocationId: `${envelope.queryId}:history:${row.command_id}`,
@@ -1136,7 +1056,7 @@ class ReportExportService {
         requestedAt: envelope.requestedAt,
         invocationId: `${envelope.queryId}:history-body:${row.command_id}`,
         contentRef: completed.contentRef,
-        verified: envelope.verified,
+        verified: visible,
       });
       if (body === undefined) continue;
       if (referenceKey(body.body.queryResultRef) !== referenceKey(completed.sourceRef)) continue;

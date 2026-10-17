@@ -1,5 +1,37 @@
 ## ADDED Requirements
 
+### Requirement: 桌面验收独立绑定同次运行与导出查询
+
+桌面验收 MUST 从同份functional配置观察的唯一正式workflow.start-run回执绑定运行，从共享URL精确绑定同次risk-overview查询，并核验下载export请求的sourceRef与该查询一致。run-view观察和risk-overview导出分别遵循既有DTO，不得要求risk-overview携带workflowRunRef或用其它查询导出回执替代。
+
+#### Scenario: 正式观察和报告导出均绑定同次运行材料
+
+- **WHEN** 同次回执包含被functional配置观察的唯一启动、run-view观察及risk-overview导出来源，且下载来自该导出来源
+- **THEN** 桌面预检接受该正式绑定，其它工程/发布/来源/秘密校验保持
+
+#### Scenario: 非导出查询或异查询下载
+
+- **WHEN** 共享URL对应非risk-overview查询，或下载回执的请求来源不等于该精确查询
+- **THEN** 预检拒绝，不生成真实Electron通过记录
+
+### Requirement: 桌面关窗继续使用同次活动任务证明
+
+关窗前运行处于waiting时，桌面验收 MUST 以同次正式启动回执中的精确agentTaskRef，经当前会话读取所属任务并证明queued/running；人审、已完成、失败及其它任务不得替代。关窗重开后 MUST 继续读取原运行并达到completed，submitted或等待不能计通过。
+
+#### Scenario: LangGraph等待正在执行的内嵌Agent
+
+- **WHEN** 同次运行waiting且其正式任务queued/running，客户端关闭后重开
+- **THEN** 原服务端任务继续，最终核验同一运行completed；没有活动任务证明或终态失败必须失败
+
+### Requirement: 桌面验收沿当前正式清单核验兼容
+
+桌面预检 MUST 核验当前正式发布、配置、代码身份、同源地址与功能报告及客户端兼容，不得以历史固定数据库迁移号拒绝合法新发布。实际数据库迁移 MUST 由正式服务器启动按同一清单核验；桌面预检不得代替服务器迁移检查或完整功能实跑。
+
+#### Scenario: 当前后端具有已批准新迁移
+
+- **WHEN** 正式宿主已按当前清单验证000059，桌面当前发布及功能报告绑定合法
+- **THEN** 桌面预检不因历史000058常量失败；错发布/工程/报告及不合格输入继续拒绝
+
 ### Requirement: 当前桌面原件与Agent行为必须和Web一致
 
 Electron MUST 加载同一受信HTTPS的原件/PDF/Agent界面，下载只允许批准origin的原件及既有报告用途，用户选择保存位置。不得新增通用本机IPC、自动打开文件或放宽iframe/Node/窗口/TLS边界。

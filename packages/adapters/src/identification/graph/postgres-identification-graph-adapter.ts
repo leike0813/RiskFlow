@@ -900,7 +900,7 @@ class IdentificationGraphPersistence {
       });
       if (body.bodyKind !== "stage-result") return undefined;
       const stageResult: IdentificationStageResultV1 = body.stageResult;
-      if (stageResult.stage !== "I5") continue;
+      if (stageResult.stage !== "I5" || stageResult.failedCandidateSetRef !== undefined) continue;
       collected.set(
         referenceKey(stageResult.validatedCandidateSetRef.reference),
         stageResult.validatedCandidateSetRef,

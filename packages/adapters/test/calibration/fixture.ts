@@ -548,7 +548,11 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
             redacted: false,
           };
         }
-        const context = await authorizeFor(request.branch, request.invocationId, request.projectId);
+        const signed = await authorizeFor(request.branch, request.invocationId, request.projectId);
+        const context =
+          request.branch === "warning-response.read"
+            ? { ...signed, decidedAt: new Date(Date.parse(signed.decidedAt) + 1).toISOString() }
+            : signed;
         return {
           context,
           contextRef: context.authorizationContextRef,
@@ -1009,7 +1013,10 @@ export const startCalibrationFixture = async (): Promise<CalibrationPostgresFixt
       const candidate = CalibrationCandidateV1Schema.parse({
         schemaVersion: "1",
         taskRef,
-        resultRef,
+        resultRef: buildCompletedAgentTaskResult(taskRef, {
+          kind: "calibration-suggestion",
+          reference: ref(`c29-proposed-${input.suffix}`),
+        }),
         inputSnapshotRef: input.inputSnapshotRef,
         rationale: `c29 calibration candidate ${input.suffix}`,
         evidenceReferences: evidence,

@@ -15,3 +15,23 @@ provision-monitoring-inputs-d91.mjs的prepare已通过，三份metadata和put-co
 D-94修复provision监测两步骤使用登记监测批次所属授权分支，既有参数化断言两项先红，修后20/20（/tmp/riskflow-d94-green.log）及lint/format通过。v100正式prerequisites-provision-report-d94.json两步COMPLETED：physical-d91-longitudinal-ground-settlement@1与physical-d91-longitudinal-availability@1。原AUTHORIZATION_DENIED报告保留；第一次CLI误用不支持的deployment-config导致参数缺失，在业务写入前拒绝，后按既有环境变量调用，无产品接口扩展。
 
 sample-artifacts-prepared.json记录17个样本的NDJSON准备：每格与正式转换tableFields及原CSV逐项一致、原件摘要一致、真实资料段绑定，strict envelope/sample通过。仅写实例文件，尚未登记样本批次或冻结快照；清洗失败未绕过，评估/预测仍未取证。原模型/工具预算、质量、指标映射、预警阈值、评分/矩阵和历史结果保持。
+
+## v106 正式登记与冻结
+
+D-99新清洗任务与D-100准备收口已完成，精确身份及预算见[续办证据](resume-after-reduction-2026-10-16.md)。v106通过既有provision artifact-put登记三份样本，严格用途为engineering-data.register-monitoring-batch，工件版本分别等于sample-artifacts-prepared.json内的SHA-256；evidence绑定各自正式来源/段。未扩展provision或产品接口。
+
+随后在物理Chrome当前会话通过正式HTTP依次登记original、supplement、correction，后两者priorBatchRef串接前一批；每批立即同身份重放，引用不变。每次登记后冻结cutoff=2026-10-16T00:00:15.000Z、原16秒策略，分别取得：
+
+| 阶段 | 批次ID后缀 | 快照ID后缀 | 正式可用性/覆盖率 |
+| --- | --- | --- | --- |
+| 初始 | 2e141849fdc46bcb58840b0039a9359d | 74707c6d6c0ccbf4dbd69e7c0e575e75a9498818 | partial，15/16 |
+| 补录 | d1897cd584490f0c4faa6996147df373 | 7addd5ec89f5ea0fff7b657ebd26d4cf0255dee8 | available，16/16 |
+| 更正 | 038e2ead70992b1d5af4c7bbee4819aa | 5fee2da0d0dc5dd8d095e5519a834f736b72f647 | available，16/16 |
+
+批次完整前缀为monitoring-batch:physical-d91-longitudinal-ground-settlement:，快照前缀为monitoring-snapshot:，版本均1。查询使用engineering-data.monitoring-snapshot-query取得queryResultRef，再经engineering-data.read-result读取正式快照正文；首次脚本误用无此查询路由的monitoring-snapshot得到404，已修正脚本，未改产品。
+
+三份正式快照均16格，初始缺点不插值、频谱因连续点不足而unavailable；补录后频谱available。更正后末点7.0→6.8、斜率约0.40→0.36 mm/s、加速度约0→−0.06 mm/s²。最后逐一复读三份旧快照，与各自首次正文全等；catalog亦已正式读取。原工件、批次与快照未覆盖。
+
+现场脚本put-monitoring-samples-d91-v106.mjs、register-monitoring-d91-v106.mjs均通过自检；samples-put-report-v106.json、registered-{baseline,supplement,correction}-v106.json、registered-monitoring-summary-v106.json及逐命令/查询回执保存在受限目录d91-monitoring-inputs/。这是监测局部实机证据，评估/预警/预测及完整业务仍未取证，不能据此勾选完整任务3.2。
+
+物理Chrome已显示更正后末点6.8、覆盖率100%、三批次及证据定位，七个页面查询均200；截图physical-monitoring-v106.png及请求元数据physical-monitoring-v106.json已保存。视觉复核另观察到统计值直接显示浮点尾数，部分指标卡片向右溢出；业务数值与正式快照一致，显示精度/布局问题留待IP-21界面收口，不把该截图视为完整UI通过。

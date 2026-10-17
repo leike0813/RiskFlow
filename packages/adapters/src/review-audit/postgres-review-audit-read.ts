@@ -16,6 +16,7 @@ import {
   type ReviewAuditReadResultV1,
   type ReviewTaskDetailV1,
   type ReviewTaskStateV1,
+  type ReviewTaskReadRefV1,
 } from "@riskflow/core/review-audit";
 import {
   ContractReferenceV1Schema,
@@ -453,7 +454,7 @@ export class PostgresReviewAuditRead implements ReviewAuditReadPortV1 {
 
   async #taskState(
     projectId: string,
-    requested: ReviewTaskRefV1,
+    requested: ReviewTaskReadRefV1,
   ): Promise<{ readonly row: ReviewTaskDetailRow; readonly state: ReviewTaskStateV1 }> {
     const row = await this.#db
       .selectFrom(REVIEW_TASKS_TABLE)
@@ -471,7 +472,7 @@ export class PostgresReviewAuditRead implements ReviewAuditReadPortV1 {
       throw closed("task-detail-fact-mismatch");
     }
     if (
-      !taskRefEquals(storedRef.data, requested) ||
+      ("reviewType" in requested && !taskRefEquals(storedRef.data, requested)) ||
       storedRef.data.reference.entityId !== row.review_task_id ||
       storedRef.data.reference.versionId !== row.version_id ||
       storedRef.data.reviewType !== row.review_type ||

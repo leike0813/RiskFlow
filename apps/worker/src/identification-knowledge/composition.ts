@@ -399,6 +399,8 @@ export const createPostgresIdentificationKnowledgeComposition = (
 
   const modelStep = withKnowledgeAuthoringModelStep({
     policy,
+    loadManifest: (task) => adapter.readModelManifest(task),
+    readObservation: (task, artifactRef) => adapter.readModelObservation(task, artifactRef),
     persistArtifact: async ({ task, actionId, purposeCode, value }) => {
       const result = await options.artifactStore.put(
         ArtifactPutCommandV1Schema.parse({

@@ -81,6 +81,47 @@ describe("功能验收配置契约", () => {
 });
 
 describe("正式查询目标终态定位", () => {
+  it("评估详情分开运行身份与状态版本，只有同次正式结果可证明完成", () => {
+    const operation = operationIdFor("query", "risk-assessment.read");
+    const payload = { operation: "run-read", workflowRunRef };
+    const result = {
+      kind: "run-read",
+      runRef: workflowRunRef,
+      stateVersion: { entityId: workflowRunRef.reference.entityId, versionId: "later-state" },
+      status: "completed",
+      resultRefs: [ref("stage-result", "stage-1"), ref("risk-flow-run-result", "result-1")],
+    };
+    expect(terminalStatusOfV1(operation, payload, result, { workflowRunRef })).toBe("completed");
+    expect(
+      requiredReferencesOfV1(result, [["resultRefs", 1]], operation, { workflowRunRef }),
+    ).toEqual({ "resultRefs.1": result.resultRefs[1] });
+    expect(
+      requiredReferencesOfV1(result, [["resultRefs", 0]], operation, { workflowRunRef }),
+    ).toBeNull();
+    expect(
+      requiredReferencesOfV1(
+        result,
+        [
+          ["resultRefs", 0],
+          ["resultRefs", 1],
+        ],
+        operation,
+        {
+          workflowRunRef,
+        },
+      ),
+    ).toBeNull();
+    for (const reference of [
+      { ...workflowRunRef.reference, entityId: "other-run" },
+      { ...workflowRunRef.reference, versionId: "wrong-version" },
+    ]) {
+      const changed = { ...result, runRef: { ...workflowRunRef, reference } };
+      expect(terminalStatusOfV1(operation, payload, changed, { workflowRunRef })).toBeUndefined();
+      expect(
+        requiredReferencesOfV1(changed, [["resultRefs", 1]], operation, { workflowRunRef }),
+      ).toBeNull();
+    }
+  });
   it("只读取 Agent 任务 detail Schema 的 summary.status", () => {
     expect(
       terminalStatusOfV1(

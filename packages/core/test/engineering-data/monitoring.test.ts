@@ -46,17 +46,27 @@ const policy = MonitoringAvailabilityPolicyV1Schema.parse({
   audit: { actorId: "actor-1", action: "policy", recordedAt: "2030-01-01T00:00:00.000Z" },
 });
 
+const sampleEvidence = [
+  {
+    locator: { sourceSegmentId: "source-1-1-1" },
+    sourceVersion: { entityId: "source-1", versionId: "1" },
+  },
+];
+
 const sampleAt = (second: number, value: number) => ({
   sourceSampleKey: `sample-${second}`,
   sampledAt: `2030-01-01T00:00:${String(second).padStart(2, "0")}.000Z`,
   value,
   unit: "mm",
-  evidenceReferences: [
-    {
-      locator: { sourceSegmentId: "source-1-1-1" },
-      sourceVersion: { entityId: "source-1", versionId: "1" },
-    },
-  ],
+  evidenceReferences: sampleEvidence,
+});
+
+const sampleAtMillis = (offsetMs: number, value: number) => ({
+  sourceSampleKey: `sample-${offsetMs}`,
+  sampledAt: new Date(Date.parse("2030-01-01T00:00:00.000Z") + offsetMs).toISOString(),
+  value,
+  unit: "mm",
+  evidenceReferences: sampleEvidence,
 });
 
 describe("C14 monitoring features", () => {
@@ -162,6 +172,38 @@ describe("C14 monitoring features", () => {
     expect(constant.availability).toBe("partial");
     expect(constant.features.dominantFrequency.reasonCode).toBe("no-dominant-frequency");
     expect(constant.features.anomalyScore.value).toBe(0);
+    // D145：16 点/100ms 恒值 6.8mm 曾因去均值浮点残差误报 0.625Hz 主峰。
+    const constant16 = computeMonitoringFeatures({
+      samples: Array.from({ length: 16 }, (_, index) => sampleAtMillis(index * 100, 6.8)),
+      cutoff: "2030-01-01T00:00:01.500Z",
+      canonicalUnit: "mm",
+      policy: MonitoringAvailabilityPolicyV1Schema.parse({
+        ...policy,
+        windowDurationMs: 1_600,
+        intervalMs: 100,
+        frequencyWindowSize: 16,
+        frequencyPowerFloor: 0,
+      }),
+    });
+    expect(constant16.alignedPoints).toHaveLength(16);
+    expect(constant16.features.dominantFrequency.status).toBe("unavailable");
+    expect(constant16.features.dominantFrequency.reasonCode).toBe("no-dominant-frequency");
+    expect(constant16.features.dominantFrequency.inputCount).toBe(16);
+    expect(constant16.availability).toBe("partial");
+    // 有限数值检查先于恒值短路：求和溢出的恒值窗口仍是 numeric-degenerate。
+    const overflowing = computeMonitoringFeatures({
+      samples: Array.from({ length: 16 }, (_, index) => sampleAtMillis(index * 100, 1e308)),
+      cutoff: "2030-01-01T00:00:01.500Z",
+      canonicalUnit: "mm",
+      policy: MonitoringAvailabilityPolicyV1Schema.parse({
+        ...policy,
+        windowDurationMs: 1_600,
+        intervalMs: 100,
+        frequencyWindowSize: 16,
+      }),
+    });
+    expect(overflowing.features.dominantFrequency.status).toBe("unavailable");
+    expect(overflowing.features.dominantFrequency.reasonCode).toBe("numeric-degenerate");
     const short = computeMonitoringFeatures({
       samples: [sampleAt(3, 7), sampleAt(4, 7), sampleAt(5, 8)],
       cutoff: "2030-01-01T00:00:05.000Z",

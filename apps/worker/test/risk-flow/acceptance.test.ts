@@ -83,6 +83,7 @@ import {
   type StandardizedRiskRecordEnvelope,
 } from "@riskflow/contracts/records";
 import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
+import type { PostgresLocalIdentityAccess } from "@riskflow/adapters/auth";
 import type { ArtifactStorePolicyV1 } from "@riskflow/core/artifacts";
 import { ASSESSMENT_CONFIGURATION_DEFINITION_TYPES_V1 } from "@riskflow/core/assessment-config";
 import {
@@ -237,6 +238,14 @@ const createAccess = () => {
     });
   return {
     port: {
+      async authorizeBusinessAction(input) {
+        if (revoked) throw new Error("access revoked");
+        const context = contextFor(
+          input.capability,
+          input.authorizationContextRef ?? AUTHORIZATION.authorizationContextRef,
+        );
+        return { context, contextRef: context.authorizationContextRef, redacted: false };
+      },
       async verify(requestInput: Parameters<LocalIdentityAccessV1["verify"]>[0]) {
         calls.push({ invocationId: requestInput.invocationId, branch: requestInput.branch });
         if (revoked) {
@@ -260,7 +269,7 @@ const createAccess = () => {
           redacted: false,
         };
       },
-    } satisfies Pick<LocalIdentityAccessV1, "verify">,
+    } satisfies Pick<PostgresLocalIdentityAccess, "verify" | "authorizeBusinessAction">,
     runtimeAuthorization: {
       async verifyCurrent(input: {
         readonly authorization: AuthorizationContextV1;

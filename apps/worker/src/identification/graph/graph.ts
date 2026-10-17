@@ -15,6 +15,7 @@
  * 业务幂等身份重放；因此 checkpoint 只承载小型引用，业务事实永不来自 checkpoint 正文。
  */
 import { isDeepStrictEqual } from "node:util";
+import { independentGraphConfig } from "../../graph-execution.js";
 
 import {
   Annotation,
@@ -147,7 +148,8 @@ type NodeNameV1 =
 
 /** 恢复值：只携带稳定引用，不携带自由正文（`wait` 节点消费）。 */
 export interface IdentificationGraphResumeValueV1 {
-  readonly kind: "agent-task-completed" | "review-resolved" | "transient-recovered";
+  readonly kind:
+    "agent-task-completed" | "agent-task-failed" | "review-resolved" | "transient-recovered";
   readonly agentTaskRef?: AgentTaskRefV1;
   readonly reviewDecisionRef?: { readonly reference: VersionReference };
 }
@@ -2446,6 +2448,7 @@ const submitGroupAcceptance = async (input: {
   readonly events: readonly DomainEventRefV1[];
   readonly skippedGroupRefs: readonly IdentificationGroupRefV1[];
 }> => {
+  if (input.decisionRefs.length === 0) return { records: [], events: [], skippedGroupRefs: [] };
   const accepted = await input.ports.finalizationService.finalize({
     kind: "accept-groups",
     commandId: actionIdFor(input.run, `${input.acceptanceSuffix}:accept`),
@@ -2583,7 +2586,17 @@ const stageI8: StageHandlerV1 = async ({ ports, run, state }) => {
     routes,
     decisionRefs,
   });
-  const rejectedGroupRefs = [...closedGroupRefs, ...submitted.skippedGroupRefs];
+  const acceptedRiskRecordRefs = [...cursor.acceptedRiskRecordRefs];
+  for (const record of submitted.records) {
+    if (
+      !acceptedRiskRecordRefs.some(
+        (existing) =>
+          existing.reference.entityId === record.reference.entityId &&
+          existing.reference.versionId === record.reference.versionId,
+      )
+    )
+      acceptedRiskRecordRefs.push(record);
+  }
   return await advance({
     ports,
     run,
@@ -2603,13 +2616,13 @@ const stageI8: StageHandlerV1 = async ({ ports, run, state }) => {
       eventRefs: submitted.events,
     }),
     cursorPatch: {
-      acceptedRiskRecordRefs: [...cursor.acceptedRiskRecordRefs, ...submitted.records],
-      rejectedGroupRefs: [...cursor.rejectedGroupRefs, ...rejectedGroupRefs],
+      acceptedRiskRecordRefs,
+      rejectedGroupRefs: closedGroupRefs,
       pendingGroupRefs: [...pendingGroupRefs],
     },
     statePatch: {
-      acceptedRiskRecordRefs: [...state.acceptedRiskRecordRefs, ...submitted.records],
-      rejectedGroupRefs: [...state.rejectedGroupRefs, ...rejectedGroupRefs],
+      acceptedRiskRecordRefs,
+      rejectedGroupRefs: closedGroupRefs,
     },
   });
 };
@@ -2947,36 +2960,6 @@ const retryBudget = async (
   }
 };
 
-/**
- * LangGraph 运行配置里的检查点键（锁定 `@langchain/langgraph@1.4.17`）：父图节点内嵌套调用本图时，
- * LangGraph 会把父图执行上下文中的检查点并入本图运行配置，使子检查点落到父任务命名空间或父图的
- * saver 上（design D-01）。这里显式绑定本图已注入的 saver；该键只在本包装边界设置，不进入公共
- * DTO 或上游端口。
- */
-const GRAPH_CHECKPOINTER_CONFIG_KEY_V1 = "__pregel_checkpointer" as const;
-const GRAPH_SCRATCHPAD_CONFIG_KEY_V1 = "__pregel_scratchpad" as const;
-
-/**
- * 本图唯一的执行/回读配置构造（design D-01）：线程仍由调用方给出，检查点命名空间固定为根命名空间，
- * 已注入的 saver 与 `durability: "sync"` 在父节点内外保持一致，使调用与回读命中同一检查点边界。
- */
-const executableConfig = (
-  checkpointer: BaseCheckpointSaver,
-  config: LangGraphRunnableConfig,
-): LangGraphRunnableConfig & { readonly durability: "sync" } => ({
-  ...config,
-  configurable: {
-    ...config.configurable,
-    checkpoint_ns: "",
-    checkpoint_id: undefined,
-    checkpoint_map: {},
-    // 独立子运行不能继承父节点的子图调用计数，否则根命名空间会被改写。
-    [GRAPH_SCRATCHPAD_CONFIG_KEY_V1]: undefined,
-    [GRAPH_CHECKPOINTER_CONFIG_KEY_V1]: checkpointer,
-  },
-  durability: "sync",
-});
-
 /** 编译 I0～I9 子图；checkpointer 由组合根提供（design D-02）。 */
 export const createIdentificationGraph = (options: {
   readonly ports: IdentificationGraphPortsV1;
@@ -3092,7 +3075,7 @@ export const createIdentificationGraph = (options: {
   // 该选项在调用期生效：每个 superstep 末等待检查点落库后再继续。
   const compiled = graph.compile({ checkpointer: options.checkpointer });
   const configFor = (config: LangGraphRunnableConfig) =>
-    executableConfig(options.checkpointer, config);
+    independentGraphConfig(options.checkpointer, config);
   return {
     invoke: (input, config) => compiled.invoke(input.graph, configFor(config)),
     resume: (input, config) =>

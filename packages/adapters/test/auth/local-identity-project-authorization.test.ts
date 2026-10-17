@@ -1072,6 +1072,46 @@ describe.sequential("local identity and project authorization", () => {
       requestedSourceVersionRefs: [sourceDefault],
     });
     expect(defaultSource.context.sourceAccessGrantRefs).toHaveLength(1);
+    const grantInput = {
+      actorId: defaultSource.context.actorId,
+      projectId: "project-a",
+      branch: "engineering-data.evidence-access" as const,
+      capability: "engineering-data.read" as const,
+      invocationId: "artifact-grant-current-read",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+      requestedSourceAccessGrantRefs: defaultSource.context.sourceAccessGrantRefs,
+    };
+    expect(
+      (await access!.authorizeBusinessAction(grantInput)).context.sourceAccessGrantRefs,
+    ).toEqual(defaultSource.context.sourceAccessGrantRefs);
+    expect(
+      (
+        await access!.verifyDeploymentContext({
+          actorId: grantInput.actorId,
+          projectId: grantInput.projectId,
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+          requestedSourceAccessGrantRefs: grantInput.requestedSourceAccessGrantRefs,
+          authorizationContextRef: defaultSource.contextRef,
+          requiredCapability: "engineering-data.read",
+          requestedAt: clock.now().toISOString(),
+        })
+      ).context.sourceAccessGrantRefs,
+    ).toEqual(defaultSource.context.sourceAccessGrantRefs);
+    for (const changed of [
+      { ...grantInput, projectId: "project-b" },
+      {
+        ...grantInput,
+        requestedSourceAccessGrantRefs: [
+          {
+            kind: "source-access-grant" as const,
+            reference: { entityId: "unknown-grant", versionId: "1" },
+          },
+        ],
+      },
+    ])
+      await expect(access!.authorizeBusinessAction(changed)).rejects.toThrow();
     await expect(
       access!.administerProject({
         kind: "revise-source-access",
@@ -1123,6 +1163,13 @@ describe.sequential("local identity and project authorization", () => {
     });
     expect(narrowed.redacted).toBe(true);
     expect(narrowed.context.sourceAccessGrantRefs).toHaveLength(0);
+    await expect(
+      access!.authorizeBusinessAction({
+        ...grantInput,
+        invocationId: "artifact-grant-after-revocation",
+        requestedSourceAccessGrantRefs: viewerEvidence.context.sourceAccessGrantRefs,
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
     await expect(
       access!.verify({
         authorizationContextRef: viewerEvidence.contextRef,
@@ -1238,6 +1285,17 @@ describe.sequential("local identity and project authorization", () => {
       expect(documentDecision.context.grantedCapabilities).toEqual(
         documentAdmission.context.grantedCapabilities,
       );
+      await expect(
+        authority.authorizeBusinessAction({
+          ...input,
+          requestedSourceAccessGrantRefs: [
+            {
+              kind: "source-access-grant",
+              reference: { entityId: sourceGrantId!, versionId: "1" },
+            },
+          ],
+        }),
+      ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
       await expect(
         authority.verify({
           authorizationContextRef: decision.contextRef,

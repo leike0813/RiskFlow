@@ -6,6 +6,7 @@ import type {
   SourceVersionRefV1,
   WorkflowRunRefV1,
   AgentTaskResultRefV1,
+  AgentTaskRefV1,
 } from "@riskflow/contracts/ports";
 import type { IdentificationGraphStateV1 } from "@riskflow/contracts/workflows";
 
@@ -161,6 +162,10 @@ export interface IdentificationGraphResumeCommandV1 {
 }
 
 export type IdentificationGraphResumeCauseV1 =
+  | {
+      readonly kind: "agent-task-failed";
+      readonly agentTaskRef: AgentTaskRefV1;
+    }
   | {
       readonly kind: "agent-task-completed";
       readonly agentTaskResultRef?: AgentTaskResultRefV1;

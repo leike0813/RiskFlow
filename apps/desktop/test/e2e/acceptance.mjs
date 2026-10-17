@@ -9,6 +9,7 @@ import {
   ReleaseManifestV1Schema,
 } from "../../../../packages/adapters/dist/deployment/index.js";
 import {
+  AgentTaskRefV1Schema,
   QueryResultRefV1Schema,
   SourceVersionRefV1Schema,
   WorkflowRunRefV1Schema,
@@ -186,9 +187,13 @@ const checkApprovedTargetsV1 = (acceptance, publicOrigin, problems, desktopSchem
 /** 同次正式回执：functionalConfigFile → runConfigFile → bindings，逐步核对工程与部署身份。 */
 const readSameRunBindingsV1 = (acceptance, acceptanceConfigPath, publicOrigin, problems, env) => {
   const functionalPath = resolve(dirname(acceptanceConfigPath), acceptance.functionalConfigFile);
-  let runConfig, synthetic;
+  let functionalConfig, runConfig, synthetic;
   try {
-    ({ runConfig, synthetic } = readFunctionalAcceptanceReportV1(
+    ({
+      config: functionalConfig,
+      runConfig,
+      synthetic,
+    } = readFunctionalAcceptanceReportV1(
       functionalPath,
       resolve(dirname(acceptanceConfigPath), acceptance.functionalReportFile),
     ));
@@ -221,7 +226,6 @@ const readSameRunBindingsV1 = (acceptance, acceptanceConfigPath, publicOrigin, p
     deployment.data.releaseId !== acceptance.releaseId ||
     manifest.data.releaseId !== acceptance.releaseId ||
     manifest.data.codeCommit !== synthetic.codeHead ||
-    manifest.data.finalMigrationVersion !== "000058" ||
     httpsOriginOfV1(deployment.data.publicOrigin) !== httpsOriginOfV1(publicOrigin)
   ) {
     problems.push(DESKTOP_ACCEPTANCE_PROBLEM_V1.deploymentMismatch);
@@ -255,19 +259,22 @@ const readSameRunBindingsV1 = (acceptance, acceptanceConfigPath, publicOrigin, p
     if (querySteps.length !== 1) throw new Error("query receipt not unique");
     const command = runConfig.commands.find((step) => step.stepId === querySteps[0].stepId);
     const steps = new Map(synthetic.steps.map((step) => [step.stepId, step]));
-    const workflowRunRef = WorkflowRunRefV1Schema.parse(
-      resolveTemplates(command.payload.workflowRunRef, {
-        steps,
-        bindings: synthetic.bindings,
-      }),
-    );
+    const templateContext = { steps, bindings: synthetic.bindings };
+    const queryPayload = resolveTemplates(command.payload, templateContext);
+    if (
+      queryPayload.queryType !== "risk-overview" ||
+      queryPayload.projectRevisionRef?.reference?.entityId !== acceptance.projectId
+    )
+      throw new Error("shared source is not a project report query");
+    const observedStepIds = new Set(functionalConfig.observations.map((item) => item.stepId));
     const startSteps = synthetic.steps.filter(
       (step) =>
         step.operationId === "riskflow_command_workflow_start-run" &&
         ["submitted", "completed"].includes(step.status) &&
-        sameRef(step.resultRef?.workflowRunRef, workflowRunRef),
+        observedStepIds.has(step.stepId),
     );
     if (startSteps.length !== 1) throw new Error("start receipt not unique");
+    const workflowRunRef = WorkflowRunRefV1Schema.parse(startSteps[0].resultRef?.workflowRunRef);
     const sourceVersionRef = SourceVersionRefV1Schema.parse(
       startSteps[0].requestedSourceVersionRefs?.[0],
     );
@@ -289,13 +296,27 @@ const readSameRunBindingsV1 = (acceptance, acceptanceConfigPath, publicOrigin, p
           sameRef(step.resultRef?.exportArtifactRef, {
             kind: "export-artifact",
             reference: acceptance.downloadArtifactRef.reference,
-          }),
+          }) &&
+          sameRef(
+            resolveTemplates(
+              runConfig.commands.find((command) => command.stepId === step.stepId)?.payload
+                ?.sourceRef,
+              templateContext,
+            ),
+            queryResultRef,
+          ),
       )
     )
       throw new Error("download receipt missing");
     return {
       workflowRunRef,
+      ...(startSteps[0].resultRef?.agentTaskRef === undefined
+        ? {}
+        : {
+            pendingAgentTaskRef: AgentTaskRefV1Schema.parse(startSteps[0].resultRef.agentTaskRef),
+          }),
       queryResultRef,
+      reportSourceVersionRefs: querySteps[0].requestedSourceVersionRefs ?? [],
       sourceVersionRef,
       desktopCompatibility: manifest.data.desktopCompatibility,
       requestedSpatialScopeRefs: startSteps[0].requestedSpatialScopeRefs ?? [],

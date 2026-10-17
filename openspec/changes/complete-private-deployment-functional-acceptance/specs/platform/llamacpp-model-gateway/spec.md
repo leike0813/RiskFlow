@@ -82,3 +82,18 @@ StructuredCompletionRequestV1 MUST 支持maxInputTokens与maxContextTokens行动
 - **WHEN** MiniMax响应含reasoning_content
 - **THEN** 在C04持久化、API返回、日志、界面及报告前剔除，不保存或展示内部思考
 - **AND** C04保留可审计协议证据和受原权限保护的普通正文，普通日志、界面及报告不披露正文或思维内容
+
+#### Scenario: 格式错误可被上层反馈
+
+- **WHEN** 模型正常结束但 JSON 或字段不合规
+- **THEN** 网关保存响应并返回可修正结构错误，上层能够在原预算内修正
+
+#### Scenario: 合规输出保留业务校验
+
+- **WHEN** 输出通过 Zod
+- **THEN** 仍由所属业务模块校验来源、规则和专业约束
+
+#### Scenario: 不保存思维链
+
+- **WHEN** 响应包含 reasoning_content
+- **THEN** 持久化和展示前剔除，保留实际回答和协议元数据

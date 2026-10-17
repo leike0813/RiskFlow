@@ -553,6 +553,30 @@ describe("C19 结构化评分规则与适用规则集", () => {
   });
 
   describe("评分边界", () => {
+    it("全域等级通过正式Schema并只为已声明离散值评分", () => {
+      const rule = makeScoringRule({
+        scoringThresholds: [
+          { thresholdId: "clay", operator: "eq", value: "粉质黏土", score: 3 },
+          { thresholdId: "rock", operator: "eq", value: "完整岩体", score: 1 },
+        ],
+        gradeIntervals: [{ grade: "classified" }],
+      });
+      const document = makeScoringRuleDocument({
+        members: [{ rule, binding: makeScoringRuleSourceBinding() }],
+      });
+      expect(document.members[0]!.rule.gradeIntervals).toEqual([{ grade: "classified" }]);
+      expect(evaluateScoringRule(rule, "粉质黏土")).toMatchObject({
+        kind: "evaluated",
+        thresholdId: "clay",
+        score: 3,
+        grade: "classified",
+      });
+      for (const value of ["未声明地层", 3])
+        expect(evaluateScoringRule(rule, value)).toMatchObject({ kind: "rejected" });
+      expect(() =>
+        normalizeGradeIntervals([{ grade: "all" }, { grade: "partial", lowerBound: 0 }]),
+      ).toThrow();
+    });
     it("GB 50911-2013 表 9.2.2-2 端点按左闭右开唯一求值", () => {
       // 中软~软弱土行：一级 15~25、二级 25~35、三级 35~45（mm），变化速率 3/4/5（mm/d）。
       const rule = makeScoringRule();
@@ -804,6 +828,45 @@ describe("C19 结构化评分规则与适用规则集", () => {
   });
 
   describe("冲突", () => {
+    it("同规则候选替换明确基线时保留候选，不由来源或版本标识排序决定", () => {
+      const baseline = {
+        rule: {
+          ...makeScoringRule({ ruleId: "replacement" }),
+          ruleVersion: { entityId: "replacement", versionId: "z-old" },
+        },
+        sourceVersionRef: {
+          kind: "source-version" as const,
+          reference: { entityId: "a-old-source", versionId: "1" },
+        },
+      };
+      const candidate = {
+        rule: {
+          ...baseline.rule,
+          ruleVersion: { entityId: "replacement", versionId: "a-new" },
+          scoringThresholds: baseline.rule.scoringThresholds.map((threshold) => ({
+            ...threshold,
+            score: threshold.score + 1,
+          })),
+        },
+        sourceVersionRef: {
+          kind: "source-version" as const,
+          reference: { entityId: "z-new-source", versionId: "1" },
+        },
+      };
+      const snapshot = detectRuleRelations({
+        policyRef: { entityId: "priority", versionId: "1" },
+        candidateContentDigest: "d".repeat(64),
+        candidates: [candidate],
+        baseline: [baseline],
+        baseReleaseRef: releaseFor("baseline"),
+        baseRevisionRef: revisionFor("baseline"),
+      });
+      expect(snapshot.relations.length).toBeGreaterThan(0);
+      for (const relation of snapshot.relations) {
+        expect(relation.retainedRuleVersionRef).toEqual(candidate.rule.ruleVersion);
+        expect(relation.excludedRuleVersionRef).toEqual(baseline.rule.ruleVersion);
+      }
+    });
     const relationCandidate = (
       ruleId: string,
       thresholds: ScoringRuleRelationCandidateV1["rule"]["scoringThresholds"],

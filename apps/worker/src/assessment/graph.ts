@@ -21,6 +21,7 @@
  * 阶段结果行只在阶段完成时写入一次，其身份由动作后缀与内容摘要确定性派生，因此恢复重放命中
  * 同一幂等键即同事实重放。缺席链尾以 `workflow-error` 行登记类型化原因码，绝不写占位事实。
  */
+import { independentGraphConfig } from "../graph-execution.js";
 import {
   Annotation,
   Command,
@@ -38,6 +39,7 @@ import {
   ApplicabilityMetadataSnapshotRefV1Schema,
   AssessmentBasisReleaseSetRefV1Schema,
   AssessmentInputSnapshotRefV1Schema,
+  AssessmentPreparationSnapshotRefV1Schema,
   ContentArtifactRefV1Schema,
   EffectForecastRefV1Schema,
   ExecutionRecordRefV1Schema,
@@ -56,6 +58,7 @@ import {
   type AssessmentBasisReleaseSetRefV1,
   type AssessmentEvaluationSuccessV1,
   type AssessmentPreparationSnapshotRefV1,
+  type RiskInputFactFieldV1,
   type AuthorizationContextV1,
   type ContentArtifactRefV1,
   type ContractReferenceV1,
@@ -88,6 +91,7 @@ import {
 } from "@riskflow/contracts/workflows";
 import type {
   AssessmentDownstreamAuthorizerV1,
+  AssessmentPreparationContextReaderV1,
   AssessmentRuntimePolicySetProviderV1,
   AssessmentRuntimePolicySetV1,
 } from "@riskflow/core/risk-assessment/engine";
@@ -310,7 +314,8 @@ export interface AssessmentGraphPortsV1 {
   readonly registrationStore: AssessmentGraphRegistrationStorePortV1;
   readonly bodies: AssessmentGraphBodyPortV1;
   /** C11 评估准备冻结：只按显式入口引用冻结，不推断“最新版”。 */
-  readonly engineeringData: Pick<EngineeringDataPortV1, "freeze">;
+  readonly engineeringData: Pick<EngineeringDataPortV1, "freeze"> &
+    Partial<AssessmentPreparationContextReaderV1>;
   /** C19 已发布评估依据集合与 C18 版本化策略的解析入口。 */
   readonly basis: AssessmentBasisReleaseSetReaderV1;
   /**
@@ -2010,6 +2015,92 @@ export const resolveAssessmentEntry = async (input: {
     }
     default: {
       const refs = entryRefsOf({ run, stage: "A0", occurredAt });
+      let sourceFieldFacts: readonly RiskInputFactFieldV1[] | undefined;
+      const suppliedPreparation = optionalFrozenRef({
+        run,
+        kind: "assessment-preparation-snapshot",
+        schema: AssessmentPreparationSnapshotRefV1Schema,
+        stage: "A0",
+        detailCode: "assessment-preparation-invalid",
+        occurredAt,
+      });
+      if (suppliedPreparation !== undefined) {
+        const read = ports.engineeringData.readAssessmentPreparationContext;
+        if (run.entryMode !== "assess" || read === undefined) {
+          fail(
+            entryIncomplete({
+              stage: "A0",
+              detailCode: "assessment-preparation-reader-missing",
+              occurredAt,
+            }),
+          );
+        }
+        const requestId = actionIdFor(run, "A0:assessment-preparation-read");
+        const authorization = await ports.authorizeDownstream({
+          branch: "engineering-data.evidence-access",
+          invocationId: requestId,
+          projectId: run.projectId,
+          actorId: run.actorId,
+          requestedAt: run.issuedAt,
+        });
+        const result = await read.call(ports.engineeringData, {
+          requestId,
+          idempotencyKey: requestId,
+          requestedAt: run.issuedAt,
+          authorization,
+          preparationSnapshotRef: suppliedPreparation,
+        });
+        if (result.kind !== "succeeded") {
+          fail(
+            toAssessmentGraphError({
+              stage: "A0",
+              error: result.kind === "failed" ? result.error : result.waiting,
+              occurredAt,
+            }),
+          );
+        }
+        const preparation = result.preparation;
+        const monitors = preparation.monitoringSnapshotRefs ?? [];
+        if (
+          preparation.entryMode !== run.entryMode ||
+          preparation.createdBy !== run.actorId ||
+          preparation.causalRunRef !== undefined ||
+          !sameVersionReference(
+            preparation.projectRevisionRef.reference,
+            refs.projectRevisionRef.reference,
+          ) ||
+          !sameVersionReference(
+            preparation.spatialScopeRef.reference,
+            refs.spatialScopeRef.reference,
+          ) ||
+          preparation.riskInput.kind !== refs.riskInput.kind ||
+          !sameVersionReference(preparation.riskInput.reference, refs.riskInput.reference) ||
+          !sameVersionReference(
+            preparation.applicabilityMetadataSnapshotRef.reference,
+            refs.applicabilityMetadataSnapshotRef.reference,
+          ) ||
+          monitors.length !== refs.monitoringSnapshotRefs.length ||
+          monitors.some(
+            (monitor) =>
+              !refs.monitoringSnapshotRefs.some((ref) =>
+                sameVersionReference(ref.reference, monitor.reference),
+              ),
+          ) ||
+          refs.monitoringSnapshotRefs.some(
+            (ref) =>
+              !monitors.some((monitor) => sameVersionReference(ref.reference, monitor.reference)),
+          )
+        ) {
+          fail(
+            contractInvalid({
+              stage: "A0",
+              detailCode: "assessment-preparation-entry-mismatch",
+              occurredAt,
+            }),
+          );
+        }
+        sourceFieldFacts = preparation.sourceFieldFacts;
+      }
       // A0 的前驱同样取自已登记的重评入口事实（design D-12），不从冻结引用集合反查。
       const previousAssessmentRecordRef =
         run.reassessmentEntry === undefined
@@ -2050,6 +2141,7 @@ export const resolveAssessmentEntry = async (input: {
           triggerReasonCode: run.entryMode,
           ...(previousAssessmentRecordRef === undefined ? {} : { previousAssessmentRecordRef }),
           causalRunRef: run.parentRunRef ?? run.runRef,
+          ...(sourceFieldFacts === undefined ? {} : { sourceFieldFacts: [...sourceFieldFacts] }),
           ...(refs.monitoringSnapshotRefs.length === 0
             ? {}
             : { monitoringSnapshotRefs: [...refs.monitoringSnapshotRefs] }),
@@ -3981,17 +4073,16 @@ export const createAssessmentGraph = (options: {
   graph.addConditionalEdges(WAIT_NODE_V1, router, routes);
   // `durability: "sync"`：每个 superstep 末等待检查点落库后再继续，恢复才能与业务事实对账。
   const compiled = graph.compile({ checkpointer: options.checkpointer });
+  const configFor = (config: LangGraphRunnableConfig) =>
+    independentGraphConfig(options.checkpointer, config);
   return {
-    invoke: (input, config) => compiled.invoke(input.graph, { ...config, durability: "sync" }),
+    invoke: (input, config) => compiled.invoke(input.graph, configFor(config)),
     resume: (input, config) =>
       compiled.invoke(
         new Command<AssessmentGraphResumeValueV1, GraphChannelsV1, NodeNameV1>({
           resume: input.resume,
         }),
-        {
-          ...config,
-          durability: "sync",
-        },
+        configFor(config),
       ),
     retry: (state, config) =>
       compiled.invoke(
@@ -3999,10 +4090,10 @@ export const createAssessmentGraph = (options: {
           update: stateAsUpdate({ ...state, status: "running" }),
           goto: NODE_FOR_STAGE_V1[state.stage],
         }),
-        { ...config, durability: "sync" },
+        configFor(config),
       ),
     recover: async (state, completedNode, config) => {
-      await compiled.updateState(config, stateAsUpdate(state), completedNode);
+      await compiled.updateState(configFor(config), stateAsUpdate(state), completedNode);
       if (
         state.status === "completed" ||
         state.status === "cancelled" ||
@@ -4011,8 +4102,8 @@ export const createAssessmentGraph = (options: {
       ) {
         return state;
       }
-      return compiled.invoke(null, { ...config, durability: "sync" });
+      return compiled.invoke(null, configFor(config));
     },
-    getState: (config) => compiled.getState(config),
+    getState: (config) => compiled.getState(configFor(config)),
   };
 };

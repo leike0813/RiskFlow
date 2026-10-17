@@ -1247,6 +1247,7 @@ export const detectRuleRelations = (
   const compare = (
     firstCandidate: ScoringRuleRelationCandidateV1,
     secondCandidate: ScoringRuleRelationCandidateV1,
+    replacingBaseline = false,
   ): void => {
     if (sameRuleIdentity(firstCandidate, secondCandidate)) {
       if (sha256CanonicalJson(firstCandidate.rule) !== sha256CanonicalJson(secondCandidate.rule)) {
@@ -1273,6 +1274,9 @@ export const detectRuleRelations = (
       left.exceptionClauses.every((clause) => !right.exceptionClauses.includes(clause));
     const priority = [leftCandidate!, rightCandidate!]
       .sort((first, second) => {
+        if (replacingBaseline && first.rule.ruleId === second.rule.ruleId) {
+          return first === firstCandidate ? -1 : 1;
+        }
         const rankDelta = rankOf(first) - rankOf(second);
         if (rankDelta !== 0) return rankDelta;
         const firstKey = `${versionKey(first.sourceVersionRef.reference)}:${scoringRuleIdentityKey(first.rule.ruleId, first.rule.ruleVersion)}`;
@@ -1316,7 +1320,7 @@ export const detectRuleRelations = (
   }
   for (const candidate of input.candidates) {
     for (const baselineCandidate of input.baseline ?? []) {
-      compare(candidate, baselineCandidate);
+      compare(candidate, baselineCandidate, true);
     }
   }
   const sorted = closeRelationTemplates(relations);

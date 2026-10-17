@@ -37,6 +37,7 @@ import {
 } from "@riskflow/core/model";
 import { AccessServiceError } from "@riskflow/core/access";
 import {
+  AgentTaskRefV1Schema,
   AgentTaskResultRefV1Schema,
   type AgentTaskRefV1,
   type AgentTaskResultRefV1,
@@ -613,7 +614,7 @@ export class AgentRuntimeRunner {
   async #runClaim(claim: AgentTaskClaimV1, signal: AbortSignal): Promise<void> {
     const taskRef = claim.task.envelope.agentTaskRef;
     let currentTask = claim.task;
-    let sequence = (currentTask.state.latestCandidateVersion ?? 0) + 1;
+    let sequence = 1;
     let actionId = actionIdFor(taskRef, sequence);
     let definition: AgentTaskDefinitionV1;
     let intentRecorded = false;
@@ -736,8 +737,87 @@ export class AgentRuntimeRunner {
       let pendingTool: { readonly toolRef: VersionReference; readonly input: unknown } | undefined;
       let previousObservationArtifactRef: ArtifactRefV1 | undefined;
       const completedToolCalls: AgentCompletedToolCallV1[] = [];
+      let correctionFeedback: AgentTaskActionV1 | undefined;
+      let previousCandidate:
+        | {
+            readonly candidateVersion: number;
+            readonly candidate: unknown;
+            readonly validation: AgentCandidateVersionV1["validation"];
+          }
+        | undefined;
       let completed = await this.#options.store.findAction(taskRef, actionId);
-      while (completed?.status === "completed" && completed.resultRef === undefined) {
+      while (
+        (completed?.status === "completed" && completed.resultRef === undefined) ||
+        (completed?.status === "failed" &&
+          completed.actionType === "model-invocation" &&
+          completed.errorCode === "AGENT_VALIDATION_REJECTED")
+      ) {
+        if (completed.status === "failed") {
+          correctionFeedback = completed;
+          if (completed.resultArtifactRef?.kind === "content-artifact") {
+            const recorded = await this.#readJson(
+              currentTask,
+              actionId,
+              completed.resultArtifactRef,
+              "agent-action-result",
+              operationController.signal,
+            );
+            if (
+              typeof recorded === "object" &&
+              recorded !== null &&
+              "candidateFeedback" in recorded
+            ) {
+              const parsed = AgentCandidateVersionV1Schema.safeParse(recorded.candidateFeedback);
+              const recordedTask = AgentTaskRefV1Schema.safeParse(
+                "taskRef" in recorded ? recorded.taskRef : undefined,
+              );
+              if (
+                !parsed.success ||
+                !recordedTask.success ||
+                !agentTaskRefEquals(parsed.data.taskRef, taskRef) ||
+                !agentTaskRefEquals(recordedTask.data, taskRef) ||
+                !("actionId" in recorded) ||
+                recorded.actionId !== actionId ||
+                !("actionResultArtifactRef" in recorded) ||
+                !ArtifactRefV1Schema.safeParse(recorded.actionResultArtifactRef).success ||
+                parsed.data.disposition !== "rejected" ||
+                parsed.data.validation === undefined
+              )
+                throw new AgentRuntimeError(
+                  makeAgentError({
+                    code: "AGENT_ARTIFACT_FAILURE",
+                    category: "artifact",
+                    retryable: false,
+                    stage: "worker.recovery.candidate-feedback",
+                    taskRef,
+                    actionId,
+                  }),
+                );
+              const candidate = parsed.data;
+              if (candidate.candidateVersion === currentTask.state.latestCandidateVersion) {
+                previousCandidate = {
+                  candidateVersion: candidate.candidateVersion,
+                  candidate: this.#options.registry.parseCandidate(
+                    taskRef.taskType,
+                    await this.#readJson(
+                      currentTask,
+                      actionId,
+                      candidate.candidateArtifactRef,
+                      "agent-candidate",
+                      operationController.signal,
+                    ),
+                  ),
+                  validation: candidate.validation,
+                };
+              }
+            }
+          }
+          sequence += 1;
+          actionId = actionIdFor(taskRef, sequence);
+          completed = await this.#options.store.findAction(taskRef, actionId);
+          continue;
+        }
+        if (completed.actionType === "model-invocation") correctionFeedback = undefined;
         if (
           completed.actionType === "model-invocation" &&
           completed.resultArtifactRef !== undefined
@@ -1020,7 +1100,7 @@ export class AgentRuntimeRunner {
                 ? {}
                 : { completedToolCalls: [...completedToolCalls] }),
             });
-            if (completed?.errorCode === "AGENT_VALIDATION_REJECTED")
+            if (correctionFeedback !== undefined || previousCandidate !== undefined)
               rendered = {
                 ...rendered,
                 messages: [
@@ -1029,8 +1109,9 @@ export class AgentRuntimeRunner {
                     role: "user",
                     content: JSON.stringify({
                       validationFeedback: {
-                        code: completed.errorCode,
+                        code: correctionFeedback?.errorCode ?? "AGENT_VALIDATION_REJECTED",
                         reasonCode: currentTask.state.error?.reasonCode,
+                        ...(previousCandidate === undefined ? {} : { previousCandidate }),
                       },
                     }),
                   },
@@ -1132,6 +1213,7 @@ export class AgentRuntimeRunner {
           throwLeaseFailure();
           const requestedAmount = maxUsage(
             rendered?.reservationAmount,
+            correctionFeedback === undefined ? undefined : { corrections: 1 },
             resourceReservation(currentTask, actionType, tool?.budgetUsage),
             rendered === undefined || actionType !== "model-invocation"
               ? undefined
@@ -1172,8 +1254,9 @@ export class AgentRuntimeRunner {
           actionUsage = {
             ...emptyAgentBudgetUsage(),
             transientRetries: reservation.reservation.amount.transientRetries,
-            corrections: completed?.errorCode === "AGENT_VALIDATION_REJECTED" ? 1 : 0,
+            corrections: correctionFeedback === undefined ? 0 : 1,
           };
+          correctionFeedback = undefined;
           completed = undefined;
           intentRecorded = true;
           throwLeaseFailure();
@@ -1474,6 +1557,19 @@ export class AgentRuntimeRunner {
           });
           throwLeaseFailure();
           if (validation.disposition === "rejected") {
+            actionEvidenceRef = await this.#persistJson(
+              reservation.task,
+              `${actionId}:candidate-feedback`,
+              "agent-action-result",
+              {
+                schemaVersion: "1",
+                taskRef,
+                actionId,
+                actionResultArtifactRef: evidenceRef,
+                candidateFeedback: candidate,
+              },
+              operationController.signal,
+            );
             const failure = makeAgentError({
               code: "AGENT_VALIDATION_REJECTED",
               category: "validation",
@@ -1489,7 +1585,7 @@ export class AgentRuntimeRunner {
               leaseToken: claim.leaseToken,
               actionId,
               error: failure,
-              resultArtifactRef: evidenceRef,
+              resultArtifactRef: actionEvidenceRef,
               usage,
               activeWallClockMs: activeActionWallClockMs(),
               now: this.#now(),

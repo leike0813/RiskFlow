@@ -161,7 +161,7 @@ const issuedContext = (request: AuthorizationRequestV1): AuthorizationContextV1 
     },
     actorId: parent?.actorId ?? ACTOR_ID,
     projectId: request.projectId,
-    grantedCapabilities: [EVIDENCE_ACCESS_CAPABILITY],
+    grantedCapabilities: [MODULE_BRANCH_CAPABILITY_V1[request.branch]],
     spatialScopeRefs: [...(request.requestedSpatialScopeRefs ?? [])],
     sourceAccessGrantRefs: [],
     authorizationPolicyRef: ACCESS_POLICY_REF_V1,
@@ -696,7 +696,9 @@ describe("C17 worker identification knowledge composition root", () => {
     } as never);
     // 精确窄读失败即封闭失败，不回退到调用方能力或任何缓存正文。
     expect(result).toMatchObject({ kind: "failed" });
-    expect(harness.authorizeRequests).toEqual([
+    expect(
+      harness.authorizeRequests.filter((request) => request.branch === EVIDENCE_ACCESS_BRANCH),
+    ).toEqual([
       {
         invocation: { kind: "human-session", sessionToken: SESSION_TOKEN },
         invocationId: `${commandId}:preparation`,
@@ -742,7 +744,9 @@ describe("C17 worker identification knowledge composition root", () => {
     } as never);
     // 窄读失败是脚本化收口；本条只核对送交 C06 的请求继承了受信来源的冻结范围。
     expect(result).toMatchObject({ kind: "failed" });
-    expect(harness.authorizeRequests).toEqual([
+    expect(
+      harness.authorizeRequests.filter((request) => request.branch === EVIDENCE_ACCESS_BRANCH),
+    ).toEqual([
       {
         invocation: { kind: "human-session", sessionToken: SESSION_TOKEN },
         invocationId: `${commandId}:preparation`,
@@ -793,7 +797,9 @@ describe("C17 worker identification knowledge composition root", () => {
       payload: { preparationSnapshotRef, requiredAt: NOW },
     } as never);
     expect(result).toMatchObject({ kind: "failed" });
-    expect(harness.authorizeRequests).toEqual([
+    expect(
+      harness.authorizeRequests.filter((request) => request.branch === EVIDENCE_ACCESS_BRANCH),
+    ).toEqual([
       {
         invocation: { kind: "human-session", sessionToken: SESSION_TOKEN },
         invocationId: `${commandId}:preparation`,
@@ -946,28 +952,30 @@ describe("C17 worker identification knowledge composition root", () => {
         },
       ),
     ).rejects.toMatchObject({ details: { code: "AGENT_TOOL_FAILURE" } });
-    expect(harness.authorizeRequests).toEqual([
-      expect.objectContaining({
-        invocationId: "action:baseline:baseline-read",
-        branch: "knowledge-modeling.identification-basis",
-        parentContext: expect.objectContaining({
-          invocation: expect.objectContaining({
-            kind: "agent-task",
-            agentTaskRef: identificationTask.envelope.agentTaskRef,
+    expect(harness.authorizeRequests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          invocationId: "action:baseline:baseline-read",
+          branch: "knowledge-modeling.identification-basis",
+          parentContext: expect.objectContaining({
+            invocation: expect.objectContaining({
+              kind: "agent-task",
+              agentTaskRef: identificationTask.envelope.agentTaskRef,
+            }),
           }),
         }),
-      }),
-      expect.objectContaining({
-        invocationId: "action:slice:segment-slice:preparation",
-        branch: "engineering-data.evidence-access",
-        parentContext: expect.objectContaining({
-          invocation: expect.objectContaining({
-            kind: "agent-task",
-            agentTaskRef: identificationTask.envelope.agentTaskRef,
+        expect.objectContaining({
+          invocationId: "action:slice:segment-slice:preparation",
+          branch: "engineering-data.evidence-access",
+          parentContext: expect.objectContaining({
+            invocation: expect.objectContaining({
+              kind: "agent-task",
+              agentTaskRef: identificationTask.envelope.agentTaskRef,
+            }),
           }),
         }),
-      }),
-    ]);
+      ]),
+    );
     expect(harness.narrowReadCalls).toEqual(["readExactPreparation"]);
     expect(harness.engineeringDataCalls).toEqual([]);
   });

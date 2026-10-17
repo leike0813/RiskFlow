@@ -38,11 +38,11 @@ import {
   versionRef,
 } from "./fixture.js";
 
-const submission = (candidateSetRef: ArtifactRefV1) => ({
+const submission = (candidateSetRef: ArtifactRefV1, candidateVersion = 1) => ({
   kind: "submit-retrieval-review",
   increment: {
     schemaVersion: "1",
-    candidateVersion: 1,
+    candidateVersion,
     candidateSetRef,
     operations: [
       {
@@ -252,7 +252,12 @@ describe("C21 retrieval review model step", () => {
     const policy = reviewPolicy();
     const persistArtifact = vi.fn();
     const task = taskSnapshot();
-    const modelInput = { candidateSet: candidateSetValue(), observationText: "上一轮观察" };
+    // 生产 loader 形状：本轮绑定的候选集引用 + 完整候选集（含上一轮观察）。
+    const modelInput = {
+      candidateSetRef: task.envelope.frozenInputRef,
+      candidateSet: candidateSetValue(),
+      previousObservation: { kind: "validation", items: [] },
+    };
     const loadModelInput = vi.fn(async () => modelInput);
     const stepOptions = { policy, loadModelInput, persistArtifact: persistArtifact as never };
     const step = await renderRetrievalReviewModelStep(stepOptions, task, {});
@@ -367,6 +372,52 @@ describe("C21 retrieval review model step", () => {
         task,
       ),
     ).rejects.toBeInstanceOf(AgentRuntimeError);
+  });
+
+  it("binds every review action to the current candidate set reference and version loaded for this round", async () => {
+    const policy = reviewPolicy();
+    const envelopeRef: ArtifactRefV1 = {
+      kind: "content-artifact",
+      reference: versionRef("candidate-set-frozen-input"),
+    };
+    const currentRef: ArtifactRefV1 = {
+      kind: "content-artifact",
+      reference: versionRef("candidate-set-after-resupplement"),
+    };
+    const task = taskSnapshot(envelopeRef);
+    const loadModelInput = vi.fn(async () => ({
+      candidateSetRef: currentRef,
+      candidateSet: { ...candidateSetValue(), candidateVersion: 3 },
+    }));
+    const step = await renderRetrievalReviewModelStep(
+      { policy, loadModelInput, persistArtifact: vi.fn() as never },
+      task,
+      {},
+    );
+    const parse = (action: unknown) => step.outputSchema?.safeParse(action);
+
+    expect(step.outputSchema).toBeDefined();
+    // 合法提交与两项有界工具动作都以本轮加载的当前候选集为准。
+    expect(parse(submission(currentRef, 3))?.success).toBe(true);
+    expect(
+      parse({
+        kind: "read-frozen-result",
+        candidateSetRef: currentRef,
+        queryResultRef: candidateSetValue()["baselineQueryResultRef"],
+        maxMembers: 4,
+      })?.success,
+    ).toBe(true);
+    expect(
+      parse({
+        kind: "bounded-hybrid-resupplement",
+        candidateSetRef: currentRef,
+        supplementIntentCode: "settlement",
+        anchorEntryIds: [candidateMember()["sourceEntryId"]],
+      })?.success,
+    ).toBe(true);
+    // 任务信封的初始引用与过期版本号在补搜后都不再是当前绑定，必须拒绝。
+    expect(parse(submission(envelopeRef, 3))?.success).toBe(false);
+    expect(parse(submission(currentRef, 1))?.success).toBe(false);
   });
 
   it("drives a bounded submit through validation and finalization into one formal artifact set", async () => {

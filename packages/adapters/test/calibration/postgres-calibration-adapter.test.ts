@@ -259,6 +259,8 @@ describe.sequential("PostgreSQL calibration adapter", () => {
 
   it("已越限事实进入校准：冻结输入落工件且公共记录身份稳定", async () => {
     const fact = fixture!.deviationFacts.seed({ suffix: "exceeded", thresholdExceeded: true });
+    const evidenceCount = fact.evidenceReferences.length;
+    fact.evidenceReferences.push(fact.evidenceReferences[0]!);
     const first = await fixture!.prepareInput({
       requestId: "c29-prepare-exceeded",
       deviationFactRef: fact.deviationFactRef,
@@ -298,6 +300,30 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       targetReleaseRef: fixture!.targetReleaseRef,
       baseContentDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
     });
+    const snapshot = await fixture!.readArtifact(
+      first.result.frozenInputRef,
+      C29_FROZEN_INPUT_PURPOSE,
+    );
+    const inherited = await fixture!.rows<{
+      parent_artifact_refs: unknown[];
+      evidence_references: unknown[];
+    }>(
+      `SELECT parent_artifact_refs, evidence_references FROM business.artifact_manifests
+       WHERE project_id = $1 AND artifact_id = $2 AND version_id = $3`,
+      [
+        fixture!.projectId,
+        first.result.frozenInputRef.reference.entityId,
+        first.result.frozenInputRef.reference.versionId,
+      ],
+    );
+    expect(inherited[0]!.parent_artifact_refs).toContainEqual(
+      (snapshot as { baseArtifactRef: unknown }).baseArtifactRef,
+    );
+    expect(inherited[0]!.evidence_references).toEqual(
+      expect.arrayContaining(fact.evidenceReferences),
+    );
+    expect(inherited[0]!.evidence_references).toHaveLength(evidenceCount);
+    expect(fact.evidenceReferences).toHaveLength(evidenceCount + 1);
   });
 
   it("未越限事实不进入校准且不产生任何持久化事实", async () => {
@@ -1474,11 +1500,42 @@ describe.sequential("PostgreSQL calibration adapter", () => {
     expect(await state.calibration.readCreatedDeviationRecordRef(createdInput)).toEqual(
       seeded.prepared.result.deviationRecordRef,
     );
+    expect(
+      await state.calibration.readCreatedDeviationRecordRef({
+        ...createdInput,
+        authorization: { ...input.authorization, spatialScopeRefs: [] },
+      }),
+    ).toEqual(seeded.prepared.result.deviationRecordRef);
+    const setResult = (result: unknown) =>
+      state.rows(
+        `UPDATE business.calibration_suggestions SET agent_task_result_ref = $1::jsonb WHERE project_id = $2 AND suggestion_id = $3 AND version_id = $4`,
+        [
+          JSON.stringify(result),
+          state.projectId,
+          seeded.result.calibrationSuggestionRef.reference.entityId,
+          seeded.result.calibrationSuggestionRef.reference.versionId,
+        ],
+      );
+    for (const invalidResult of [
+      { ...seeded.task.resultRef, reference: { entityId: "other-result", versionId: "1" } },
+      {
+        ...seeded.task.resultRef,
+        agentTaskRef: {
+          ...seeded.task.taskRef,
+          modelDeploymentRef: { entityId: "other-model", versionId: "1" },
+        },
+      },
+    ]) {
+      await setResult(invalidResult);
+      try {
+        expect(await state.calibration.readCreatedDeviationRecordRef(createdInput)).toBeUndefined();
+      } finally {
+        await setResult(seeded.task.resultRef);
+      }
+    }
     for (const invalid of [
       { actorId: "other" },
       { projectId: "other" },
-      { invocationId: "unsigned" },
-      { authorization: { ...input.authorization, spatialScopeRefs: [] } },
       {
         parentRunRef: {
           ...input.parentRunRef,
@@ -1508,8 +1565,6 @@ describe.sequential("PostgreSQL calibration adapter", () => {
       for (const invalid of [
         { actorId: "other" },
         { projectId: "other" },
-        { invocationId: "unsigned" },
-        { authorization: { ...input.authorization, spatialScopeRefs: [] } },
         {
           parentRunRef: {
             ...input.parentRunRef,

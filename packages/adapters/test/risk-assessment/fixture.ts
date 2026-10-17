@@ -40,9 +40,11 @@ import {
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 import type { AssessmentPreparationSnapshotRefV1 } from "@riskflow/contracts/ports";
+import type { EvidenceReference } from "@riskflow/contracts/common";
 import {
   WorkflowGraphRunStateV1Schema,
   workflowGraphInvocationIdV1,
+  workflowEntryIdentityFor,
   type WorkflowGraphResultRowV1,
 } from "@riskflow/core/workflow";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
@@ -58,6 +60,7 @@ import {
 import { createPostgresRiskAssessmentEngine } from "../../src/risk-assessment/engine/index.js";
 import type { PostgresRiskAssessmentEngine } from "../../src/risk-assessment/engine/index.js";
 import { createPostgresWorkflowAdapter } from "../../src/workflow/index.js";
+import { createDeploymentAuthorizedArtifactStoreV1 } from "../../../../scripts/deployment/start.mjs";
 import {
   startEngineeringContextSourceFixture,
   type EngineeringContextSourcePostgresFixture,
@@ -113,6 +116,8 @@ export interface RiskAssessmentEngineFixtureV1 {
   readonly accessRootScopeRef: SpatialScopeRefV1;
   /** 已登记来源精确引用：入口候选读的当前已验证来源范围。 */
   readonly sourceVersionRef: SourceVersionRefV1;
+  /** 上述来源已登记资料段的正式证据引用：事实与准备补充字段共用同一真实定位。 */
+  readonly evidenceReference: EvidenceReference;
   readonly businessSpatialScopeRef: SpatialScopeRefV1;
   readonly preparationSnapshotRef: AssessmentPreparationSnapshotRefV1;
   readonly monitoringSnapshotRefs: readonly {
@@ -254,6 +259,8 @@ export interface RiskAssessmentEngineFixtureV1 {
     readonly effectiveAt?: string;
     /** 缺省使用既有合成风险输入；IP-04 用已登记的真实记录引用冻结正式准备。 */
     readonly riskInput?: unknown;
+    /** 准备显式冻结的资料字段（D-112）：按唯一 RiskInputFactFieldV1 形状透传给 C11。 */
+    readonly sourceFieldFacts?: unknown;
   }): Promise<AssessmentPreparationSnapshotRefV1>;
   prepareCommand(input: {
     readonly commandId: string;
@@ -1097,6 +1104,8 @@ export const startRiskAssessmentEngineFixture = async (
 
   const registeredExternalRiskEvents = new Set<string>();
   let facts: unknown | undefined = factsFor();
+  /** 显式设定的事实正文按原样作为读取结果；缺省才按请求的风险输入派生。 */
+  let explicitFacts: unknown | undefined;
   let driftAfterFirstBasisRead = false;
   let basisReadCount = 0;
   let revokeOnFacts = false;
@@ -1116,7 +1125,8 @@ export const startRiskAssessmentEngineFixture = async (
           ? { kind: "failed" as const, error: precondition("c25-fixture-facts") }
           : {
               kind: "succeeded" as const,
-              facts: (riskInput === undefined ? facts : factsFor(riskInput as never)) as never,
+              facts: (explicitFacts ??
+                (riskInput === undefined ? facts : factsFor(riskInput as never))) as never,
             };
       if (revokeOnFacts) {
         // 读取已返回、提交尚未开始：此刻失效必须在提交前复验被拒绝。
@@ -1156,10 +1166,22 @@ export const startRiskAssessmentEngineFixture = async (
   const unwiredReadDependency = (label: string): never => {
     throw new Error(`C25 fixture seam 之外的读依赖未接线：${label}`);
   };
+  const authorizedArtifactStore = createDeploymentAuthorizedArtifactStoreV1({
+    access,
+    store: {
+      put: postgres.artifactStore.put.bind(postgres.artifactStore),
+      open: postgres.artifactStore.open.bind(postgres.artifactStore),
+      readManifest: postgres.artifactRegistry.readManifest.bind(postgres.artifactRegistry),
+    },
+  });
+  const currentArtifactStore = {
+    put: postgres.artifactStore.put.bind(postgres.artifactStore),
+    open: authorizedArtifactStore.open,
+  };
   const workflow = createPostgresWorkflowAdapter({
     db: postgres.runtime.db,
     transactionUnit: postgres.transactionUnit,
-    artifactStore: postgres.artifactStore,
+    artifactStore: currentArtifactStore,
     authorization: access,
     now: () => new Date(T0),
   });
@@ -1171,7 +1193,7 @@ export const startRiskAssessmentEngineFixture = async (
     db: postgres.runtime.db,
     transactionUnit: postgres.transactionUnit,
     access,
-    artifactStore: postgres.artifactStore,
+    artifactStore: currentArtifactStore,
     preparationContext: registry,
     riskInputFacts,
     basisReader,
@@ -1228,6 +1250,8 @@ export const startRiskAssessmentEngineFixture = async (
     readonly withCausalRun?: boolean;
     /** 风险输入覆盖：外部风险事件分支用正式登记的外部事件引用。 */
     readonly riskInput?: unknown;
+    /** 准备显式冻结的资料字段（D-112）：原样进入 C11 冻结载荷，缺省不出现在载荷里。 */
+    readonly sourceFieldFacts?: unknown;
   }) => {
     const frozen = await registry.freeze({
       commandId: `c25-engine-preparation-${input.suffix}`,
@@ -1268,6 +1292,9 @@ export const startRiskAssessmentEngineFixture = async (
                 reference: { entityId: "c25-engine-run", versionId: "1" },
               },
             }),
+        ...(input.sourceFieldFacts === undefined
+          ? {}
+          : { sourceFieldFacts: input.sourceFieldFacts }),
       },
     });
     if (frozen.kind !== "succeeded" || frozen.result.kind !== "assessment-preparation") {
@@ -1353,10 +1380,12 @@ export const startRiskAssessmentEngineFixture = async (
     };
   }) => {
     const runVersionId = c25Digest({ run: "run-version", suffix: input.suffix });
-    const entryIdentity = {
-      entityId: `workflow-entry:${PROJECT_ID}:${input.suffix}`,
-      versionId: c25Digest({ run: "entry-identity", suffix: input.suffix }),
-    };
+    const entryIdentity = workflowEntryIdentityFor({
+      projectId: PROJECT_ID,
+      entryMode: input.entryMode,
+      frozenRefs: [C25_FIXTURE_RISK_RECORD_REF],
+      reassessmentEntry: input.reassessmentEntry,
+    });
     const rowBase = {
       schemaVersion: "1" as const,
       projectId: PROJECT_ID,
@@ -1557,15 +1586,18 @@ export const startRiskAssessmentEngineFixture = async (
     projectRevisionRef,
     accessRootScopeRef,
     sourceVersionRef,
+    evidenceReference,
     businessSpatialScopeRef,
     preparationSnapshotRef: preparations.a,
     monitoringSnapshotRefs,
     basisRef,
     setFacts(value) {
       facts = value;
+      explicitFacts = value;
     },
     resetFacts() {
       facts = factsFor();
+      explicitFacts = undefined;
     },
     driftWeightSetDigest() {
       basisResult = basisReadResult(

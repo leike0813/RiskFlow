@@ -1835,11 +1835,7 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       requestedSourceVersionRefs: [...sourceVersionRefs] as never,
       requestedAt: context.authorization.decidedAt,
     });
-    if (
-      branch === "engineering-data.complete-identification-preparation" &&
-      (verified.redacted ||
-        canonicalJson(verified.context) !== canonicalJson(context.authorization))
-    )
+    if (branch === "engineering-data.complete-identification-preparation" && verified.redacted)
       boundResultDenied(context.commandId);
   }
 

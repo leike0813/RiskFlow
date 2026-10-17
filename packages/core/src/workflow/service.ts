@@ -667,6 +667,9 @@ export const evaluateWorkflowEntryGate = (payload: WorkflowStartPayloadV1): Work
         payload.applicabilityMetadataSnapshotRef,
         riskInput,
         ...monitoringRefs,
+        ...(payload.entryMode === "assess" && payload.assessmentPreparationSnapshotRef !== undefined
+          ? [payload.assessmentPreparationSnapshotRef]
+          : []),
         ...(payload.entryMode === "historical-backfill"
           ? [payload.assessmentBasisReleaseSetRef]
           : []),

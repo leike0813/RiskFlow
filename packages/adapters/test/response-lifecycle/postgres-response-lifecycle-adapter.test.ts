@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { makeRiskAssessmentEngineContext } from "../../../core/test/risk-assessment/fixture.js";
 
 import type { ForecastPolicyV1 } from "@riskflow/core/assessment-config";
 import type { EffectForecastExecutorV1 } from "@riskflow/core/response-lifecycle";
@@ -999,6 +1000,81 @@ describe("C28 处置执行、预测、反馈与偏差 PostgreSQL 链", () => {
     );
     expect(row.rows[0]?.forecast_availability).toBe("available");
     expect(row.rows[0]?.effect_forecast_id).toBe(forecastRef?.reference.entityId);
+  });
+
+  pgIt("执行后新依据按评分成员及适用决定判断相容，读取失败不落部分反馈", async () => {
+    const state = fixture!;
+    state.setExecutors([executor({ predictedValue: "12" })]);
+    const chain = await adoptedChain("c28-compatible-basis");
+    const execution = executionRef(chain.execution).result.executionRecordRef;
+    const post = await state.postActionAssessment({
+      suffix: "c28-compatible-basis",
+      riskInputKey: chain.prepared.riskInputKey,
+    });
+    const artifact = await state.publishFeedbackArtifact({ suffix: "c28-compatible-basis" });
+    const alias = {
+      kind: "assessment-basis-release-set" as const,
+      reference: { entityId: "new-post-basis", versionId: "1" },
+    };
+    const originalRead = state.contextReader.readAssessmentChain.bind(state.contextReader);
+    const read = vi
+      .spyOn(state.contextReader, "readAssessmentChain")
+      .mockImplementation(async (input) => ({ ...(await originalRead(input)), basisRef: alias }));
+    const context = makeRiskAssessmentEngineContext();
+    let scenario = "equivalent";
+    const basis = vi
+      .spyOn(state.contextReader, "readAssessmentBasis")
+      .mockImplementation(async (input) => {
+        const result = {
+          kind: "succeeded" as const,
+          schemaVersion: "1" as const,
+          assessmentBasisReleaseSetRef: input.basisReleaseSetRef,
+          memberDigest: "1".repeat(64),
+          ...structuredClone(context.basis),
+          applicableRuleSetDocument: structuredClone(context.applicableRuleSet),
+        };
+        if (input.basisReleaseSetRef.reference.entityId === alias.reference.entityId) {
+          result.applicableRuleSetDocument.requiredAt = "2030-01-02T00:00:00.000Z";
+          if (scenario === "unavailable") throw new Error("basis unavailable");
+          if (scenario === "decision")
+            result.applicableRuleSetDocument.assemblyPolicyRef.versionId = "different";
+          if (scenario === "scoring") result.scoringRuleMembers[0]!.contentDigest = "2".repeat(64);
+          if (scenario === "weight" || scenario === "matrix") {
+            const member = result.configurationMembers.find(
+              (m) => m.definitionType === (scenario === "weight" ? "weight-set" : "risk-matrix"),
+            )!;
+            member.releaseRef.reference.versionId = "different";
+          }
+        }
+        return result;
+      });
+    try {
+      for (scenario of ["equivalent", "scoring", "weight", "matrix", "decision", "unavailable"]) {
+        const before = await state.countRows("response_feedback_records");
+        const snapshot = state.feedbackSnapshot({
+          suffix: `c28-basis-${scenario}`,
+          executionRecordRef: execution,
+        });
+        const result = await state.recordFeedback(
+          await state.feedbackCommand({
+            commandId: `c28-basis-${scenario}`,
+            executionRecordRef: execution,
+            postActionMonitoringSnapshotRef: post.monitoringSnapshotRef,
+            feedbackArtifactRef: artifact,
+            actualAssessmentRecordRef: post.assessmentRecordRef,
+            snapshotRef: snapshot.ref,
+            snapshot: snapshot.body,
+          }),
+        );
+        expect(result.kind).toBe(scenario === "equivalent" ? "succeeded" : "failed");
+        expect(await state.countRows("response_feedback_records")).toBe(
+          before + (scenario === "equivalent" ? 1 : 0),
+        );
+      }
+    } finally {
+      read.mockRestore();
+      basis.mockRestore();
+    }
   });
 
   pgIt("反馈时间或评估链不匹配时拒绝且不落部分事实", async () => {

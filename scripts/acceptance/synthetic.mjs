@@ -991,6 +991,7 @@ const requestJson = async (fetchImpl, url, init, timeoutMs, parentSignal) => {
   try {
     const response = await fetchImpl(url, {
       ...init,
+      headers: { ...init.headers, origin: new URL(url).origin },
       redirect: "manual",
       signal:
         parentSignal === undefined
@@ -1566,7 +1567,8 @@ export const runPack = async ({
         `步骤 ${step.stepId} 返回不符合正式结果契约，不作为成功。`,
       ]);
     }
-    if (response.body.kind !== "succeeded") {
+    const acceptedWaiting = isAsyncCommand(route) && response.body.kind === "waiting";
+    if (response.body.kind !== "succeeded" && !acceptedWaiting) {
       step.status = "failed";
       step.note = `业务返回 kind=${String(response.body.kind)}（${errorCodeOf(response.body)}）`;
       persist("RUNNING", [...blocked]);
@@ -1579,7 +1581,22 @@ export const runPack = async ({
     // 只保留契约引用：整对象或正文一律拒绝，原始响应不落盘。
     let resultRef;
     try {
-      resultRef = collectCaptures(step.captures, response.body);
+      resultRef = collectCaptures(
+        step.captures,
+        acceptedWaiting
+          ? {
+              ...response.body,
+              result: {
+                ...(response.body.workflowRunRef === undefined
+                  ? {}
+                  : { workflowRunRef: response.body.workflowRunRef }),
+                ...(response.body.waiting.kind !== "agent-task"
+                  ? {}
+                  : { agentTaskRef: response.body.waiting.agentTaskRef }),
+              },
+            }
+          : response.body,
+      );
     } catch (error) {
       step.status = "failed";
       step.note = `captures 不合格：${error.message}`;

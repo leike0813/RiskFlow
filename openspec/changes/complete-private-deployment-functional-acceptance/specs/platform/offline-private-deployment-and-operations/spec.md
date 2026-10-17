@@ -1,5 +1,28 @@
 ## ADDED Requirements
 
+### Requirement: 评估功能终态使用所属正式运行详情
+
+功能观察器 MUST 支持既有risk-assessment.read的run-read DTO，仅在原runRef与同次启动回执精确一致时读取顶层status，stateVersion作为独立状态版本。完成证明 MUST 包含resultRefs中的assessment-run-result或risk-flow-run-result；辅助阶段、审核和审计引用不得替代正式结果。错运行、错版本、未支持DTO、等待或缺正式结果不得PASS。
+
+#### Scenario: 状态推进后观察同次评估
+
+- **WHEN** 同次启动的评估完成，C34详情保留原runRef并返回独立stateVersion及正式run-result
+- **THEN** 观察器以原精确runRef确认终态及正式结果，不用当前状态版本替换启动身份
+
+#### Scenario: 辅助引用不能证明完成
+
+- **WHEN** 详情不属于同次精确运行，或resultRefs只有阶段/复核/审计引用
+- **THEN** 观察不通过，不借其它运行或辅助结果判PASS
+
+### Requirement: 功能运行器保存合法异步等待回执
+
+运行器 MUST 对正式Schema验证通过的异步waiting回执保存submitted及真实运行/任务引用，不以kind非succeeded误记提交失败；统一私有引用投影只取正式回执字段。非异步waiting、坏Schema、缺引用及失败 MUST 保持失败，submitted不能作为业务完成证据。
+
+#### Scenario: 工作流返回等待Agent的202回执
+
+- **WHEN** 正式异步入口返回合法waiting及精确运行/任务引用
+- **THEN** 保存submitted及原引用供所属终态查询，不重发命令、伪造完成或推断缺失引用
+
 ### Requirement: 受控预置登记监测前置配置
 
 provision MUST 支持以既有strict命令登记监测序列修订与可用性策略，复用当前人类会话及engineering-data.write权限、C03事务/幂等和审计。步骤 MUST 仅接受领域payload，宿主注入命令/主体/工程/授权；报告 MUST 返回精确序列或策略版本引用供后续步骤绑定。领域拒绝、错形或权限失败 MUST 停止，不直写表或猜测策略默认值。

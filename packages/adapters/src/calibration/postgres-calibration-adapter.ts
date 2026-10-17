@@ -5,6 +5,7 @@ import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/a
 import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
+  normalizeEvidenceReferences,
   type ArtifactRefV1,
   type ArtifactStoreV1,
 } from "@riskflow/core/artifacts";
@@ -68,6 +69,7 @@ import {
 } from "@riskflow/core/calibration";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
+  AgentTaskResultRefV1Schema,
   ReviewTaskRefV1Schema,
   ReviewRequestV1Schema,
   WarningResponseRecordCommandV1Schema,
@@ -502,6 +504,8 @@ export class PostgresCalibrationAdapter
         purposeCode: CALIBRATION_INPUT_PURPOSE_CODE_V1,
         mediaType: CALIBRATION_INPUT_MEDIA_TYPE_V1,
         value: snapshot,
+        parentArtifactRefs: [target.artifactRef],
+        evidenceReferences: fact.evidenceReferences,
       });
       return {
         kind: "succeeded",
@@ -1174,6 +1178,8 @@ export class PostgresCalibrationAdapter
           ? STRUCTURED_SCORING_RULE_MEDIA_TYPE_V1
           : ASSESSMENT_CONFIGURATION_MEDIA_TYPE_V1,
       value: outcome.document,
+      parentArtifactRefs: [snapshot.baseArtifactRef],
+      evidenceReferences: candidate.evidenceReferences,
     });
     const revisionAuthorization = await this.#authorizeFor({
       branch: GOVERNANCE_BRANCH_V1,
@@ -2119,6 +2125,8 @@ export class PostgresCalibrationAdapter
     readonly purposeCode: string;
     readonly mediaType: string;
     readonly value: unknown;
+    readonly parentArtifactRefs: readonly ContentArtifactRefV1[];
+    readonly evidenceReferences: ResponseDeviationFactV1["evidenceReferences"];
   }): Promise<ContentArtifactRefV1> {
     const payload = new TextEncoder().encode(JSON.stringify(input.value, null, 2));
     const result = await this.#artifactStore.put(
@@ -2136,8 +2144,8 @@ export class PostgresCalibrationAdapter
         artifactKind: "content",
         purposeCode: input.purposeCode,
         mediaType: input.mediaType,
-        parentArtifactRefs: [],
-        evidenceReferences: [],
+        parentArtifactRefs: input.parentArtifactRefs,
+        evidenceReferences: normalizeEvidenceReferences(input.evidenceReferences),
         additionalSpatialScopeRefs: [],
         additionalSourceAccessGrantRefs: [],
       }),
@@ -2307,7 +2315,7 @@ export class PostgresCalibrationAdapter
     )
       return false;
     const verified = await this.#verifyRead(input);
-    if (verified === undefined || !isDeepStrictEqual(verified, input.authorization)) return false;
+    if (verified === undefined) return false;
     const ref = input.reference.reference;
     let suggestionRef = ref;
     if (input.reference.kind === "deviation-record") {
@@ -2356,10 +2364,14 @@ export class PostgresCalibrationAdapter
       suggestion.validation_payload,
     );
     const review = ReviewTaskRefV1Schema.safeParse(suggestion.review_task_ref);
+    const result = AgentTaskResultRefV1Schema.safeParse(suggestion.agent_task_result_ref);
     return (
       candidate.success &&
       validation.success &&
       review.success &&
+      result.success &&
+      result.data.status === "completed" &&
+      candidate.data.resultRef.status === "completed" &&
       validation.data.disposition === "accepted" &&
       validation.data.candidateDigest === suggestion.candidate_digest &&
       isDeepStrictEqual(
@@ -2384,7 +2396,8 @@ export class PostgresCalibrationAdapter
         entityId: suggestion.agent_task_id,
         versionId: suggestion.agent_task_version_id,
       }) &&
-      isDeepStrictEqual(candidate.data.resultRef, suggestion.agent_task_result_ref) &&
+      refEquals(candidate.data.resultRef.reference, result.data.reference) &&
+      isDeepStrictEqual(candidate.data.taskRef, result.data.agentTaskRef) &&
       refEquals(review.data.reference, {
         entityId: suggestion.review_task_id,
         versionId: suggestion.review_task_version_id,

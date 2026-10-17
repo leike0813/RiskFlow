@@ -16,7 +16,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { LangGraphRunnableConfig } from "@langchain/langgraph";
+import {
+  Annotation,
+  END,
+  MemorySaver,
+  START,
+  StateGraph,
+  type LangGraphRunnableConfig,
+} from "@langchain/langgraph";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { VersionReference } from "@riskflow/contracts/common";
@@ -134,6 +141,11 @@ import {
   type AssessmentGraphRuntimeV1,
   type AssessmentRunOutcomeV1,
 } from "../../src/assessment/index.js";
+import {
+  resolveAssessmentEntry,
+  type AssessmentGraphRunContextV1,
+} from "../../src/assessment/graph.js";
+import { AssessmentPreparationSnapshotV1Schema } from "@riskflow/contracts/workflows";
 
 const PROJECT_ID = "project-c30-assessment";
 const ACTOR_ID = "actor-c30-assessment";
@@ -1354,6 +1366,119 @@ const stageResultStages = (
   rows.filter((row) => row.resultKind === "stage-result").map((row) => row.stage);
 
 describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", () => {
+  it("A0 binds only the matching independent preparation with its frozen fields and this run cause", async () => {
+    resetWorld();
+    const preparationRef = AssessmentPreparationSnapshotRefV1Schema.parse({
+      kind: "assessment-preparation-snapshot",
+      reference: versionRef("explicit-preparation"),
+    });
+    const inputs = entryInputsFor("explicit-preparation", {
+      monitoringCount: 2,
+      extraRefs: [preparationRef],
+    });
+    const scope = harness.scope({
+      entryMode: "assess",
+      frozenRefs: inputs.frozenRefs,
+      riskRecordRef: inputs.riskInput,
+    });
+    const run: AssessmentGraphRunContextV1 = {
+      ...harness.startCommand({ scope, entryMode: "assess" }),
+      acceptedRiskRecordRef: inputs.riskInput,
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+      applicabilityMetadataSnapshotRef: inputs.applicabilityMetadataSnapshotRef,
+      monitoringSnapshotRefs: inputs.monitoringSnapshotRefs,
+      assessmentRunRefs: [],
+      reassessmentEntry: undefined,
+    };
+    const preparation = AssessmentPreparationSnapshotV1Schema.parse({
+      schemaVersion: "1",
+      projectRevisionRef: inputs.projectRevisionRef,
+      spatialScopeRef: SPATIAL_SCOPE_REF,
+      riskInput: inputs.riskInput,
+      applicabilityMetadataSnapshotRef: inputs.applicabilityMetadataSnapshotRef,
+      monitoringSnapshotRefs: [...inputs.monitoringSnapshotRefs].reverse(),
+      sourceEvidenceReferences: [
+        { sourceVersion: versionRef("source"), locator: { sourceSegmentId: "segment" } },
+      ],
+      sourceFieldFacts: [
+        {
+          documentType: "construction-log",
+          fieldPath: ["support", "facePressureKpa"],
+          value: 126,
+          evidenceReferences: [
+            { sourceVersion: versionRef("source"), locator: { sourceSegmentId: "segment" } },
+          ],
+        },
+      ],
+      entryMode: "assess",
+      triggerReasonCode: "manual",
+      authorizationContextRef: AUTHORIZATION.authorizationContextRef,
+      auditTrailRef: { kind: "audit-trail", reference: versionRef("preparation-audit") },
+      createdBy: ACTOR_ID,
+      createdAt: TIMESTAMP,
+    });
+    const read = async (value: typeof preparation) =>
+      resolveAssessmentEntry({
+        run,
+        occurredAt: TIMESTAMP,
+        ports: {
+          ...harness.composition.ports,
+          engineeringData: {
+            ...harness.composition.ports.engineeringData,
+            readAssessmentPreparationContext: async () => ({
+              kind: "succeeded",
+              preparation: value,
+              applicability: {} as never,
+            }),
+          },
+        },
+      });
+    const bound = await read(preparation);
+    expect(bound.entrySnapshotRef).toMatchObject({ kind: "assessment-preparation" });
+    expect(bound.entryIdentity).not.toEqual(preparationRef.reference);
+    expect(harness.world.calls.freeze).toHaveLength(1);
+    const frozen = harness.world.calls.freeze[0];
+    expect(frozen).toMatchObject({
+      kind: "assessment-preparation",
+      payload: {
+        sourceFieldFacts: preparation.sourceFieldFacts,
+        causalRunRef: scope.parentRunRef,
+        monitoringSnapshotRefs: inputs.monitoringSnapshotRefs,
+      },
+    });
+    for (const patch of [
+      { riskInput: { ...inputs.riskInput, reference: versionRef("another-risk") } },
+      {
+        projectRevisionRef: {
+          ...inputs.projectRevisionRef,
+          reference: versionRef("another-project-revision"),
+        },
+      },
+      { spatialScopeRef: { ...SPATIAL_SCOPE_REF, reference: versionRef("another-space") } },
+      {
+        applicabilityMetadataSnapshotRef: {
+          ...inputs.applicabilityMetadataSnapshotRef,
+          reference: versionRef("another-applicability"),
+        },
+      },
+      { monitoringSnapshotRefs: inputs.monitoringSnapshotRefs.slice(0, 1) },
+      {
+        monitoringSnapshotRefs: [
+          inputs.monitoringSnapshotRefs[0]!,
+          inputs.monitoringSnapshotRefs[0]!,
+        ],
+      },
+      { createdBy: "another-user" },
+      { entryMode: "historical-backfill" as const },
+      { causalRunRef: scope.parentRunRef },
+    ])
+      await expect(read({ ...preparation, ...patch })).rejects.toMatchObject({
+        error: { code: "CONTRACT_INVALID", stage: "A0" },
+      });
+    expect(harness.world.calls.freeze).toHaveLength(1);
+    expect(harness.world.calls.basisResolve).toHaveLength(0);
+    expect(harness.world.calls.prepare).toHaveLength(0);
+  });
   it("评分配置未齐保持等待，精确准备引用补齐后续办且不重复冻结资料", async () => {
     resetWorld({ basisResolution: "missing-configuration" });
     const inputs = entryInputsFor("business-preparation");
@@ -1454,7 +1579,7 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
       expectedRunVersionId: cursor!.state.runVersionId,
       resumeCause: { kind: "user-confirmed" },
     });
-    expect(resumed.status).toBe("completed");
+    expect(resumed.status, JSON.stringify(resumed)).toBe("completed");
     expect(harness.world.calls.basisResolve).toHaveLength(1);
     expect(harness.world.calls.freeze).toHaveLength(1);
   });
@@ -1690,6 +1815,57 @@ describe("C30 评估子图运行时（真实 PostgreSQL + 真实 LangGraph）", 
     } finally {
       harness.access.restore();
     }
+  });
+
+  it("D132 父节点内启动和恢复沿用子运行自己的检查点", async () => {
+    resetWorld({ prepareOutcome: "waiting" });
+    const inputs = entryInputsFor("nested-assessment-boundary");
+    const scope = harness.scope({ entryMode: "assess", frozenRefs: inputs.frozenRefs });
+    const command = harness.startCommand({
+      scope,
+      entryMode: "assess",
+      overrides: {
+        spatialScopeRef: SPATIAL_SCOPE_REF,
+        applicabilityMetadataSnapshotRef: inputs.applicabilityMetadataSnapshotRef,
+        monitoringSnapshotRefs: inputs.monitoringSnapshotRefs,
+        acceptedRiskRecordRef: inputs.riskInput,
+      },
+    });
+    let outcome: AssessmentRunOutcomeV1 | undefined;
+    const parent = new StateGraph(Annotation.Root({ status: Annotation<string>() }))
+      .addNode("assessment", async () => {
+        outcome =
+          outcome === undefined
+            ? await harness.runtime.start(command)
+            : await harness.runtime.resume({
+                ...command,
+                commandId: `${command.commandId}:resume`,
+                idempotencyKey: `${command.idempotencyKey}:resume`,
+                authorizationBranch: "workflow.resume-run",
+                expectedRunVersionId: outcome.runVersionId,
+                resumeCause: { kind: "conditions-changed" },
+              });
+        return { status: outcome.status };
+      })
+      .addEdge(START, "assessment")
+      .addEdge("assessment", END)
+      .compile({ checkpointer: new MemorySaver() });
+    const config = { configurable: { thread_id: "parent-d132" } };
+    await parent.invoke({ status: "running" }, config);
+    expect(outcome?.status).toBe("waiting");
+    expect((await harness.checkpointState(scope.threadId)).status).toBe("waiting");
+    harness.world.prepareOutcome = "succeeded";
+    await parent.invoke({ status: "running" }, config);
+    expect(outcome?.status).toBe("completed");
+    expect((await harness.checkpointState(scope.threadId)).status).toBe("completed");
+    expect(
+      new Set(harness.world.calls.evaluate.map((call) => sha256CanonicalJson(call.payload))).size,
+    ).toBe(1);
+    const namespaces = await harness.postgres.adminPool.query<{ namespace: string }>(
+      "select distinct checkpoint_ns as namespace from langgraph_checkpoint.checkpoints where thread_id = $1",
+      [scope.threadId],
+    );
+    expect(namespaces.rows).toEqual([{ namespace: "" }]);
   });
 
   it("R3/S1 无预警：评估记录成立但不建预警/建议/Agent，缺席原因进入运行汇总", async () => {

@@ -8,16 +8,8 @@ import { SectionTabs } from "../components/SectionTabs";
 import { StatusTag, type StatusTone } from "../components/StatusTag";
 import { VersionTag } from "../components/VersionTag";
 import { useEngineering, usePageQuery, useProjectPath, type PageState } from "../api/engineering";
-import {
-  readReviewQueue,
-  submitReviewDecision,
-  type ReviewTaskRefView as ReviewTaskRef,
-} from "../api/operations";
-import {
-  readReviewTaskDetail,
-  type ReviewTaskDetailView,
-  type ReviewTaskRefView as ReviewTaskDetailRef,
-} from "../api/agentAuditOperations";
+import { submitReviewDecision, type ReviewTaskRefView as ReviewTaskRef } from "../api/operations";
+import { readReviewTaskDetail, type ReviewTaskDetailView } from "../api/agentAuditOperations";
 import "./ReviewDetailPage.css";
 
 export const reviewTabs = [
@@ -177,15 +169,6 @@ export const submitReviewTaskDecision = async (request: {
   return submitted.reviewDecisionRef.reference.entityId;
 };
 
-/** 详情读只认精确 review-task 引用：实体标识 + 身份版本，不可只按标识定位。 */
-const detailRefOf = (taskRef: ReviewTaskRef): ReviewTaskDetailRef => ({
-  kind: "review-task",
-  reference: taskRef.reviewTaskRef.reference,
-  reviewType: taskRef.reviewType,
-  targetRef: taskRef.targetRef,
-  waitingRunRef: taskRef.waitingRunRef,
-});
-
 export type DecisionAvailability = "allowed" | "denied" | "business-unavailable" | "hidden";
 
 /** 动作可用性只取 decide-review 分支的读判定；缺项按无权处理，不假设可用。 */
@@ -209,7 +192,7 @@ export interface ReviewDecisionOutcome {
 }
 
 interface DetailQueryResult {
-  readonly kind: "missing-identity" | "not-in-queue" | "detail";
+  readonly kind: "missing-identity" | "detail";
   readonly taskRef?: ReviewTaskRef;
   readonly detail?: ReviewTaskDetailView;
 }
@@ -459,8 +442,7 @@ export function ReviewDecisionRecordCard({ detail }: { readonly detail: ReviewTa
 }
 
 /**
- * 精确复核任务定位：复核详情只接受带身份版本的 review-task 引用，
- * 因此先在队列页中按实体标识 + 身份版本定位，再取详情。定位不到即如实呈现缺席。
+ * 深链按精确身份窄读；决定所需完整任务引用只取所属详情返回值。
  */
 export const useLocatedReviewTask = (
   taskId: string | undefined,
@@ -472,15 +454,21 @@ export const useLocatedReviewTask = (
   usePageQuery<DetailQueryResult>(
     async (projectId, signal) => {
       if (taskId === undefined || versionId === null) return { kind: "missing-identity" };
-      const queue = await readReviewQueue(projectId, {}, signal);
-      const item = queue.items.find(
-        (entry) =>
-          entry.reviewTaskRef.reviewTaskRef.reference.entityId === taskId &&
-          entry.reviewTaskRef.reviewTaskRef.reference.versionId === versionId,
+      const detail = await readReviewTaskDetail(
+        projectId,
+        { kind: "review-task", reference: { entityId: taskId, versionId } },
+        signal,
       );
-      if (item === undefined) return { kind: "not-in-queue" };
-      const detail = await readReviewTaskDetail(projectId, detailRefOf(item.reviewTaskRef), signal);
-      return { kind: "detail", taskRef: item.reviewTaskRef, detail };
+      return {
+        kind: "detail",
+        taskRef: {
+          reviewTaskRef: { kind: "review-task", reference: detail.reviewTaskRef.reference },
+          reviewType: detail.reviewTaskRef.reviewType,
+          targetRef: detail.reviewTaskRef.targetRef,
+          waitingRunRef: detail.reviewTaskRef.waitingRunRef,
+        },
+        detail,
+      };
     },
     [taskId, versionId],
   );
@@ -547,16 +535,10 @@ export default function ReviewDetailPage() {
                 </Card>
               );
             }
-            if (
-              result.kind === "not-in-queue" ||
-              result.taskRef === undefined ||
-              result.detail === undefined
-            ) {
+            if (result.taskRef === undefined || result.detail === undefined) {
               return (
                 <Card title="复核详情">
-                  <div className="rv-muted">
-                    当前队列页中未见该实体标识与身份版本组合：任务可能已被决定、被取代，或超出本页范围。
-                  </div>
+                  <div className="rv-muted">复核任务不可用，请返回复核队列选择任务。</div>
                   <Link className="rv-back" to={projectPath("/review")}>
                     返回复核队列
                   </Link>

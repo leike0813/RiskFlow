@@ -399,6 +399,17 @@ export const calculateDominantFrequency = (
       "Hz",
     );
   }
+  // 恒值窗口去均值后只剩浮点残差，经 Hann 窗后非零，但本无主峰。
+  if (run.every((item) => item.value === run[0]!.value)) {
+    return unavailable(
+      "dominant-frequency",
+      windowSize,
+      algorithmVersion,
+      "no-dominant-frequency",
+      n,
+      "Hz",
+    );
+  }
   let bestFrequency: number | undefined;
   let bestPower = powerFloor;
   for (let k = 1; k <= Math.floor(n / 2); k += 1) {

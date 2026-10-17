@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import type { Kysely, Selectable, Transaction } from "kysely";
 
@@ -118,6 +119,7 @@ import {
 import {
   STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1,
   StructuredDocumentJsonLdV1Schema,
+  type TextBlockV1,
 } from "@riskflow/core/engineering-data/document-conversion";
 
 import type { PostgresDataCleaningStore } from "../engineering-data/cleaning/index.js";
@@ -739,89 +741,125 @@ export class PostgresIdentificationPreparationKnowledgeReader implements Identif
         requestedSpatialScopeRefs: [...preparation.snapshot.spatialScopeRefs],
         requestedSourceVersionRefs: [...preparation.snapshot.sourceVersionRefs],
       });
-      let readBytes = 0;
-      const read = async (
-        artifactRef: ContentArtifactRefV1,
-        purposeCode: string,
-        maxBytes = MAX_PACKAGE_BYTES,
-      ) =>
-        readContentArtifact(
-          this.#artifactStore,
-          {
-            ...input,
-            authorization,
-            artifactRef,
-            purposeCode,
-          },
-          (bytes) => {
-            readBytes += bytes;
-            if (readBytes > STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1)
-              throw new RangeError("standard retrieval read limit");
-          },
-          maxBytes,
-        );
-      const manifest = CleaningPreparationManifestV1Schema.parse(
-        await read(
-          preparation.result.manifestArtifactRef,
-          "engineering-data.data-cleaning-preparation-manifest",
-        ),
+      const blocks = await this.#readRetainedTextBlocks(
+        { ...input, authorization },
+        preparation,
+        input.entry.evidence,
       );
-      if (manifest.projectId !== input.projectId) return false;
-      const documents = new Map<
-        string,
-        ReturnType<typeof StructuredDocumentJsonLdV1Schema.parse>
-      >();
-      const texts: string[] = [];
-      for (const evidence of input.entry.evidence) {
-        const member = manifest.documents.find((document) =>
-          versionedEquals(document.sourceVersionRef, { reference: evidence.sourceVersion }),
-        );
-        if (
-          member === undefined ||
-          !preparation.snapshot.sourceVersionRefs.some((ref) =>
-            versionedEquals(ref, member.sourceVersionRef),
-          ) ||
-          !preparation.snapshot.includedSourceSegmentSetRefs.some((ref) =>
-            versionedEquals(ref, member.sourceSegmentSetRef),
-          ) ||
-          !retainedSegmentsFor(preparation.result, member.sourceVersionRef).includes(
-            evidence.locator.sourceSegmentId,
-          )
-        )
-          return false;
-        const key = `${member.sourceVersionRef.reference.entityId}:${member.sourceVersionRef.reference.versionId}`;
-        let document = documents.get(key);
-        if (document === undefined) {
-          document = StructuredDocumentJsonLdV1Schema.parse(
-            await read(
-              member.jsonLdArtifactRef,
-              "engineering-data.structured-document-conversion",
-              STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1,
-            ),
-          );
-          if (document.metadata.projectId !== input.projectId) return false;
-          documents.set(key, document);
-        }
-        const fragments = document.evidenceFragments.filter(
-          (fragment) => fragment.sourceSegmentId === evidence.locator.sourceSegmentId,
-        );
-        if (fragments.length !== 1 || fragments[0]!.textBlockIds.length === 0) return false;
-        const blocks = new Map(document.textBlocks.map((block) => [block.blockId, block]));
-        for (const blockId of fragments[0]!.textBlockIds) {
-          const block = blocks.get(blockId);
-          if (
-            block === undefined ||
-            block.sourceSegmentId !== evidence.locator.sourceSegmentId ||
-            !versionedEquals(block.sourceVersionRef, member.sourceVersionRef)
-          )
-            return false;
-          texts.push(block.text);
-        }
-      }
-      return texts.join("\n") === input.entry.retrievalText;
+      return (
+        blocks
+          .flat()
+          .map((block) => block.text)
+          .join("\n") === input.entry.retrievalText
+      );
     } catch {
       return false;
     }
+  }
+
+  async #readRetainedTextBlocks(
+    input: Omit<
+      Parameters<IdentificationPreparationKnowledgeReaderV1["checkStandardRetrievalText"]>[0],
+      "entry"
+    > & { readonly authorization: AuthorizationContextV1 },
+    preparation: Extract<IdentificationPreparationExactReadV1, { kind: "ok" }>,
+    evidenceReferences: readonly EvidenceReference[],
+  ): Promise<TextBlockV1[][]> {
+    const authorization = input.authorization;
+    const unavailable = (): never => {
+      throw new IdentificationKnowledgeModuleError(
+        moduleError({
+          code: "BUSINESS_BLOCKED",
+          causalRunId: input.requestId,
+          blockerKind: "source-segment-text-unavailable",
+          blockerRef: asContractReference(input.preparationSnapshotRef),
+        }),
+      );
+    };
+    let readBytes = 0;
+    const read = async (
+      artifactRef: ContentArtifactRefV1,
+      purposeCode: string,
+      maxBytes = MAX_PACKAGE_BYTES,
+    ) =>
+      readContentArtifact(
+        this.#artifactStore,
+        {
+          ...input,
+          authorization,
+          artifactRef,
+          purposeCode,
+        },
+        (bytes) => {
+          readBytes += bytes;
+          if (readBytes > STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1)
+            throw new RangeError("retained segment read limit");
+        },
+        maxBytes,
+      );
+    const manifest = CleaningPreparationManifestV1Schema.parse(
+      await read(
+        preparation.result.manifestArtifactRef,
+        "engineering-data.data-cleaning-preparation-manifest",
+      ),
+    );
+    if (manifest.projectId !== input.projectId) return unavailable();
+    const documents = new Map<string, ReturnType<typeof StructuredDocumentJsonLdV1Schema.parse>>();
+    const texts: TextBlockV1[][] = [];
+    for (const evidence of evidenceReferences) {
+      const member = manifest.documents.find((document) =>
+        versionedEquals(document.sourceVersionRef, { reference: evidence.sourceVersion }),
+      );
+      if (
+        member === undefined ||
+        !preparation.snapshot.sourceVersionRefs.some((ref) =>
+          versionedEquals(ref, member.sourceVersionRef),
+        ) ||
+        !preparation.snapshot.includedSourceSegmentSetRefs.some((ref) =>
+          versionedEquals(ref, member.sourceSegmentSetRef),
+        ) ||
+        !retainedSegmentsFor(preparation.result, member.sourceVersionRef).includes(
+          evidence.locator.sourceSegmentId,
+        )
+      )
+        return unavailable();
+      const key = `${member.sourceVersionRef.reference.entityId}:${member.sourceVersionRef.reference.versionId}`;
+      let document = documents.get(key);
+      if (document === undefined) {
+        document = StructuredDocumentJsonLdV1Schema.parse(
+          await read(
+            member.jsonLdArtifactRef,
+            "engineering-data.structured-document-conversion",
+            STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1,
+          ),
+        );
+        if (document.metadata.projectId !== input.projectId) return unavailable();
+        documents.set(key, document);
+      }
+      const fragments = document.evidenceFragments.filter(
+        (fragment) => fragment.sourceSegmentId === evidence.locator.sourceSegmentId,
+      );
+      if (
+        fragments.length !== 1 ||
+        fragments[0]!.textBlockIds.length === 0 ||
+        !versionedEquals(fragments[0]!.sourceVersionRef, member.sourceVersionRef)
+      )
+        return unavailable();
+      const blocks = new Map(document.textBlocks.map((block) => [block.blockId, block]));
+      const segmentBlocks: TextBlockV1[] = [];
+      for (const blockId of fragments[0]!.textBlockIds) {
+        const block = blocks.get(blockId);
+        if (
+          block === undefined ||
+          block.sourceSegmentId !== evidence.locator.sourceSegmentId ||
+          !versionedEquals(block.sourceVersionRef, member.sourceVersionRef)
+        )
+          return unavailable();
+        segmentBlocks.push(block);
+      }
+      texts.push(segmentBlocks);
+    }
+    return texts;
   }
 
   async readExactPreparation(input: {
@@ -953,22 +991,49 @@ export class PostgresIdentificationPreparationKnowledgeReader implements Identif
             : moduleError({ code: "TERMINAL_FAILURE", causalRunId: input.requestId }),
       };
     }
+    if (
+      !versionedEquals(
+        resolved.result.segmentSet.sourceVersionRef,
+        preparation.snapshot.sourceVersionRefs[memberIndex]!,
+      ) ||
+      !versionedEquals(resolved.result.segmentSet.sourceSegmentSetRef, input.sourceSegmentSetRef)
+    ) {
+      return {
+        kind: "failed",
+        error: moduleError({
+          code: "AUTHORIZATION_DENIED",
+          branch: SOURCE_SEGMENTS_BRANCH,
+          causalRunId: input.requestId,
+        }),
+      };
+    }
     const requested = new Set(input.segmentIds);
     const excluded = excludedSegmentsFor(preparation.result);
+    const sourceVersionRef = resolved.result.segmentSet.sourceVersionRef;
+    const selected = resolved.result.segmentSet.segments
+      .filter((segment) => requested.has(segment.sourceSegmentId))
+      .slice(0, input.limit);
+    const textBlocks = await this.#readRetainedTextBlocks(
+      { ...input, authorization },
+      preparation,
+      selected.map((segment) => ({
+        locator: { sourceSegmentId: segment.sourceSegmentId },
+        sourceVersion: sourceVersionRef.reference,
+      })),
+    );
     return {
       kind: "succeeded",
       observation: {
         queryResultRef: resolved.result.queryResultRef,
         sourceSegmentSetRef: resolved.result.segmentSet.sourceSegmentSetRef,
-        segments: resolved.result.segmentSet.segments
-          .filter((segment) => requested.has(segment.sourceSegmentId))
-          .slice(0, input.limit)
-          .map((segment) => ({
-            sourceSegmentId: segment.sourceSegmentId,
-            kind: segment.kind,
-            locator: segment.locator,
-            excluded: excluded.has(segment.sourceSegmentId),
-          })),
+        sourceVersionRef: resolved.result.segmentSet.sourceVersionRef,
+        segments: selected.map((segment, index) => ({
+          sourceSegmentId: segment.sourceSegmentId,
+          kind: segment.kind,
+          locator: segment.locator,
+          excluded: excluded.has(segment.sourceSegmentId),
+          textBlocks: textBlocks[index]!,
+        })),
       },
     };
   }
@@ -1450,12 +1515,24 @@ export class PostgresIdentificationKnowledgeAdapter {
       if (entries.length === 0) {
         const binding = await this.#findReleaseBindingByRef(input.projectId, ref);
         if (binding === undefined) continue;
+        const invocationId = `${input.authorization.authorizationContextRef.reference.entityId}:entries:${refKey(ref)}`;
+        const authorization = await this.#authorize({
+          ...(input.authorization.invocation.kind === "agent-task"
+            ? { taskRef: input.authorization.invocation.agentTaskRef }
+            : {}),
+          projectId: input.projectId,
+          actorId: input.authorization.actorId,
+          invocationId,
+          branch: IDENTIFICATION_BASIS_BRANCH,
+          requestedAt: input.authorization.decidedAt,
+        });
         const original = await this.readExact({
           projectId: input.projectId,
           releaseRef: ref,
           actorId: input.authorization.actorId,
           requestedAt: input.authorization.decidedAt,
-          authorization: input.authorization,
+          invocationId,
+          authorization,
         });
         if (original.kind !== "succeeded")
           throw new IdentificationKnowledgeModuleError(original.error);
@@ -2670,13 +2747,71 @@ export class PostgresIdentificationKnowledgeAdapter {
 
   async #readManifest(task: AgentTaskSnapshotV1): Promise<KnowledgeAuthoringManifestV1> {
     const frozen = task.envelope.frozenInputRef;
-    return KnowledgeAuthoringManifestV1Schema.parse(
+    const manifest = KnowledgeAuthoringManifestV1Schema.parse(
       await this.#readArtifact(
         task.envelope.authorization,
         ContractCandidateArtifactRefV1Schema.parse(frozen),
         MANIFEST_PURPOSE,
       ),
     );
+    if (
+      manifest.projectId !== task.envelope.projectId ||
+      manifest.createdBy !== task.envelope.actorId ||
+      !isDeepStrictEqual(manifest.parentRunRef, task.envelope.parentRunRef) ||
+      !isDeepStrictEqual(manifest.validationPolicyRef, this.#policy.policyRef) ||
+      !isDeepStrictEqual(manifest.agent.definitionRef, this.#policy.agent.definitionRef) ||
+      Object.entries(manifest.agent).some(
+        ([key, value]) =>
+          key !== "definitionRef" &&
+          !isDeepStrictEqual(
+            value,
+            task.envelope.agentTaskRef[key as keyof typeof task.envelope.agentTaskRef],
+          ),
+      )
+    )
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_INPUT_INVALID",
+          category: "input",
+          retryable: false,
+          stage: "worker.knowledge-authoring.manifest.scope",
+          taskRef: task.envelope.agentTaskRef,
+        }),
+      );
+    return manifest;
+  }
+
+  async readModelManifest(task: AgentTaskSnapshotV1): Promise<KnowledgeAuthoringManifestV1> {
+    return this.#readManifest(task);
+  }
+
+  async readModelObservation(task: AgentTaskSnapshotV1, artifactRef: unknown): Promise<JsonValue> {
+    const observation = (await this.#readArtifact(
+      task.envelope.authorization,
+      ContractCandidateArtifactRefV1Schema.parse(artifactRef),
+      OBSERVATION_PURPOSE,
+    )) as {
+      readonly taskRef?: unknown;
+      readonly manifestArtifactRef?: unknown;
+      readonly value?: JsonValue;
+    };
+    if (
+      observation === null ||
+      typeof observation !== "object" ||
+      !isDeepStrictEqual(observation.taskRef, task.envelope.agentTaskRef) ||
+      !isDeepStrictEqual(observation.manifestArtifactRef, task.envelope.frozenInputRef) ||
+      observation.value === undefined
+    )
+      throw new AgentRuntimeError(
+        makeAgentError({
+          code: "AGENT_INPUT_INVALID",
+          category: "input",
+          retryable: false,
+          stage: "worker.knowledge-authoring.observation.scope",
+          taskRef: task.envelope.agentTaskRef,
+        }),
+      );
+    return observation.value;
   }
 
   /**
@@ -2755,7 +2890,11 @@ export class PostgresIdentificationKnowledgeAdapter {
       {
         artifactId: `${context.actionId}:segment-slice`,
         purposeCode: OBSERVATION_PURPOSE,
-        value: read.observation,
+        value: {
+          taskRef: context.taskRef,
+          manifestArtifactRef: context.task.envelope.frozenInputRef,
+          value: read.observation,
+        },
         parentArtifactRefs: [],
       },
     );
@@ -2833,9 +2972,13 @@ export class PostgresIdentificationKnowledgeAdapter {
         artifactId: `${context.actionId}:baseline-read`,
         purposeCode: OBSERVATION_PURPOSE,
         value: {
-          definitionType: read.read.package.definitionType,
-          packageDigest: identificationKnowledgePackageDigest(read.read.package),
-          validationDisposition: read.read.validation.disposition,
+          taskRef: context.taskRef,
+          manifestArtifactRef: context.task.envelope.frozenInputRef,
+          value: {
+            package: read.read.package,
+            packageDigest: identificationKnowledgePackageDigest(read.read.package),
+            validationDisposition: read.read.validation.disposition,
+          },
         },
         parentArtifactRefs: [read.read.releaseBinding.candidateArtifactRef],
       },
@@ -2962,7 +3105,7 @@ export class PostgresIdentificationKnowledgeAdapter {
       },
       {
         artifactId: `${task.envelope.commandId}:validation-${sha256CanonicalJson(candidate).slice(0, 16)}`,
-        purposeCode: VALIDATION_PURPOSE,
+        purposeCode: "agent-validation",
         value: {
           schemaVersion: SCHEMA_VERSION,
           items: agentItems,
@@ -3092,6 +3235,9 @@ export class PostgresIdentificationKnowledgeAdapter {
         authorization,
         payload: {
           definitionType: applied.manifest.targetDefinitionType,
+          ...(applied.manifest.baseReleaseRef === undefined
+            ? {}
+            : { baseReleaseRef: applied.manifest.baseReleaseRef }),
           candidateArtifactRef,
           evidenceReferences: [...submissionEvidenceReferences(applied.package, applied.manifest)],
         },
@@ -3165,7 +3311,16 @@ export class PostgresIdentificationKnowledgeAdapter {
    * 逐 attempt 隔离：单个 attempt 的授权或调用失败被记录为可验错误并继续处理其余工程，
    * 该 attempt 保留最后已成立阶段（不回滚其它工程的稳定事实），不得静默吞掉。
    */
-  async settleAuthoringFailures(): Promise<IdentificationKnowledgeFailureSettlementV1> {
+  async settleAuthoringFailures(
+    runAttempt?: (
+      input: {
+        readonly projectId: string;
+        readonly actorId: string;
+        readonly taskRef: AgentTaskRefV1;
+      },
+      operation: () => Promise<void>,
+    ) => Promise<void>,
+  ): Promise<IdentificationKnowledgeFailureSettlementV1> {
     const rows = await this.#db
       .selectFrom("business.identification_knowledge_authoring_attempts")
       .selectAll()
@@ -3183,7 +3338,17 @@ export class PostgresIdentificationKnowledgeAdapter {
     for (const row of rows) {
       const parsedTaskRef = AgentTaskRefV1Schema.safeParse(row.agent_task_ref);
       try {
-        await this.#settleOneFailure(row);
+        const operation = () => this.#settleOneFailure(row);
+        if (runAttempt === undefined) await operation();
+        else
+          await runAttempt(
+            {
+              projectId: row.project_id,
+              actorId: row.actor_ref,
+              taskRef: AgentTaskRefV1Schema.parse(row.agent_task_ref),
+            },
+            operation,
+          );
         settled += 1;
       } catch (error) {
         failures.push({
@@ -3308,6 +3473,35 @@ export class PostgresIdentificationKnowledgeAdapter {
       branch: "knowledge-modeling.submit-revision",
       requestedAt: nowIso(this.#now),
     });
+    const requiredAt = nowIso(this.#now);
+    const invocationId = `${failureCommandId}:current-baseline`;
+    const baselineAuthorization = await this.#authorize({
+      projectId: row.project_id,
+      actorId: row.actor_ref,
+      invocationId,
+      branch: IDENTIFICATION_BASIS_BRANCH,
+      requestedAt: requiredAt,
+    });
+    const baseline = await this.#governance.resolveGovernedReleases({
+      invocationId,
+      projectId: row.project_id,
+      requiredDefinitionTypes: [row.definition_type],
+      requiredAt,
+      asOfRecordedAt: requiredAt,
+      authorization: baselineAuthorization,
+    });
+    if (
+      baseline.kind === "failed" &&
+      !(
+        baseline.error.code === "BUSINESS_BLOCKED" &&
+        baseline.error.blockerKind === "required-release-unavailable" &&
+        baseline.error.blockerRef.kind === "knowledge-release" &&
+        baseline.error.blockerRef.reference.versionId === "missing"
+      )
+    )
+      throw new IdentificationKnowledgeModuleError(baseline.error);
+    const baseReleaseRef =
+      baseline.kind === "succeeded" ? baseline.result.releaseRefs[0] : undefined;
     const failureArtifactRef = await this.#putArtifact(
       {
         projectId: row.project_id,
@@ -3357,6 +3551,7 @@ export class PostgresIdentificationKnowledgeAdapter {
       payload: {
         definitionType: row.definition_type,
         candidateArtifactRef: failureArtifactRef,
+        ...(baseReleaseRef === undefined ? {} : { baseReleaseRef }),
         evidenceReferences: [
           {
             locator: { sourceSegmentId: "identification-knowledge-failure-diagnostic" },
@@ -3551,16 +3746,18 @@ export class PostgresIdentificationKnowledgeAdapter {
     branch: ModuleBranchV1,
   ): Promise<AuthorizationContextV1> {
     const capability = MODULE_BRANCH_CAPABILITY_V1[branch];
-    if (
-      authorization.projectId !== projectId ||
-      authorization.actorId !== actorId ||
-      authorization.grantedCapabilities.length !== 1 ||
-      authorization.grantedCapabilities[0] !== capability
-    ) {
-      throw new IdentificationKnowledgeModuleError(
-        moduleError({ code: "AUTHORIZATION_DENIED", branch, causalRunId: invocationId }),
-      );
-    }
+    const assertBinding = (context: AuthorizationContextV1) => {
+      if (
+        context.projectId !== projectId ||
+        context.actorId !== actorId ||
+        context.grantedCapabilities.length !== 1 ||
+        context.grantedCapabilities[0] !== capability
+      )
+        throw new IdentificationKnowledgeModuleError(
+          moduleError({ code: "AUTHORIZATION_DENIED", branch, causalRunId: invocationId }),
+        );
+    };
+    assertBinding(authorization);
     const decision = await this.#access.verify({
       authorizationContextRef: authorization.authorizationContextRef,
       invocationId,
@@ -3570,17 +3767,13 @@ export class PostgresIdentificationKnowledgeAdapter {
       requestedSourceVersionRefs: [],
       requestedAt: authorization.decidedAt,
     });
-    const verified = decision.context;
-    if (
-      verified.projectId !== projectId ||
-      verified.actorId !== actorId ||
-      verified.grantedCapabilities.length !== 1 ||
-      verified.grantedCapabilities[0] !== capability
-    ) {
+    if (decision.redacted) {
       throw new IdentificationKnowledgeModuleError(
         moduleError({ code: "AUTHORIZATION_DENIED", branch, causalRunId: invocationId }),
       );
     }
+    const verified = decision.context;
+    assertBinding(verified);
     return verified;
   }
 

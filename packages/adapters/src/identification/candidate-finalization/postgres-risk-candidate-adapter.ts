@@ -436,7 +436,7 @@ export class PostgresRiskCandidateFinalizationAdapter
     },
     context?: unknown,
   ): Promise<
-    | { readonly kind: "inserted" }
+    | { readonly kind: "inserted"; readonly insertedRiskRecordIds: readonly string[] }
     | { readonly kind: "replayed" }
     | { readonly kind: "conflict"; readonly detailCode: string }
   > {
@@ -459,9 +459,10 @@ export class PostgresRiskCandidateFinalizationAdapter
           ) as never,
         )
         .onConflict((conflict) => conflict.columns(["project_id", "risk_record_id"]).doNothing())
+        .returning("risk_record_id")
         .execute();
-      const created = Number(inserted[0]?.numInsertedOrUpdatedRows ?? 0n);
-      if (created === rows.length) return { kind: "inserted" };
+      const insertedRiskRecordIds = inserted.map((row) => row.risk_record_id);
+      if (inserted.length === rows.length) return { kind: "inserted", insertedRiskRecordIds };
 
       // 唯一键只按 `(project_id, risk_record_id)` 收口：摘要一致视为同一记录重放，否则是异载荷冲突。
       for (const row of rows) {
@@ -476,10 +477,9 @@ export class PostgresRiskCandidateFinalizationAdapter
           return { kind: "conflict", detailCode: "standardized-risk-record-payload-mismatch" };
         }
       }
-      if (created > 0) {
-        return { kind: "conflict", detailCode: "standardized-risk-record-partial-overlap" };
-      }
-      return { kind: "replayed" };
+      return inserted.length > 0
+        ? { kind: "inserted", insertedRiskRecordIds }
+        : { kind: "replayed" };
     } catch (error) {
       throw mapPostgresError(error, "identification-candidate-finalization.record-insert");
     }

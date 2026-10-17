@@ -102,6 +102,8 @@ const hasTerminalStatusPathV1 = (operationId, payload) =>
   (operationId === operationIdFor("query", "agent-task.read") && payload?.kind === "detail") ||
   (operationId === operationIdFor("query", "risk-identification.run-read") &&
     payload?.kind === "run-read") ||
+  (operationId === operationIdFor("query", "risk-assessment.read") &&
+    payload?.operation === "run-read") ||
   (operationId === operationIdFor("query", "projection.result-read") &&
     payload?.queryResultRef !== undefined);
 
@@ -172,6 +174,16 @@ const projectionFormalSchemaV1 = (result, path, expectedRunRef) => {
 
 /** 路径能证明正式结果时返回该路径的引用 Schema，否则返回 null。 */
 const formalResultSchemaV1 = (result, path, operationId, targetResultRef) => {
+  if (operationId === operationIdFor("query", "risk-assessment.read")) {
+    return result?.kind === "run-read" &&
+      sameReferenceV1(result.runRef, targetResultRef.workflowRunRef) &&
+      path.length === 2 &&
+      path[0] === "resultRefs" &&
+      Number.isInteger(path[1]) &&
+      ["assessment-run-result", "risk-flow-run-result"].includes(result.resultRefs?.[path[1]]?.kind)
+      ? ContractReferenceV1Schema
+      : null;
+  }
   if (operationId === operationIdFor("query", "agent-task.read")) {
     return completedAgentTaskResultV1(result, targetResultRef.agentTaskRef) !== null &&
       isAgentTaskFormalPathV1(path)
@@ -198,7 +210,8 @@ export const requiredReferencesOfV1 = (result, paths, operationId, targetResultR
   for (const [index, path] of paths.entries()) {
     // projection 只承认本次 run 的正式结果路径：其它 run、非归属行与 report-absence 一律拒绝。
     if (
-      operationId === operationIdFor("query", "projection.result-read") &&
+      (operationId === operationIdFor("query", "projection.result-read") ||
+        operationId === operationIdFor("query", "risk-assessment.read")) &&
       schemas[index] === null
     ) {
       return null;
@@ -212,6 +225,14 @@ export const requiredReferencesOfV1 = (result, paths, operationId, targetResultR
 
 /** Only paths verified against the formal query result DTO are eligible to determine PASS. */
 export const terminalStatusOfV1 = (operationId, payload, result, targetResultRef = {}) => {
+  if (
+    operationId === operationIdFor("query", "risk-assessment.read") &&
+    payload?.operation === "run-read" &&
+    result?.kind === "run-read" &&
+    sameReferenceV1(result.runRef, targetResultRef.workflowRunRef)
+  ) {
+    return result.status;
+  }
   if (
     operationId === operationIdFor("query", "agent-task.read") &&
     payload?.kind === "detail" &&

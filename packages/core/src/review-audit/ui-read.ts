@@ -15,6 +15,7 @@ import {
   ReviewDecisionRefV1Schema,
   ReviewDecisionV1Schema,
   ReviewTaskRefV1Schema,
+  ReviewTaskIdentityRefV1Schema,
   ReviewTargetRefV1Schema,
   ReviewTypeV1Schema,
   WorkflowRunRefV1Schema,
@@ -109,7 +110,12 @@ export const ReviewActivityPageV1Schema = z.strictObject({
 });
 export type ReviewActivityPageV1 = z.infer<typeof ReviewActivityPageV1Schema>;
 
-const taskDetailPayload = z.strictObject({ reviewTaskRef: ReviewTaskRefV1Schema });
+export const ReviewTaskReadRefV1Schema = z.union([
+  ReviewTaskRefV1Schema,
+  ReviewTaskIdentityRefV1Schema,
+]);
+export type ReviewTaskReadRefV1 = z.infer<typeof ReviewTaskReadRefV1Schema>;
+const taskDetailPayload = z.strictObject({ reviewTaskRef: ReviewTaskReadRefV1Schema });
 const activitiesPayload = z.strictObject({
   subjectRef: ContractReferenceV1Schema.optional(),
   sourceType: z

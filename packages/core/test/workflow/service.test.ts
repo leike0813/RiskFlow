@@ -89,6 +89,20 @@ const reassess = (overrides: Record<string, unknown> = {}): Payload =>
   }) as unknown as Payload;
 
 describe("C30 entry gate", () => {
+  it("pins an explicit assessment preparation into the entry identity", () => {
+    const preparation = version("assessment-preparation-snapshot", "preparation");
+    const original = evaluateWorkflowEntryGate(assess());
+    const supplied = evaluateWorkflowEntryGate(
+      assess({ assessmentPreparationSnapshotRef: preparation }),
+    );
+    expect(original.kind).toBe("ready");
+    expect(supplied.kind).toBe("ready");
+    if (original.kind !== "ready" || supplied.kind !== "ready") return;
+    expect(supplied.frozenRefs).toContainEqual(preparation);
+    const identity = (frozenRefs: typeof original.frozenRefs) =>
+      workflowEntryIdentityFor({ entryMode: "assess", projectId: "project", frozenRefs });
+    expect(identity(supplied.frozenRefs)).not.toEqual(identity(original.frozenRefs));
+  });
   it("accepts paired multi-space contexts and freezes each space exactly once", () => {
     const gate = evaluateWorkflowEntryGate(
       identifyAndAssess({

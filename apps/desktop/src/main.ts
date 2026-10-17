@@ -90,21 +90,26 @@ const createWindow = (config: DesktopConfigV1): BrowserWindow => {
   window.webContents.on("login", (event) => {
     event.preventDefault();
   });
-  window.webContents.on("did-fail-load", (_event, _code, _description, validatedUrl) => {
-    if (
-      validatedUrl === config.publicOrigin ||
-      validatedUrl.startsWith(`${config.publicOrigin}/`)
-    ) {
-      showConnectionState(
-        window,
-        "与 RiskFlow 服务的连接中断，请检查内网与证书配置。",
-        config.publicOrigin,
-      );
-    }
-  });
+  window.webContents.on(
+    "did-fail-load",
+    (_event, code, _description, validatedUrl, isMainFrame) => {
+      if (
+        isMainFrame &&
+        code !== -3 &&
+        (validatedUrl === config.publicOrigin || validatedUrl.startsWith(`${config.publicOrigin}/`))
+      ) {
+        showConnectionState(
+          window,
+          "与 RiskFlow 服务的连接中断，请检查内网与证书配置。",
+          config.publicOrigin,
+        );
+      }
+    },
+  );
 
-  window.loadURL(config.publicOrigin).catch(() => {
-    showConnectionState(window, "无法连接到 RiskFlow 服务。", config.publicOrigin);
+  window.loadURL(config.publicOrigin).catch((error: Error & { errno?: number }) => {
+    if (error.errno !== -3)
+      showConnectionState(window, "无法连接到 RiskFlow 服务。", config.publicOrigin);
   });
   return window;
 };

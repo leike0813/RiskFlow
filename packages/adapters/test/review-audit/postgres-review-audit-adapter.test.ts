@@ -2177,6 +2177,35 @@ describe.sequential("PostgreSQL review audit read adapter (C35)", () => {
     // 决定正文、登记行与请求授权上下文都不在读面；详情只回送提交决定所需的引用。
     expect(detail.decision).toBeUndefined();
     expect("requestedAuthorizationContextRef" in detail).toBe(false);
+    const exactQuery = taskDetailQuery(
+      request.projectId,
+      authorization,
+      created.result.reviewTaskRef,
+    );
+    const identity = {
+      kind: "review-task" as const,
+      reference: created.result.reviewTaskRef.reference,
+    };
+    const narrow = await succeededDetail(readAdapterFor(authorization), {
+      ...exactQuery,
+      kind: "task-detail",
+      payload: { reviewTaskRef: identity },
+    });
+    expect(narrow).toEqual(detail);
+    expect(
+      (
+        await readAdapterFor(authorization).read({
+          ...exactQuery,
+          kind: "task-detail",
+          payload: {
+            reviewTaskRef: {
+              ...identity,
+              reference: { ...identity.reference, versionId: "missing" },
+            },
+          },
+        })
+      ).kind,
+    ).toBe("failed");
     expect(await reviewAuditCounts(requireFixture(), request.projectId)).toEqual(before);
   }, 120_000);
 

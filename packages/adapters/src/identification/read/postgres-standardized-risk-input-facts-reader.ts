@@ -7,6 +7,7 @@ import {
 } from "@riskflow/core/access";
 import type { JsonValue } from "@riskflow/core/persistence";
 import { RISK_ASSESSMENT_DOWNSTREAM_BRANCH_V1 } from "@riskflow/core/risk-assessment/engine";
+import { riskRecordSourceVersionsFor } from "@riskflow/core/identification/candidate-finalization";
 import {
   RiskInputFactsReadRequestV1Schema,
   RiskInputFactsV1Schema,
@@ -171,7 +172,7 @@ export const createPostgresStandardizedRiskInputFactsReader = (
       requestedSourceVersionRefs: [],
       requestedAt: request.requestedAt,
     });
-    return decision.context.actorId === request.authorization.actorId;
+    return !decision.redacted && decision.context.actorId === request.authorization.actorId;
   };
 
   /** 第二阶段按记录已登记的精确空间与来源范围复验；任何未覆盖项按授权失败关闭。 */
@@ -189,7 +190,7 @@ export const createPostgresStandardizedRiskInputFactsReader = (
       requestedSourceVersionRefs: [...input.sourceVersionRefs],
       requestedAt: input.request.requestedAt,
     });
-    return decision.context.actorId === input.request.authorization.actorId;
+    return !decision.redacted && decision.context.actorId === input.request.authorization.actorId;
   };
 
   /**
@@ -309,24 +310,16 @@ export const createPostgresStandardizedRiskInputFactsReader = (
       ) {
         return { kind: "failed", error: denied(causalRunId, occurredAt) };
       }
-      const registeredSourceVersions = new Set(
-        sourceVersionRefs.map((reference) =>
-          JSON.stringify([reference.reference.entityId, reference.reference.versionId]),
-        ),
-      );
-      if (
-        evidenceReferences.some(
-          (reference) =>
-            !registeredSourceVersions.has(
-              JSON.stringify([reference.sourceVersion.entityId, reference.sourceVersion.versionId]),
-            ),
-        )
-      ) {
+      const provenanceSources = SourceVersionRefV1Schema.array()
+        .min(1)
+        .max(64)
+        .safeParse(riskRecordSourceVersionsFor(sourceVersionRefs, evidenceReferences));
+      if (!provenanceSources.success) {
         return { kind: "failed", error: denied(causalRunId, occurredAt) };
       }
 
       const scopeVerified = await verifyCurrent(() =>
-        verifyScope({ request, spatialScopeRefs, sourceVersionRefs }),
+        verifyScope({ request, spatialScopeRefs, sourceVersionRefs: provenanceSources.data }),
       );
       if (scopeVerified !== true) {
         return { kind: "failed", error: denied(causalRunId, occurredAt) };
@@ -401,7 +394,11 @@ export const createPostgresStandardizedRiskInputFactsReader = (
         kind: "succeeded" as const,
         facts,
         deploymentRiskScopes: identificationRunRef.success
-          ? { spatialScopeRefs, sourceVersionRefs, identificationRunRef: identificationRunRef.data }
+          ? {
+              spatialScopeRefs,
+              sourceVersionRefs: provenanceSources.data,
+              identificationRunRef: identificationRunRef.data,
+            }
           : undefined,
       };
     },

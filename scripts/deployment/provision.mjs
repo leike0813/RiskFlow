@@ -312,9 +312,7 @@ const executeStep = async ({ step, config, foundation, sessionToken, now, previo
   }
   if (result?.kind === "failed")
     throw new ProvisionBlockedError(result.error?.code ?? "STEP_FAILED");
-  const resultRef = result?.artifactRef
-    ? { kind: "content-artifact", reference: result.artifactRef.reference }
-    : publicResultRef(result);
+  const resultRef = result?.artifactRef ?? publicResultRef(result);
   if (!resultRef) throw new ProvisionBlockedError("STEP_RESULT_REFERENCE_MISSING");
   return { resultRef, status: "completed" };
 };

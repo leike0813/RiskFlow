@@ -372,9 +372,11 @@ export const AgentTaskRefV1Schema = z.strictObject({
 });
 export type AgentTaskRefV1 = z.infer<typeof AgentTaskRefV1Schema>;
 
+export const ReviewTaskIdentityRefV1Schema = versionedRef("review-task");
+export type ReviewTaskIdentityRefV1 = z.infer<typeof ReviewTaskIdentityRefV1Schema>;
+
 const reviewTaskBase = {
-  kind: z.literal("review-task"),
-  reference: VersionReferenceSchema,
+  ...ReviewTaskIdentityRefV1Schema.shape,
   waitingRunRef: WorkflowRunRefV1Schema,
 };
 
@@ -429,6 +431,34 @@ export const RiskInputFactFieldV1Schema = z.strictObject({
   evidenceReferences: z.array(EvidenceReferenceSchema).min(1).max(32),
 });
 export type RiskInputFactFieldV1 = z.infer<typeof RiskInputFactFieldV1Schema>;
+
+export const AssessmentSourceFieldFactsV1Schema = z
+  .array(RiskInputFactFieldV1Schema)
+  .min(1)
+  .max(RISK_INPUT_FACT_MAX_FIELDS_V1)
+  .superRefine((fields, context) => {
+    const keys = new Set<string>();
+    const evidence = new Set<string>();
+    for (const field of fields) {
+      const key = JSON.stringify([field.documentType, field.fieldPath]);
+      if (field.documentType === "standardized-risk-record" || keys.has(key)) {
+        context.addIssue({
+          code: "custom",
+          message: "source fields must be unique and cannot replace risk fields",
+        });
+      }
+      keys.add(key);
+      for (const ref of field.evidenceReferences)
+        evidence.add(
+          JSON.stringify([ref.sourceVersion.entityId, ref.sourceVersion.versionId, ref.locator]),
+        );
+    }
+    if (evidence.size > 256)
+      context.addIssue({
+        code: "custom",
+        message: "source evidence exceeds the preparation limit",
+      });
+  });
 
 export const ContractReferenceV1Schema = z.discriminatedUnion("kind", [
   AuthorizationContextRefV1Schema,
@@ -1131,6 +1161,7 @@ const AssessmentPreparationCommandPayloadV1Schema = z.strictObject({
   previousAssessmentRecordRef: RiskAssessmentRecordRefV1Schema.optional(),
   causalRunRef: WorkflowRunRefV1Schema.optional(),
   monitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
+  sourceFieldFacts: AssessmentSourceFieldFactsV1Schema.optional(),
 });
 
 const MonitoringSnapshotCommandPayloadV1Schema = z.strictObject({
@@ -1823,6 +1854,13 @@ export const ResumeCauseV1Schema = z.discriminatedUnion("kind", [
     agentTaskResultRef: AgentTaskResultRefV1Schema,
   }),
   z.strictObject({
+    kind: z.literal("agent-task-failed"),
+    agentTaskRef: AgentTaskRefV1Schema.extend({
+      taskType: z.literal("retrieval-review"),
+      triggerMode: z.literal("embedded"),
+    }),
+  }),
+  z.strictObject({
     kind: z.literal("command-confirmed"),
     commandProposalRef: CommandProposalRefV1Schema,
   }),
@@ -1880,6 +1918,7 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
   z.strictObject({
     ...workflowStartControlShape,
     entryMode: z.literal("assess"),
+    assessmentPreparationSnapshotRef: AssessmentPreparationSnapshotRefV1Schema.optional(),
     riskInput: RiskInputVersionRefV1Schema,
     applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
     monitoringSnapshotRef: MonitoringSnapshotRefV1Schema.optional(),

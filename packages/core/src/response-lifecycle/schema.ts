@@ -38,6 +38,7 @@ import {
 } from "@riskflow/contracts/workflows";
 
 import {
+  CANONICAL_DECIMAL_MAX_FRACTION_DIGITS_V1,
   CanonicalDecimalV1Schema,
   ForecastMethodV1Schema,
   compareCanonicalDecimal,
@@ -525,7 +526,7 @@ const effectForecastModelBase = {
   unit: unitSchema,
   stepMs: positiveInteger,
   maxHorizonSteps: positiveInteger.max(720),
-  calculationScale: positiveInteger.max(32),
+  calculationScale: positiveInteger.max(CANONICAL_DECIMAL_MAX_FRACTION_DIGITS_V1),
   measureLibraryReleaseRef: VersionReferenceSchema,
   measureEffects: uniqueBy(
     EffectForecastMeasureEffectV1Schema,

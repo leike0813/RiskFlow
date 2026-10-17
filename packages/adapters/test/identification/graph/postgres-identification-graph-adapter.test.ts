@@ -1802,6 +1802,20 @@ describe("PostgreSQL identification graph persistence", () => {
     });
     await registerThroughTransaction(fixture!, [stageRowFor(plan, stageArtifactRef)], "first");
 
+    const failed = { ...referenceKitFor("read-failed"), workPlanRef: plan.workPlanRef };
+    const failedBody = stageResultI5Body(failed);
+    const failedArtifact = await putBodyAs(fixture!, {
+      artifactId: "c24-body-stage-read-failed",
+      body: {
+        ...failedBody,
+        stageResult: {
+          ...failedBody.stageResult,
+          failedCandidateSetRef: refOf("identification-candidate-set", "failed-candidates"),
+        },
+      },
+    });
+    await registerThroughTransaction(fixture!, [stageRowFor(failed, failedArtifact)], "first");
+
     const queryId = "c24-query-read";
     const exact = await fixture!.adapter.contextInputReader.readExact({
       projectId: PROJECT_ID,

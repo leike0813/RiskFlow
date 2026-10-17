@@ -2998,7 +2998,8 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
             status,
             parentRunRef,
             assessmentRunRefs: [],
-            acceptedRiskRecordRefs: [recordAutoRef, recordReviewRef],
+            // 公共报告只引用资料 A；受限 B 留在识别复核夹具中。
+            acceptedRiskRecordRefs: [recordAutoRef],
             assessmentRecordRefs: [assessmentRef],
             warningRecordRefs: [warningRef],
             responseRecommendationRefs: [recommendationRef],

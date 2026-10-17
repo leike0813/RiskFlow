@@ -27,6 +27,7 @@ import { sha256CanonicalJson } from "@riskflow/core/persistence";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   WorkflowGraphRunStateV1Schema,
+  workflowEntryIdentityFor,
   type WorkflowGraphResultRowV1,
   type WorkflowGraphRunStateV1,
 } from "@riskflow/core/workflow";
@@ -508,7 +509,19 @@ describe("C30 workflow registration adapter", () => {
       ...(kind === "route-decision" ? {} : { stage: "identification" as const }),
     });
     await registerWithinTransaction({
-      row: { ...makeRow("entry-snapshot", "event-prep"), frozenRefs: [preparation] },
+      row: {
+        ...makeRow("entry-snapshot", "event-root"),
+        stage: "preparing",
+        entryIdentity: { ...ENTRY_IDENTITY, versionId: "business-inputs-v1" },
+        frozenRefs: [SPATIAL_SCOPE_REF],
+      },
+    });
+    await registerWithinTransaction({
+      row: {
+        ...makeRow("entry-snapshot", "event-prep"),
+        entryIdentity: { entityId: "event-preparation-entry", versionId: "v1" },
+        frozenRefs: [preparation],
+      },
     });
     const route = {
       ...makeRow("route-decision", "event-accepted"),
@@ -645,6 +658,42 @@ describe("C30 workflow registration adapter", () => {
     };
     expect(await fixture.adapter.verifyEventConsumption(prepared)).toBe(true);
     expect(await fixture.adapter.verifyEventConsumption(accepted)).toBe(true);
+    const current = authorizationFor({
+      sourceAccessGrantRefs: [
+        {
+          kind: "source-access-grant",
+          reference: { entityId: "current-source-grant", versionId: "v2" },
+        },
+      ],
+    });
+    fixture.access.setAuthorization(current);
+    expect(
+      await fixture.adapter.readEventParentRun({
+        ...input,
+        authorization: current,
+        identificationRunRef: child,
+      }),
+    ).toEqual(parent);
+    expect(
+      await fixture.adapter.verifyEventConsumption({ ...prepared, authorization: current }),
+    ).toBe(true);
+    expect(
+      await fixture.adapter.verifyEventConsumption({ ...accepted, authorization: current }),
+    ).toBe(true);
+    const wrongSpace = authorizationFor({
+      spatialScopeRefs: [
+        { ...SPATIAL_SCOPE_REF, reference: { ...SPATIAL_SCOPE_REF.reference, versionId: "other" } },
+      ],
+    });
+    fixture.access.setAuthorization(wrongSpace);
+    await expect(
+      fixture.adapter.readEventParentRun({
+        ...input,
+        authorization: wrongSpace,
+        identificationRunRef: child,
+      }),
+    ).rejects.toThrow();
+    fixture.access.setAuthorization(undefined);
     expect(
       await fixture.adapter.verifyEventConsumption({
         ...accepted,
@@ -1528,18 +1577,26 @@ describe("C30 workflow registration adapter", () => {
       };
     }) => {
       const runVersionId = sha(`entries-run-version:${input.suffix}`);
-      const entryIdentity = {
-        entityId: `workflow-entry:${PROJECT_ID}:${input.suffix}`,
-        versionId: sha(`entries-entry:${input.suffix}`),
+      const frozenRefs = resultRowFor("entry-snapshot", input.suffix).frozenRefs;
+      const entryIdentity = workflowEntryIdentityFor({
+        projectId: PROJECT_ID,
+        entryMode: input.entryMode,
+        frozenRefs,
+        reassessmentEntry: input.reassessmentEntry,
+      });
+      const preparationRef = {
+        kind: "assessment-preparation-snapshot" as const,
+        reference: { entityId: `preparation:${input.suffix}`, versionId: "1" },
       };
       await registerWithinTransaction({
         row: {
           ...resultRowFor("entry-snapshot", input.suffix),
           runId: input.runId,
           runVersionId,
-          resultId: `entry-snapshot:${input.runId}:1`,
+          resultId: preparationRef.reference.entityId,
           resultVersionId: "1",
-          entryIdentity,
+          entryIdentity: preparationRef.reference,
+          inputSnapshotRef: preparationRef,
           entryMode: input.entryMode,
         },
       });
@@ -1706,6 +1763,45 @@ describe("C30 workflow registration adapter", () => {
       ]);
     });
 
+    it("运行入口摘要与A0准备身份分别核对，任一错配均拒绝", async () => {
+      fixture.access.setAuthorization(ENTRIES_AUTHORIZATION);
+      const recordRef = {
+        kind: "risk-assessment-record" as const,
+        reference: { entityId: "assessment-entries-identities", versionId: "1" },
+      };
+      const runId = "assessment-run:entries-identities";
+      await registerAssessmentRun({ suffix: "identities", runId, recordRef, entryMode: "assess" });
+      const read = () =>
+        fixture.adapter.entriesRead.readAssessmentEntriesForRecords(readInput([recordRef]));
+      expect(await read()).toMatchObject({ kind: "succeeded" });
+      for (const column of ["entry_identity", "frozen_refs"] as const) {
+        const rows = await fixture.postgres.adminPool.query(
+          `SELECT ${column} AS original FROM business.workflow_graph_results WHERE project_id = $1 AND run_id = $2 AND result_kind = 'entry-snapshot'`,
+          [PROJECT_ID, runId],
+        );
+        const changed =
+          column === "entry_identity"
+            ? { entityId: "wrong-preparation", versionId: "1" }
+            : [SPATIAL_SCOPE_REF];
+        try {
+          await fixture.postgres.adminPool.query(
+            `UPDATE business.workflow_graph_results SET ${column} = $3::jsonb WHERE project_id = $1 AND run_id = $2 AND result_kind = 'entry-snapshot'`,
+            [PROJECT_ID, runId, JSON.stringify(changed)],
+          );
+          expect(await read()).toMatchObject({
+            kind: "failed",
+            error: { code: "BUSINESS_BLOCKED" },
+          });
+        } finally {
+          await fixture.postgres.adminPool.query(
+            `UPDATE business.workflow_graph_results SET ${column} = $3::jsonb WHERE project_id = $1 AND run_id = $2 AND result_kind = 'entry-snapshot'`,
+            [PROJECT_ID, runId, JSON.stringify(rows.rows[0]!.original)],
+          );
+        }
+      }
+      expect(await read()).toMatchObject({ kind: "succeeded" });
+    });
+
     it("重评元数据缺失、目标无链边、授权撤销与空输入一律失败闭合", async () => {
       fixture.access.setAuthorization(ENTRIES_AUTHORIZATION);
       // 入口事实缺席：历史工件可读，但不得据此编造原因。
@@ -1795,6 +1891,7 @@ describe("C30 workflow registration adapter", () => {
       readonly assessmentRunRefs?: readonly WorkflowRunRefV1[];
       readonly parentRunRef?: WorkflowRunRefV1;
       readonly omitGraphVersion?: boolean;
+      readonly stateScopeDigest?: string;
     }) => {
       const runVersionId = sha(`run-read-version:${input.suffix}`);
       const runRef = {
@@ -1868,6 +1965,7 @@ describe("C30 workflow registration adapter", () => {
       await registerWithinTransaction({
         row: {
           ...resultRowFor("run-state", input.suffix),
+          authorizationScopeDigest: input.stateScopeDigest ?? SCOPE_DIGEST,
           runId: input.runId,
           runVersionId,
           resultVersionId: runVersionId,
@@ -1994,7 +2092,8 @@ describe("C30 workflow registration adapter", () => {
       const singleChild = await registerRun({
         suffix: "child-single",
         runId: "risk-flow-run:run-read-child-single",
-        stages: [],
+        stages: childStages("risk-flow-run:run-read-child-single"),
+        stateScopeDigest: sha("resumed-child-scope"),
         parentRunRef: {
           kind: "workflow-run",
           reference: { entityId: singleParentId, versionId: sha("run-read-version:parent-single") },
@@ -2005,12 +2104,19 @@ describe("C30 workflow registration adapter", () => {
         runId: singleParentId,
         stages: [],
         assessmentRunRefs: [singleChild],
+        stateScopeDigest: sha("resumed-parent-scope"),
       });
       const singleView = await read(singleParent);
       expect(singleView).toMatchObject({ kind: "succeeded" });
       if (singleView.kind !== "succeeded") return;
       expect(singleView.projection.selectedAssessmentRunRef).toBeDefined();
       expect(singleView.projection.assessmentRunRefs).toHaveLength(1);
+      expect(singleView.projection.stages.map((item) => item.stageCode)).toEqual([
+        "A0",
+        "A5",
+        "A9",
+      ]);
+      expect(singleView.projection.resultRefs).toHaveLength(3);
 
       // 父运行 + 多子运行且未选中：阶段留空交页面引导，不合成一条轨迹。
       const parent = await registerRun({
@@ -2156,22 +2262,41 @@ describe("C30 workflow registration adapter", () => {
       readonly runId: string;
       readonly stage?: WorkflowGraphResultRowV1["stage"];
       readonly inputSnapshotRef?: WorkflowGraphResultRowV1["inputSnapshotRef"];
-    }) =>
-      await registerWithinTransaction({
+    }) => {
+      const entryIdentity = {
+        entityId: `workflow-entry:${PROJECT_ID}:${input.suffix}`,
+        versionId: sha(`entry-identity:${input.suffix}`),
+      };
+      const artifactRef = await fixture.adapter.bodies.putBody({
+        projectId: PROJECT_ID,
+        actorId: ACTOR_ID,
+        commandId: `entry-body:${input.suffix}`,
+        invocationId: `entry-body:${input.suffix}`,
+        issuedAt: TIMESTAMP,
+        artifactId: `entry-body:${input.suffix}`,
+        authorization: ENTRY_AUTHORIZATION,
+        body: {
+          bodyKind: "run-state",
+          runState: {
+            ...runState({ runId: input.runId, runVersionId: RUN_VERSION_ID }),
+            entryIdentity,
+          },
+        },
+      });
+      return await registerWithinTransaction({
         row: {
           ...resultRowFor("entry-snapshot", input.suffix),
           runId: input.runId,
           resultId: `entry-snapshot:${input.runId}:${input.suffix}`,
           stage: input.stage ?? "A0",
-          entryIdentity: {
-            entityId: `workflow-entry:${PROJECT_ID}:${input.suffix}`,
-            versionId: sha(`entry-identity:${input.suffix}`),
-          },
+          entryIdentity,
+          artifactRef,
           ...(input.inputSnapshotRef === undefined
             ? {}
             : { inputSnapshotRef: input.inputSnapshotRef }),
         },
       });
+    };
 
     afterEach(() => {
       fixture.access.setAuthorization(undefined);
@@ -2217,6 +2342,22 @@ describe("C30 workflow registration adapter", () => {
         expect(
           await fixture.adapter.registrationStore.readAssessmentEntrySnapshot(readInput(runId)),
         ).toEqual(entryCase.expected);
+        const current = authorizationFor({
+          grantedCapabilities: ["projection.query"],
+          sourceAccessGrantRefs: [
+            {
+              kind: "source-access-grant",
+              reference: { entityId: "current-extra-source", versionId: "1" },
+            },
+          ],
+        });
+        fixture.access.setAuthorization(current);
+        expect(
+          await fixture.adapter.registrationStore.readAssessmentEntrySnapshot(
+            readInput(runId, { authorization: current }),
+          ),
+        ).toEqual(entryCase.expected);
+        fixture.access.setAuthorization(ENTRY_AUTHORIZATION);
       }
     });
 

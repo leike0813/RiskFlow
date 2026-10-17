@@ -42,6 +42,7 @@ import {
   MergePlanV1Schema,
   RiskCandidateFinalizationResultRowV1Schema,
   RiskCandidateFinalizationService,
+  riskRecordSourceVersionsFor,
   RiskCandidateGenerationPolicyV1Schema,
   RiskCandidateMergePolicyV1Schema,
   RiskCandidateSetV1Schema,
@@ -913,8 +914,9 @@ interface HarnessOverrides {
   readonly forcedReviewPolicyOverrides?: Record<string, unknown>;
   /** 故障注入：`artifact-put` 让 C04 写入失败，`transaction` 让 C03 事务失败。 */
   readonly failureInjection?: "artifact-put" | "transaction";
+  readonly mapTransactionErrors?: boolean;
   readonly recordInsertOutcomes?: readonly (
-    | { readonly kind: "inserted" }
+    | { readonly kind: "inserted"; readonly insertedRiskRecordIds?: readonly string[] }
     | { readonly kind: "replayed" }
     | { readonly kind: "conflict"; readonly detailCode: string }
   )[];
@@ -1131,13 +1133,32 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
   };
 
   const recordStore = {
-    async insertRecords() {
+    async insertRecords(input: {
+      readonly rows: readonly {
+        readonly riskRecordId: string;
+        readonly sourceVersionRefs: readonly { readonly reference: VersionReference }[];
+        readonly evidenceReferences: readonly { readonly sourceVersion: VersionReference }[];
+      }[];
+    }) {
       calls.recordInsertCalls += 1;
-      return (
-        overrides.recordInsertOutcomes?.[calls.recordInsertCalls - 1] ?? {
-          kind: "inserted" as const,
-        }
-      );
+      for (const row of input.rows) {
+        for (const evidence of row.evidenceReferences)
+          expect(
+            row.sourceVersionRefs.some(
+              (source) =>
+                source.reference.entityId === evidence.sourceVersion.entityId &&
+                source.reference.versionId === evidence.sourceVersion.versionId,
+            ),
+          ).toBe(true);
+      }
+      const outcome = overrides.recordInsertOutcomes?.[calls.recordInsertCalls - 1];
+      return outcome !== undefined && outcome.kind !== "inserted"
+        ? outcome
+        : {
+            kind: "inserted" as const,
+            insertedRiskRecordIds:
+              outcome?.insertedRiskRecordIds ?? input.rows.map((row) => row.riskRecordId),
+          };
     },
     async readRecord() {
       return undefined;
@@ -1172,7 +1193,10 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
         }
         return { ...prior, replayed: true };
       }
-      const commit = await handler({ transaction: "in-memory" });
+      const commit = await handler({ transaction: "in-memory" }).catch((error: unknown) => {
+        if (overrides.mapTransactionErrors) throw new Error("TRANSACTION_FAILED");
+        throw error;
+      });
       const receipt = {
         resultRef: commit.resultRef,
         auditEntryId: commit.audit.auditEntryId,
@@ -1267,6 +1291,7 @@ const makeHarness = (overrides: HarnessOverrides = {}) => {
     modelRequests,
     artifacts,
     rows,
+    receipts,
     seedRow,
     putValue,
   };
@@ -1418,6 +1443,16 @@ const blockedKindOf = (
 // ============================================================ 严格 Schema 与身份
 
 describe("C22 严格 Schema 与身份", () => {
+  it("正式来源包含工程输入和证据的每个精确版本且去重", () => {
+    const first = { kind: "source-version" as const, reference: versionRef("source-a") };
+    const second = { ...first, reference: { ...first.reference, versionId: "2" } };
+    const refs = riskRecordSourceVersionsFor(
+      [first, first],
+      [evidence("segment-1"), { ...evidence("segment-2"), sourceVersion: second.reference }],
+    );
+    expect(refs).toHaveLength(2);
+    expect(refs).toEqual(expect.arrayContaining([first, second]));
+  });
   it("候选集拒绝契约外字段与重复候选版本", () => {
     expect(RiskCandidateSetV1Schema.safeParse(candidateSetValue()).success).toBe(true);
     expect(
@@ -2242,6 +2277,7 @@ describe("C22 服务接入（端口驱动）", () => {
   it("自动路线按路线中的组与系统决定逐项匹配并原子写入记录和事件", async () => {
     const authorizationChecks = new Map<string, number>();
     const harness = makeHarness({
+      mapTransactionErrors: true,
       verifyCurrent: async ({ invocationId }) => {
         const count = (authorizationChecks.get(invocationId) ?? 0) + 1;
         authorizationChecks.set(invocationId, count);
@@ -2251,7 +2287,14 @@ describe("C22 服务接入（端口驱动）", () => {
       },
       recordInsertOutcomes: [
         { kind: "inserted" },
+        {
+          kind: "inserted",
+          insertedRiskRecordIds: [
+            `identification-risk-record:${PROJECT}:${groupRefValue("group-2").reference.entityId}`,
+          ],
+        },
         { kind: "conflict", detailCode: "standardized-risk-record-payload-mismatch" },
+        { kind: "replayed" },
       ],
     });
     const routeSet = AcceptanceRouteSetV1Schema.parse(routeSetValue());
@@ -2347,6 +2390,81 @@ describe("C22 服务接入（端口驱动）", () => {
     expect(harness.calls.transactionCalls).toBe(2);
     expect(harness.calls.verifyCurrentCalls).toBe(4);
 
+    const secondRoute = {
+      ...route,
+      groupId: "group-2",
+      groupRef: groupRefValue("group-2"),
+      routeDecisionRef: {
+        kind: "route-decision" as const,
+        reference: versionRef(`route-decision:${PROJECT}:group-2`),
+      },
+    };
+    harness.seedRow(acceptanceRouteSetRow(), { ...routeSet, routes: [route, secondRoute] });
+    harness.seedRow(
+      {
+        ...resultRowBase(
+          "identification-group",
+          secondRoute.groupRef.reference.entityId,
+          secondRoute.groupRef.reference.versionId,
+        ),
+        workPlanRef,
+        groupRef: secondRoute.groupRef,
+      },
+      { ...group, groupId: secondRoute.groupId },
+    );
+    harness.seedRow(
+      {
+        ...resultRowBase(
+          "route-decision",
+          secondRoute.routeDecisionRef.reference.entityId,
+          secondRoute.routeDecisionRef.reference.versionId,
+        ),
+        workPlanRef,
+        groupRef: secondRoute.groupRef,
+        routeDecisionRef: secondRoute.routeDecisionRef,
+      },
+      {
+        schemaVersion: "1",
+        projectId: PROJECT,
+        workPlanRef,
+        inputSnapshotRef,
+        mergePlanRef: mergePlanRefValue,
+        groupId: secondRoute.groupId,
+        groupVersionId: secondRoute.groupVersionId,
+        groupRef: secondRoute.groupRef,
+        routeDecisionRef: secondRoute.routeDecisionRef,
+        decision: "accept-unchanged",
+        compositeConfidence: secondRoute.compositeConfidence,
+        confidencePolicyRef: versionRef("confidence-policy"),
+        forcedReviewPolicyRef: versionRef("forced-review-policy"),
+        decidedAt: TIMESTAMP,
+      },
+    );
+    const incrementalCommand = acceptCommand({
+      commandId: "command-accept-incremental",
+      idempotencyKey: "idempotency-accept-incremental",
+      payload: {
+        acceptanceRouteSetRef: acceptanceRouteSetRefValue,
+        acceptedGroupRefs: [route.groupRef, secondRoute.groupRef],
+        decisionRefs: [route.routeDecisionRef, secondRoute.routeDecisionRef],
+      },
+    });
+    const incremental = await harness.service.finalize(incrementalCommand);
+    expect(incremental).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "accepted", standardizedRiskRecordRefs: expect.any(Array) },
+    });
+    if (incremental.kind !== "succeeded" || incremental.result.kind !== "accepted")
+      throw new Error("acceptance required");
+    expect(incremental.result.standardizedRiskRecordRefs).toHaveLength(2);
+    expect(incremental.result.assessmentEventRefs).toHaveLength(2);
+    expect(harness.receipts.get(incrementalCommand.commandId)?.eventRefs).toEqual([
+      incremental.result.assessmentEventRefs[1],
+    ]);
+    expect(await harness.service.finalize(incrementalCommand)).toEqual(incremental);
+    expect(harness.calls.recordInsertCalls).toBe(2);
+    harness.seedRow(acceptanceRouteSetRow(), routeSet);
+
     const conflict = await harness.service.finalize(
       acceptCommand({
         commandId: "command-accept-conflict",
@@ -2360,7 +2478,20 @@ describe("C22 服务接入（端口驱动）", () => {
     );
     expect(conflict).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
     expect(blockedKindOf(conflict)).toBe("standardized-risk-record-payload-mismatch");
-    expect(harness.calls.recordInsertCalls).toBe(2);
+    expect(harness.calls.recordInsertCalls).toBe(3);
+
+    const recordReplay = await harness.service.finalize(
+      acceptCommand({
+        commandId: "command-accept-record-replay",
+        idempotencyKey: "idempotency-accept-record-replay",
+        payload: {
+          acceptanceRouteSetRef: acceptanceRouteSetRefValue,
+          acceptedGroupRefs: [route.groupRef],
+          decisionRefs: [route.routeDecisionRef],
+        },
+      }),
+    );
+    expect(recordReplay).toEqual(result);
 
     const revoked = await harness.service.finalize(
       acceptCommand({
@@ -2374,7 +2505,7 @@ describe("C22 服务接入（端口驱动）", () => {
       }),
     );
     expect(revoked).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
-    expect(harness.calls.recordInsertCalls).toBe(2);
+    expect(harness.calls.recordInsertCalls).toBe(4);
   });
 
   it("assemble-and-infer 模型失败时返回映射的技术错误且零登记", async () => {

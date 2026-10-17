@@ -14,6 +14,7 @@ import {
 } from "../../packages/core/dist/assessment-config/index.js";
 import {
   CalibrationCandidateV1Schema,
+  CalibrationValidationPolicyV1Schema,
   deriveCalibrationInputSnapshotRef,
 } from "../../packages/core/dist/calibration/index.js";
 import { canonicalJson } from "../../packages/core/dist/persistence/index.js";
@@ -93,7 +94,7 @@ const snapshotRef = deriveCalibrationInputSnapshotRef({
   projectId: "project",
   deviationFactRef: ref("deviation-fact"),
   targetReleaseRef: ref("target-release"),
-  calibrationValidationPolicyRef: ref("validation"),
+  calibrationValidationPolicyRef: ref("calibration-policy"),
 });
 const inputSnapshot = (overrides = {}) => ({
   schemaVersion: "1",
@@ -112,7 +113,7 @@ const inputSnapshot = (overrides = {}) => ({
     reference: ref("base-artifact", `sha256:${"a".repeat(64)}`),
   },
   baseContentDigest: assessmentConfigurationDocumentDigest(baseDocument()),
-  calibrationValidationPolicyRef: ref("validation"),
+  calibrationValidationPolicyRef: ref("calibration-policy"),
   modelDeploymentRef: ref("model"),
   promptTemplateRef: ref("prompt"),
   toolPolicyRef: ref("tools"),
@@ -221,6 +222,7 @@ const setup = ({
   base = baseDocument(),
   verified = true,
   streamedInputBytes,
+  policyOverrides = {},
 } = {}) => {
   const content = new Map();
   const putCalls = [];
@@ -315,6 +317,26 @@ const setup = ({
     },
   };
   const accessCalls = [];
+  const policyCalls = [];
+  const policy = CalibrationValidationPolicyV1Schema.parse({
+    schemaVersion: "1",
+    policyRef: ref("calibration-policy"),
+    projectId: "project",
+    definitionRef: ref("calibration-definition"),
+    toolPolicyRef: ref("tools"),
+    incrementSchemaRef: ref("increment"),
+    validationPolicyRef: ref("validation"),
+    budgetPolicy,
+    evidenceRequirementCount: 1,
+    maxOperations: 1,
+    ...policyOverrides,
+  });
+  const policyCatalog = {
+    resolve(selector) {
+      policyCalls.push(selector);
+      return policy;
+    },
+  };
   const access = {
     async verifyDeploymentContext(input) {
       accessCalls.push(input);
@@ -322,10 +344,11 @@ const setup = ({
     },
   };
   return {
-    port: createDeploymentCalibrationTaskPortV1({ artifactStore, access }),
+    port: createDeploymentCalibrationTaskPortV1({ artifactStore, access, policyCatalog }),
     task: task(frozenInputRef),
     putCalls,
     accessCalls,
+    policyCalls,
     content,
   };
 };
@@ -337,9 +360,20 @@ describe("deployment calibration task port", () => {
     expect(result.snapshot).toEqual(inputSnapshot());
     expect(result.inputSnapshotRef).toEqual(snapshotRef);
     expect(result.document).toEqual(baseDocument());
+    expect(fixture.policyCalls).toEqual([
+      {
+        projectId: "project",
+        policyType: "calibration",
+        policyRef: ref("calibration-policy"),
+      },
+    ]);
     expect(fixture.putCalls).toHaveLength(0);
     for (const invalid of [
       setup({ input: inputSnapshot({ modelDeploymentRef: ref("other-model") }) }),
+      setup({ policyOverrides: { projectId: "other-project" } }),
+      setup({ policyOverrides: { policyRef: ref("other-policy") } }),
+      setup({ policyOverrides: { validationPolicyRef: ref("other-validation") } }),
+      setup({ input: inputSnapshot({ calibrationValidationPolicyRef: ref("validation") }) }),
       setup({ input: inputSnapshot({ baseContentDigest: "0".repeat(64) }) }),
       setup({ verified: false }),
     ]) {

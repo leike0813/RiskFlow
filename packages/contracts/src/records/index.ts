@@ -117,15 +117,6 @@ export const GradeIntervalSchema = z
     upperBound: FiniteNumberSchema.optional(),
   })
   .superRefine((interval, context) => {
-    if (interval.lowerBound === undefined && interval.upperBound === undefined) {
-      context.addIssue({
-        code: "custom",
-        path: [],
-        message: "at least one interval bound is required",
-      });
-      return;
-    }
-
     if (
       interval.lowerBound !== undefined &&
       interval.upperBound !== undefined &&

@@ -987,6 +987,13 @@ describe("C09 HTTP shell", () => {
   });
 
   it("SSE 逐事件授权保留当前会话、精确来源和独立调用身份", async () => {
+    const workflowRunRef = {
+      kind: "workflow-run" as const,
+      reference: {
+        entityId: "risk-flow-run:synthetic-station-tunnel-project:assess:" + "a".repeat(32),
+        versionId: "b".repeat(64),
+      },
+    };
     const access = accessStub();
     const requests: Parameters<LocalIdentityAccessV1["authorize"]>[0][] = [];
     const scopeInput = {
@@ -1027,7 +1034,7 @@ describe("C09 HTTP shell", () => {
     try {
       const response = await app.inject({
         method: "GET",
-        url: `/api/v1/projects/project/runs/${encodeWorkflowRunIdV1({ kind: "workflow-run", reference: { entityId: "run", versionId: "1" } })}/events`,
+        url: `/api/v1/projects/project/runs/${encodeWorkflowRunIdV1(workflowRunRef)}/events`,
         headers: { cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
       });
       expect(response.statusCode).toBe(200);

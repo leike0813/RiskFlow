@@ -483,7 +483,51 @@ describe("统一风险事实生产读取接缝", () => {
     }
   }, 240_000);
 
-  it("拒绝超出登记来源范围的标准记录证据", async () => {
+  it.each([false, true])(
+    "已登记证据版本纳入精确来源范围且尊重当前脱敏拒绝：%s",
+    async (redacted) => {
+      const evidenceVersion = { ...fixture.sourceVersionRef.reference, versionId: "2" };
+      const riskInput = await insertIncompleteRecord(`evidence-source-union-${redacted}`, {
+        evidence_references: JSON.stringify([
+          { locator: { sourceSegmentId: secondSegmentId }, sourceVersion: evidenceVersion },
+        ]),
+      });
+      const request = await readRequest({
+        requestId: `seam-evidence-union-${redacted}`,
+        riskInput,
+        spatialScopeRefs: [fixture.businessSpatialScopeRef],
+        sourceVersionRefs: [fixture.sourceVersionRef],
+      });
+      const requestedScopes: unknown[] = [];
+      const reader = createPostgresStandardizedRiskInputFactsReader({
+        db: fixture.postgres.runtime.db,
+        authorization: {
+          async verify(input) {
+            requestedScopes.push(input.requestedSourceVersionRefs);
+            const verified = await fixture.postgres.access.verify({
+              ...input,
+              requestedSourceVersionRefs: [fixture.sourceVersionRef],
+            });
+            // 合成第二版本的权限由端口替身给出；未知来源仍由下一个真实C06用例拒绝。
+            return {
+              ...verified,
+              redacted: input.requestedSourceVersionRefs.length > 0 && redacted,
+            };
+          },
+        },
+      });
+      const result = await reader.readRiskInputFacts(request);
+      expect(result.kind).toBe(redacted ? "failed" : "succeeded");
+      expect(requestedScopes.at(-1)).toEqual(
+        expect.arrayContaining([
+          fixture.sourceVersionRef,
+          { kind: "source-version", reference: evidenceVersion },
+        ]),
+      );
+    },
+  );
+
+  it("拒绝当前无权的已登记证据来源", async () => {
     const unregisteredSourceEvidence = JSON.stringify([
       {
         locator: { sourceSegmentId: secondSegmentId },

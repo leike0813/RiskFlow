@@ -353,10 +353,12 @@ const decodeWorkflowRunPathPayload = (value: string): WorkflowRunPathPayloadV1 |
 const encodeWorkflowRunPathPayload = (value: WorkflowRunPathPayloadV1): string =>
   Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
 
+export const HTTP_WORKFLOW_RUN_ID_MAX_LENGTH_V1 = 2_048;
+
 export const EncodedWorkflowRunIdV1Schema = z
   .string()
   .min(1)
-  .max(2_048)
+  .max(HTTP_WORKFLOW_RUN_ID_MAX_LENGTH_V1)
   .regex(/^[A-Za-z0-9_-]+$/)
   .superRefine((value, context) => {
     const decoded = decodeWorkflowRunPathPayload(value);

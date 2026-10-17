@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,6 +20,10 @@ import {
 } from "@playwright/test";
 
 import { ReportArtifactBodyV1Schema } from "../../../../packages/core/dist/workflow/report.js";
+import type {
+  SourceVersionRefV1,
+  WorkflowRunRefV1,
+} from "../../../../packages/contracts/dist/ports/index.js";
 
 import {
   DESKTOP_ACCEPTANCE_ENV_V1,
@@ -103,6 +108,7 @@ type DesktopSessionV1 = Readonly<{ app: ElectronApplication; window: Page }>;
  */
 const launchClientV1 = async (desktopConfigPath: string): Promise<DesktopSessionV1> => {
   const app = await electron.launch({
+    executablePath: createRequire(join(REPO_ROOT, "apps", "desktop", "package.json"))("electron"),
     args: [
       join(REPO_ROOT, "apps", "desktop"),
       "--user-data-dir=" + makeTempDirV1("riskflow-desktop-session-"),
@@ -151,6 +157,17 @@ const loginV1 = async (
   await window.getByLabel("密码").fill(password);
   await window.getByRole("button", { name: "登录", exact: true }).click();
   await expect(gate, "登录后闸门必须落下").toHaveCount(0, { timeout: 60_000 });
+  if (new URL(url).pathname === "/report/export") {
+    await window.getByRole("button", { name: /^资料来源：/ }).click();
+    await window
+      .getByLabel("资料来源版本")
+      .fill(
+        JSON.stringify(
+          acceptanceTarget.bindings.reportSourceVersionRefs.map((ref) => ref.reference),
+        ),
+      );
+    await window.getByRole("button", { name: "应用来源", exact: true }).click();
+  }
   return true;
 };
 
@@ -160,7 +177,14 @@ let querySequenceV1 = 0;
  * 真实同源读取：请求由页面自己带会话 cookie 发出，与页面走同一传输、Origin 与授权面，
  * 不额外开旁路、不注入凭据。
  */
-const queryV1 = async (window: Page, projectId: string, branch: string, payload: unknown) => {
+const queryV1 = async (
+  window: Page,
+  projectId: string,
+  branch: string,
+  payload: unknown,
+  sourceVersionRefs: readonly SourceVersionRefV1[] = acceptanceTarget.bindings
+    .requestedSourceVersionRefs,
+) => {
   querySequenceV1 += 1;
   return window.evaluate(
     async ({ target, body }) => {
@@ -180,7 +204,7 @@ const queryV1 = async (window: Page, projectId: string, branch: string, payload:
         queryId: "desktop-" + Date.now() + "-" + querySequenceV1,
         requestedAt: new Date().toISOString(),
         requestedSpatialScopeRefs: acceptanceTarget.bindings.requestedSpatialScopeRefs,
-        requestedSourceVersionRefs: acceptanceTarget.bindings.requestedSourceVersionRefs,
+        requestedSourceVersionRefs: sourceVersionRefs,
         payload,
       },
     },
@@ -193,27 +217,22 @@ type RunStatusProbeV1 = Readonly<{ status: number; runStatus: string | null }>;
 const readRunStatusV1 = async (
   window: Page,
   projectId: string,
-  workflowRunRef: unknown,
+  workflowRunRef: WorkflowRunRefV1,
 ): Promise<RunStatusProbeV1> => {
-  const registered = await queryV1(window, projectId, "projection.query", {
-    queryType: "run-view",
+  const response = await queryV1(window, projectId, "risk-assessment.read", {
+    operation: "run-read",
     workflowRunRef,
   });
-  if (registered.status !== 200) return { status: registered.status, runStatus: null };
-  const response = await queryV1(window, projectId, "projection.result-read", {
-    queryResultRef: registered.body.result.queryResultRef,
-    limit: 100,
-  });
   if (response.status !== 200) return { status: response.status, runStatus: null };
-  const items = response.body?.result?.items ?? [];
-  const summary = items.find(
-    (item: { kind?: string; workflowRunRef?: { reference?: unknown } }) =>
-      item?.kind === "run-summary" &&
-      JSON.stringify(item?.workflowRunRef?.reference) === JSON.stringify(workflowRunRef.reference),
-  );
+  const result = response.body?.result;
+  const sameRun =
+    result?.kind === "run-read" &&
+    result.runRef?.kind === workflowRunRef.kind &&
+    result.runRef?.reference?.entityId === workflowRunRef.reference.entityId &&
+    result.runRef?.reference?.versionId === workflowRunRef.reference.versionId;
   return {
     status: response.status,
-    runStatus: typeof summary?.status === "string" ? summary.status : null,
+    runStatus: sameRun && typeof result.status === "string" ? result.status : null,
   };
 };
 
@@ -345,10 +364,9 @@ const reviseMembershipV1 = async (
   await row.getByRole("button", { name: "修订", exact: true }).click();
   await window.locator("#access-membership-status").selectOption(status);
   await window.getByRole("button", { name: "提交修订", exact: true }).click();
-  await window.getByRole("dialog").getByRole("button", { name: "确认提交", exact: true }).click();
-  await expect(window.locator('[data-confirmation-state="succeeded"]')).toBeVisible({
-    timeout: 30_000,
-  });
+  const confirmation = window.getByRole("group", { name: "管理动作确认", exact: true });
+  await confirmation.getByRole("button", { name: "确认执行", exact: true }).click();
+  await expect(confirmation).toHaveCount(0);
   await expect(row.getByText(MEMBERSHIP_STATUS_LABEL_V1[status])).toBeVisible({
     timeout: 60_000,
   });
@@ -411,13 +429,31 @@ const writeFixtureV1 = () => {
         stepId: "query",
         type: "http",
         operationId: "riskflow_query_projection_query",
-        payload: { workflowRunRef: { $result: "start", path: ["workflowRunRef"] } },
+        payload: {
+          queryType: "risk-overview",
+          projectRevisionRef: {
+            kind: "project-revision",
+            reference: { entityId: "project-fixture", versionId: "1" },
+          },
+        },
+      },
+      {
+        stepId: "run-view",
+        type: "http",
+        operationId: "riskflow_query_projection_query",
+        payload: {
+          queryType: "run-view",
+          workflowRunRef: { $result: "start", path: ["workflowRunRef"] },
+        },
       },
       {
         stepId: "export",
         type: "http",
         operationId: "riskflow_query_projection_export",
-        payload: {},
+        payload: {
+          sourceRef: { $result: "query", path: ["queryResultRef"] },
+          exportPolicyRef: { entityId: "report-export", versionId: "1" },
+        },
       },
     ],
   };
@@ -429,7 +465,7 @@ const writeFixtureV1 = () => {
       {
         stepId: "start",
         operationId: "riskflow_query_projection_result-read",
-        payload: { queryResultRef: "fixture" },
+        payload: { queryResultRef: { $result: "run-view", path: ["queryResultRef"] }, limit: 100 },
         expectedTerminalStatus: "completed",
         requiredReferences: [["items", 0, "latestResultRef"]],
       },
@@ -506,8 +542,19 @@ const writeFixtureV1 = () => {
         resultRef: { queryResultRef: runConfig.bindings.queryResultRef },
       },
       {
-        stepId: "export",
+        stepId: "run-view",
         operationId: runConfig.commands[3].operationId,
+        status: "completed",
+        resultRef: {
+          queryResultRef: {
+            kind: "query-result",
+            reference: { entityId: "run-view-fixture", versionId: "1" },
+          },
+        },
+      },
+      {
+        stepId: "export",
+        operationId: runConfig.commands[4].operationId,
         status: "completed",
         resultRef: {
           exportArtifactRef: {
@@ -528,6 +575,7 @@ const writeFixtureV1 = () => {
   );
   manifest.releaseId = acceptance.releaseId;
   manifest.codeCommit = codeCommit;
+  manifest.finalMigrationVersion = "000059";
   const releaseManifestPath = writeJson("release.json", manifest);
   const acceptanceConfigPath = writeJson("acceptance.json", acceptance);
   return {
@@ -645,6 +693,37 @@ test("预检边界：缺项、错工程/发布、越界链接与非法秘密都�
     ),
   }));
   expect(foreignQuery.problems).toContain(DESKTOP_ACCEPTANCE_PROBLEM_V1.invalidRunBindings);
+
+  for (const invalidBinding of ["run-view-source", "foreign-export-source"]) {
+    const rejected = await preflightFixtureV1((fixture) => {
+      const configPath = join(fixture.acceptance.functionalConfigFile, "..", "run-config.json");
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      if (invalidBinding === "run-view-source") {
+        config.commands.find(
+          (step: { stepId: string }) => step.stepId === "query",
+        ).payload.queryType = "run-view";
+      } else {
+        config.commands.find(
+          (step: { stepId: string }) => step.stepId === "export",
+        ).payload.sourceRef = {
+          kind: "query-result",
+          reference: { entityId: "foreign-query", versionId: "1" },
+        };
+      }
+      writeFileSync(configPath, JSON.stringify(config));
+      const report = JSON.parse(readFileSync(fixture.acceptance.functionalReportFile, "utf8"));
+      report.runConfigDigest = createHash("sha256")
+        .update(
+          JSON.stringify({
+            ...config,
+            password: createHash("sha256").update(config.password).digest("hex"),
+          }),
+        )
+        .digest("hex");
+      writeFileSync(fixture.acceptance.functionalReportFile, JSON.stringify(report));
+    });
+    expect(rejected.problems).toContain(DESKTOP_ACCEPTANCE_PROBLEM_V1.invalidRunBindings);
+  }
 });
 
 test("预检：受控输入、同次回执与秘密边界齐备", () => {
@@ -673,9 +752,22 @@ test("关闭窗口后已受理任务继续：重开客户端读到同次运行�
     );
     before = await readRunStatusV1(first.window, projectId, workflowRunRef);
     expect(before.status, "同次运行必须可读").toBe(200);
-    expect(["pending", "running"], "关窗前必须有已受理且未完成的同次运行").toContain(
-      before.runStatus,
-    );
+    if (before.runStatus === "waiting") {
+      const agentTaskRef = acceptanceTarget.bindings.pendingAgentTaskRef;
+      expect(agentTaskRef, "等待运行必须具有同次启动回执的任务引用").toBeDefined();
+      const task = await queryV1(first.window, projectId, "agent-task.read", {
+        kind: "detail",
+        agentTaskRef,
+      });
+      expect(task.status).toBe(200);
+      expect(["queued", "running"], "关窗前任务必须仍在服务端执行").toContain(
+        task.body?.result?.summary?.status,
+      );
+    } else {
+      expect(["pending", "running"], "关窗前必须有已受理且未完成的同次运行").toContain(
+        before.runStatus,
+      );
+    }
   } finally {
     // 关闭客户端窗口：已受理的服务端任务不得因此取消。
     await first.app.close();
@@ -1133,7 +1225,11 @@ test("越界导航：主框架导航与新窗口被拒绝，页面仍停在批�
       "主框架不得导航到未批准 origin",
     ).toBe(false);
     expect(new URL(window.url()).origin).toBe(new URL(acceptanceTarget.publicOrigin).origin);
-    await expect(window.getByRole("heading", { level: 1 }), "越界被拒后页面仍可用").toBeVisible();
+    await expect
+      .poll(() => window.getByRole("heading", { level: 1 }).isVisible(), {
+        message: "越界被拒后页面仍可用",
+      })
+      .toBe(true);
 
     // 新窗口一律拒绝：外链不交给系统浏览器，也不产生第二个窗口。
     const denied = await window.evaluate(
@@ -1228,14 +1324,17 @@ test("撤权：管理会话修订成员状态后，业务会话的同次读取�
   const projectId = acceptanceTarget.acceptance.projectId;
   const operator = acceptanceTarget.credentials.operator;
   const administrator = acceptanceTarget.credentials.administrator;
-  const queryResultRef = acceptanceTarget.bindings.queryResultRef;
+  const exportArtifactRef = {
+    kind: "export-artifact",
+    reference: acceptanceTarget.acceptance.downloadArtifactRef.reference,
+  };
   const artifactId = acceptanceTarget.acceptance.downloadArtifactRef.reference.entityId;
 
   const operatorSession = await launchClientV1(envPathV1(DESKTOP_ACCEPTANCE_ENV_V1.buildConfig));
   const administratorSession = await launchClientV1(
     envPathV1(DESKTOP_ACCEPTANCE_ENV_V1.buildConfig),
   );
-  let restored = false;
+  let membershipChanged = false;
   try {
     await loginV1(
       operatorSession.window,
@@ -1243,10 +1342,13 @@ test("撤权：管理会话修订成员状态后，业务会话的同次读取�
       operator.loginName,
       operator.password,
     );
-    const before = await queryV1(operatorSession.window, projectId, "projection.result-read", {
-      queryResultRef,
-      limit: 10,
-    });
+    const before = await queryV1(
+      operatorSession.window,
+      projectId,
+      "projection.report-read",
+      { kind: "artifact", exportArtifactRef },
+      acceptanceTarget.bindings.reportSourceVersionRefs,
+    );
     expect(before.status, "撤权前同次读取必须成立").toBe(200);
 
     await loginV1(
@@ -1256,11 +1358,15 @@ test("撤权：管理会话修订成员状态后，业务会话的同次读取�
       administrator.password,
     );
     await reviseMembershipV1(administratorSession.window, projectId, operator.loginName, "removed");
+    membershipChanged = true;
 
-    const after = await queryV1(operatorSession.window, projectId, "projection.result-read", {
-      queryResultRef,
-      limit: 10,
-    });
+    const after = await queryV1(
+      operatorSession.window,
+      projectId,
+      "projection.report-read",
+      { kind: "artifact", exportArtifactRef },
+      acceptanceTarget.bindings.reportSourceVersionRefs,
+    );
     expect(after.status, "撤权后同一账号的同次读取必须关闭").toBe(404);
     expect(after.body?.code).toBe("NOT_FOUND");
 
@@ -1273,9 +1379,9 @@ test("撤权：管理会话修订成员状态后，业务会话的同次读取�
     await expect(operatorSession.window.getByText(artifactId, { exact: true })).toHaveCount(0);
 
     await reviseMembershipV1(administratorSession.window, projectId, operator.loginName, "active");
-    restored = true;
+    membershipChanged = false;
   } finally {
-    if (!restored) {
+    if (membershipChanged) {
       // 断言失败也要把隔离实例恢复原状；恢复失败不得掩盖原失败。
       await reviseMembershipV1(
         administratorSession.window,

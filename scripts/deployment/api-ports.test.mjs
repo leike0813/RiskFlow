@@ -46,7 +46,7 @@ const providers = (overrides = {}) => {
     agentTask: stub(["startTask", "resumeTask", "cancelTask", "confirmCommand"]),
     agentTaskRead: stub(["read"]),
     warningLifecycle: stub(["open", "acknowledge", "read"]),
-    recommendation: stub(["createCandidate", "validateAndRecord"]),
+    recommendation: stub(["measureCandidates", "createCandidate", "validateAndRecord"]),
     responseLifecycle: stub(["calculateDeviation"]),
     calibration: stub(["createSuggestion", "createGovernanceDraft", "recordReviewOutcome"]),
     transactionUnit: stub(["execute"]),
@@ -94,13 +94,23 @@ const providers = (overrides = {}) => {
 
 describe("生产 API 全端口装配契约", () => {
   it("返回的 ApiPortsV1 覆盖全部声明端口，且逐个具备必需的公开方法", () => {
-    const ports = createDeploymentApiPortsV1(providers());
+    const options = providers();
+    const query = { kind: "measure-candidates" };
+    const measures = { kind: "succeeded", result: { knowledgeQueryResultRef: "exact-query" } };
+    options.recommendation.measureCandidates = vi.fn(() => measures);
+    options.knowledgeModeling.retrieve = vi.fn(() => "knowledge-result");
+    const ports = createDeploymentApiPortsV1(options);
     for (const [portKey, methods] of Object.entries(REQUIRED_API_PORT_METHODS_V1)) {
       expect(ports[portKey], `缺少端口 ${portKey}`).toBeDefined();
       for (const method of methods) {
         expect(typeof ports[portKey][method], `端口 ${portKey} 缺方法 ${method}`).toBe("function");
       }
     }
+    expect(ports.knowledgeModeling.retrieve(query)).toBe(measures);
+    expect(options.recommendation.measureCandidates).toHaveBeenCalledWith(query);
+    for (const kind of ["hybrid-evidence", "relationship-context"])
+      expect(ports.knowledgeModeling.retrieve({ kind })).toBe("knowledge-result");
+    expect(options.knowledgeModeling.retrieve).toHaveBeenCalledTimes(2);
   });
 
   it("缺任一必需 provider 即拒绝装配，不返回半装配端口", () => {
@@ -133,6 +143,7 @@ describe("生产 API 全端口装配契约", () => {
           read: () => undefined,
         },
         recommendation: {
+          measureCandidates: () => undefined,
           createCandidate: (command) => (
             calls.push(["recommendation.createCandidate", command.kind]),
             "candidate"

@@ -512,6 +512,566 @@ v101新任务首次模型调用把data-cleaning-manifest工件身份填入source
 
 新隔离清洗策略显式绑定已验证的同MiniMax模型/low/function-call部署，保留旧部署；仅更新清洗policy/model/prompt/budget的精确引用，原上下文、工具、资源数值、质量和100%留存/覆盖保持。先以原失败任务冻结首步做一次诊断，严格核对实际source引用及原Zod，禁止执行工具、创建候选或改原任务台账；通过后才新任务正式取证。不自动重试、换模式、补默认引用或将失败转人工PASS。源码及既有测试仍限D-95四文件，无core/HTTP公共字段、依赖、迁移或权限变化。
 
+### D-97：工件来源限制不能依赖逐段证据是否存在
+
+减负后续办的v103诊断在模型前复现registry.authorization：清洗冻结清单带三项真实资料授权限制，但没有逐段evidence，宿主只从evidence构造当前来源，因而取得空资料授权并错误拒绝。历史任务和原工件不修改，诊断不计业务通过。
+
+C06内部业务授权输入及部署复验增加可选requestedSourceAccessGrantRefs，仅由可信工件清单或当前模型输入授权提供，不进入HTTP/Agent契约。C06在本工程资料授权登记中按稳定grant身份解析真实来源版本，与显式来源去重后执行原当前账号、资料、空间及任务冻结上界检查；未知或跨工程grant拒绝。历史grant修订只用于追溯，当前资格仍取现行授权。工件读取仅提交目标清单限制；写入同时保留调用输入及显式附加限制，模型调用保留实际输入授权限制。源正文、角色、能力、撤权、任务终态和预算语义不变，不新增表、依赖或通用读取入口。
+
+文件限core/access/authorization.ts、adapters/auth/postgres-local-identity-access.ts、scripts/deployment/start.mjs及既有auth与entrypoints测试。先复现无evidence的受限工件拒绝，再验证合法读取/写入、错工程/未知grant/撤权与任务越界拒绝、模型输入限制保留；构建与定向回归后冻结新制品，正式读取原清单并执行D-96诊断，不复活旧任务或替换原结果。
+
+### D-98：清洗提示明确串行状态循环
+
+v104真实D-96诊断返回三个并行emit_result，各针对一个资料选项，违反原每步唯一动作契约。官方`text-chat-openai`及其`openapi-chat-openai.json`明确对应api.minimax.cn/v1/chat/completions，但未声明parallel_tool_calls或强制具名tool_choice；不依赖未知参数，也不丢弃多余调用。
+
+先以同一冻结三资料输入、当前短选项outputSchema、原模型/数值预算做一次新提示诊断：明确每次只选择一个资料动作，等待宿主观察后才进入下一状态，多个资料不可并行提议。诊断只保存C04响应和用量，不执行工具、创建候选或修改原任务。成功输出按当前模型Schema解析并核对sourceOption映射的真实冻结来源，不误用内部领域动作Schema解析短选项。
+
+诊断通过后仅在`apps/worker/src/engineering-data/cleaning/runtime.ts`固定指令加入该串行说明；隔离实例新建清洗policy/prompt/budget引用，预算正文除绑定引用外不变。复用既有清洗runtime测试，不断言提示文案。工程检查后冻结新制品并以新命令正式清洗；诊断再次失败则保留失败，不继续重试或放宽单结果契约。无HTTP、领域Schema、工具、权限、依赖或迁移变化。
+
+### D-99：清洗新策略固定既有Schema提示承载
+
+D-98串行说明诊断仍以MODEL_STRUCTURE_INVALID/chat.choice失败（2657输入/135输出tokens），不进入生产，也不再重试该候选。官方同源OpenAPI未声明串行函数开关。清洗本次采用已实现且原已批准的schema-prompt承载，固定同一MiniMax-M3.1-Flash-Preview/low部署`minimax-chat-acceptance@v1`，当前短sourceOption模型Schema与原Zod确定性校验保持；风险候选生成仍用原function-call部署。无运行中模式切换，旧响应、任务及预算保留。
+
+先在当前冻结三资料输入上以新诊断提示引用调用一次该既有部署，按当前模型outputSchema验证单JSON动作及短选项范围，不执行工具或候选写入。通过后仅新建隔离实例清洗policy/prompt/budget及catalog/发布版本，除模型承载和关联精确引用外深比较数值预算、业务约束及工具不变；以正式新任务取证。没有生产代码、公共Schema、迁移或依赖变化，不使用未声明参数，不从不合法函数响应提取结果。
+
+### D-100：完成清洗准备复验当前权限，不比较完整授权快照
+
+v105正式三资料清洗完成（7模型/6工具、27063输入/532输出tokens、无纠错或瞬态重试），完成准备却返回404。原结果/清单/策略/任务绑定只读逐项均成立；对同一所属端口的异常断点定位到C15 `#verify`，其额外比较完整授权对象，而宿主当前业务复验对首次空资料范围返回的授权增量与入口不同，触发旧全等门禁。
+
+仅删除完成分支的完整授权canonicalJson全等要求，保留当前C06 verify、redacted拒绝、主体/工程、完成任务、精确策略/清单/结果、后续全部资料和空间复验及原事务幂等。符合减负D-02的当前权限语义，不放宽任何角色或资料资格。文件限`packages/adapters/src/engineering-data/cleaning/postgres-data-cleaning-store.ts`及其既有测试；成功完成用例覆盖有效当前授权增量，旧撤权/错任务/幂等/并发继续回归。通过后新制品消费原v105完成任务，不重跑模型、不修改旧结果或终态。无公共Schema、依赖、迁移或新事实来源。
+
+### D-101：旧发布条目补登记使用所属读取授权
+
+v106独立批次绑定原五资料准备后，I0–I2已提交，I3在创建审阅任务前终态失败。带模型/工件/领域写入屏障的原prepareReview路径复现：C20调用C17 readVisibleEntries，旧发布尚无000059条目投影，内部readExact收到hybrid-evidence授权而要求identification-basis，返回AUTHORIZATION_DENIED并抛IdentificationKnowledgeModuleError。旧父子终态和全部原阶段保留，诊断不发起模型或新批次。
+
+依验收必要修正持续授权，仅在C17已有旧发布补登记分支通过原#authorize取得同主体/工程的identification-basis授权，带精确发布派生invocationId调用原readExact；Agent来源保留taskRef。当前读取、C04完整消费、原包与发布绑定及现有条目登记逻辑保持；返回条目仍由原hybrid-evidence授权执行filterVisibleSources，不交换两种能力、不增加角色或来源。无新Schema、接口、依赖或迁移。
+
+文件限`packages/adapters/src/identification-knowledge/postgres-identification-knowledge-adapter.ts`及其既有测试，扩展已有精确发布/合法空集用例：仅隔离测试数据库清空该发布条目投影模拟旧发布，当前读取授权拒绝时不得补登记，合法读取重建同一批准条目并复用，再保留未知发布与撤权覆盖。先红后绿，相关C17/C20及宿主回归、8GiB构建/类型检查和strict后冻结新制品；先有界验证真实旧发布补登记，旧v106终态不恢复。
+
+### D-102：全部候选待人工复核时不提交空决定
+
+v107五个检索审阅任务及I5、I6、I7均已正式完成，I8将所有待复核组的空decisionRefs提交accept-groups；公开Schema要求至少一个真实决定，正确拒绝UNSUPPORTED_CONTRACT。父子终态及已提交候选、合并、路由、复核任务与预算保留。该失败不通过放宽决定Schema或伪造人工决定解决。
+
+依持续授权，仅在C24唯一submitGroupAcceptance接缝对decisionRefs为空返回本轮零记录/事件/跳过组，让原I8登记pendingGroupRefs、I9形成human-review等待；当前路线读取及逐组决定核验仍完整执行。有自动决定或人工已决时继续原整集提交与事务幂等。文件限apps/worker/src/identification/graph/graph.ts及已有runtime.test.ts/fixture.ts；既有端口替身按生产IdentificationFinalizationCommandV1Schema解析，以真实契约复现全待定缺陷，新增一个全待定等待/零正式记录用例，原混合组、决定后继续、并发及取消回归保持。无新公共契约、状态、依赖或迁移；旧终态不恢复，先工程回归再新制品实机继续。
+
+### D-103：工作计划只投影成功I5的已验证候选
+
+v108两项候选因机理适用性修正耗尽失败，另三项通过I5；原批次继续后I6以BUSINESS_BLOCKED终态。C24 validatedCandidateSetRefsFor未区分成功/失败I5，将failedCandidateSetRef存在的诊断占位validatedCandidateSetRef也收进C22工作计划，导致expected五项与游标提交的三份合格校验集不一致。合并完整性拒绝应保留，错误在投影资格。
+
+依持续授权，仅在该共用收集接缝按已有failedCandidateSetRef字段跳过失败I5；无前缀判断、不删历史阶段或把失败当合格，原C04完整读取、运行/工作计划范围及C22整集完整性校验保持。文件限packages/adapters/src/identification/graph/postgres-identification-graph-adapter.ts及已有对应测试；扩展原C21/C22精确读取用例混入同运行同工作计划的失败I5，仍只返回成功校验集，先红后绿。现场只读投影须与v108三份已登记成功引用相等，零模型、零业务推进；旧父子终态与两项失败、三项成功及预算保留。回归/构建后再继续实机验收，无新公共契约、依赖或迁移。
+
+### D-104：检索审阅生成绑定当前集合版本
+
+v109首项I5失败、第二三项I5通过，第四项必经检索审阅因candidate-set-mismatch终态；父图仍waiting，驱动已停。正式候选与原冻结集合经C04只读对账：精确candidateSetRef、冻结授权摘要/引用、所有操作成员与证据均匹配，唯一差异为increment.candidateVersion=2而集合当前版本=1。原拒绝和模型预算保留，不伪造completed或复活终态任务。
+
+依持续授权，在apps/worker/src/identification/context/runtime.ts复用D-96已存在的可信outputSchema接缝，从loadModelInput经原受权读取的当前candidateSetRef/candidateSet.candidateVersion构造原RetrievalReviewActionV1Schema的子集：两种工具动作的集合引用固定当前值，提交增量固定当前集合引用和版本。补搜后的绑定取实际当前集合，不能固定初始task.frozenInputRef；操作、成员、证据、工具白名单和原确定性校验不变。仅限制生成值，不在解释或提交时覆盖模型错误，不新增公开字段、依赖、迁移或预算。
+
+辅助implementer仅扩展已有apps/worker/test/identification/context/runtime.test.ts，父Agent持有生产实现及最终验收：更新loader模拟为生产当前绑定形状，检验合法提交/工具动作、错引用/错版本拒绝及补搜后新版本。先红后绿，相关C21回归、build/typecheck/lint/format及strict后冻结制品，再以原冻结输入执行一次诊断证明输出绑定。旧v109终态任务和父等待保持，后续正式任务须另按明确输入/策略关联，不自动重开批次碰运气。
+
+### D-105：以精确任务失败通知收口原识别等待
+
+用户已批准公开失败通知提案，并持续授权同类验收必要修正。workflow.resume-run新增strict原因agent-task-failed，仅携retrieval-review/embedded的精确agentTaskRef；C30原样转交C24，不构造AgentTaskResultRef。C24复用C08既有getTask精确读取，核验任务引用、工程/原主体、父子运行绑定、真实terminal-failure与当前retrieval-review-agent等待，再由原stageI3分支把该项计入失败、继续剩余工作项。当前权限、范围、原状态版本、命令收据与阶段事务仍由既有入口复验；原终态、预算、成功/失败项及审计均保留，不创建替代任务或上下文。
+
+仅支持通知终态失败；pending/running/retryable-failure/completed/cancelled、错任务/父运行/工程、撤权及等待不匹配均拒绝。父先技术失败且子仍等待时，与原完成通知一样从父失败阶段retry后转交原原因，不重置重试预算。无新任务状态、持久化字段、迁移或依赖。
+
+范围限packages/contracts/src/ports/index.ts及test/contract-kernel.test.ts、packages/core/src/identification/graph/ports.ts、apps/worker/src/risk-flow/{graph,runtime}.ts及既有runtime.test.ts、apps/worker/src/identification/graph/{graph,runtime}.ts及既有runtime/nested-boundary测试；fixture仅按真实任务形状补齐。复用既有agentTaskReader，不新增部署端口。先红后绿覆盖载荷边界、父转交、真实失败/非终态/错任务/父版本/撤权、原成功项保留与重复命令；相关回归与构建后切新制品，正式HTTP仅续原v109第四项失败并继续第五项，不重开整批。具体前置事实与已批准提案见evidence/failed-review-resume-scope-proposal.md。
+
+### D-106：复核深链按精确身份窄读
+
+v111物理Chrome打开真实待审任务深链，页面以队列第一页50项定位任务；当前8项在页外，错误呈现缺席且无法确认。C35详情已有工程/任务实体/身份版本的单点查询，但输入要求调用方预知目标与父运行等完整任务事实，导致UI依赖队列反查。
+
+按用户持续授权，在contracts导出唯一ReviewTaskIdentityRefV1（kind与VersionReference），完整ReviewTaskRefV1复用该身份。C35 task-detail请求接受精确身份或原完整引用；所属adapter按当前权限、工程、实体及版本单点读取，完整引用传入时继续验证额外绑定，输出仍为原完整ReviewTaskRef/详情。UI两种详情页直接窄读，再从受权详情恢复决定所需完整引用；不扫描队列、不枚举历史、不依赖队列页或放宽决定命令。未知/错版/错工程/撤权仍同形拒绝，原存储事实完整性检查不变。
+
+文件限packages/contracts/src/ports/index.ts、packages/core/src/review-audit/ui-read.ts及既有review-audit.test.ts、packages/adapters/src/review-audit/postgres-review-audit-read.ts及既有postgres-review-audit-adapter.test.ts、apps/web/src/api/agentAuditOperations.ts、pages/ReviewDetailPage.tsx和IdentificationReviewPage.tsx。前端waitingRunRef读取与已存在的必填输出契约对齐，不加新输出字段、迁移或依赖。扩现有核心/adapter精确定位测试覆盖最小身份及错误版本，保留完整引用错配/跨工程/撤权测试；真实UI原页外任务为红灯，再跑现有相关浏览器复核场景和物理Chrome深链确认。同步platform/review-and-audit-runtime及web/agent-audit-and-operations-ui delta，IP-21关联。后续类似必要修正按本轮持续授权推进。
+
+### D-107：父事件证明按真实运行与当前空间权限核验
+
+v112第一组物理Chrome确认合并已正式入库标准化风险记录，复核事件published/1；随后risk-record-accepted事件exhausted/10，原父仍等待且无评估子运行。设置业务效果屏障的原事件只读诊断确认C30 readEventParentRun以历史链边授权摘要与本次事件授权摘要不相等抛WORKFLOW_EVENT_PARENT_UNPROVEN；本次授权覆盖同一空间，但不携识别输入资料授权。原事件及预算/投递次数保持，不能重置或冒充已消费。
+
+在packages/adapters/src/workflow/postgres-workflow-adapter.ts唯一事件证明路径去除历史链边、运行状态、阶段与消费事实的完整授权摘要全等。当前C06授权、工程/主体/调用身份、redacted拒绝、精确父子链边、run/thread正式绑定、C04完整性、同版本状态与正式风险/准备消费事实保持。#eventState按同工程/运行preparing阶段精确匹配唯一正式入口登记，有界limit2；当前空间必须覆盖该入口冻结空间集合，不能把删除整份授权相等变成绕过空间权限。来源资格在后续所属资料/工件入口按实际输入独立验证，事件不要求携整批历史资料授权。
+
+仅修改该adapter与其既有postgres-workflow-adapter.test.ts；已有事件证明用例补真实根入口/空间，验证当前来源授权不同仍能读取父与证明消费，错空间/撤权/错主体/错引用/假消费仍拒绝且零写。同步domain/module-interfaces-events-workflows delta及IP-19/IP-21。原v112 exhausted事件不复活；修后先以原事件只读屏障证明可到达业务效果前，再由同批次余下复核决定的新正常事件取证；需要原父补进度时只用已有真实reviewDecisionRef及当前状态的正式恢复入口。没有新公共字段、状态、依赖或迁移。
+
+### D-108：分批复核按实际新增记录原子收口
+
+v113第二组人工决定已正式成立，但I8整集提交包含首条旧记录与新合格记录，C22将同摘要的部分重叠误判冲突，C03映射回滚哨兵后表现为TRANSACTION_FAILED。第一条记录、两条人工决定和原exhausted事件保持；不提交其余决定直到恢复本阶段。
+
+依用户持续授权，内部StandardizedRiskRecordStoreV1.insertRecords的inserted结果增加insertedRiskRecordIds。PostgreSQL在原ambient事务内以RETURNING取得实际新增身份；已有身份仍逐项核对摘要，同摘要混合批次合法，全旧返回replayed，异摘要整体回滚。C22只为实际新增记录构造事件，完整合格记录与既有确定性事件引用继续返回；事件数量校验按本次新增数，同命令回执重放不要求重新执行插入回调。已设置的可信回滚结果在C03映射异常后仍按replayed/conflict处理，未知技术失败继续抛出。C24按精确实体和版本累积记录，不能重复旧引用。
+
+文件限core/identification/candidate-finalization/{ports,service}.ts、adapter对应postgres-risk-candidate-adapter.ts、worker identification/graph/graph.ts及对应既有核心/adapter/runtime测试和fixture。夹具必须返回全部合格记录以暴露真实增量行为；拒绝组取本轮完整路线中语义已封闭集合，不累加旧引用，也不把C22的待定跳过误计为拒绝。验证合法旧新混合只插新身份、异摘要回滚、真实C03映射下重放/冲突、事件仅新记录与同命令重放、C24汇总无重复；不新增公开DTO、依赖或迁移。通过工程验证后冻结新制品，沿原失败阶段正式恢复，保留原重试策略、预算与已成功阶段，不重开批次或重置旧事件。
+
+### D-109：正式风险的来源范围包含已登记证据来源
+
+v114公开恢复原父时，已接受首风险进入空间配对，父以spatial-pairing-missing终态。带当前C06的精确只读证明：原记录source_version_refs仅含五工程输入，evidence_references真实引用已发布mechanism-01来源s_baa06323b7398504401063b4888945a4@1；reader在范围复验前按子集要求拒绝。原记录/人工决定/证据不修改，父终态不复活；连接中断不等于零业务效果，已提交状态为准，不重放原恢复命令。
+
+正式记录来源范围由所属C22统一为成员工作项来源与实际合并证据来源的精确并集；同实体不同版本均保留。读取已有记录时，同样只由该条已登记来源与已登记证据构造受权范围，不能从其它记录、当前最新知识或候选补造。缺失或不合法的来源/空间/证据登记继续拒绝；并集沿原64来源上限，超限拒绝。C06按该真实并集复验当前权限，redacted或撤权拒绝；不再要求知识库证据来源必须属于工程输入子集。新写入保持原记录身份/摘要/事件幂等，不回填或覆盖旧记录，无新表/迁移/公开DTO/依赖。
+
+范围限core候选收口service.ts与既有核心测试、adapters/identification/read/postgres-standardized-risk-input-facts-reader.ts与既有risk-assessment/postgres-risk-input-facts-reader.test.ts。测试覆盖已登记第二证据来源参与范围复验、未知/撤权拒绝、缺登记/错版/工程/预算仍拒绝，并复验C30空间配对。工程通过后先只读原首记录的事实/空间配对应通过，零模型或工作流写；再由原C24的当前授权、状态版本及正式runtime.resume恢复尚未终态的I8，不复活终态父。后续评估用既有assess-existing-risk入口引用正式记录，保持原识别来源和旧父失败证据；未重新取得完整C30链路证据前不勾业务总任务。
+
+### D-110：评估按实际输入当前权限收口，不比较不同请求的授权增量
+
+v115以公开assess入口引用原首风险及D-91更正快照，A0正式准备、A1确定性C19派生依据和A2输入快照均成立，A3 AUTHORIZATION_DENIED终态，尚无评估记录或预警。原父子终态及已成立准备/依据/输入保持。效果屏障诊断定位唯一额外门禁：身份检查无显式资料返回0项当前增量，准备范围复验返回1项，evaluate把后者强制包含于前者而拒绝；两次当前权限均通过。诊断没有模型、评估或工作流写。
+
+按持续授权，仅删除C25 evaluate这处“准备范围上下文必须包含于无显式请求上下文”的集合门禁与过时的宽上下文说明。评估继续用按真实准备空间/证据来源复验后的当前上下文；C06主体/工程/分支/调用身份、真实风险/监测/C19/C04逐项读取、快照版本、提交前复验和事务保持，redacted结果明确拒绝。C04父工件所需来源由D-97已存在的所属入口按真实清单独立复验，不依赖历史整个授权集合。无公共字段、依赖或迁移。
+
+源码限packages/adapters/src/risk-assessment/engine/postgres-risk-assessment-engine.ts及既有对应test/risk-assessment/postgres-risk-assessment-engine.test.ts。扩一个当前身份读取不携资料增量、准备仍有真实来源的可复现行为用例，保留撤权/错范围/事务/幂等。先红后绿及engine/风险事实/assessment组合回归、build/typecheck/lint/format/deps/strict/diff；原冻结输入效果屏障探针应越过此门禁并停在写入前。原终态不恢复；修后正式评估通过既有入口引用已完成识别记录，不能重复识别任务或重置预算。
+
+### D-111：补齐原阈值要求的其余五类真实合成监测序列
+
+D-110修后同冻结输入探针越过授权门禁，确定性评估以risk-assessment-monitoring-snapshot-coverage阻断。实际C19成员受权读取证明原阈值要求地表沉降、地下水位、注浆压力、支护结构变形、盾构姿态、泥水压力六类，原评估仅绑定D-91地表沉降；拒绝正确，不删阈值或把缺项视为正常。
+
+依持续授权，在原SYN-PHYSICAL-LONGITUDINAL-001情景、工程/空间新增五个独立合成序列与一份原生CSV：同2026-10-16T00:00:00Z起16个秒点，地下水位/groundwater-level值2m，注浆压力/grouting-pressure值400kPa，支护变形/lining-deformation值4mm，盾构姿态/shield-attitude-frequency值0.05+0.01*sin(2π*i/4)deg（按6位小数），泥水压力/slurry-chamber-pressure值300kPa。每格带情景、对象、指标/参数、采样键/时刻、真实值/单位、合成标记/生成规则，待甲方复核，不伪装实测。姿态频谱16点只使用原确定性算法，输出不足/越限按原结果处理。
+
+五序列与五可用性策略使用与D-91相同16秒/1秒/不插值/窗口/算法数值，序列/策略身份各自独立；cutoff同00:00:15Z。复用D-89受控provision的C04/C11来源登记、原生CSV转换、序列/策略登记，样本NDJSON只由已核对CSV和实际转换段派生，再通过正式HTTP登记batch/freeze/read/replay留证。原地表沉降三份快照保留，评估输入将引用更正快照与新增五份精确快照。业务字段映射、规则/矩阵/权重/阈值和模型/预算不变。
+
+仅当前change设计/IP/handoff/证据与受限实例新输入、预置和回执；不改生产代码、主规格、依赖或迁移。先自检5×16唯一时刻/值/单位、原生转换与段逐格一致、Schema和原监测回放/快照行为，再正式登记；缺项/不可用不算通过。施工日志/围岩字段的事实通路另按真实代码调查，不将监测补齐等同完整评估通过。
+
+### D-112：评估准备显式冻结带证据的资料字段，评估入口消费精确准备
+
+实机与源码调查确认：RiskInputFactFieldV1、C18 source-field映射及C25取值已实现，但标准化风险reader只拥有六个风险标量，没有施工日志压力和地质等级的事实生产者。不得改成外部风险事件、拿置信度冒充压力、修改原映射/阈值或向标准化风险记录添加工程字段。
+
+按验收必要修复持续授权，在现有C11 assessment-preparation载荷及共享AssessmentPreparationSnapshotV1增加可选sourceFieldFacts，复用唯一RiskInputFactFieldV1。它是调用方显式提供的类型化资料值，必须引用本工程真实已登记资料版本/段，当前空间/来源权限与原证据定位校验通过才冻结；不由模型推断或从全库/最新资料补齐。字段键documentType+fieldPath唯一，拒绝标准化风险自身字段覆盖，字段数量沿1024上限、唯一证据合计不超过256；原标量类型与来源定位不变。值和证据作为准备不可变正文保存并纳入既有摘要；同键异载荷冲突，原准备不补写。
+
+C25读取正式风险六标量后，只合并该准备显式冻结的sourceFieldFacts及证据，继续现有总量/重复/值类型/单位/映射/规则检查，不覆盖风险字段。C11在冻结及回读按实际补充证据来源重新复验，当前撤权/错段/错工程/错版本/无效空间拒绝。
+
+公开workflow.start-run的assess载荷增加可选assessmentPreparationSnapshotRef。C30将其纳入原冻结引用/入口身份；A0有此精确引用时经C11既有readAssessmentPreparationContext窄口当前读取，核对工程修订、风险、空间、适用性、entryMode、发起人及完整监测集合与显式入口一致后复用，不再冻结另一份准备；不允许有旧父因果的准备被改绑新父。A0未提供此引用时沿原冻结路径。缺口仅增加可选所属读取接缝，不新增状态/迁移/依赖。
+
+源范围：contracts/src/ports/index.ts、workflows/index.ts；core/src/workflow/service.ts；adapters/src/engineering-data/context-source/postgres-engineering-context-source-registry.ts、risk-assessment/engine/postgres-risk-assessment-engine.ts；worker/src/assessment/{graph,composition}.ts（仅必要类型/接线）；既有contracts契约、core workflow、C11 assessment-preparation、C25 engine与worker assessment/risk-flow测试及其必要fixture。C11新准备通过当前正式freeze命令冻结真实资料字段；合成实例只使用经原转换逐项读到的压力/围岩字段和定位，待甲方复核，不使用expected标签填值。
+
+实机合成字段选择原资料段005：施工日志表1第2行第5列126.0kPa、地质报告p1_b8粉质黏土。日志里程DK12+300与地质该行DK12+380不一致，原资料不修改；该组合仅作为同合成编号的显式验收输入，待甲方复核，不证明真实现场同位置。值、原始定位及差异保存在实例d112-assessment-inputs/source-field-selection.json；正式准备仍由当前登记段和空间权限核验，不绕过C11。
+
+先红后绿覆盖新字段Schema/保留旧输入、重复键/覆盖/超限/错证据/撤权拒绝、准备同键冲突与历史稳定、C25确实使用资料值而非风险分数、C30入口身份及A0复用/错绑定零下游效果。最小相关回归和build/typecheck/lint/format/deps/strict/diff后先效果屏障预检，再正式冻结新准备与assess取证；原识别结果、失败父子、预算及历史准备均保留，不重开识别批次。
+
+### D-113：独立评估准备经所属冻结绑定本次运行因果
+
+v117的D-112入口精确读取与匹配均通过，A0/A1/A2正式成立，A3以risk-assessment-assessment-run-required终态。C25写入和后续正式评估证明都沿准备causalRunRef保持追溯，独立准备没有该引用；不得伪造授权、改写准备、复活终态或去掉运行要求。
+
+按持续授权修正D-112的直接复用决定：A0保留当前窄读与全部入口匹配，再经既有C11 freeze，以原精确风险/修订/空间/适用性/监测集合和sourceFieldFacts冻结带本次运行因果的准备。C11重新核验当前证据，原独立准备不变。动作沿本次A0既有幂等身份，causalRunRef沿原parentRunRef或runRef规则；普通入口不变。C30根入口保存独立准备，A0入口保存绑定准备，两者经同一正式运行追溯；C25只消费绑定准备，无新因果DTO、依赖、迁移或规则。
+
+范围仅worker/src/assessment/graph.ts和既有runtime.test.ts，同步本change design/IP/domain delta与证据。测试匹配输入仅冻结一次、原字段与本次因果透传，错绑定零冻结/下游效果，原普通路线保持。工程通过后以新正式C11准备命令形成新输入引用再assess；原v117父子终态、独立准备、C19/A2与预算保持，不重复识别。
+
+### D-114：合成评分配置按现有实际值求值契约修正等级区间
+
+v118完成因果绑定后A3以risk-assessment-rule-coverage终态；受权只读精确C19/C04证明原三条正式规则与原合成来源均把gradeIntervals设为0–12分数尺度。既有C19统一求值按实际值落等级区间，126kPa超界；地层字符串则要求一个无界等级。代码与已归档边界场景一致，不修改求值算法或规避拒绝。
+
+持续授权下，仅新增独立合成来源及新规则版本：压力等级为grade-a(-∞,80)、grade-b[80,120)、grade-c[120,160)、grade-d[160,+∞)；沉降等级grade-a(-∞,5)、grade-b[5,10)、grade-c[10,20)、grade-d[20,30)、grade-e[30,+∞)；离散地层使用无上下界的grade-discrete，六种等值评分仍由原阈值确定。三规则ruleVersion提升2，评分阈值/分值、适用性、指标、权重、矩阵、预警阈值和模型/预算均保持。合成、待甲方复核，不冒称真实业务规则。
+
+新增实例CSV逐行保存完整修正规则及说明，经C04/C11登记和确定性CSV转换取真实段，重建配置包/规则文档证据，再沿原C19提交、真实可见复核及批准发布；不修改旧来源/发布版本。源与新候选逐项深比较，只允许等级区间、规则版本和真实证据改变；现有求值器自检数值共享端点、代表值及全部离散值均唯一。当前change设计/IP/handoff/证据与实例新增工件，不改源码/主规格/依赖/迁移。新规则正式发布后新准备+assess取证，原v118父759ec70c…与子c0f2b0b4…终态保留。
+
+### D-115：共享等级Schema允许现有离散求值器要求的全域区间
+
+D-114新来源和CSV转换已正式成立，包在Schema阶段拒绝离散grade-discrete，因为GradeIntervalSchema要求至少一个界，而现有evaluateScoringRule对字符串/布尔等值规则只接受lower和upper均空。二者矛盾导致所有合法离散规则不可求值，不能以换工程值或绕过Schema解决。
+
+持续授权下删除共享GradeIntervalSchema的“至少一个界”检查，双缺省表示全域；保留非有限数、倒序/相等双界拒绝，C19统一归一/重叠/空洞检查不变。全域与其它区间并列仍因重叠拒绝；离散阈值只匹配同类型同值，未声明值仍拒绝。只改contracts/src/records/index.ts、既有contract-kernel.test.ts与core/test/scoring-rules/scoring-rules.test.ts；同步本change评分delta/IP/证据，不新增字段、依赖、迁移或改变阈值/分值。先共享Schema及离散规则红绿，数值端点/冲突/区间回归，再工程构建、严格验证和新制品；D-114包走正式审核发布后才再次业务取证。
+
+### D-116：配置包基线修订接通冲突复核并保留明确替换候选
+
+v119新包无基线提交409，补原正式baseReleaseRef与包baseRuleReleaseRef后修订dead48d0…正式登记，但request-review以BUSINESS_BLOCKED拒绝。精确只读12条关系含10条conflict、0条C07链接；#ensureConflictReviewLinks只在Agent finalize调用，配置包直导路径永远无法进入人工复核。并且同一ruleId的v1/v2关系按来源标识字典序保留旧版、排除候选，后续组装必然把候选排除；不可通过造来源ID或批准错误保留方案绕过。
+
+按持续授权，C19 assertRevisionMetadata进入正式审核前调用原幂等#ensureConflictReviewLinks，再沿原关系/摘要/基线/决定门禁；只补缺失链接，不修改关系事实，不在只读组装创建任务。同一ruleId且一端是明确候选、一端是声明基线时，关系保留候选版本、排除被替换基线，不按不透明版本号猜新旧；候选内部不同规则与其它来源冲突沿原优先级。冲突仍必须逐项C07人工批准，之后才可发布。该优先选择由当前冲突策略实现版本与新修订关系快照固定，旧修订/决定不回填。
+
+范围core/src/scoring-rules/validation.ts及既有core/test/scoring-rules/scoring-rules.test.ts；adapters/src/scoring-rules/postgres-scoring-rules-adapter.ts及既有test/scoring-rules/postgres-scoring-rules-adapter.test.ts；本change规格/IP/证据。复用原C07 linker和事务/审计幂等，不新增依赖/迁移/公开DTO；失败修订保持。测试候选来源排序相反仍保留明确替换候选、不同规则优先不变；配置包提交后复核任务可达、未批准门禁保持、重复补链不重复。工程后新修订重新固定关系，逐项可见批准再发布/组装；原失败与预算不动。
+
+生产宿主尚缺conflictReview装配，纳入scripts/deployment/start.mjs及既有entrypoints.test.mjs。linker按原动作身份和review-audit.request-review分支签发当前授权，调用原C07 requestReview；target、validation/evidence快照均精确投影同一已登记不可变rule-relation，等待引用为该关系的复核过程身份，reviewPolicyRef使用当前冻结conflictPriorityPolicyRef，不造模型/工作流运行。任务创建失败原样返回，成功由原C19追加link审计；当前工程/主体不符拒绝，已存在任务按C07原幂等重放。
+
+决定读取同样必须由宿主按原invocationId签发review-audit.trace上下文，再调用原C07精确readRuleConflictDecision，不能直传knowledge-modeling.govern上下文。创建/读取各自当前核验，同一宿主接缝覆盖二者，不扩权限或改历史授权。
+
+### D-117：配置包当前配置读取身份绑定本次调用
+
+v120原候选及新候选提交均409/IDEMPOTENCY_CONFLICT，定向prepareRevision诊断（不提交修订）证明两命令无回执、新候选无修订；失败来自#prepareConfigurationPackage的C18 resolveConfigurationSet。其requestId/idempotencyKey只含包引用，却以本次authorization.decidedAt作为请求/有效/记录时刻；后续当前调用撞原读回执的异载荷检查。不是候选内容或C16业务幂等可绕过的问题。
+
+按持续授权，唯一requestId由包精确引用、本次authorizationContextRef和decidedAt派生，沿既有sha256CanonicalJson形成有界身份；下游签发/复验/C18 request及idempotencyKey共用。相同调用仍重放，不同当前调用独立读，原包/配置/审批/回执不改；不扩大来源或时限。只改adapters/src/scoring-rules/postgres-scoring-rules-adapter.ts及既有test同名文件，扩配置包用例以另一当前授权/时刻重复准备，仍消费原包且不建新修订或Agent任务。无新DTO/依赖/迁移/业务规则。工程后新制品先原候选prepare诊断越过该处，再用新的正式提交命令生成新关系；旧失败不重投。
+
+### D-118：评估读面按目标真实来源检查当前可见性
+
+v121正式评估完成并形成P=3.6、C=2、level-3及四条预警；A7因measure-category-unbound跳过建议，不能计完整业务通过。C34 record-read误把合法空来源授权增量当完整可读清单，返回不可枚举404。原记录及终态保持，不重跑评分。
+
+按持续授权复用C06 filterVisibleSources，支持显式risk-assessment.read分支，默认检索分支保持；当前账号、成员、空间、资料正文权限和任务冻结范围继续核验。C34共享查询仅从本工程、当前空间及请求筛选的评估准备提取真实来源引用，复用既有256来源上限（多取一项识别越界），不枚举全资料库；精确读取先约束记录身份，目录/历史/摘要在SQL分页或聚合前使用可见来源过滤。缺证据或当前无权保持不可枚举拒绝，不把历史授权包含关系当权限。内部工件/投影读取不再要求来源增量为旧上下文子集，C04按工件登记来源执行当前检查。
+
+范围：core/access/service.ts、adapters/auth/postgres-local-identity-access.ts、adapters/risk-assessment/engine/postgres-risk-assessment-engine.ts及既有auth/engine测试；本change design/IP/risk-assessment delta/handoff/evidence同步。无新依赖、迁移或评分规则。复用既有记录解释及5001可见/5001隐藏记录分页用例，补空增量仍可读及错能力拒绝，保留真实撤权、异工程和隐藏行过滤。工程检查后新制品只读取原正式评估核验。
+
+### D-119：C30区分评估运行入口身份与A0准备引用
+
+D-118新dist实机只读已越过权限误拒，抵达C30 assessment-entry-identity-mismatch。正式A0 entry-snapshot.entryIdentity保存绑定准备引用，run-state.entryIdentity保存workflowEntryIdentityFor生成的运行入口摘要，二者领域含义不同。用原登记frozenRefs和入口方式计算所得摘要与原运行完全一致，无事实漂移，不改历史行或终态。
+
+C30以原workflowEntryIdentityFor和entry-snapshot.frozenRefs、state.reassessmentEntry验证运行身份；entry-snapshot存在inputSnapshotRef时，单独核对其引用与entryIdentity。保留工程、runId、状态版本、入口方式、评估归属、前驱及原因校验。复用既有C30入口元数据用例和C25 fixture，改成真实两种身份，并覆盖引用错配/运行摘要错配拒绝。范围adapters/src/workflow/postgres-workflow-adapter.ts及既有workflow测试、risk-assessment/fixture.ts，同步本change design/IP/domain delta/evidence。无新DTO/依赖/迁移，不重新评分。
+
+### D-120：原预警任务绑定明确合成类别并沿公开入口接续建议
+
+v122已取得原评估正式HTTP200和物理Chrome截图。原任务实体ID为2b3e1d45-2f73-4158-812c-4c575a50684b（kind为warning-response-task，entityId不带kind前缀）。C27原正式上下文确认风险为掌子面稳定性失效，措施库knowledge-release-2340f951-f50b-4105-bb20-330b85a98c72@1的measure-01具有同类别及当前适用性；生成策略bindings为空是原配置缺项。
+
+仅新增实例response-generation不可变版本，精确riskInputRef绑定掌子面稳定性失效；新catalog及release/config绑定此版本，旧目录/策略/来源保留。模型、预算、三项校验、评分及原任务均不变，不新增生产代码/DTO/依赖/迁移。通过公开measure-candidates→agent-task.start-task（原评估子运行作为parent）→create-candidate→validate-and-record接续；不伪造run或复活终态。全部输入/查询/任务/模型/结果按原正式审计取证。
+
+原四预警中联合规则地下水位与姿态主频在冻结字段映射中未解析，原measure-01也仅声明联合/指标越限触发；该事实保持，不改为有覆盖或删除预警。三项校验若拒绝，保存真实失败及零正式建议结果，再以明确的新配置/输入单独准备后续合法场景，不能把当前链计通过。现场/规范依据仍按已有正式引用读取，缺项明确失败，不从预期输出造依据。证据范围实例d120-response-inputs与本change handoff/evidence/IP。
+
+### D-121：公开措施候选分支接入现有C27
+
+v123公开knowledge-modeling.measure-candidates返回426/UNSUPPORTED_CONTRACT，尚无候选或Agent。生产API组合根将所有knowledgeModeling.retrieve直接交给只支持识别检索的C17 adapter，遗漏已注入C27的measureCandidates分派；非HTTP内部A7此前可正确调用C27，因此工程测试未覆盖此公开缺口。
+
+在既有scripts/deployment/composition/api-ports.mjs的knowledgeModeling端口按原kind分派：measure-candidates交现有recommendation.measureCandidates，其余govern/resolve/retrieve保留原receiver和模块。将measureCandidates纳入既有必需provider方法清单，缺失时沿原装配错误收口。扩scripts/deployment/api-ports.test.mjs原装配行为用例，验证原查询对象和结果原样传递、其它知识行为不变；无新DTO/路由/依赖/迁移/权限。同步design/IP/handoff/evidence，正式新制品后继续原任务查询，原426记录保留，未重投任何已写业务。
+
+### D-122：建议模型步骤消费当前授权决定，不比较历史完整快照
+
+v124公开措施候选200，query=measure-candidates-1801710793fc7f94844d8b9134cdf84b@1，原子运行parent上的建议Agent已正式创建。该任务在模型调用前以AGENT_INPUT_INVALID/deployment.response-model.authorization终态，model/tool用量均0，原任务保留不重开。生产response-model-step仍比较当前C06决定与历史授权完整JSON及空间版本集合；与减负D-02当前业务动作授权语义冲突。
+
+删除source.context/当前decision与历史授权的完整JSON相等及空间集合全等门禁。来源读取仍须存在、同主体同工程；当前decision仍须非redacted、同主体同工程并含实际能力；请求继续携原任务空间和冻结来源，由C06检查当前权限与任务上界。下游候选集/偏差的工程、主体、实际空间及精确引用/模型/预算/Schema核验保持。仅scripts/deployment/composition/response-model-step.mjs及既有response-model-step.test.mjs；扩原C27/C29用例覆盖当前时间/空增量变化仍可读和错主体/缺能力/脱敏拒绝。无DTO/权限扩大/依赖/迁移，检查后新制品、新任务身份消费原冻结查询，原零调用失败不复活。
+
+### D-123：处置Agent写授权提供者按原接口映射任务身份
+
+v125任务冻结原候选与8实际来源，模型1次、7571输入/23输出token后以AGENT_TOOL_FAILURE终态，零正式建议。只读诊断证明C27 TaskAuthorization.authorize接收{task,purpose}，生产却直接传入通用authorizeDownstream，缺projectId/actorId/branch，得到DEPLOYMENT_AUTHORIZATION_SCOPE_MISSING。终态任务runTask探针也正确拒绝无租约，未重新执行或改写任务；另用当前人工读授权验证参数不匹配，无业务写。
+
+在既有assessment组合加入小型task授权映射，受信envelope提供工程、发起人、空间，固定warning-response.create-candidate分支，invocationId沿taskId:purpose；来源继续由活动任务作用域携原冻结上界，不给客户端/模型扩权。生产start.mjs注入该提供者；reviewAuthorization原完整请求保持。范围composition/assessment.mjs、start.mjs及既有assessment-composition.test.mjs，扩两种purpose映射与原scope/current权限回归。无DTO/依赖/迁移/预算变化；新制品后新任务消费原候选，原v125模型及终态保留。
+
+### D-124：现场绑定使用正式用途与真实工序来源的新版本
+
+v126建议Agent completed，1模型/7571输入/23输出token、0纠错/工具/重试，正式候选recommendation-candidate-e2a4d1da101809a967f4b00e938dd3f6@1及公开create-candidate绑定200。validate-and-record500经C04只读诊断证明site binding仍指向用途synthetic-site-context-candidate的旧预置工件，正式reader要求recommendation-site-context；空间/权限并非该次原因。旧候选现场正文还含未登记synthetic-knowledge-evidence-v1引用，不可改用途冒充合格正文。
+
+仅新增实例合成现场上下文版本和C04正式用途工件，保留旧候选及配置。工序取原正式风险node-02-变径空间扩挖；从C17已发布process-model f3bda4af…@1所属窄读取得节点、真实来源段及版本，processNodeRef使用节点ID/发布版本，精确发布与候选工件一并留证。场景沿原提供site-context-node-02-resourced的工序状态、资源、约束及观察时刻，显式合成、待甲方复核；不为通过校验增加资源。新正文使用实际空间/工序与已登记证据，原正式来源权限检查和C04审计保持。
+
+新release/config只更新siteContextBindings到新精确ref；模型/预算/评分/生成/校验策略均不变，复用v126制品，无生产代码/DTO/依赖/迁移。新校验命令消费同一正式候选与新现场引用，先查原命令真实回执/校验/建议/复核效果，不盲重投；三项失败如实留证，不人工覆盖。之后另行准备满足专业契约的新输入场景，不能把原候选当正式建议通过。
+
+### D-125：三项失败沿现有C07复核端口登记
+
+v127正式现场reader成立，原候选三项校验实际全部失败：水位/姿态未映射及风险等级措施未覆盖、规范证据/禁忌不合格、缺inspection-crew和synthetic-material-kit。C04已耐久保存三项快照99e292…；正式建议/校验行/命令回执均0，HTTP422。不得修改这些失败或直接人工批准。
+
+定位生产assessment组合已要求并注入同一C07 review，却遗漏C27构造选项reviewAudit，导致其适用复核路径提前recommendation-validation-rejected。只在scripts/deployment/composition/assessment.mjs向现有C27注入reviewAudit: review；复用既有C27三失败、独立C07、事务失败复用同reviewRef测试及部署组合/宿主回归，不增加新的抽象、DTO、路由、依赖或迁移。新制品后查原422零业务效果，以新命令消费原候选/现场重新接受原三项校验，登记失败快照与适用复核。原模型、输入、失败结论与终态保持；不复活父/子或通过人工绕过三约束。
+
+### D-126：独立单风险等级预警合成处置场景
+
+原D-125三失败候选经物理Chrome拒绝，C07决定0f6384bc…@1、校验行及两条审计成立，正式建议0。v128失败快照的实际C04摘要为17b16bbf…；v127的99e292…是原失败尝试，不混用。原已完成评估与所有历史输入保持。
+
+沿持续授权新增SYN-PHYSICAL-RISK-LEVEL-ONLY-002，覆盖主规格已有“单独风险等级预警可形成正式建议”场景。六类监测均从新CSV来源登记：16个100ms等间隔样本；沉降2mm、水位2m、注浆300kPa、支护2mm、泥水200kPa恒定，姿态0.05+0.01*sin(2*pi*i/8)deg。使用新序列/可用性策略的真实100ms采样率，姿态主频预期1.25Hz；原八项阈值、联合规则、矩阵、评分、压力126kPa和粉质黏土来源不变。常量无主频如实partial，不填造频率；正式评估结果才决定是否仅风险等级触发，不按预期删预警。
+
+新增合成措施measure-risk-level-review-d126：对掌子面稳定性风险等级越限暂停作业、复核压力与沉降记录后按原流程处置；目标仅为已存在的沉降指标，目标2mm；资源限原现场已登记的小盾构和扩径模块，不新增现场资源。措施及其synthetic-monitoring-ledger、synthetic-response-procedure依据写入独立合成CSV，经C11原生转换逐格核对，纳入新措施配置修订并走C07可见人工审核/C16发布；不伪称真实规范条款或甲方已审核。
+
+新response-validation版本只为该措施登记上述真实合成依据许可；unverified-trigger-indicator禁忌保留在监测、特征、联合类型，风险等级使用原矩阵/风险可接受阈值的确定性身份与严格越限校验，不以无条件禁忌替代该校验。原措施/策略/候选不变，新措施仍声明该禁忌，现场约束与资源检查不变。新候选必须在新评估/预警任务、发布和策略引用下冻结，再由同模型、原预算Agent选择，三项全部通过才可正式入库。任一输入或正式结果不符即留存失败，不能把原四预警减少为一条。
+
+首次v130独立评估形成P=3.6、C=1、level-3及一条风险等级预警，但原风险输入的C26任务按风险/空间正确累积到版本2，含旧四预警和新预警；新旧依据不同，C27按原相容性检查拒绝。该运行completed/A9、A7未形成建议，保留原任务与两次评估。后续采用原六条正式识别结果中另一条mechanism-01/node-03-刀盘扩径风险（aa612e79…@a86c05ed…）作为独立输入，精确绑定同类别生成策略，并从原已提供node03-resourced场景及正式C17工序来源建立新现场引用；不关闭旧任务、删除旧预警、改合并策略或复活终态。原物理参数与新六监测继续复用，新增现场资源仍为0。
+
+范围仅实例d126-risk-level-inputs的新来源、策略、序列、配置/发布/命令/证据与本change工件；不改生产源码、公共DTO、迁移、依赖或权限。先输入生成自检、C04/C11登记和逐格校验，再复核发布、独立准备/评估及处置；后续人工采纳、执行、反馈保持独立边界。
+
+### D-127：复核恢复消费者按任务类型限定识别动作
+
+D-125拒绝事件event-868c8468…已exhausted/10、TRANSACTION_FAILED，父子评估仍completed。C07所有五类决定共用review-resolved事件，而C24 consumeRecoveryEvent对每类都签发risk-identification.plan并读取C24运行；response-candidate的resumeRunRef实际是C25运行，不能在C24找到。知识/规则/校准决定同样不属于识别恢复，不应要求识别权限或读取C24运行。
+
+仅在C24既有幂等消费者内部按结构化reviewTaskRef.reviewType分流：identification-group保持原当前授权、精确C24运行和resume行为；其它四类返回原reviewDecisionRef作为无识别动作的耐久消费结果。生产runEvent原始事件Schema、来源和当前权限复验保持；不向其它模块添加恢复动作，不复活终态。消费回执沿原consumerName/eventId去重，未知事件仍拒绝，原exhausted/10保留且不重投。
+
+范围apps/worker/src/identification/graph/composition.ts及既有composition.test.ts，本change识别delta/IP/证据。参数化验证四类非识别决定不读取/恢复识别、返回正式决定引用，识别事件仍必须满足原恢复授权，相关运行/部署回归、构建及新制品后新合法决定取证。无公共字段、依赖、迁移或权限变化。
+
+### D-128：多个父工件按精确引用合并空间集合
+
+D-126新措施工件的两个合法父工件属于同一空间和两个已授权来源，正式put被ARTIFACT_ACCESS_DENIED拒绝，零清单。带写屏障的真实C06诊断证明原包装器flatMap重复空间时普通verifyDeploymentContext报ACCESS_CONTRACT_INVALID；仅去重空间后当前复验成功。API请求作用域诊断可接受重复，不能替代普通预置入口验证。
+
+scripts/deployment/start.mjs的createDeploymentAuthorizedArtifactStoreV1仅对父工件空间并集按kind/entityId/versionId去重，沿现有Map模式保留不同精确引用；无父工件继续使用原请求空间。来源/当前权限、各父工件用途/访问与完整性、正文和审计校验保持。扩既有entrypoints.test.mjs多父工件共享空间用例，不改变C06接受的契约或绕过拒权。无DTO、迁移、依赖或权限变化；原失败保留，新制品后新预置命令消费原候选正文。
+
+### D-129：A0入口引用恢复按当前C04访问读取
+
+v131独立风险已正式评估并只生成风险等级预警，A7已创建原处置Agent并完成（1模型、2930输入/26输出token、无工具/纠错/重试，候选7e613994…@1）。C25实际等待A7，但返回父运行时stateOfCursor因entrySnapshotRef缺失抛ZodError，C30记录retryable-failure且尚未补父子引用。按确定性子身份查到A0–A7登记，parent_run_id空不等于子运行不存在；不重复评估或新建Agent。
+
+写屏障只读重放证明readAssessmentEntrySnapshot仍要求当前authorizationScopeDigest与A0历史完整授权摘要相等，合法的当前来源增量变化导致undefined。只改workflow adapter该窄读：保留当前授权及精确工程/运行、唯一A0行和合法inputSnapshotRef，按该行精确artifactRef经现有#openBody执行当前C04来源/空间读取，并核对正文工程/运行；缺正文、损坏、撤权、错目标或多义继续拒绝。删除历史完整授权摘要全等，不改变原登记/指针。既有A0窄读夹具补真实C04正文，扩其当前额外来源授权仍可读取及原拒绝边界；workflow adapter与assessment/runtime回归后新制品只接续当前retryable父和原completed任务，不改预算、公共DTO、依赖或迁移。
+
+### D-130：预置回执保留真实工件引用类型
+
+D-129恢复诊断C04实际写入diagnostic，但provision.mjs executeStep将所有artifactRef硬投影为content-artifact，恢复脚本在提交前正确断言失败。原工件和报告保持；以当前C04读取核验真实diagnostic引用并另存证明后可继续使用原工件。
+
+仅将预置结果原样使用所属C04返回的artifactRef，扩既有provision.test.mjs的content/diagnostic两类回执参数化测试，内容字节使用真实临时文件消费。无新字段、权限、依赖、迁移或业务动作；新报告及恢复配置引用真实类型，不覆盖旧错误报告。文件归IP-19原provision接缝。
+
+### D-131：公开Agent完成通知恢复原评估子运行
+
+v132父运行已按D-129恢复到原A7等待，原Agent为completed/version4；公开agent-task-completed返回202但父子版本及等待未变。C30仅为识别设置恢复上下文，评估聚合仅转交business-preparation-ready，故没有调用C25 resume，不能据202认定恢复成功。
+
+复用原评估子运行聚合恢复通路，将评估恢复上下文统一承载既有business-preparation-ready或agent-task-completed。仅对当前waiting且等待引用与通知精确匹配的子运行调用原assessmentRuntime.resume，沿原冻结输入重建同一子身份，使用当前子版本，原样转交完整agentTaskResultRef后回读正式状态。父处于评估等待时拒绝错任务通知；其它兄弟等待不推进，已终态子不重开。C25继续核验原任务真实结果，不新建评估、Agent或模型额度。识别通知及配置准备恢复语义保持。
+
+范围apps/worker/src/risk-flow/{graph,runtime}.ts及既有runtime.test.ts、本change领域delta/IP与证据。验证公共完成通知只转交匹配子运行、完整结果及当前恢复授权/版本保持、错任务拒绝；既有识别/配置恢复回归与build/typecheck/lint/strict/diff后冻结新制品，以新命令继续原completed任务。无公共DTO、迁移、依赖、权限或预算变化。
+
+### D-132：评估独立运行隔离父检查点上下文
+
+v133已进入原C25恢复但checkpoint-unavailable；只读证明原子线程仍有10条检查点，唯一命名空间assessment:8c9ec984-b945-58b9-b40a-ce005d596176，根命名空间为空。C25图包装器未隔离LangGraph父节点隐式上下文，而C24已有executableConfig固定自身saver/根命名空间并清空继承checkpoint_id/map/scratchpad。同类边界复用一个实现：将C24既有函数移至worker内部graph-execution.ts，识别与评估全部invoke/resume/retry/recover/getState均使用，C30及公开DTO不变。复用既有评估runtime真实PG夹具，父MemorySaver节点内启动并恢复评估子运行，独立读回同一PG根检查点，原C24嵌套回归保持。
+
+锁定LangGraph版本以checkpoint_id键存在性判定历史重放；共享边界仅在当前父上下文实际携带该标识时显式屏蔽，独立调用保留缺省无键语义，避免重新执行已完成pendingWrites。既有A1业务提交领先检查点用例与新增嵌套用例均须通过。
+
+原A7检查点不得删改或重新评估。一次受控恢复先按已观察的唯一精确线程/命名空间，通过现有checkpointer.getTuple及当前权限/引用校验读取原状态，核对工程、父子身份、图版本、A7等待、原Agent及正式评估/预警与最新C03登记完全一致，保留原检查点引用及读取证据。确认根无状态后，用原graph.recover在同一线程的根命名空间登记原等待状态；业务事务与模型设写屏障，只允许同步检查点写入及等待中断，不创建任务、候选或业务事实。新根可正常独立读取后，再按当前父版本与冻结重试策略公开通知原completed任务。不扫描其它运行、不复制/更新数据库行、不建立运行时自动猜测命名空间的回退。任何不一致停止该恢复，保留失败。
+
+范围worker内部新共享执行配置、C24/C25图包装器、既有assessment/runtime及identification/nested-boundary回归、当前change delta/IP及实例恢复证据。无依赖、迁移、权限、预算或公开接口变化。
+
+### D-133：已登记内嵌任务恢复只观察原任务
+
+v134原父子已completed，A7按真实IDEMPOTENCY_CONFLICT跳过建议，正式建议0。startEmbeddedTask每次ensureTask都先重新startTask，当前恢复授权已变化，不能把新授权塞入原启动命令再要求整请求幂等；原C08拒绝同键异载荷正确，原终态和失败保留。
+
+复用core/agent-runtime的agentTaskRefFor，从原合法启动输入派生唯一任务身份。保留现有当前授权检查，先getTask精确读取；已有则直接用同一observeAgentTask验证工程、主体、原command/idempotency、父运行、冻结输入及全部模型/策略引用，再按真实终态返回，禁止再次startTask。缺任务才沿原startTask路径并校验返回身份、读取正式快照。两条路径共用同一观察校验且不重复读取已取得快照；失败/取消不重开，当前拒权和错身份仍拒绝。适用于既有C27及C29共享接缝，不增加新任务种类、权限或预算。
+
+仅scripts/deployment/composition/assessment.mjs及既有assessment-composition.test.mjs，扩原先两次start的测试为首次缺任务启动、当前授权变化后只观察原完成结果，补原失败/错冻结/父/主体/策略及缺任务启动边界。部署前运行相关组合/entrypoints、lint/format/strict/diff。原v134终态不复活；既有候选通过公开create-candidate/validate-and-record继续，未新增模型。无DTO、依赖或迁移。
+
+### D-134：预测等待绑定已有正式发布
+
+v134原候选已公开绑定并三项true，正式建议fcfc67fb…@1；可见Chrome二次确认采纳200，预测父0217dc68…waiting/A0，missingKinds=forecast-configuration。当前config.forecastPolicyReleaseRef仍是physical-forecast-awaiting-formal-release，而governance-publication-v14/forecast-policy/release-result.json已有正式knowledge-release-050053b0-0e5f-45cd-b1b9-237278b1bfe9@1。仅新增不可变config/release绑定该实际发布，先当前权限窄读确认发布类型与工程，再按原父版本及精确business-preparation-ready继续原预测等待。评分、原建议/采纳、策略正文、模型/预算不变；不复活原评估终态。预测策略引用的参数模型若不存在须明确不可用或等待，不能填零或以基线代替正式预测。后续模型或执行反馈资料需另列合成输入方案及真实来源证据。
+
+范围实例config/release/证据，无生产代码/DTO/依赖/迁移变化；D-133新制品可同时携带此绑定，旧引用和失败保持。
+
+### D-135：可重放合成预测、执行与反馈输入
+
+已有预测策略引用早期语义模型标识，尚无可执行C04参数工件；trend策略声明两指标也不符合既有趋势模型仅取目标指标的契约。不得临时装默认模型。新增独立synthetic-acceptance资料，待甲方复核：模型声明CSV、合成执行/反馈记录CSV及执行后六类96点监测CSV。模拟执行时刻为生成时刻前3秒（晚于真实采纳），监测从执行后1秒开始、16点100ms间隔；沉降6.8mm，其余五类沿D126（含姿态1.25Hz），不改变评分、阈值、矩阵和已冻结基线。
+
+预测参数明确声明为monitoring-trend，仅indicator-consequence-settlement/mm，windowPoints=16、stepMs=100、maxHorizonSteps=3、calculationScale=8，绑定本次已发布措施库7f2851e8…@1及measure-risk-level-review-d126。复核动作无定量效果依据，offset="0"、perStep="0"是新合成场景的显式参数，不是运行时默认或改善承诺；模型sampleOrigin=synthetic、reviewStatus=pending-client-review。正式C11转换逐格核对后，以真实证据段及来源作为模型C04父工件/证据，验证原16点基线预测为2mm。新forecast-policy仅该方法/目标/时域，requiredRef使用实际C04内容引用，经C18/C16/C07正式批准发布，不保留未满足的统计模型分支冒充可用。
+
+新合成政策的业务有效时刻显式为2026-10-17T00:00:00.000Z，系统登记/人工批准/发布时间均为实际当前时刻。只以当前asOf解析供尚未冻结配置的原A0等待；不宣称政策当时已发布，不改原冻结评分、策略或历史解析结果。新config/release绑定新正式发布后，按原预测父当前版本和精确准备引用恢复，不重开原已完成评估或重采纳。若当前组合不能选择此明确双时间范围则保持阻断，不能偷换冻结时刻。
+
+合成执行来源写明模拟暂停变径/复核、原建议与当前参与者；C11登记后，人工执行命令只引用新证据。后监测经既有C14正式登记/快照，再以同一风险、原依据/规则/矩阵及新监测形成真实确定性评估；反馈C04使用warning-response.feedback-artifact用途和新来源父工件。实际预测与评估决定偏差是否超限，C29只在正式超限事实成立后创建原预算内建议候选并人工复核，不修改已发布配置。无生产源码、依赖、迁移或预算变更；实例材料生成留断言及完整输入/回执/来源证明，不能提前计业务链通过。
+
+### D-136：人工采纳历史等待不阻断后续配置恢复
+
+v135新正式预测发布已绑定，原预测business-preparation-ready返回422，状态和版本不变。C30 assertResumeReferences将任意历史human-decision等待行视为当前仍待采纳，即使正式采纳路由已登记且当前等待是A0配置。仅将“其它恢复原因被人工决定阻断”的判断绑定cursor.lastWaitingRef.kind=human-decision及当前waiting；首次采纳仍要求唯一原等待行、当前版本及C41精确证明，后续配置恢复仍匹配当前精确preparationRef，历史行/审计不删。扩原C41/S2测试：真实采纳后子转配置等待，再用配置完成恢复只调用原子，不重新采纳、不增子运行；未采纳与错引用仍拒绝。范围risk-flow/runtime.ts及既有runtime.test.ts、当前delta/IP，相关回归/build/typecheck后新制品继续原预测。无DTO/依赖/迁移/权限/预算变化。
+
+### D-137：阶段配置查询身份包含当前调用上下文
+
+D136实机已越过历史人工等待门禁，但原A0仍等待配置。所属provider诊断明确resolveConfigurationSet返回IDEMPOTENCY_CONFLICT，被映射forecast-policy-unavailable；assessment-policy请求ID只含冻结依据/动作/requiredAt，却每次带不同当前授权与asOfRecordedAt。同键异查询拒绝正确，不能重置旧解析。
+
+仅createDeploymentAssessmentGraphPoliciesV1请求身份摘要补入指定releaseRef和本次入口authorizationContextRef/decidedAt，先确定身份再按该requestId签发当前下游授权，原配置查询的requestId/idempotencyKey及签发配对保持。固定requiredAt沿原业务时间，当前asOf依旧当前，既有已成立A0不重新解析。扩现有“专用配置集合”用例，用真实摘要比较器模拟幂等：同一当前调用重放一致，当前上下文变化新身份且不冲突，仍只取指定发布；现有历史时刻/拒权/错成员测试保持。范围composition/assessment.mjs及原assessment-composition.test.mjs；相关部署回归/格式/strict/diff后新制品，原等待新命令继续，无DTO/依赖/迁移/预算变化。
+
+### D-138：预测精度约束复用规范十进制上限
+
+D135原模型calculationScale=8通过Schema但computeEffectForecast抛decimal scale is outside the supported range。模型Schema单独允许32，而既有规范十进制输出及roundCanonicalDecimalValue唯一上限为6，不能扩大算法精度或静默夹取。
+
+仅response-lifecycle/schema.ts的模型calculationScale上限复用assessment-config已导出的CANONICAL_DECIMAL_MAX_FRACTION_DIGITS_V1；非法精度在模型解析边界拒绝，computeEffectForecast沿原model-unreadable结果，不抛底层RangeError。扩原forecast.test.ts非法模型表，保留六位内算术与舍入，相关core/adapter模型读取回归/build/typecheck/lint/strict/diff。同步本change处置预测delta/IP。
+
+D135已登记8位声明与工件保持为失败证据，不用于正式预测。新合成模型声明CSV v2显式calculationScale=6，其他参数/资料/模型预算均不变，经新C11正式转换、真实证据绑定及新C04模型ref后再生成预测政策来源CSV（含该实际模型ref及完整候选JSON），原始三份CSV不覆盖。新政策真实审核发布及双时间按D135处理。无依赖、迁移或其它数值域变更。
+
+### D-139：执行后评估按冻结成员判断依据相容
+
+D135执行后六监测已登记，物理Chrome二次确认执行200。新assess可沿正式C11准备保留126kPa及地层来源，但C19依据集合身份包含准备引用与requiredAt，因此新准备即使使用相同规则/配置也产生新集合。C28反馈将“相容”实现为集合ref全等，错误拒绝正常新评估；historical-backfill还缺正式准备字段入口，不用历史回填冒充执行后评估。
+
+复用C19精确当前受权读取，将C28 reader既有成员读取的授权/Schema/失败处理集中复用；readBasisMembers继续消费原结果。反馈先保留原风险、空间和后监测校验，再按原建议与实际评估的两次集合读取其冻结成员。评分规则成员及assessment用途配置成员必须完全一致；独立预测/偏差阶段政策不参与评分依据比较。自动组装适用规则集本身也按准备派生新引用；因此经当前C04、原用途及contentDigest校验读取两份ApplicableRuleSetDocumentV1正文，比较除requiredAt外全部结构（工程版本、适用性快照及正文、配置/兼容/组装策略、入选成员和全部决定），不能仅比较引用或只比入选数量。评分/配置成员使用原严格Schema的排序及完整release/revision/artifact/contentDigest，不另设摘要门禁、不查latest。集合、适用集身份、两次准备、输入、业务时间和审计均独立保留。任一当前读取拒绝、评分成员或适用决定变化、风险不符仍拒绝；不得修改原集合或评估事实。
+
+范围core/response-lifecycle/service.ts内部reader契约、adapters/response-lifecycle/postgres-response-lifecycle-adapter.ts及既有response-lifecycle测试/夹具、本delta/IP。验证不同集合同成员反馈成功、评分/矩阵/权重变化或不可读取拒绝且无部分写，原反馈/偏差/权限回归及build/typecheck/lint/strict/diff。无HTTP字段、依赖、迁移或预算变更。新制品后新C11正式准备与正常assess生成实际评估，再以正式执行/反馈工件继续；原失败保持。
+
+### D-140：偏差阶段显式选择原绝对偏差政策并绑定正式校准目标
+
+当前C18精确读取证明旧deviation-policy正式7ee6af0f…@1含三条政策，C28入口只接受唯一政策，不能随意取第一条或混算。新增独立synthetic-acceptance CSV来源，候选明确只保留旧deviation-absolute规则及其threshold="2"、monitoring-record证据要求，其余不改；按C11正式转换逐格核对、真实C04父/来源、C18/C16/C07审核发布新版本，保留旧三政策正文和发布。新版本按当前实际时刻生效/发布，在首次反馈前由现有purpose=deviation解析并冻结，不能改已成立反馈的政策引用；预测与两次评分不受影响。
+
+当前calibrationTargetReleaseRef仍为awaiting占位。新不可变config/release仅将其绑定两次实际C19依据均包含的正式monitoring-warning-threshold发布de2a8b10…@1；其正文及阈值不变，先当前受权窄读证明。以实际偏差结果决定是否创建C29任务，Agent只给候选和理由、沿原预算/校验/人工复核，不自动调阈值或保证通过。绑定不构成业务采纳或校准生效。范围实例新资料/候选/正式治理/配置/证据，无生产代码、公共字段、依赖、迁移或预算变化。
+
+### D-141：运行读面不按历史授权摘要拆散同一运行
+
+原预测父子completed、专属forecast-read200，run-read404。当前projection.query身份诊断证明精确父子链边存在且from/to与请求全同；链边摘要fe2126…、最新状态7d071f…因合法恢复的当前来源上下文变化而不同。readAssessmentRun的childLinkFor及阶段/引用查询仍以最新状态的历史摘要过滤旧事实，导致误拒及历史阶段缺失。
+
+仅workflow adapter所属读接缝删除这些历史摘要相等条件及不再使用的scopeDigest参数。入口当前C06复验、精确工程/运行的最新C04状态读取、父状态声明的子引用、完整from/to父子链边及子状态当前C04读取保持；阶段/结果只在已受权的精确运行内有界分页，只有引用、状态等既有公开投影，不读其它运行正文。摘要保留原登记审计，不决定当前可见性；缺关系、错父子版本、当前撤权/正文不可读仍拒绝。无新接口或自动关系补写。
+
+范围adapters/workflow/postgres-workflow-adapter.ts及既有workflow测试、当前领域delta/IP。扩原唯一子运行用例：阶段、父子链边、最新状态合法不同历史摘要时仍完整呈现，原错归属/缺链边/错版/撤权回归保持；workflow、C25读面及相关runtime/build/typecheck/lint/strict/diff后冻结新制品，只读原completed预测验证200，不重算预测或改历史。
+
+### D-142：反馈分段固定原预测基线并按真实载荷派生启动身份
+
+v139物理Chrome反馈返回500，但当前精确查询证明唯一feedback-ebf42566…@1已正式C28提交、C41快照committed，原预测及新实际评估引用和新偏差政策beb608e7…@1保持。失败来自新分段父62a987f7…/子d7ede78e…在A2终态response-deviation-value-incompatible：C41把实际评估输入当作预测冻结基线传入，C28正确拒绝与原效果预测的基线不一致。原失败父子不复活，不能重登记反馈。
+
+新增C28内部context reader精确readForecastBasis：按当前已受权工程/空间读取正式预测行，复用parseForecastOutcome核验原内容及引用，以其真实frozenAssessmentBasisRef沿既有窄读取原basis集合，返回两个精确引用。C41有正式effectForecastRef时只用此原基线启动反馈分段；无预测时保留实际评估输入及既有跳过语义。实际反馈仍固定新实际评估及新监测，不改变C28偏差同基线检查或D139相容校验。
+
+启动commandId/幂等身份以原反馈命令身份加固定分段载荷的摘要派生，当前授权签发使用同一身份；载荷包括原反馈/执行/预测/基线及图/重试引用。同载荷重试相同，新修正载荷不碰旧终态启动命令。已标记segmentStartedAt的快照不再启动；未标记时原反馈命令重放仅消费已提交快照并启动正确新分段，完成后标记原快照，零新增反馈。摘要仅承担命令身份，不作为权限门禁。
+
+范围core/response-lifecycle/service.ts内部reader契约、core/human-decision-feedback/service.ts、adapters/response-lifecycle所属reader及既有C41测试；不改HTTP字段/迁移/依赖/预算。扩既有反馈重试测试加入真实可用预测和独立实际评估，断言分段使用原预测基线、原反馈唯一及重复提交不重启；C28/C41相关回归/build/typecheck/lint/strict/diff后新制品，原命令原载荷重放，不手写状态或新反馈。
+
+### D-143：部署人员请求入口使用已批准当前业务授权
+
+v140 D142工程回归及原预测基线窄读已绿，原信封重放两次401，重新可见登录仍401。入口HTTP已按服务器当前时刻授权，实际部署authorizationScope.access.authorize首个请求仍调用旧localAccess.authorize：按原invocationId命中五分钟历史context后authorize.context抛SESSION_EXPIRED，新登录也不能改变同命令的过期记录。这不是实际业务拒权，也不能改commandId重登记反馈或扩大TTL绕过。
+
+按已归档减负D-02的现有readSession与authorizeBusinessAction接通部署首个人员入口：先用真实sessionToken验证当前会话得到accountRef主体，再以原project/branch/capability/空间/来源及调用日志编号检查当前业务权限；返回当前决定后沿既有sourceOf捕获请求作用域。内部当前业务动作复验保持；非人员入口的已批准任务/事件路径不变。删除对人员请求的旧invocationId授权有效性配对依赖，不更新旧context/TTL、不信任客户端actor、不降低撤权或资料范围检查。
+
+范围scripts/deployment/start.mjs的授权作用域包装器及既有entrypoints.test.mjs；不改C06历史authorize、HTTP字段、依赖、迁移或预算。扩原请求作用域测试：旧authorize显式不可用、当前会话导出主体且重复原调用仍通过当前权限、当前会话失效/业务拒权无下游或业务动作。定向宿主回归/lint/format/deps/strict/diff后新制品，第三次重放仍原信封；保留两次401、原500、唯一已提交反馈及旧终态分段。
+
+### D-144：校准整体策略与Agent校验策略分别绑定
+
+v141原反馈信封已越过当前授权及原预测基线校验，形成唯一正式response-deviation-a431c31d…@1：预测2mm、实际6.8mm、绝对4.8mm、threshold2mm超限。新父a653e333…/子237c43cb…在A3以UNSUPPORTED_CONTRACT终止；旧A2终态保持。C29正确要求calibrationValidationPolicyRef匹配CalibrationValidationPolicyV1.policyRef，部署provider错误返回其validationPolicyRef；后者是C08候选校验身份，不是整体bundle身份。
+
+assessment组合provider和calibration Agent入口统一使用外层policyRef，C08启动继续使用内层validationPolicyRef。calibration-task注入既有policyCatalog，按snapshot工程、calibration类型及外层精确ref解析共享Schema bundle，核验工程/外层ref和内层ref与任务信封分别对应；保留当前C06/C04、模型/提示/工具/预算及冻结输入绑定。不得删除校验或改C29正确比较，不新增公共字段、依赖或迁移。
+
+范围scripts/deployment/composition/{assessment,calibration-task}.mjs、start.mjs及既有assessment-composition/calibration-task测试。fixture外层和内层使用不同身份，验证合法对应及错工程/外层/内层拒绝且零部分写，保留既有校验和宿主回归。验证后冻结新制品及配置，riskFlow/assessment图定义发布physical-20261017-d144-v1；其余模型、策略、预算和业务输入不变。真实修复图版本沿既有workflowRunIdentityFor派生新运行，不重开两个旧terminal运行。原反馈信封重放消费唯一反馈及已正式计算偏差，不新登记反馈、不重算预测/实际评估/偏差；新任务和预算按真实结果记录，人工审核仍为生效前置。
+
+### D-145：恒值频谱不得把浮点均值残差作为主峰
+
+D135正式16点/100ms恒定6.8mm快照报告0.625Hz；频谱去均值时重复加法舍入产生常数残差，经Hann窗后非零，零frequencyPowerFloor误选k=1。主规格排除直流，恒值本来无主峰；现有测试仅整数7未覆盖。
+
+在core/engineering-data/monitoring/features.ts所属calculateDominantFrequency中保留连续点数及有限数值检查，确定原窗口全部数值精确相同时返回既有no-dominant-frequency；不引入epsilon、功率阈值或修改其它特征。扩既有monitoring.test.ts恒值用例，覆盖16点/100ms/6.8/零功率下限和原整数；保留真实周期、并列、缺样及溢出边界。无新依赖、字段或迁移。新制品后以新明确频谱算法版本的可用性策略创建独立快照，复用原样本/截止点并逐值核对；原正式快照、评估、反馈及偏差不修改、不以新快照替换原引用。该修复不代表原校准任务成功。
+
+### D-146：校准输入继承真实来源并在任务启动前冻结
+
+v142原反馈重放200，唯一反馈已标记segmentStarted，新父6f295018…/子eb61261b…等待A4真实校准任务；任务在模型前以AGENT_AUTHORIZATION_DENIED/deployment-context终止，模型/工具/重试均零。精确读取证明任务来源集合为空，输入工件也无证据/父工件，基准阈值正文要求原配置来源s_09d7266…@1；C06正确拒绝任务读取未冻结来源。
+
+C29 prepareInput保存工件时以target.artifactRef为真实父工件、fact.evidenceReferences为直接证据，复用C04既有父来源/访问并集与当前权限检查；治理候选同样继承原baseArtifactRef和真实候选证据。仅私有put helper增加必填父/证据参数，不改快照Schema。部署校准provider在start前通过已注入的C04精确manifest reader取得该输入的工程、用途、完整ref及继承来源/访问授权；只有绑定正确、证据非空才把证据来源去重和sourceAccessGrantRefs交原authorizeBusinessAction，签发当前人员权限并冻结到新任务启动授权。空来源、缺清单、错工程/ref/用途均零任务启动，当前拒权继续失败。共享startEmbeddedTask只接可选内部来源参数，C27保持原调用。
+
+范围adapters/calibration/postgres-calibration-adapter.ts及既有C29测试、scripts/deployment/composition/assessment.mjs和start.mjs及既有assessment-composition测试。验证C04正式清单父/证据继承、合法非空来源冻结和缺失/错绑/当前拒权零启动；相关回归/build/typecheck/lint/deps/strict/diff后新制品。v142任务真实失败，agent-task-failed只支持retrieval-review，实际通知400保留，不伪造完成结果。沿公开workflow.cancel-run取消原等待父及子运行，保留任务failed和零用量；原segment_started_at保持，不能重放原反馈产生第二分段。使用已有公开workflow.start-run record-response-feedback入口，以原唯一反馈/执行/预测/基线及修复图版本发布新独立后续运行，原反馈/偏差不重算、不复活旧终态、不修改旧冻结来源或预算。新图版本physical-20261017-d146-v1，模型/阈值/预算不变。
+
+### D-147：可修复模型候选使用新的行动身份
+
+v143任务来源四版本已正确冻结并通过输入/基准读取。首个模型输出Schema不合法，真实usage9493输入/1569输出已保存；后续纠错沿同action:1，带validationFeedback的新输入写同agent-model-input命令键，C04正确报ARTIFACT_IDEMPOTENCY_CONFLICT/registry.register，任务terminal-failure。账本modelInvocations=2、corrections=1，其中第二次在输入工件写入前已预留并按失败行动结算、未再次到达模型；不得把账本次数冒称两次外部调用或改旧账。
+
+Worker从行动序号1沿既有有界恢复路径读行动，已完成工具/模型仍按原证据重建；已失败且errorCode=AGENT_VALIDATION_REJECTED的model-invocation保留原记录/工件，推进到下一行动序号，并把原验证反馈交新模型输入。新的模型输入、响应与候选使用新行动身份，仍是同任务、同冻结输入/模型/预算；当前租约、来源、权限和不确定行动拒绝不变。真正可安全重试的技术失败继续原行动恢复。新纠错行动预留至少一次corrections，在外部调用前由累计预算拒绝不足；已完成行动后清除纠错反馈，不传播到无关后续模型。候选版本继续只计候选，不能当行动游标。
+
+范围apps/worker/src/agent-runtime/runner.ts及既有runner.test.ts、当前runtime delta/IP。扩既有模型Schema失败/用量用例为连续两次claim：第一次失败记录不改，第二次新行动携带验证反馈并正常完成，验证工件键不冲突、用量累计及预算不足不调用模型；工具恢复/租约/取消/预算相关回归保持。build/typecheck/lint/strict/diff及真实新图版本physical-20261017-d147-v1后新独立后续运行消费原反馈/偏差。原v143任务及账本不复活，旧等待运行受控取消；不重登记原业务，不增依赖/字段/迁移或预算。
+
+### D-148：校准生成Schema固定可信任务及完成结果绑定
+
+v144已验证新action:1、2、3独立，未再发生工件键冲突；前两次模型响应均未给completed结果任何primary output，按共享Schema在resultRef.status拒绝。第三行动在request.input-quota调用前拒绝，原预算不扩容；任务version7终态，账本modelInvocations3/corrections2，真实两响应usage19003输入/2857输出。受保护原响应仅在内存解析并输出Schema路径/码及操作kind，不展示/复制思考内容。
+
+response-model-step在C29 render时复用原definition.actionSchema，用safeExtend仅将taskRef、inputSnapshotRef及完整resultRef缩为本任务真实值的生成Schema；模型无权声明其它任务/输入或漏掉完成结果primary output。候选身份由当前任务和下一候选版本确定，使用已有buildCompletedAgentTaskResult构造完整绑定，加入实际模型输入；rationale、evidenceReferences和operations继续由模型产生并经过原候选/领域校验。生成Schema复用原精确ref结构与所有预算/候选约束，不修改公共Candidate DTO、正式建议身份或解释器校验，不删除正确的completed主输出约束。去掉生成时无关结果联合分支减少输入Schema规模，预算与专业规则保持。
+
+仅scripts/deployment/composition/response-model-step.mjs及既有response-model-step.test.mjs、当前delta/IP。扩C29真实输入用例核验生成绑定合法、缺primary/错任务/错输入拒绝及原字段校验；相关模型步/校准/宿主回归/lint/format/deps/strict/diff后新制品及真实图版本physical-20261017-d148-v1。取消旧等待运行，以原反馈/偏差开启独立后续取证，保留旧失败/原响应及预算，不复活旧任务。
+
+### D-149：校准检查点按当前权限及真实结果身份读取
+
+v145原校准Agent completed/version4，1模型5922输入/1209输出、1操作/1候选、零纠错/重试，正式建议calibration-suggestion-1b088599…@1、pending偏差记录及C07复核均已提交。完成通知在后续readCreatedDeviationRecordRef返回空，父3cf536bb…/子dea644cb…A4 calibration-created-record-missing终态。独立当前读取证明正式view成功；authorizationFullEqual=false、candidateResultFullEqual=false，但taskRefFullEqual/resultIdentityEqual=true。模型提交的候选结果与finalize后的正式结果合法有不同primary candidateRef及validationRef，不是另一个任务或结果。
+
+仅C29 verifyCheckpointReference去掉当前C06决定与入口完整授权对象相等，继续以所属#verifyRead当前工程/主体/能力/空间决定读取；精确父运行/版本、候选/验证/复核/记录摘要保持。存储的Agent结果按共享AgentTaskResultRefV1Schema解析并要求completed，核验候选完整taskRef与正式结果agentTaskRef一致、两结果reference一致，候选仍completed且其taskRef匹配行task身份；允许finalize添加校验引用和正式候选身份。不得只检查状态、忽略完整任务绑定或修改旧候选/结果来通过。
+
+范围adapters/calibration/postgres-calibration-adapter.ts及既有C29 test/fixture，fixture在原真实C06复验后投影新当前时刻，并让候选暂存结果与正式结果分别保存，扩原检查点用例覆盖合法差异及错任务/结果身份拒绝，原错工程/父/版本/撤权零写保持。相关C29/graph回归/build/typecheck/lint/deps/strict/diff后新制品，只读原正式建议/偏差及物理Chrome复核，消费原completed任务，不调用新模型、不复活原terminal图或重登记建议。当前原图失败如实保留，不以正式view成功宣称整图completed。
+
+### D-150：桌面测试不固定历史后端迁移号
+
+IP-18预检仍要求manifest.finalMigrationVersion等于000058，而已批准减负迁移及当前正式宿主均为000059；这会在启动Electron前误拒合法同源发布。桌面只负责客户端/服务器发布兼容，实际数据库迁移由正式服务器启动沿当前清单验证，测试不维护第二个后端迁移事实源。
+
+仅删除apps/desktop/test/e2e/acceptance.mjs该历史常量判断，保留严格清单Schema、当前release/config/code/origin、客户端兼容、功能报告/任务/资料/下载精确绑定、秘密及拒绝目标检查。既有client.spec.ts预检夹具改用000059，先红后绿核验合法新清单；错发布/工程/报告和不合格输入仍拒绝。同步施工图当前迁移事实为000059，不改生产迁移/依赖/桌面功能。预检通过不替代真实完整Electron场景。
+
+### D-151：验收宿主识别真实异步受理及Agent执行等待
+
+生产工作流合法返回202/waiting及精确workflowRunRef/agentTaskRef，synthetic运行器虽通过正式结果Schema，仍只接受kind=succeeded，导致真实受理被误记失败。桌面关窗场景只允许pending/running，忽略LangGraph等待正在执行内嵌Agent的正常waiting；不得把人审等待、失败或完成冒称在途任务。
+
+仅scripts/acceptance/synthetic.mjs及既有synthetic.test.mjs、apps/desktop/test/e2e/acceptance.mjs及client.spec.ts。运行器只对正式Schema已验证的异步命令接受waiting，仍记submitted；从真实waiting回执的workflowRunRef/agent-task等待引用形成私有统一result引用投影，沿原captures验证/保存，不推断状态或引用。非异步waiting、失败、坏Schema和缺引用仍拒绝，submitted不等于completed。
+
+桌面同次绑定可携正式启动回执中的精确agentTaskRef。关窗前若运行waiting，必须通过同会话当前正式agent-task.detail证明同次该任务queued/running；否则拒绝。pending/running仍按原语义，关窗后仍必须同一运行completed，不放宽终态或复用别的任务。扩现有synthetic异步用例及桌面预检夹具检查；预检/工程检查通过不计真实Electron场景完成，无生产DTO/预算/依赖/迁移变更。
+
+### D-152：知识编制模型读取冻结定位与所属观察
+
+C17生产模型步只收到frozenManifestArtifactRef和previousObservationArtifactRef，未注入任何读取能力；两个领域工具又要求准确的清单成员定位，模型无法从不透明引用取得定位或工具正文。现有脚本化网关测试预置工具请求与候选，掩盖这一生产缺口。
+
+仅在C17 adapter、Worker identification-knowledge runtime/composition及既有测试补模型前窄读：沿当前受权C04完整读取冻结manifest并核验工程、发起者、父运行及策略版本，模型只投影目标类型、真实准备/成员、可选基线、类型质量约束及下一候选版本。资料正文继续只经两个既有白名单工具；观察工件保存完整taskRef和冻结manifest引用，读取时按用途/上限及两绑定校验，再把所属观察正文交模型。基线观察提供已有精确读回的包和摘要，不另读全库。模型请求保留正式actionSchema和累计预算，以有界单次输出额度预留，错任务/清单及当前拒权在模型前失败。不新增HTTP、工具、依赖、迁移或放宽内容校验；结果仍是待审修订。
+
+扩既有Worker模型步测试证明冻结成员/真实观察进入模型、未完成工具观察不得进入消息、错绑定零模型；扩既有C17生产工具测试证明观察可读及异任务拒绝。相关C17/组合根/runtime回归、build/typecheck/lint/deps/strict/diff后冻结新制品，使用现有生产prepare入口和真实所属父引用取证；不把历史终态运行复活或虚构C30状态。
+
+### D-153：C17提交使用当前真实来源范围并透传基线
+
+D152 v148真实案例编制完成8模型/7工具，usage81635输入/3361输出，形成通过领域校验的候选；提交在本地validation事务前失败。候选包与validation工件已耐久，尚无validation事务回执/正式修订。独立C06/C04证明原授权25个grant可读候选，verify请求空来源后grant为0，静态引用守卫正确拒绝。失败任务及原预算保持；原父仍真实knowledge-preparation等待，不把候选当正式结果。旧缺基线诊断只证明C16既有base-release-required门禁，不是该次首个失败位置。
+
+C17保留入口授权的主体/工程/能力及原上下文当前复验，随后通过已注入#authorize和可信来源解析器，按同主体/工程/原空间与真实声明来源签发当前所属分支上下文供C04/C03使用；拒绝redacted或真实撤权，不拼装授权对象、不复制旧grant、不扩大来源。编制finalizer把manifest可选baseReleaseRef原样传入C16；已有定义必须由新任务显式冻结实际基线，C16原精确/当前版本门禁不改。新取证应使用该基线包所属真实C15准备与来源，不以不含基线证据的五资料准备冒充合格更新。
+
+范围C17 adapter及既有fixture/test：fixture模拟生产当前verify的空来源返回，先复现C04拒绝，再验证当前来源恢复和真实撤权拒绝；扩既有编制链用同项目已发布基线形成新待审修订。相关C17/宿主回归/build/typecheck/lint/deps/strict/diff后新制品，原失败任务不复活；失败人工复核按既有所属接缝继续取证，不将未收口attempt记为通过。无新HTTP/字段/工具/依赖/迁移/预算。
+
+### D-154：桌面分别绑定同次运行观察与可导出查询
+
+桌面预检从sharedObjectUrl对应projection.query的payload.workflowRunRef推导运行，但正式报告导出只接受risk-overview，只有run-view才有workflowRunRef；旧夹具省略queryType而误通过。预检应从同份functional配置明确观察的唯一workflow.start-run正式回执取得运行，从共享URL精确定位同次risk-overview查询，分别核验各自身份。下载artifact还必须由同次export请求的sourceRef精确绑定该risk-overview回执，不能只匹配返回artifact。
+
+仅apps/desktop/test/e2e/acceptance.mjs及既有client.spec.ts夹具/边界测试。夹具显式区分run-view观察查询和risk-overview导出查询，并以真实模板关联启动、查询与导出。旧错工程/发布/来源/秘密边界保持，异查询导出及非risk-overview共享源拒绝。预检回归不代表Electron实跑，无生产HTTP/Schema/依赖/迁移变化。
+
+### D-155：知识编制的C08候选校验工件使用既有用途
+
+v149新任务正确读基线及案例资料，3模型/2工具、85449输入/2566输出。模型对已存在case-entry-01直接cite-case，所属领域按increment-target-exists正确返回repairable；校验工件也已保存。后续C08 recordCandidate按既有agent-validation用途核验，而C17该工件误用identification-knowledge-validation，C04用途拒绝被外层映射为AGENT_TOOL_FAILURE，原任务version3终态、候选尚未登记。candidate-diagnosis-v149.json证明基线摘要一致、纯领域拒绝及校验Schema合法，不是模型/工具读取失败。
+
+仅C17 #validateAuthoringCandidate的工件用途改为agent-validation；C17包提交自己的validation用途保持。扩既有C17测试直接经正式manifest reader核验可接受和repairable校验工件的C08用途，保留原C08严格用途门禁。Worker知识编制指令说明已有标识的声明须先用同一候选的对应retire操作；不改领域操作/候选Schema或把重复声明放宽为覆盖。原纠错在新任务累计预算内运行，原v149终态/真实消耗不重置。相关C17/C08/runtime及宿主回归/build/typecheck/lint/deps/strict/diff后新制品和同活动父下的新独立任务；旧失败仍须按原失败复核契约闭合。
+
+### D-156：知识模型清单无损压缩并限定目标生成Schema
+
+v150已越过C08用途守卫并登记repairable候选version1（increment-target-exists），新行动纠错正常开始；原预算在action8/request.input-quota外部调用前拒绝。账本5模型包含该次零用量尝试，真实4响应116672输入/2849输出，3工具/1纠错，taskVersion6终态。清单16成员/595保留标识的JSON为45049字节，每步重复长来源前缀，冻结预算保持196608输入/262144上下文。catalog-compression-proof-v150.json证明沿C15既有公共前缀模式可完整还原全部标识，定位JSON降至24976字节，不减少来源/资料段或截断正文。
+
+仅Worker identification-knowledge/runtime.ts及既有runtime.test.ts：模型定位投影改为每成员真实sourceVersion/sourceSegmentSet、资料段公共前缀与全部后缀，明确按拼接还原原工具所需标识；C17原manifest和领域工具DTO完全保持。生成Schema复用正式Action及Candidate Schema，只保留当前manifest目标定义的候选分支并固定下一候选版本，两个原工具动作保持；解释器和原确定性校验继续验证完整正式契约。实际观察仍完整保留，累计预算和模型不扩大。测试验证全定位往返、长重复定位确实缩小、合法工具/当前目标候选接受及异目标/版本拒绝，相关回归/build/typecheck/lint/deps/strict/diff后新制品新任务；原v150失败/用量不改。
+
+同步既有composition.test.ts的C06夹具：按请求分支返回正式映射能力，目标读取测试只核对相应分支及冻结范围/任务绑定，不把D153新增当前范围签发视为能力错配或固定内部调用次数。错主体、拒权、越界零读取的原断言保持。
+
+### D-157：共享部署复验保留原上下文自己的范围
+
+v151原risk-overview查询200、报告policy读取200，preview/export均422。report-scope-proof-v151.json证明同一调用原25grant，经部署verify变0，配对result-read又按真实范围签发25，C35按父范围子集正确拒绝source-page-unreadable。C17先前相同缺口由D153额外authorize补偿；继续逐模块补签会重复同一规则。C06原生verify已经定义空资源复验使用原context自己的空间及来源；部署actionDecision(reuseSnapshot=true)直接重授权却漏掉该语义。
+
+仅共享部署actionDecision在复用审计上下文时，从请求authorizationContextRef的C06持久来源元数据取得原范围；当前作用域本身同ref时复用其已读元数据，其它ref按当前主体/工程精确读取。空/未提供资源集合按该原上下文范围复验，显式非空仍用实际请求；新authorize继续保持显式空集合，不用环境更宽范围补位。未知来源关闭失败，当前C06 authorizeBusinessAction、taskRef/租约/冻结范围、真实撤权及原审计快照不变，不复制旧grant或恢复TTL门禁。
+
+删除C17 D153的重复current-scope签发及其专用窄verify夹具，保留入口与当前决定主体/工程/能力/redacted检查、基线透传、C08用途和原领域校验。范围scripts/deployment/start.mjs及既有entrypoints.test.mjs、C17 adapter与既有fixture。根回归覆盖原上下文小于环境范围、普通verify/工件verify共用语义、显式空新授权、显式非空复验、未知ref、当前拒权；C17/C35/宿主回归、build/typecheck/lint/deps/strict/diff后新制品，仅重读原报告查询，不伪造导出或复活旧任务。
+
+### D-158：纠错模型恢复最新拒绝候选与完整校验
+
+v151真实行动证明模型已读正确基线，却三版重复increment-target-exists。通用Runner只附错误码，缺前一候选及逐项校验，并在中间成功工具行动后丢反馈。沿既有C04 agent-action-result用途以独立稳定子身份保存candidate-feedback，包含真实actionId、完整taskRef、原行动证据引用及耐久候选元数据，保留原响应链。恢复时经当前授权、用途和字节限制读取，核验完整任务/行动绑定、rejected及validation，只加载等于当前latestCandidateVersion的候选；通过正式候选解析器恢复原agent-candidate内容。后续模型数据上下文保留该候选与完整校验，跨工具调用及重新claim均有效；旧无候选反馈行动保留原错误码处理。
+
+范围apps/worker/src/agent-runtime/runner.ts与既有runner.test.ts，及本change工件。通用渲染后附结构化反馈，各任务复用同一机制，不堆C17专用提示或重复读取。原不可重试校验、纠错/输入/输出/墙钟预算、受限工具及正式结果确定性验证保持；不读取模型内部思考、不改旧终态、不新增DB/公共Schema/依赖。验证拒绝候选保存、原行动证据链、下一模型完整候选/校验、跨工具与恢复，以及错任务反馈在模型前拒绝；相关回归及工程检查后与D157合并新不可变制品取证。
+
+### D-159：报告预览接受所属分页端口的真实游标
+
+D157后v152真实原查询的登记摘要等于零来源摘要，与当前25grant不同，按原历史范围拒绝，不改登记。新正式risk-overview查询读取成功，但真实C31游标超过512字符，C35 preview nextCursor的任意512上限导致HTTP Schema返回500。C31请求/结果以IdentifierSchema表达游标，C35预览复用相同Schema；不改变游标编码、精确查询/范围绑定或分页预算。C35自身history游标仍按其原契约。范围packages/core/src/workflow/report.ts及既有C35数据库测试，覆盖真实长引用产生游标、源端续页与预览Schema往返；工程验证后新制品，旧查询及失败回执保留。
+
+### D-160：失败复核逐attempt恢复控制来源并使用当前治理基线
+
+正式Worker在退出任务租约作用域后调用C17失败收口，当前无调用来源，四旧失败始终未送审。C17 settleAuthoringFailures增加仅供组合根的逐attempt操作回调，传精确projectId/actorId/taskRef；宿主从C08真实任务只读取信封来源，完整核验任务/主体/工程，再以既有authorizationScope.run和原parentRunRef建立独立控制来源，不借终态任务租约。当前C06逐分支重授权，C08 readTerminalFailure继续独立核验终态并提供唯一失败证据；不把getTask当失败证据，不改变旧终态和用量。
+
+失败修订只为人工诊断，不是旧模型候选提交。提交前以当前C06 identification-basis授权通过C16 resolveGovernedReleases读取该定义在处理时点的真实有效基线，带入C16 submit；仅其明确missing发布的结构化业务拒绝允许省略基线，让C16继续区分首版/已有未发布定义。拒权、冲突、缺修订及技术错误原样失败。原manifest不变，failure-review-only永不可发布，逐阶段CAS/断点续作保持。范围C17 adapter及既有测试、scripts/deployment/start.mjs和entrypoints.test.mjs；覆盖逐attempt绑定/拒权零写/已有发布后失败送审/原始失败和预算不变，相关回归及全部工程检查后实机读取旧失败正式修订/复核引用。无新DB/依赖/公共DTO/预算变化。
+
+### D-161：知识编制切片工具返回真实转换正文
+
+v152模型输入包含完整纠错候选和校验，下一调用因累计输入不足正式失败；五次segment工具只返回C02段标识/kind/locator/excluded，未返回正文，模型无法据原材料编制。复用C17 checkStandardRetrievalText已实现的C15清洗manifest→精确JSON-LD→证据片段→文本块读取，提取为该准备读取器的一个私有方法，校验工程、冻结sourceVersion/segmentSet、保留段、片段唯一性、每块的真实版本与段绑定，保持已有字节上限和当前授权。规范检索文本仍按同一真实块顺序逐字核验；segment工具在原定位外补该精确段的textBlocks及sourceVersionRef，保留真实坐标/置信度，不编造、截断或把基线当正文。
+
+范围packages/adapters/src/identification-knowledge/postgres-identification-knowledge-adapter.ts及既有adapter测试；复用已安装Schema与C04，不增加工具、通用文件读、私表读取、依赖、迁移或预算。既有正式切片用例断言返回原JSON-LD精确块，保留错版本/异集合/排除段/无权/损坏与规范正文回归。完成工程验证后新制品和独立新任务，五旧失败、原manifest、基线、消耗均保持。
+
+### D-162：风险追溯按实际登记来源检查当前权限
+
+v153报告第15页原df1a…运行的状态/结果可读，正式风险记录仍在且有000054登记的五份来源/空间；其历史授权摘要为零来源，C22 trace-reader却要求与当前25grant摘要全等，返回ENTITY_NOT_FOUND并使整份报告失败。按已批准减负D-02，历史摘要保留审计，不作为读取可见性的替代。
+
+C22保持一次有界SQL取本批精确工程/版本记录及自身登记的source_version_refs/spatial_scope_refs，在披露各条最小引用前经C06既有authorizeBusinessAction按真实目标检查当前主体、工程、branch能力、实际空间/来源和必要任务上界。相同资源组在同一次读取内复用当前决定，不另建缓存/持久票据。元数据缺失或非法、无权/撤权、跨工程、错版本同形不可读；不扩大正文披露或改旧记录。真实来源权限与范围由C06判断，不用字符串空间比较或复制历史grant。
+
+范围packages/adapters/src/identification/candidate-finalization/postgres-risk-record-trace-reader.ts、既有adapter测试与apps/worker/test/risk-flow/acceptance.test.ts的C06夹具；真实组合根已有C06业务动作接口。更新旧仅靠摘要差异模拟隐藏的夹具为真实目标空间拒绝，覆盖额外无关授权/旧摘要不挡原可见记录、撤权/越界/错版零披露和原批量上限。C22/完整报告/Worker回归、工程检查及新制品后从原真实查询完整取证；不跳过报告第15页，不追改历史数据，无依赖/迁移/领域Schema变化。
+
+### D-163：模型输入仅投影编制所需正文与真实剩余额度
+
+v154真实读取正文后，3次响应84049输入/4670输出、3工具/149对象，下一模型请求在input-quota拒绝，尚无候选。原工具观察完整textBlocks反复包含源版本/段/块链、重复请求段ID与内部相邻块标识；模型提交操作仅引用精确来源段，不使用块链。Worker渲染对segment工具的当前受权观察按正式TextBlock Schema解析，仅投影blockId、完整text、headingPath、已有coordinate/confidence，父segment与sourceVersionRef保持；工具输入在模型视图保留类型/集合/limit及请求段数量，完整请求ID仍在原行动与观察中，不改工具输出/持久证据。基线包不压缩或代替正文，不删实际段和正文字符。
+
+渲染同时提供任务账本计算的剩余输入token、模型/工具调用和纠错次数，提示按剩余额度选择小范围真实材料、证据充足即提交。实际硬门禁/模型/任务预算保持，不由提示决定权限或扩容。范围Worker identification-knowledge/runtime.ts及既有runtime.test.ts；验证原正文/坐标/置信度保留、原对象不变、重复输入减少、实际剩余额度准确。用原v154不可变输入离线投影量化后再新制品/独立任务，不把模型前拒绝算真实响应，无依赖/迁移/公共DTO变化。
+
+### D-164：公共报告浏览器夹具只引用其账号可见的资料
+
+D162实际权限修复后，浏览器公共夹具启动的C35正向导出失败：operator无权读取资料B，chain-a/b公共报告却同时引用含B的recordReview；此前仅比摘要的C22误放行掩盖该矛盾。apps/web及demo同构business-server.mjs的公共报告运行只引用真实可读recordAuto/A，原受限B、跨A/B的人工复核记录和对应识别/证据权限场景完整保留。只修合成夹具，不扩大operator权限、不修改生产拒权或跳过用例。完整90项浏览器回归重跑，初次2失败/1中断/87未运行留存，不冒称通过。
+
+### D-165：新知识编制任务在原总额度内重分配输入/输出
+
+按用户持续批准的必要修复授权及evidence/knowledge-input-output-budget-rebalance-proposal.md，将新独立任务的输入/输出上限从196608/65536调整为229376/32768，总和与context总上限均保持262144。v155真实下一纠错输入89197字节超过剩余输入77735，网络网关保守预检正确拒绝；不修改预检或旧任务。只追加新knowledge-budget与所属knowledge-validation策略版本，原模型/提示/工具、调用24/48、纠错2/重试2及其它硬上限不变。
+
+范围为隔离宿主新不可变catalog/config及本change证据，不改公共Schema/算法/依赖/迁移。新catalog保留全部旧条目，项目绑定精确新策略；正式Schema/预算总和/其它字段不变自检后新制品重启，只对新任务生效。旧七失败与候选/消耗/失败复核保留，实际终态仍独立核验。该版本仅适用于synthetic-acceptance，不能包装为甲方正式资源定额。
+
+### D-166：评估决定工件按自身行动取得当前来源授权
+
+完整browser回归的初评在A3确定性结果提交失败。独立真实夹具复现表明C04的registry.parent-access拒绝：C19真实规则/适用规则集父工件登记两份来源，C25准备只包含风险资料A，evaluate复验按准备收窄后所得上下文不能访问另一规则来源。确定性计算已完成，事务回滚，无正式评估事实；不能删除父工件或扩大账号权限来通过。
+
+C25的私有putDecisionArtifact沿已有authorizeFor/authorizeDownstream接缝，使用实际decision写行动身份与已验证空间取得当前risk-assessment.evaluate授权，来源范围仍由部署受控调用来源限定，C04逐项校验全部父工件；同一授权用于并发回读。准备、风险事实、监测及提交前复验保持现有范围与当前拒权。范围仅生产C25 adapter与既有engine/browser回归，复用原端口，不改公共DTO/依赖/迁移或历史记录。先定向初评及现有C25权限回归，再全量browser。
+
+### D-167：验收CLI遵守服务端同源POST契约
+
+v158真实functional首次执行在登录即CONTRACT_INVALID/400，业务步骤未发送。API对所有POST校验Origin等于部署publicOrigin；synthetic共享requestJson未发送该头，登录/命令/观察查询均不能通过。共享请求函数从既有受限目标URL取origin并作为请求头发送，保持manual重定向、TLS校验、Cookie和请求信封/身份不变。现有synthetic测试替身按服务端同源规则拒绝缺失/不等Origin，先红后绿；复用functional回归与真实CLI验证。无服务端/公开Schema/依赖/迁移变化，原失败报告保留，不手造run.json或装填历史回执。
+
+### D-168：评估终态观察使用所属C34运行详情
+
+真实CLI已受理并完成新评估，但原观察用C31 run-view，其run-summary.workflowRunRef携当前状态版本，不能匹配启动回执的稳定运行引用，故观察器正确拒绝。既有C34 risk-assessment.read/run-read明确分别返回原runRef和stateVersion，resultRefs含正式run-result。功能观察器追加支持这一既有DTO：operation=run-read、result.kind=run-read、runRef与同次启动回执逐字段精确一致才读取顶层status；只有resultRefs中assessment-run-result或risk-flow-run-result可证明正式结果，stage/review/audit等辅助引用不算完成证明。C31原严格匹配保持，不更改服务端/记录/公共Schema。范围functional.mjs及既有functional.test.mjs，验证状态版本独立、异运行/错版本拒绝和辅助引用不能通过，再真实CLI完整执行并观察。
+
+### D-169：C34内部工件读取不显式清空调用来源
+
+D166后浏览器初评已正式完成，启动向导跳到运行页却显示无权。C34共享artifactReadAuthorization显式requestedSourceVersionRefs=[]，使真实C06夹具按空集合签发，而运行/决定工件登记了原两份来源。删除这一显式空值，既有下游接缝按受控人员调用来源继承当前来源；主体、工程、分支及已验证空间仍显式限定，C04继续按已登记父工件来源逐项检查。复用共享读取方法，不恢复全工程来源扫描或增加比对门禁。范围C25 adapter原方法及既有权限/浏览器运行详情回归，无公共DTO/依赖/迁移变化。
+
+### D-170：校准工件使用既有证据集合规范化
+
+真实browser反馈后的A3校准准备失败，独立Node复现捕获ArtifactPutCommandV1Schema的evidenceReferences重复/未排序错误。C28偏差事实合法合并预测和实际评估证据，同一来源可重复，领域ResponseDeviationFact允许此表示；C29直接透传到C04规范集合契约而拒绝。C29共享putArtifact复用已有normalizeEvidenceReferences，排序去重后写工件元数据，不改原偏差事实、证据定位、原校验或预算。扩已有越限准备/幂等/证据继承用例，输入重复证据、验证工件仍保留原证据且原事实不被修改，再真实browser反馈/校准回归。无新helper、公共DTO/依赖/迁移。
+
+### D-171：Electron任务继续观察复用所属运行详情
+
+桌面readRunStatus使用两次HTTP（登记C31 run-view、再读页），仍把当前状态版本与启动引用全对象字符串比较，重复了D168已实机确认的身份混用。改为一次既有C34 risk-assessment.read/run-read，核验原runRef的kind/entityId/versionId后只读顶层status，与functional使用相同所属DTO。删除额外投影登记和JSON.stringify身份比较，不改关窗前仍在执行、原任务引用及关窗后同运行completed的原验收条件。范围client.spec.ts私有helper及原真实Electron场景，无产品代码/公共Schema/依赖/迁移。
+
+### D-172：桌面测试从应用已声明依赖解析Electron
+
+当前pnpm根workspace没有声明electron，只有apps/desktop声明该依赖。真实桌面测试从根目录执行，不能假定Playwright能从根目录解析应用局部依赖。启动helper沿apps/desktop/package.json用Node已有createRequire解析其正式electron路径，显式传入executablePath；复用当前版本，不安装或新增依赖，不修改产品启动/TLS/sandbox策略。范围仅client.spec.ts的import与共享launchClientV1，验证仍为原14项真实Electron场景。
+
+### D-173：桌面连接失败页只处理主框架真实加载失败
+
+原生Electron复现捕获首屏loadURL被后续同源导航取代，did-fail-load报告-3/ERR_ABORTED，后续页面已200却被连接页覆盖。main.ts的did-fail-load忽略-3和非主框架失败；首屏loadURL拒绝处理同样忽略errno=-3。真实网络/证书加载失败仍进入原连接状态页，越界导航/新窗口/iframe/TLS/sandbox策略保持。复用已有真实越界导航与TLS拒绝用例及原生最小复现，不新增同实现的单元测试或公共契约。允许文件main.ts和client.spec.ts，证据只记录事件码/URL和结果。
+
+### D-174：报告窄读透传既有用户来源选择
+
+实机报告已由正式CLI生成，C35页面却显示空历史。client.ts的postQuery只为risk-assessment.read转发既有assessmentSources选择，projection.report-read始终发空来源，即使用户已声明也被丢弃。复用现有解析与工程/修订绑定，将报告窄读纳入同一默认来源透传；显式sourceVersionRefs仍优先。扩既有真实报告browser用例核对history/preview/artifact三种请求的来源，原下载及URL释放断言保留。不改服务器授权、历史摘要、角色或来源资格，也不自动枚举全工程来源。范围client.ts、原agent-audit-operations.spec.ts、桌面acceptance.mjs和client.spec.ts；桌面预检从同次已匹配overview回执保留reportSourceVersionRefs，登录后沿现有来源选择UI声明该精确范围，不误用可能更宽的启动来源或把资料列表塞入受512字符限制的测试共享URL。导航断言轮询既有locator.isVisible，避免被拒绝的导航让Playwright自动等待永不提交的导航；仍核对页面可见、原origin及拒绝新窗口。
+
+### D-175：HTTP路由参数上限复用已有运行引用契约
+
+正式SSE返回414/FST_ERR_MAX_PARAM_LENGTH，当前人员直接调用所属事件reader成功且来源35/35、redacted=false。Fastify默认参数上限100小于合法base64url运行引用，真实编码约280字符，HTTP入口因此先于公开Schema拒绝。http.ts以同一常量保持既有EncodedWorkflowRunIdV1Schema最大2048，app.ts的routerOptions.maxParamLength引用它；其它路径及严格解码仍由原Schema验证，不新增旁路或放宽引用身份。扩原逐事件当前会话/来源/独立调用身份测试，使用真实长运行标识和64字符版本，先红414后绿200。范围app.ts、http.ts及既有http-shell.test.ts，实机再核验SSE握手/游标。
+
+### D-176：桌面撤权用例按报告自身范围读取并正确恢复
+
+原撤权用例在前置读取时误用启动的36份来源，而同次overview只有35份。原finally即使没有修订成员也尝试恢复，未登录的管理窗口再失败，掩盖首个错误。queryV1允许调用方显式提供既有来源范围，撤权前后通过页面实际使用的projection.report-read/artifact读取同一正式导出工件，并传入reportSourceVersionRefs；其它读保持原默认。C31直接读的500另留未解决证据，不冒称该问题已修复。成员修订helper使用产品已有“管理动作确认”组及“确认执行”，以确认组关闭及目录状态确认成功，不再等不存在的对话框和确认标记；只有真实执行removed成功后才登记需恢复，恢复成功清除。复用原真实撤权场景，仍核对200→404/NOT_FOUND、页面不泄露工件及原成员恢复，不改产品授权。范围仅client.spec.ts。
+
 ## Migration Plan
 
 1. 固定并核对前置实现和本规划基线；正式模块/主规格按前置 change 归档同步顺序消费。
@@ -521,4 +1081,4 @@ v101新任务首次模型调用把data-cleaning-manifest工件身份填入source
 
 ## Open Questions
 
-无影响实现契约的开放技术问题。实际环境、秘密、资料资格和人工批准是执行输入；缺项记录 BLOCKED，不填默认值。
+公开失败通知缺口已按D-105及用户批准闭合设计；实施及实机证据尚待完成。实际环境、秘密、资料资格和人工批准仍是执行输入；缺项记录BLOCKED，不填默认值。

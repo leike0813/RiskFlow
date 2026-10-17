@@ -825,7 +825,7 @@ export const startHumanDecisionFeedbackFixture =
           : { kind: "failed", error: unsupportedError(query.queryId) },
     };
 
-    /** C41 只调用 `readRecommendationContext`：两个未触达的只读接缝以显式失败替身注入。 */
+    /** C41 读取正式建议与预测基线；未触达的外部接缝以显式失败替身注入。 */
     const unreachableSeam = (seam: string) => async (): Promise<never> => {
       throw new TypeError(`c41 fixture read seam ${seam} must not be reached`);
     };

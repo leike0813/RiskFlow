@@ -219,6 +219,9 @@ export const createIdentificationGraphComposition = (
       throw new TypeError("identification graph recovery consumer only accepts review decisions");
     }
     return await options.recoveryConsumer.consume(consumerName, event, async () => {
+      if (event.payload.reviewTaskRef.reviewType !== "identification-group") {
+        return { resultRef: event.payload.reviewDecisionRef };
+      }
       const recovery = await options.recoveryAuthorization({ event });
       if (recovery === undefined) {
         throw new TypeError("identification graph recovery requires a current authorization");

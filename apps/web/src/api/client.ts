@@ -277,7 +277,7 @@ export const postQuery = async (input: {
     requestedSpatialScopeRefs: [],
     requestedSourceVersionRefs: [
       ...(input.sourceVersionRefs ??
-        (input.branch === "risk-assessment.read"
+        (input.branch === "risk-assessment.read" || input.branch === "projection.report-read"
           ? selectedAssessmentSources(input.projectId)
           : [])),
     ],

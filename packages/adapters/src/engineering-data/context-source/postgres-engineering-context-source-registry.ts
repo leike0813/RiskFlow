@@ -3626,6 +3626,9 @@ export class PostgresEngineeringContextSourceRegistry
         [],
         "engineering-data.assessment-preparation",
       );
+      if (decision.redacted) {
+        return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
+      }
       const verified = { ...command, actorId: decision.context.actorId };
       const payloadRun = command.payload.causalRunRef;
       const authorizationRun = decision.context.causalRunRef;
@@ -3768,10 +3771,55 @@ export class PostgresEngineeringContextSourceRegistry
         return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
       }
 
-      // 监测读取所需的资料版本只能来自本次已读到的风险输入证据（C14 快照证据同源）。
+      const sourceFieldFacts = command.payload.sourceFieldFacts;
+      const supplementalEvidence = normalizeEvidenceReferences(
+        (sourceFieldFacts ?? []).flatMap((field) => field.evidenceReferences),
+      );
+      const sourceEvidenceReferences = normalizeEvidenceReferences([
+        ...facts.evidenceReferences,
+        ...supplementalEvidence,
+      ]);
+      if (sourceEvidenceReferences.length > 256) {
+        return {
+          kind: "failed",
+          error: moduleError("BUSINESS_BLOCKED", command.commandId, {
+            blockerKind: "assessment-source-evidence-limit",
+            blockerRef: command.payload.riskInput,
+          }),
+        };
+      }
+      if (supplementalEvidence.length > 0) {
+        const target = await this.#resolveEvidenceAccessTargets(
+          command.projectId,
+          supplementalEvidence,
+        );
+        if (
+          target === undefined ||
+          target.items.some(
+            (item) =>
+              !item.segment.spatialScopeRefs.some((scope) =>
+                sameEntity(scope, command.payload.spatialScopeRef),
+              ),
+          )
+        ) {
+          return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
+        }
+        const supplementalAccess = await this.#verify(
+          command,
+          target.spatialScopeRefs,
+          supplementalEvidence.map((evidence) => ({
+            kind: "source-version" as const,
+            reference: evidence.sourceVersion,
+          })),
+          "engineering-data.assessment-preparation",
+        );
+        if (supplementalAccess.redacted)
+          return { kind: "failed", error: moduleError("AUTHORIZATION_DENIED", command.commandId) };
+      }
+      // 监测读取仍按本次准备已核验的真实证据来源签发。
       const sourceVersionRefs = [
         ...new Map(
-          facts.evidenceReferences.map((evidence) => [
+          sourceEvidenceReferences.map((evidence) => [
             `${evidence.sourceVersion.entityId}\u0000${evidence.sourceVersion.versionId}`,
             { kind: "source-version" as const, reference: evidence.sourceVersion },
           ]),
@@ -3804,7 +3852,8 @@ export class PostgresEngineeringContextSourceRegistry
         riskInput: command.payload.riskInput,
         applicabilityMetadataSnapshotRef: command.payload.applicabilityMetadataSnapshotRef,
         ...(monitoringRefs === undefined ? {} : { monitoringSnapshotRefs: orderedMonitoringRefs }),
-        sourceEvidenceReferences: facts.evidenceReferences,
+        sourceEvidenceReferences,
+        ...(sourceFieldFacts === undefined ? {} : { sourceFieldFacts }),
         entryMode: command.payload.entryMode,
         triggerReasonCode: command.payload.triggerReasonCode,
         ...(command.payload.previousAssessmentRecordRef === undefined
@@ -3831,6 +3880,9 @@ export class PostgresEngineeringContextSourceRegistry
         riskInput: snapshot.riskInput,
         applicabilityMetadataSnapshotRef: snapshot.applicabilityMetadataSnapshotRef,
         sourceEvidenceReferences: snapshot.sourceEvidenceReferences,
+        ...(snapshot.sourceFieldFacts === undefined
+          ? {}
+          : { sourceFieldFacts: snapshot.sourceFieldFacts }),
         entryMode: snapshot.entryMode,
         triggerReasonCode: snapshot.triggerReasonCode,
         ...(snapshot.monitoringSnapshotRefs === undefined
@@ -4003,7 +4055,7 @@ export class PostgresEngineeringContextSourceRegistry
         requestedAt: input.requestedAt,
       });
       // 操作者身份只取自 C06 当前验证结果；调用方声明的 actor 必须与之一致。
-      if (decision.context.actorId !== input.actorId) {
+      if (decision.redacted || decision.context.actorId !== input.actorId) {
         throw preserveDomainError(moduleError("AUTHORIZATION_DENIED", input.requestId));
       }
       return decision;
@@ -4040,6 +4092,35 @@ export class PostgresEngineeringContextSourceRegistry
     );
     // C06 verify 把上下文与签发时的 invocationId 绑定：复验必须沿用同一调用身份。
     await current(accessScopes, sourceVersionRefs);
+    const supplementalEvidence = normalizeEvidenceReferences(
+      (preparation.sourceFieldFacts ?? []).flatMap((field) => field.evidenceReferences),
+    );
+    if (supplementalEvidence.length > 0) {
+      const registeredEvidence = new Set(
+        preparation.sourceEvidenceReferences.map((evidence) => sha256CanonicalJson(evidence)),
+      );
+      if (
+        supplementalEvidence.some(
+          (evidence) => !registeredEvidence.has(sha256CanonicalJson(evidence)),
+        )
+      )
+        return denied();
+      const target = await this.#resolveEvidenceAccessTargets(
+        input.projectId,
+        supplementalEvidence,
+      );
+      if (
+        target === undefined ||
+        target.items.some(
+          (item) =>
+            !item.segment.spatialScopeRefs.some((scope) =>
+              sameEntity(scope, preparation.spatialScopeRef),
+            ),
+        )
+      )
+        return denied();
+      await current(target.spatialScopeRefs, sourceVersionRefs);
+    }
     return { kind: "succeeded", preparation, applicability };
   }
 

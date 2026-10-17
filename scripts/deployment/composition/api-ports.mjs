@@ -99,7 +99,7 @@ export const REQUIRED_API_PROVIDERS_V1 = Object.freeze({
   agentTask: ["startTask", "resumeTask", "cancelTask", "confirmCommand"],
   agentTaskRead: ["read"],
   warningLifecycle: ["open", "acknowledge", "read"],
-  recommendation: ["createCandidate", "validateAndRecord"],
+  recommendation: ["measureCandidates", "createCandidate", "validateAndRecord"],
   responseLifecycle: ["calculateDeviation"],
   calibration: ["createSuggestion", "createGovernanceDraft", "recordReviewOutcome"],
   transactionUnit: ["execute"],
@@ -369,7 +369,14 @@ export const createDeploymentApiPortsV1 = (options) => {
     // engineeringData 端口就是同一真实 context-source registry 的原端口。
     engineeringData: options.contextSource,
     engineeringDataCatalog,
-    knowledgeModeling: options.knowledgeModeling,
+    knowledgeModeling: {
+      govern: (command) => options.knowledgeModeling.govern(command),
+      resolve: (command) => options.knowledgeModeling.resolve(command),
+      retrieve: (query) =>
+        query.kind === "measure-candidates"
+          ? options.recommendation.measureCandidates(query)
+          : options.knowledgeModeling.retrieve(query),
+    },
     applicableRuleSetAssembly: options.applicableRuleSetAssembly,
     knowledgeGovernanceRead,
     knowledgeRetrievalRead,

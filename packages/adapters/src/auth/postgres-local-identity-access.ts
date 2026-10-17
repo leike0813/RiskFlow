@@ -79,6 +79,7 @@ import {
   type SourceAccessGrantRefV1,
   type SourceVersionRefV1,
   SourceVersionRefV1Schema,
+  SourceAccessGrantRefV1Schema,
   type SpatialScopeRefV1,
   type WorkflowRunRefV1,
   WorkflowRunRefV1Schema,
@@ -212,6 +213,7 @@ export interface PostgresLocalIdentityAccess extends LocalIdentityAccessV1 {
     readonly requiredCapability: ModuleCapabilityV1;
     readonly requestedSpatialScopeRefs: readonly SpatialScopeRefV1[];
     readonly requestedSourceVersionRefs: readonly SourceVersionRefV1[];
+    readonly requestedSourceAccessGrantRefs?: readonly SourceAccessGrantRefV1[];
     readonly requestedAt: string;
   }): Promise<AuthorizationDecisionV1>;
   readonly systemAdministration: SystemAdministrationPortV1;
@@ -578,6 +580,38 @@ const currentScopeRefsForMembership = (
       ? []
       : [scopeRef(revision.scope_id, revision.revision_id)];
   });
+};
+
+const sourceVersionsForAccessGrants = async (
+  db: AccessDb,
+  input: Pick<
+    BusinessActionAuthorizationInputV1,
+    "projectId" | "requestedSourceVersionRefs" | "requestedSourceAccessGrantRefs"
+  >,
+  clock: () => Date,
+): Promise<readonly SourceVersionRefV1[]> => {
+  const grants = input.requestedSourceAccessGrantRefs ?? [];
+  if (grants.length === 0) return input.requestedSourceVersionRefs;
+  const ids = [...new Set(grants.map((grant) => grant.reference.entityId))];
+  const policies = await db
+    .selectFrom("business.source_access_policies")
+    .select(["source_entity_id", "source_version_id"])
+    .where("project_id", "=", input.projectId)
+    .where("source_access_grant_id", "in", ids)
+    .execute();
+  if (policies.length !== ids.length)
+    throw makeAccessError("AUTHORIZATION_DENIED", "authorize.artifact-sources", clock);
+  return SourceVersionRefSetV1Schema.parse([
+    ...new Map(
+      [
+        ...input.requestedSourceVersionRefs,
+        ...policies.map((policy) => ({
+          kind: "source-version" as const,
+          reference: { entityId: policy.source_entity_id, versionId: policy.source_version_id },
+        })),
+      ].map((source) => [JSON.stringify(source.reference), source]),
+    ).values(),
+  ]);
 };
 
 const querySourcePolicy = async (
@@ -3164,6 +3198,7 @@ export const createPostgresLocalIdentityAccess = (
           );
         if (branch === undefined || branchCapability(branch) !== input.capability)
           throw authorizationDenied(stage, branch);
+        const requestedSourceVersionRefs = await sourceVersionsForAccessGrants(tx, input, clock);
         const scopeGraph = await scopeNodes(tx, input.projectId);
         const currentScopes = (refs: readonly SpatialScopeRefV1[]): SpatialScopeRefV1[] =>
           refs.map((ref) => {
@@ -3202,7 +3237,7 @@ export const createPostgresLocalIdentityAccess = (
               ? snapshot.sourceVersionRefs
               : [];
           if (
-            !input.requestedSourceVersionRefs.every((source) =>
+            !requestedSourceVersionRefs.every((source) =>
               sources.some(
                 (allowed) => sha256CanonicalJson(source) === sha256CanonicalJson(allowed),
               ),
@@ -3216,7 +3251,7 @@ export const createPostgresLocalIdentityAccess = (
           input.projectId,
           branch,
           requestedScopes,
-          input.requestedSourceVersionRefs,
+          requestedSourceVersionRefs,
           stage,
         );
         const decidedAt = nowDate(clock);
@@ -3259,7 +3294,7 @@ export const createPostgresLocalIdentityAccess = (
             input.actorId,
             randomId("business-action"),
             branch,
-            { sourceVersionRefs: jsonValue(input.requestedSourceVersionRefs) },
+            { sourceVersionRefs: jsonValue(requestedSourceVersionRefs) },
             null,
             input.causalRunRef === undefined ? null : jsonValue(input.causalRunRef),
             new Date(decidedAt.getTime() + CONTEXT_TTL_MS),
@@ -3296,6 +3331,7 @@ export const createPostgresLocalIdentityAccess = (
     input,
   ) => {
     const stage = "authorize.visible-sources";
+    const branch = input.branch ?? "knowledge-modeling.hybrid-evidence";
     return db.transaction().execute(async (transaction) => {
       const tx = transaction as unknown as AccessDb;
       const authorization = input.authorization;
@@ -3304,14 +3340,14 @@ export const createPostgresLocalIdentityAccess = (
         recorded?.context === undefined ||
         recorded.context.actorId !== authorization.actorId ||
         recorded.context.projectId !== authorization.projectId ||
-        !recorded.context.grantedCapabilities.includes("knowledge-modeling.retrieve")
+        !recorded.context.grantedCapabilities.includes(branchCapability(branch))
       )
-        throw authorizationDenied(stage, "knowledge-modeling.hybrid-evidence");
+        throw authorizationDenied(stage, branch);
       const current = await evaluateCurrentAccess(
         tx,
         authorization.actorId,
         authorization.projectId,
-        "knowledge-modeling.hybrid-evidence",
+        branch,
         [],
         [],
         stage,
@@ -3325,7 +3361,7 @@ export const createPostgresLocalIdentityAccess = (
           task.actorId !== authorization.actorId ||
           task.projectId !== authorization.projectId
         )
-          throw authorizationDenied(stage, "knowledge-modeling.hybrid-evidence");
+          throw authorizationDenied(stage, branch);
         const stored = await loadStoredContext(tx, task.authorization.authorizationContextRef);
         const snapshot = stored?.row.revision_snapshot as
           { sourceVersionRefs?: unknown[] } | undefined;
@@ -3354,7 +3390,7 @@ export const createPostgresLocalIdentityAccess = (
           accountId: authorization.actorId,
           projectId: authorization.projectId,
           roles: current.membership.roles,
-          branch: "knowledge-modeling.hybrid-evidence",
+          branch,
           membershipActive: true,
           grantedScopeRefs: current.spatialScopeRefs,
           policy,
@@ -3546,7 +3582,11 @@ export const createPostgresLocalIdentityAccess = (
   const deploymentVerificationSchema = AuthorizationVerificationRequestV1Schema.omit({
     invocationId: true,
     branch: true,
-  }).extend({ actorId: IdentifierSchema, requiredCapability: ModuleCapabilityV1Schema });
+  }).extend({
+    actorId: IdentifierSchema,
+    requiredCapability: ModuleCapabilityV1Schema,
+    requestedSourceAccessGrantRefs: z.array(SourceAccessGrantRefV1Schema).max(256).optional(),
+  });
   const verifyDeploymentContext: PostgresLocalIdentityAccess["verifyDeploymentContext"] = async (
     input,
   ) => {
@@ -3588,7 +3628,7 @@ export const createPostgresLocalIdentityAccess = (
       branch,
       projectId: valid.projectId,
       requestedSpatialScopeRefs: valid.requestedSpatialScopeRefs,
-      requestedSourceVersionRefs: valid.requestedSourceVersionRefs,
+      requestedSourceVersionRefs: [...(await sourceVersionsForAccessGrants(db, valid, clock))],
       requestedAt: valid.requestedAt,
     });
   };

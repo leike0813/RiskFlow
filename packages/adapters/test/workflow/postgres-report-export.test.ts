@@ -561,7 +561,7 @@ describe("C35 报告导出适配器", () => {
       runVersionId: sha("run-a"),
       suffix: "a",
     });
-    const sourceRef = await registerOverviewQuery("query-report-basic");
+    const sourceRef = await registerOverviewQuery(`query-report-basic-${"source".repeat(40)}`);
     const { projection, report } = compose({ policies: [basePolicy()] });
 
     const exported = await projection.queryProjection.export(
@@ -588,6 +588,34 @@ describe("C35 报告导出适配器", () => {
     expect(preview.result.scope.projectRevisionRef).toEqual(PROJECT_REVISION_REF);
     expect(preview.result.scope.asOfRecordedAt).toBe(TIMESTAMP);
     expect(preview.result.items.length).toBeGreaterThan(0);
+
+    const firstPage = await projection.resultRead.readPage({
+      projectId: PROJECT_ID,
+      queryResultRef: sourceRef,
+      requestedAt: TIMESTAMP,
+      queryId: "long-cursor-first",
+      limit: 1,
+      authorization: authorizationFor("projection.result-read"),
+    });
+    if (firstPage.kind !== "page" || firstPage.nextCursor === undefined)
+      throw new Error("expected a bounded first page");
+    expect(firstPage.nextCursor.length).toBeGreaterThan(512);
+    expect(
+      ProjectionReportReadResultV1Schema.safeParse({
+        ...preview,
+        result: { ...preview.result, nextCursor: firstPage.nextCursor },
+      }).success,
+    ).toBe(true);
+    const nextPage = await projection.resultRead.readPage({
+      projectId: PROJECT_ID,
+      queryResultRef: sourceRef,
+      requestedAt: TIMESTAMP,
+      queryId: "long-cursor-next",
+      limit: 100,
+      cursor: firstPage.nextCursor,
+      authorization: authorizationFor("projection.result-read"),
+    });
+    expect(nextPage.kind).toBe("page");
 
     const artifact = await report.reportRead.read(
       readQuery("artifact", "artifact-basic", { exportArtifactRef }),

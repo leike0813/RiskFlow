@@ -1,3 +1,4 @@
+import { ContentArtifactRefV1Schema } from "@riskflow/contracts/ports";
 import {
   AgentCandidateVersionV1Schema,
   AgentRuntimeError,
@@ -8,11 +9,16 @@ import {
 import type { ArtifactRefV1 } from "@riskflow/core/artifacts";
 import {
   RETRIEVAL_REVIEW_TASK_TYPE,
+  BoundedHybridResupplementActionV1Schema,
+  ReadFrozenResultActionV1Schema,
   RetrievalReviewActionV1Schema,
+  RetrievalReviewCandidateSetV1Schema,
   RetrievalReviewIncrementV1Schema,
+  SubmitRetrievalReviewActionV1Schema,
   type RetrievalReviewPolicyV1,
 } from "@riskflow/core/identification/context";
 import type { StructuredCompletionResultV1 } from "@riskflow/core/model";
+import { z } from "@riskflow/core/model";
 
 import type {
   AgentModelStepContextV1,
@@ -83,7 +89,29 @@ export const renderRetrievalReviewModelStep = async (
   const budget = task.budgetPolicy;
   const policy = options.policy;
   const modelInput = await options.loadModelInput(task, context?.previousObservationArtifactRef);
+  const binding = z
+    .object({
+      candidateSetRef: ContentArtifactRefV1Schema,
+      candidateSet: RetrievalReviewCandidateSetV1Schema.pick({ candidateVersion: true }).strip(),
+    })
+    .parse(modelInput);
+  const candidateSetRef = ContentArtifactRefV1Schema.extend({
+    reference: ContentArtifactRefV1Schema.shape.reference.extend({
+      entityId: z.literal(binding.candidateSetRef.reference.entityId),
+      versionId: z.literal(binding.candidateSetRef.reference.versionId),
+    }),
+  });
   return {
+    outputSchema: z.discriminatedUnion("kind", [
+      ReadFrozenResultActionV1Schema.extend({ candidateSetRef }),
+      BoundedHybridResupplementActionV1Schema.extend({ candidateSetRef }),
+      SubmitRetrievalReviewActionV1Schema.extend({
+        increment: RetrievalReviewIncrementV1Schema.extend({
+          candidateSetRef,
+          candidateVersion: z.literal(binding.candidateSet.candidateVersion),
+        }),
+      }),
+    ]),
     messages: [
       { role: "system", content: RETRIEVAL_REVIEW_MODEL_INSTRUCTION },
       {

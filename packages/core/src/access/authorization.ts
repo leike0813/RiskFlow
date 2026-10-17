@@ -23,6 +23,7 @@ export interface BusinessActionAuthorizationInputV1 {
   readonly invocationId: string;
   readonly requestedSpatialScopeRefs: readonly SpatialScopeRefV1[];
   readonly requestedSourceVersionRefs: readonly SourceVersionRefV1[];
+  readonly requestedSourceAccessGrantRefs?: readonly SourceAccessGrantRefV1[] | undefined;
   readonly taskRef?: AgentTaskRefV1;
   readonly causalRunRef?: WorkflowRunRefV1;
   readonly authorizationContextRef?: AuthorizationContextRefV1;

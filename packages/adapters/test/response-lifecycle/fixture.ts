@@ -70,6 +70,7 @@ import {
   createPostgresResponseLifecycleContextReader,
   type EffectForecastExecutorSourceV1,
   type PostgresResponseLifecycleAdapter,
+  type PostgresResponseLifecycleContextReader,
   type ResponseLifecycleDownstreamAuthorizationRequestV1,
   type ResponseLifecycleDownstreamAuthorizerV1,
   type ResponseLifecycleMeasureReleaseReaderV1,
@@ -125,6 +126,7 @@ export interface ResponseLifecyclePostgresFixtureV1 {
   readonly recommendation: RecommendationPostgresFixtureV1;
   readonly db: Kysely<PostgresDatabase>;
   readonly adapter: PostgresResponseLifecycleAdapter;
+  readonly contextReader: PostgresResponseLifecycleContextReader;
   readonly projectId: string;
   readonly managerId: string;
   readonly rootSpatialScopeRef: SpatialScopeRefV1;
@@ -796,6 +798,7 @@ export const startResponseLifecycleFixture = async (
     recommendation,
     db,
     adapter,
+    contextReader,
     projectId,
     managerId,
     rootSpatialScopeRef,

@@ -27,6 +27,7 @@ import {
   ContentArtifactRefV1Schema,
   type AuthorizationContextV1,
   type AgentTaskResultRefV1,
+  type AgentTaskRefV1,
   type ReviewDecisionRefV1,
   type ContentArtifactRefV1,
   type ContractReferenceV1,
@@ -209,9 +210,9 @@ export interface RiskFlowGraphRunContextV1 {
   /** 本次恢复带来的识别准备快照引用（`engineering.inputs-ready.v1`）。 */
   readonly identificationPreparationSnapshotRef?: IdentificationPreparationSnapshotRefV1;
   readonly identificationResumeCause?: IdentificationGraphResumeCauseV1;
-  readonly businessPreparationResume?: Extract<
+  readonly assessmentResumeCause?: Extract<
     RiskFlowResumeValueV1,
-    { readonly kind: "business-preparation-ready" }
+    { readonly kind: "business-preparation-ready" | "agent-task-completed" }
   >;
   /**
    * 人工决定等待门（design D2）：只在以 `waitForDecision` 创建运行的**那一次**命令上出现。
@@ -226,6 +227,7 @@ export interface RiskFlowGraphRunContextV1 {
 /** 恢复值：只携带稳定引用与原因，不携带自由正文（`wait` 节点消费）。 */
 export type RiskFlowResumeValueV1 =
   | { readonly kind: "agent-task-completed"; readonly agentTaskResultRef: AgentTaskResultRefV1 }
+  | { readonly kind: "agent-task-failed"; readonly agentTaskRef: AgentTaskRefV1 }
   | { readonly kind: "review-resolved"; readonly reviewDecisionRef: ReviewDecisionRefV1 }
   | {
       readonly kind: "inputs-ready";
@@ -1588,13 +1590,16 @@ const aggregateAssessmentSubRuns = async (input: {
       continue;
     }
     let state = latest.state;
-    if (
-      state.status === "waiting" &&
-      state.lastWaitingRef?.kind === "business-preparation" &&
-      run.businessPreparationResume !== undefined &&
-      refKeyOf(state.lastWaitingRef.preparationRef) ===
-        refKeyOf(run.businessPreparationResume.preparationRef)
-    ) {
+    const cause = run.assessmentResumeCause;
+    const waiting = state.lastWaitingRef;
+    const matches =
+      (waiting?.kind === "business-preparation" &&
+        cause?.kind === "business-preparation-ready" &&
+        refKeyOf(waiting.preparationRef) === refKeyOf(cause.preparationRef)) ||
+      (waiting?.kind === "agent-task" &&
+        cause?.kind === "agent-task-completed" &&
+        refKeyOf(waiting.agentTaskRef) === refKeyOf(cause.agentTaskResultRef.agentTaskRef));
+    if (state.status === "waiting" && cause !== undefined && matches) {
       const candidates =
         run.entryMode !== "identify-and-assess"
           ? [segmentedAssessmentStartCommandFor({ run })]
@@ -1618,7 +1623,7 @@ const aggregateAssessmentSubRuns = async (input: {
       await ports.assessmentRuntime.resume({
         ...command,
         expectedRunVersionId: state.runVersionId,
-        resumeCause: run.businessPreparationResume,
+        resumeCause: cause,
       });
       const resumed = await ports.registrationStore.readLatestRunState({
         projectId: run.projectId,

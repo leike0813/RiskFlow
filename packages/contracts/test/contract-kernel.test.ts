@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { AssessmentSourceFieldFactsV1Schema, ResumeCauseV1Schema } from "../src/ports/index.js";
+
 import {
   APPLICABILITY_METADATA_DIMENSION_VALUES,
   ApplicabilityMetadataDimensionSchema,
@@ -79,6 +81,71 @@ const vocabularyCases = [
 const recordedAt = "2026-08-31T00:00:00Z";
 const later = "2026-08-31T01:00:00+08:00";
 const versionReference = { entityId: "riskflow-record", versionId: "v1" };
+
+describe("评估准备资料字段", () => {
+  const field = {
+    documentType: "construction-log",
+    fieldPath: ["support", "facePressureKpa"],
+    value: 300,
+    evidenceReferences: [
+      { sourceVersion: versionReference, locator: { sourceSegmentId: "segment" } },
+    ],
+  };
+  it("preserves explicit typed fields and rejects duplicate or risk-owned keys", () => {
+    expect(AssessmentSourceFieldFactsV1Schema.parse([field])).toEqual([field]);
+    expect(
+      AssessmentSourceFieldFactsV1Schema.safeParse([field, { ...field, value: 400 }]).success,
+    ).toBe(false);
+    expect(
+      AssessmentSourceFieldFactsV1Schema.safeParse([
+        { ...field, documentType: "standardized-risk-record" },
+      ]).success,
+    ).toBe(false);
+    expect(
+      AssessmentSourceFieldFactsV1Schema.safeParse(
+        Array.from({ length: 1025 }, (_, i) => ({ ...field, fieldPath: [String(i)] })),
+      ).success,
+    ).toBe(false);
+    expect(
+      AssessmentSourceFieldFactsV1Schema.safeParse(
+        Array.from({ length: 257 }, (_, i) => ({
+          ...field,
+          fieldPath: [String(i)],
+          evidenceReferences: [
+            { sourceVersion: versionReference, locator: { sourceSegmentId: `segment-${i}` } },
+          ],
+        })),
+      ).success,
+    ).toBe(false);
+  });
+});
+
+describe("原识别任务失败通知", () => {
+  const ref = {
+    kind: "agent-task",
+    reference: versionReference,
+    taskType: "retrieval-review",
+    triggerMode: "embedded",
+    modelDeploymentRef: versionReference,
+    promptTemplateRef: versionReference,
+    toolPolicyRef: versionReference,
+    budgetPolicyRef: versionReference,
+    incrementSchemaRef: versionReference,
+    validationPolicyRef: versionReference,
+  };
+  it("只接收精确内嵌检索任务引用", () => {
+    const cause = { kind: "agent-task-failed", agentTaskRef: ref };
+    expect(ResumeCauseV1Schema.safeParse(cause).success).toBe(true);
+    for (const invalid of [
+      { ...cause, agentTaskRef: { ...ref, taskType: "data-cleaning" } },
+      { ...cause, agentTaskRef: { ...ref, triggerMode: "interactive" } },
+      { ...cause, error: "caller-supplied" },
+      { kind: "agent-task-failed" },
+    ]) {
+      expect(ResumeCauseV1Schema.safeParse(invalid).success).toBe(false);
+    }
+  });
+});
 const versionedRecord = {
   reference: versionReference,
   effectivePeriod: { validFrom: recordedAt, validTo: "2026-08-31T02:00:00Z" },
@@ -387,7 +454,7 @@ describe("评估记录", () => {
     ).toBe(false);
 
     expect(GradeIntervalSchema.safeParse({ grade: "I", lowerBound: 4 }).success).toBe(true);
-    expect(GradeIntervalSchema.safeParse({ grade: "II" }).success).toBe(false);
+    expect(GradeIntervalSchema.safeParse({ grade: "II" }).success).toBe(true);
     expect(
       GradeIntervalSchema.safeParse({ grade: "III", lowerBound: 4, upperBound: 3 }).success,
     ).toBe(false);

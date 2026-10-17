@@ -35,6 +35,10 @@ import {
 import type { MonitoringSnapshotV1 } from "../engineering-data/monitoring/index.js";
 import { sha256CanonicalJson } from "../persistence/index.js";
 import { decimalFromFiniteNumber } from "../risk-assessment/engine/index.js";
+import type {
+  ApplicableRuleSetDocumentV1,
+  AssessmentBasisReleaseSetReadResultV1,
+} from "../scoring-rules/index.js";
 
 import {
   ResponseDeviationFactRefV1Schema,
@@ -448,6 +452,29 @@ export interface ResponseLifecycleAssessmentChainV1 {
 }
 
 export interface ResponseLifecycleContextReaderV1 {
+  /** 正式效果预测拥有的冻结评估输入与依据；用于反馈后续分段。 */
+  readForecastBasis(input: {
+    readonly requestId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly effectForecastRef: EffectForecastRefV1;
+  }): Promise<{
+    readonly frozenAssessmentBasisRef: AssessmentInputSnapshotRefV1;
+    readonly assessmentBasisReleaseSetRef: ResponseLifecycleAssessmentChainV1["basisRef"];
+  }>;
+
+  /** 当前受权读取冻结评分成员和已验证的适用集正文，供跨准备的依据相容判断。 */
+  readAssessmentBasis(input: {
+    readonly requestId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly basisReleaseSetRef: ResponseLifecycleAssessmentChainV1["basisRef"];
+  }): Promise<
+    Extract<AssessmentBasisReleaseSetReadResultV1, { readonly kind: "succeeded" }> & {
+      readonly applicableRuleSetDocument: ApplicableRuleSetDocumentV1;
+    }
+  >;
+
   /** 按精确引用读取 C27 建议链与 C25 基线，逐项核对工程/空间/风险输入。 */
   readRecommendationContext(input: {
     readonly requestId: string;

@@ -54,6 +54,7 @@ import {
   createDeploymentAssessmentV1,
   createDeploymentAssessmentGraphPoliciesV1,
   createDeploymentRecommendationAgentV1,
+  createDeploymentRecommendationTaskAuthorizationV1,
   createDeploymentCalibrationAgentV1,
 } from "./composition/assessment.mjs";
 import { createDeploymentCalibrationTaskPortV1 } from "./composition/calibration-task.mjs";
@@ -435,7 +436,75 @@ export const createDeploymentRetrievalQualityGateV1 = ({
   });
 };
 
-/** C18/C19 共用 C17 的 C16；每个工程只使用其批准的评分策略。 */
+export const createDeploymentScoringConflictReviewV1 = ({
+  authorizeDownstream,
+  review,
+  policy,
+}) => ({
+  async readRuleConflictDecision(input) {
+    const authorization = await authorizeDownstream({
+      projectId: input.projectId,
+      actorId: input.authorization.actorId,
+      branch: "review-audit.trace",
+      invocationId: input.invocationId,
+      requestedAt: input.requestedAt,
+    });
+    if (
+      authorization.projectId !== input.projectId ||
+      authorization.actorId !== input.authorization.actorId
+    ) {
+      throw new TypeError("DEPLOYMENT_SCORING_REVIEW_AUTHORIZATION_MISMATCH");
+    }
+    return review.readRuleConflictDecision({ ...input, authorization });
+  },
+  async ensureConflictReviewTask(input) {
+    const authorization = await authorizeDownstream({
+      projectId: input.projectId,
+      actorId: input.authorization.actorId,
+      branch: "review-audit.request-review",
+      invocationId: input.commandId,
+      requestedAt: input.issuedAt,
+    });
+    if (
+      authorization.projectId !== input.projectId ||
+      authorization.actorId !== input.authorization.actorId
+    ) {
+      throw new TypeError("DEPLOYMENT_SCORING_REVIEW_AUTHORIZATION_MISMATCH");
+    }
+    const relationRef = { entityId: `rule-relation:${input.relation.relationId}`, versionId: "1" };
+    const result = await review.requestReview({
+      kind: "request-review",
+      commandId: input.commandId,
+      idempotencyKey: input.idempotencyKey,
+      projectId: input.projectId,
+      actorId: authorization.actorId,
+      issuedAt: input.issuedAt,
+      authorization,
+      payload: {
+        reviewType: "rule-conflict",
+        targetRef: { kind: "rule-conflict", reference: relationRef },
+        validationSnapshotRef: { kind: "validation-snapshot", reference: relationRef },
+        evidenceSnapshotRef: { kind: "evidence-snapshot", reference: relationRef },
+        waitingRunRef: {
+          kind: "workflow-run",
+          reference: {
+            entityId: `rule-conflict-review:${input.relation.relationId}`,
+            versionId: "1",
+          },
+        },
+        reviewPolicyRef: policy.conflictPriorityPolicyRef,
+      },
+    });
+    return result.kind === "succeeded"
+      ? {
+          kind: "succeeded",
+          reviewTaskRef: result.result.reviewTaskRef,
+          reviewAttemptId: input.commandId,
+        }
+      : result;
+  },
+});
+
 export const createDeploymentScoringGovernanceV1 = ({
   foundation,
   resolveDeploymentPolicies,
@@ -470,6 +539,11 @@ export const createDeploymentScoringGovernanceV1 = ({
     const policy = resolveDeploymentPolicies.resolveProject(binding.projectId).policies[
       "scoring-rules"
     ];
+    const conflictReview = createDeploymentScoringConflictReviewV1({
+      authorizeDownstream,
+      review,
+      policy,
+    });
     const adapter = createPostgresScoringRulesAdapter({
       ...common,
       access: foundation.access,
@@ -485,7 +559,8 @@ export const createDeploymentScoringGovernanceV1 = ({
       preparationSnapshot: foundation.contextSource,
       authorizeConfigurationRead: (request) =>
         foundation.authorizationScope.authorizeCurrent(request),
-      conflictDecisions: review,
+      conflictDecisions: conflictReview,
+      conflictReview,
       startAgentTask: async () => {
         throw new TypeError("DEPLOYMENT_SCORING_AGENT_AUTHORING_UNAVAILABLE");
       },
@@ -824,6 +899,19 @@ export const createDeploymentAuthorizationScopeV1 = ({
       (request.actorId !== undefined && request.actorId !== source.context.actorId)
     )
       throw new TypeError("DEPLOYMENT_AUTHORIZATION_SCOPE_MISSING");
+    const recordedSource =
+      !reuseSnapshot ||
+      isDeepStrictEqual(request.authorizationContextRef, source.context.authorizationContextRef)
+        ? source
+        : await access.readDeploymentAuthorizationSource({
+            authorizationContextRef: request.authorizationContextRef,
+            projectId: request.projectId,
+            actorId: source.context.actorId,
+          });
+    if (recordedSource === undefined)
+      throw new TypeError("DEPLOYMENT_AUTHORIZATION_SOURCE_INVALID");
+    const spatialScopeRefs = request.requestedSpatialScopeRefs ?? request.spatialScopeRefs;
+    const sourceVersionRefs = request.requestedSourceVersionRefs;
     const input = {
       actorId: source.context.actorId,
       projectId: source.context.projectId,
@@ -831,10 +919,14 @@ export const createDeploymentAuthorizationScopeV1 = ({
       capability: request.requiredCapability ?? MODULE_BRANCH_CAPABILITY_V1[request.branch],
       invocationId: current.actionId ?? request.invocationId ?? randomUUID(),
       requestedSpatialScopeRefs:
-        request.requestedSpatialScopeRefs ??
-        request.spatialScopeRefs ??
-        source.context.spatialScopeRefs,
-      requestedSourceVersionRefs: request.requestedSourceVersionRefs ?? source.sourceVersionRefs,
+        reuseSnapshot && spatialScopeRefs?.length === 0
+          ? recordedSource.context.spatialScopeRefs
+          : (spatialScopeRefs ?? recordedSource.context.spatialScopeRefs),
+      requestedSourceVersionRefs:
+        reuseSnapshot && sourceVersionRefs?.length === 0
+          ? (recordedSource.sourceVersionRefs ?? [])
+          : (sourceVersionRefs ?? recordedSource.sourceVersionRefs ?? []),
+      requestedSourceAccessGrantRefs: request.requestedSourceAccessGrantRefs,
       ...(current.execution === undefined ? {} : { taskRef: current.execution.taskRef }),
       ...(reuseSnapshot ? { authorizationContextRef: request.authorizationContextRef } : {}),
       ...((request.causalRunRef ?? current.causalRunRef) === undefined
@@ -847,6 +939,7 @@ export const createDeploymentAuthorizationScopeV1 = ({
       input.capability,
       input.requestedSpatialScopeRefs,
       input.requestedSourceVersionRefs,
+      input.requestedSourceAccessGrantRefs,
       input.taskRef,
       input.authorizationContextRef,
     ]);
@@ -1026,7 +1119,24 @@ export const createDeploymentAuthorizationScopeV1 = ({
       },
       async authorize(request) {
         if (scope.getStore()?.source !== undefined) return actionDecision(request);
-        const decision = await access.authorize(request);
+        let decision;
+        if (request.invocation.kind === "human-session") {
+          const session = await access.readSession({
+            kind: "introspect-session",
+            sessionToken: request.invocation.sessionToken,
+          });
+          decision = await access.authorizeBusinessAction({
+            actorId: session.accountRef.entityId,
+            projectId: request.projectId,
+            branch: request.branch,
+            capability: MODULE_BRANCH_CAPABILITY_V1[request.branch],
+            invocationId: request.invocationId,
+            requestedSpatialScopeRefs: request.requestedSpatialScopeRefs,
+            requestedSourceVersionRefs: request.requestedSourceVersionRefs,
+          });
+        } else {
+          decision = await access.authorize(request);
+        }
         const current = scope.getStore();
         if (current !== undefined) {
           current.source = await sourceOf(decision.context);
@@ -1062,10 +1172,32 @@ export const createDeploymentAuthorizedArtifactStoreV1 = ({ store, access }) => 
         projectId: request.projectId,
         actorId: request.actorId,
         requiredCapability: request.requiredCapability,
+        requestedSourceAccessGrantRefs: [
+          ...new Map(
+            [
+              ...("artifactRef" in request ? [] : request.authorization.sourceAccessGrantRefs),
+              ...manifests.flatMap((manifest) => manifest.access.sourceAccessGrantRefs),
+              ...(request.additionalSourceAccessGrantRefs ?? []),
+            ].map((grant) => [grant.reference.entityId, grant]),
+          ).values(),
+        ],
         requestedSpatialScopeRefs:
           manifests.length === 0
             ? request.authorization.spatialScopeRefs
-            : manifests.flatMap((manifest) => manifest.access.spatialScopeRefs),
+            : [
+                ...new Map(
+                  manifests.flatMap((manifest) =>
+                    manifest.access.spatialScopeRefs.map((scope) => [
+                      JSON.stringify([
+                        scope.kind,
+                        scope.reference.entityId,
+                        scope.reference.versionId,
+                      ]),
+                      scope,
+                    ]),
+                  ),
+                ).values(),
+              ],
         requestedSourceVersionRefs: [
           ...new Map(
             evidence.map(({ sourceVersion }) => [
@@ -1128,6 +1260,7 @@ export const createDeploymentAuthorizedModelGatewayV1 = ({ gateway, access }) =>
         projectId: request.projectId,
         actorId: request.actorId,
         requiredCapability: request.requiredCapability,
+        requestedSourceAccessGrantRefs: request.authorization.sourceAccessGrantRefs,
         requestedSpatialScopeRefs: request.authorization.spatialScopeRefs,
         requestedSourceVersionRefs: [
           ...new Map(
@@ -1702,7 +1835,7 @@ export const createDeploymentGraphsV1 = async (input) => {
       routeDecisions: {
         readRouteDecision: (...args) => routeDecisions.useMethod("readRouteDecision", ...args),
       },
-      taskAuthorization: { authorize: authorizeDownstream },
+      taskAuthorization: createDeploymentRecommendationTaskAuthorizationV1(authorizeDownstream),
       reviewAuthorization: { authorize: authorizeDownstream },
       measureReleaseReader: scoring.measureReleaseReader,
       recommendationAgent: createDeploymentRecommendationAgentV1({
@@ -1712,8 +1845,15 @@ export const createDeploymentGraphsV1 = async (input) => {
         siteBindings,
         siteContextReader: { read: (...args) => siteReader.useMethod("read", ...args) },
       }),
-      calibrationAgent: createDeploymentCalibrationAgentV1(commonAgent),
-      calibrationTaskPort: createDeploymentCalibrationTaskPortV1({ artifactStore, access }),
+      calibrationAgent: createDeploymentCalibrationAgentV1({
+        ...commonAgent,
+        readArtifactManifest: foundation.readArtifactManifest,
+      }),
+      calibrationTaskPort: createDeploymentCalibrationTaskPortV1({
+        artifactStore,
+        access,
+        policyCatalog: policies.reader,
+      }),
       policies: createDeploymentAssessmentGraphPoliciesV1({
         projects,
         basis: scoring.basis,
@@ -1886,7 +2026,28 @@ export const createDeploymentAgentRunnerV1 = (host) => {
     runner,
     settleAuthoringFailures: async (signal) => {
       signal?.throwIfAborted();
-      const result = await identification.compositions.knowledge.adapter.settleAuthoringFailures();
+      const result = await identification.compositions.knowledge.adapter.settleAuthoringFailures(
+        async (input, operation) => {
+          signal?.throwIfAborted();
+          const task = await tasks.getTask(input.taskRef);
+          if (
+            task === undefined ||
+            !isDeepStrictEqual(task.envelope.agentTaskRef, input.taskRef) ||
+            task.envelope.projectId !== input.projectId ||
+            task.envelope.actorId !== input.actorId ||
+            task.envelope.authorization.projectId !== input.projectId ||
+            task.envelope.authorization.actorId !== input.actorId
+          )
+            throw new TypeError("DEPLOYMENT_KNOWLEDGE_FAILURE_SOURCE_INVALID");
+          return foundation.authorizationScope.run(
+            {
+              authorization: task.envelope.authorization,
+              causalRunRef: task.envelope.parentRunRef,
+            },
+            operation,
+          );
+        },
+      );
       signal?.throwIfAborted();
       return result;
     },

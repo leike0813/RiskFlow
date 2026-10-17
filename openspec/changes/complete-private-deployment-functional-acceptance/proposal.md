@@ -1,6 +1,6 @@
 ## Why
 
-当前接续：过度防御性设计减负由独立 [reduce-defensive-design-overhead](../reduce-defensive-design-overhead/proposal.md) 承担，责任见其 handoff.md。原5/19进度、成果与历史证据保留。逐层授权、检索摘要全等、检查点递归举证与确定性组合重复审核，以新 change 设计及本目录整理后的活动 delta 为后续目标。下文 D-ID 保留历史实施记录。
+当前接续：过度防御性设计减负已由独立 [reduce-defensive-design-overhead](../archive/2026-10-16-reduce-defensive-design-overhead/proposal.md) 完成并归档，责任见其 handoff.md。当前任务6/19，现场v110、000059；新清洗准备、纵向监测三批次/快照及旧发布条目补登记已完成，D-102修复全组待复核的空决定收口、D-103修复工作计划混入失败I5诊断引用，D-104约束检索审阅生成绑定且一次真实模型诊断通过。当前原父等待失败检索任务，D-105公开失败通知已获用户批准并在实施，范围见 evidence/failed-review-resume-scope-proposal.md；完整业务尚未通过，证据见 evidence/resume-after-reduction-2026-10-16.md。原成果与历史证据保留。下文 D-ID 保留历史实施记录。
 
 前置 change 已实现大部分部署、业务宿主与验收程序，但正式来源补证、完整 Electron 场景和真实业务报告尚未完成。将这些剩余义务独立规划，以完整终态证据判断功能是否可交付。
 

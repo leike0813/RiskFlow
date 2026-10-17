@@ -23,6 +23,7 @@ import {
   HTTP_COOKIE_NAME_V1,
   HTTP_JSON_MEDIA_TYPE_V1,
   HTTP_SSE_MEDIA_TYPE_V1,
+  HTTP_WORKFLOW_RUN_ID_MAX_LENGTH_V1,
   HttpTransportError,
   SessionChangePasswordRequestV1Schema,
   SessionLoginRequestV1Schema,
@@ -615,7 +616,11 @@ export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {
   const generateId = options.idGenerator ?? randomUUID;
   const ssePolicy = normalizeSsePolicy(options.ssePolicy);
   SsePolicyV1Schema.parse(ssePolicy);
-  const app = Fastify({ bodyLimit: MAX_HTTP_BODY_BYTES, logger: false });
+  const app = Fastify({
+    bodyLimit: MAX_HTTP_BODY_BYTES,
+    logger: false,
+    routerOptions: { maxParamLength: HTTP_WORKFLOW_RUN_ID_MAX_LENGTH_V1 },
+  });
   const activeSseControllers = new Set<AbortController>();
   const accessLogStartedAt = new WeakMap<object, number>();
   const accessLog = options.accessLog;

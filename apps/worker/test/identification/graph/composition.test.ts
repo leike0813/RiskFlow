@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DomainEventV1Schema } from "@riskflow/contracts/events";
 
 import {
   createIdentificationGraphComposition,
@@ -60,6 +61,68 @@ const REQUIRED_DEPENDENCIES = [
 ] as const;
 
 describe("C24 识别子图组合根", () => {
+  it.each([
+    "knowledge-revision",
+    "rule-conflict",
+    "response-candidate",
+    "calibration-suggestion",
+    "identification-group",
+  ] as const)("复核决定 %s 仅在识别类型进入识别恢复", async (reviewType) => {
+    const ref = (kind: string) => ({ kind, reference: { entityId: kind, versionId: "1" } });
+    const reviewTaskRef = {
+      ...ref("review-task"),
+      reviewType,
+      targetRef: ref(reviewType),
+      waitingRunRef: ref("workflow-run"),
+    };
+    const event = DomainEventV1Schema.parse({
+      schemaVersion: "1",
+      eventId: `review-${reviewType}`,
+      eventVersion: 1,
+      eventType: "review.review-resolved.v1",
+      projectId: "project-1",
+      aggregateRef: reviewTaskRef,
+      occurredAt: "2026-10-17T00:00:00.000Z",
+      recordedAt: "2026-10-17T00:00:00.000Z",
+      causationId: "decide-review",
+      correlationId: "workflow-run",
+      producerCommandId: "decide-review",
+      idempotencyKey: "decide-review",
+      authorizationContextRef: ref("authorization-context"),
+      auditTrailRef: ref("audit-trail"),
+      payload: {
+        reviewTaskRef,
+        reviewDecisionRef: ref("review-decision"),
+        resumeRunRef: ref("workflow-run"),
+      },
+    });
+    let recoveryRequests = 0;
+    const options: IdentificationGraphCompositionOptionsV1 = {
+      ...requiredOptions(),
+      recoveryConsumer: {
+        consume: async (_name, received, handler) => ({
+          ...(await handler({} as never, received)),
+          replayed: false,
+        }),
+      },
+      recoveryAuthorization: async () => {
+        recoveryRequests += 1;
+        return undefined;
+      },
+    };
+    const result = createIdentificationGraphComposition(options).consumeRecoveryEvent(event);
+    if (reviewType === "identification-group") {
+      await expect(result).rejects.toBeInstanceOf(TypeError);
+      expect(recoveryRequests).toBe(1);
+    } else {
+      await expect(result).resolves.toEqual({
+        resultRef: event.payload.reviewDecisionRef,
+        replayed: false,
+      });
+      expect(recoveryRequests).toBe(0);
+    }
+  });
+
   it.each(REQUIRED_DEPENDENCIES)("缺少必需依赖 %s 时构造期失败闭合", (dependency) => {
     const options = { ...requiredOptions(), [dependency]: undefined } as never;
     expect(() => createIdentificationGraphComposition(options)).toThrow(

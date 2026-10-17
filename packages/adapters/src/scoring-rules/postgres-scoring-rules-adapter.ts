@@ -1204,7 +1204,11 @@ export class PostgresScoringRulesAdapter
         "AUTHORIZATION_DENIED",
       );
     }
-    const requestId = `${target.reference.entityId}:${target.reference.versionId}:configuration`;
+    const requestId = `scoring-configuration-${sha256CanonicalJson({
+      packageRef: target,
+      authorizationContextRef: authorization.authorizationContextRef,
+      requestedAt: authorization.decidedAt,
+    })}`;
     const readAuthorization = await this.#authorizeConfigurationRead({
       projectId,
       actorId: authorization.actorId,
@@ -1536,6 +1540,13 @@ export class PostgresScoringRulesAdapter
     }
     // 进入 C16 人工审核前：关系事实、快照摘要、比较基线与全部 C07 决定必须精确闭合。
     if (metadata.definitionType === "structured-scoring-rule") {
+      // 配置包直导只在提交事务里写关系事实，此处按稳定身份补缺失的 C07 task/link 再门禁。
+      await this.#ensureConflictReviewLinks({
+        projectId: input.projectId,
+        revisionRef: input.revisionRef,
+        authorization: input.authorization,
+        issuedAt: input.authorization.decidedAt,
+      });
       await this.#assertRelationGate({
         projectId: input.projectId,
         revisionRef: input.revisionRef,

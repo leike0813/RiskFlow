@@ -10,6 +10,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { decisionRefFor } from "@riskflow/core/human-decision-feedback";
+import {
+  C28_FIXTURE_TIME,
+  C28_FORECAST_METHOD,
+  C28_FORECAST_REQUIRED_REF,
+} from "../response-lifecycle/fixture.js";
 import type {
   ModuleErrorV1,
   ResponseRecommendationRefV1,
@@ -655,7 +660,71 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
 
   pgIt("执行后反馈冻结精确输入并只以精确引用启动后续分段", async () => {
     const state = fixture!;
-    const { prepared, scope } = await adoptRecommendation("c41-feedback");
+    const { prepared, scope, adoption } = await adoptRecommendation("c41-feedback");
+    state.state.setExecutors([
+      {
+        method: C28_FORECAST_METHOD,
+        requiredRef: C28_FORECAST_REQUIRED_REF,
+        forecast: ({ policy }) => ({
+          kind: "available",
+          result: {
+            method: C28_FORECAST_METHOD,
+            requiredRef: C28_FORECAST_REQUIRED_REF,
+            targetIndicatorId: policy.targetIndicatorId,
+            unit: policy.unit,
+            horizonSteps: policy.horizonSteps,
+            predictedValue: "2",
+            predictedRiskState: { likelihoodScore: 2, consequenceScore: 2, riskLevel: "level-2" },
+            summary: "synthetic forecast",
+            evidenceReferences: [
+              {
+                sourceVersion: { entityId: "source-version-c28", versionId: "1" },
+                locator: { sourceSegmentId: "c28-test-evidence" },
+              },
+            ],
+          },
+        }),
+      },
+    ]);
+    const binding = {
+      schemaVersion: "1" as const,
+      projectId: state.projectId,
+      responseRecommendationRef: prepared.recommendationRef,
+      spatialScopeRef: scope,
+      routeDecisionRef: adoption.routeDecisionRef,
+      forecastRunRef: adoption.forecastRunRef,
+      boundAt: C28_FIXTURE_TIME,
+    };
+    const forecastSnapshot = state.state.forecastSnapshot({
+      recommendationRef: prepared.recommendationRef,
+      routeDecisionRef: adoption.routeDecisionRef,
+      preActionMonitoringSnapshotRef: prepared.preActionMonitoringSnapshotRef,
+      basisRef: prepared.baselineAssessmentInputSnapshotRef,
+      forecastPolicyRef: state.state.forecastPolicyReleaseRef,
+      authorizationContextRef: {
+        kind: "authorization-context",
+        reference: { entityId: "placeholder", versionId: "1" },
+      },
+    });
+    const forecastCommand = await state.state.forecastCommand({
+      commandId: "c41-feedback-forecast",
+      binding,
+      snapshotRef: forecastSnapshot.ref,
+      snapshot: forecastSnapshot.body,
+    });
+    const forecast = settled(
+      await state.state.forecastResponse({
+        ...forecastCommand,
+        payload: {
+          ...forecastCommand.payload,
+          forecastInputSnapshot: {
+            ...forecastCommand.payload.forecastInputSnapshot,
+            authorizationContextRef: forecastCommand.authorization.authorizationContextRef,
+          },
+        },
+      }),
+    );
+    expect(forecast.result.outcome.availability.kind).toBe("available");
     const executionRef = await executeAdopted({
       prefix: "c41-feedback",
       recommendationRef: prepared.recommendationRef,
@@ -803,7 +872,21 @@ describe("C41 人工决定与反馈命令 PostgreSQL 链", () => {
       entryMode: "record-response-feedback",
       executionRecordRef: executionRef,
       feedbackRef: retried.result.feedbackRef,
+      frozenAssessmentBasisRef: prepared.baselineAssessmentInputSnapshotRef,
+      forecastRef: forecast.result.outcome.effectForecastRef,
     });
+    const actualProof = settled(
+      await state.verifyAssessmentProof({
+        queryId: "c41-feedback-actual-proof",
+        riskAssessmentRecordRef: post.assessmentRecordRef,
+        spatialScopeRef: scope,
+      }),
+    );
+    expect(actualProof.result.assessmentInputSnapshotRef).not.toEqual(
+      prepared.baselineAssessmentInputSnapshotRef,
+    );
+    expect(settled(await state.record(command)).result).toEqual(retried.result);
+    expect(state.workflow.segmentStartCalls).toHaveLength(segmentStartsBefore + 1);
 
     // 正式反馈事件与精确引用一致：后续分段只读该引用。
     const events = await adminRows<{ event_json: Record<string, unknown> }>(

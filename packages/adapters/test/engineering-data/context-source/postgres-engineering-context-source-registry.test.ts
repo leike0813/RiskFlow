@@ -18,6 +18,7 @@ import type {
   EngineeringDataQueryV1,
   EngineeringFreezeCommandV1,
   ProjectRevisionRefV1,
+  RiskInputFactFieldV1,
   SourceSegmentSetRefV1,
   SourceVersionRefV1,
   SpatialScopeRefV1,
@@ -5213,6 +5214,246 @@ describe("C11 PostgreSQL context/source registry", () => {
           preparationSnapshotRef,
         });
         expect(read).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+      }, 120_000);
+    });
+
+    /**
+     * D-112：评估准备可显式冻结带证据的资料字段（施工日志压力、地质等级一类）。资料值与
+     * 证据必须落在本工程真实登记的资料版本与段上；冻结把二者并入准备正文与摘要，回读按
+     * 原证据定位与当前授权复验。资料段沿用本套件 beforeAll 登记的真实来源版本，不补 SQL 夹具。
+     */
+    describe("D-112 评估准备显式资料字段", () => {
+      let segmentId: string | undefined;
+
+      const registeredSegmentId = (): string => {
+        if (segmentId === undefined) throw new Error("D-112 source segment is not registered");
+        return segmentId;
+      };
+
+      const registeredEvidence = (): RiskInputFactFieldV1["evidenceReferences"][number] => {
+        const state = requireWorld();
+        return {
+          locator: { sourceSegmentId: registeredSegmentId() },
+          sourceVersion: state.sourceVersionRef.reference,
+        };
+      };
+
+      const pressureFact = (
+        value: number,
+        evidence: RiskInputFactFieldV1["evidenceReferences"][number],
+      ): RiskInputFactFieldV1 => ({
+        documentType: "construction-log",
+        fieldPath: ["shield", "chamberPressure"],
+        value,
+        evidenceReferences: [evidence],
+      });
+
+      const freezeWithSourceFields = async (
+        suffix: string,
+        sourceFieldFacts: readonly RiskInputFactFieldV1[],
+        idempotencyKey = `d112-freeze-${suffix}`,
+      ) => {
+        const state = requireWorld();
+        const commandId = `d112-freeze-${suffix}`;
+        const authorization = await authorizeBranch(
+          commandId,
+          "engineering-data.assessment-preparation",
+          [state.sourceVersionRef],
+        );
+        return {
+          commandId,
+          idempotencyKey,
+          projectId: project,
+          actorId: state.managerId,
+          issuedAt: now,
+          authorization,
+          kind: "assessment-preparation" as const,
+          payload: {
+            riskInput: StandardizedRiskRecordRefV1Schema.parse({
+              kind: "standardized-risk-record",
+              reference: { entityId: "c25-risk-record", versionId: "1" },
+            }),
+            projectRevisionRef: state.projectRevisionRef,
+            spatialScopeRef: state.businessSpatialScopeRef,
+            applicabilityMetadataSnapshotRef: state.applicabilitySnapshotRef,
+            entryMode: "assess" as const,
+            triggerReasonCode: "manual-assessment",
+            sourceFieldFacts: [...sourceFieldFacts],
+          },
+        } satisfies EngineeringFreezeCommandV1;
+      };
+
+      beforeAll(async () => {
+        const state = requireWorld();
+        const commandId = "d112-register-segments";
+        const authorization = await authorizeBranch(
+          commandId,
+          "engineering-data.register-source-delivery",
+          [state.sourceVersionRef],
+        );
+        const registered = await fixture.registry.registerSegments({
+          commandId,
+          idempotencyKey: commandId,
+          projectId: project,
+          actorId: state.managerId,
+          issuedAt: now,
+          authorization,
+          sourceVersionRef: state.sourceVersionRef,
+          sourceId: state.sourceVersionRef.reference.entityId,
+          segments: [
+            {
+              sourceSegmentId:
+                `${state.sourceVersionRef.reference.entityId}-chapter_1-segment_1` as never,
+              chapterId: "chapter_1",
+              segmentId: "segment_1",
+              kind: "chapter",
+              spatialScopeRefs: [state.businessSpatialScopeRef],
+              locator: { kind: "document", pageNumber: 2, headingPath: ["施工日志"] },
+            },
+          ],
+        });
+        if (registered.kind !== "succeeded" || registered.result.kind !== "source-segment-set") {
+          throw new Error(
+            `D-112 source segment registration failed: ${JSON.stringify(registered)}`,
+          );
+        }
+        segmentId = registered.result.segmentSet.segments[0]!.sourceSegmentId as string;
+      }, 120_000);
+
+      it("显式施工日志压力字段带真实登记段可冻结、同键重放并回读", async () => {
+        const state = requireWorld();
+        const registry = openRegistry();
+        const command = await freezeWithSourceFields("facts", [
+          pressureFact(320, registeredEvidence()),
+        ]);
+        const frozen = await registry.freeze(command);
+        expect(frozen).toMatchObject({
+          kind: "succeeded",
+          result: { kind: "assessment-preparation" },
+        });
+        if (frozen.kind !== "succeeded" || frozen.result.kind !== "assessment-preparation") return;
+        const preparationSnapshotRef = frozen.result.assessmentPreparationSnapshotRef;
+
+        // 同一幂等键、同一载荷重放不新建准备。
+        const replay = await registry.freeze(command);
+        expect(replay).toMatchObject({
+          kind: "succeeded",
+          result: {
+            kind: "assessment-preparation",
+            assessmentPreparationSnapshotRef: preparationSnapshotRef,
+          },
+        });
+
+        // 回读按准备保存的资料证据与空间再次核对当前授权，并原样返回冻结的资料值与证据。
+        const readAuthorization = await authorizeBranch(
+          "d112-read-facts",
+          "engineering-data.evidence-access",
+          [state.sourceVersionRef],
+          state.businessSpatialScopeRef,
+        );
+        const read = await registry.readAssessmentPreparationContext({
+          requestId: "d112-read-facts",
+          idempotencyKey: "d112-read-facts",
+          requestedAt: now,
+          authorization: readAuthorization,
+          preparationSnapshotRef,
+        });
+        expect(read.kind).toBe("succeeded");
+        if (read.kind !== "succeeded") return;
+        expect(read.preparation.sourceFieldFacts).toEqual([
+          pressureFact(320, registeredEvidence()),
+        ]);
+        // 补充证据并入准备来源证据，回读按同一保存引用复验。
+        expect(read.preparation.sourceEvidenceReferences).toContainEqual(registeredEvidence());
+      }, 120_000);
+
+      it("同幂等键异值冲突且原准备不补写", async () => {
+        const state = requireWorld();
+        const registry = openRegistry();
+        const idempotencyKey = "d112-conflict";
+        const frozen = await registry.freeze(
+          await freezeWithSourceFields(
+            "conflict-original",
+            [pressureFact(320, registeredEvidence())],
+            idempotencyKey,
+          ),
+        );
+        expect(frozen.kind).toBe("succeeded");
+        if (frozen.kind !== "succeeded" || frozen.result.kind !== "assessment-preparation") return;
+
+        const conflict = await registry.freeze(
+          await freezeWithSourceFields(
+            "conflict-changed",
+            [pressureFact(330, registeredEvidence())],
+            idempotencyKey,
+          ),
+        );
+        expect(conflict).toMatchObject({
+          kind: "failed",
+          error: { code: "IDEMPOTENCY_CONFLICT" },
+        });
+
+        const rows = await fixture.postgres.adminPool.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM business.assessment_preparation_snapshots WHERE project_id = $1 AND idempotency_key = $2",
+          [project, idempotencyKey],
+        );
+        expect(rows.rows[0]?.count).toBe("1");
+
+        const readAuthorization = await authorizeBranch(
+          "d112-read-conflict",
+          "engineering-data.evidence-access",
+          [state.sourceVersionRef],
+          state.businessSpatialScopeRef,
+        );
+        const read = await registry.readAssessmentPreparationContext({
+          requestId: "d112-read-conflict",
+          idempotencyKey: "d112-read-conflict",
+          requestedAt: now,
+          authorization: readAuthorization,
+          preparationSnapshotRef: frozen.result.assessmentPreparationSnapshotRef,
+        });
+        expect(read.kind).toBe("succeeded");
+        if (read.kind !== "succeeded") return;
+        expect(read.preparation.sourceFieldFacts?.map((field) => field.value)).toEqual([320]);
+      }, 120_000);
+
+      it("未登记段或错误资料版本拒绝冻结且零准备事实", async () => {
+        const state = requireWorld();
+        const registry = openRegistry();
+        const snapshots = () =>
+          fixture.postgres.adminPool.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM business.assessment_preparation_snapshots WHERE project_id = $1",
+            [project],
+          );
+        const before = await snapshots();
+        const rejected: readonly (readonly [string, RiskInputFactFieldV1])[] = [
+          [
+            "missing-segment",
+            pressureFact(320, {
+              locator: { sourceSegmentId: "d112-missing-segment" },
+              sourceVersion: state.sourceVersionRef.reference,
+            }),
+          ],
+          [
+            "wrong-version",
+            pressureFact(320, {
+              locator: { sourceSegmentId: registeredSegmentId() },
+              sourceVersion: {
+                entityId: state.sourceVersionRef.reference.entityId,
+                versionId: "9",
+              },
+            }),
+          ],
+        ];
+        for (const [suffix, fact] of rejected) {
+          const result = await registry.freeze(await freezeWithSourceFields(suffix, [fact]));
+          expect(result, suffix).toMatchObject({
+            kind: "failed",
+            error: { code: "AUTHORIZATION_DENIED" },
+          });
+        }
+        const after = await snapshots();
+        expect(after.rows[0]?.count).toBe(before.rows[0]?.count);
       }, 120_000);
     });
   });

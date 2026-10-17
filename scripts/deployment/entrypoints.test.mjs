@@ -24,6 +24,7 @@ import {
   createDeploymentRuntimeAuthorizationV1,
   createDeploymentCheckpointValidatorV1,
   createDeploymentScoringGovernanceV1,
+  createDeploymentScoringConflictReviewV1,
   createDeploymentIdentificationAuthorizationV1,
   resolveDeploymentPoliciesV1,
   loadDeploymentRetrievalDatasetsV1,
@@ -42,12 +43,133 @@ import {
 import { OutboxDispatchRegistryV1, OUTBOX_CONSUMER_NAMES_V1 } from "./events.mjs";
 import { HybridRetrievalAcceptanceReportV1Schema } from "../../packages/core/dist/retrieval/index.js";
 import { AccessServiceError } from "../../packages/core/dist/access/index.js";
+
+describe("knowledge failure settlement source", () => {
+  it.each(["valid", "missing", "wrong-project", "wrong-actor", "wrong-task"])(
+    "uses a separate control scope with an exact task envelope: %s",
+    async (scenario) => {
+      const taskRef = {
+        kind: "agent-task",
+        reference: { entityId: "failure-task", versionId: "1" },
+        taskType: "knowledge-authoring",
+      };
+      const input = { projectId: "project", actorId: "actor", taskRef };
+      const envelope = {
+        agentTaskRef: structuredClone(taskRef),
+        projectId: "project",
+        actorId: "actor",
+        authorization: { projectId: "project", actorId: "actor" },
+        parentRunRef: { kind: "workflow-run", reference: { entityId: "parent", versionId: "1" } },
+      };
+      if (scenario === "wrong-project") envelope.projectId = "other";
+      if (scenario === "wrong-actor") envelope.actorId = "other";
+      if (scenario === "wrong-task") envelope.agentTaskRef.reference.versionId = "other";
+      const operation = vi.fn(async () => undefined);
+      const run = vi.fn(async (_input, op) => op());
+      const tasks = {
+        claim: async () => undefined,
+        getTask: vi.fn(async () => (scenario === "missing" ? undefined : { envelope })),
+      };
+      const settleAuthoringFailures = vi.fn(async (runAttempt) => {
+        await runAttempt(input, operation);
+        return { settled: 1, failures: [] };
+      });
+      const runner = createDeploymentAgentRunnerV1({
+        foundation: {
+          config: { instanceId: "worker", worker: { leaseTimeoutMs: 30000, maxConcurrency: 1 } },
+          authorizationScope: { run, runTask: vi.fn(), setTaskAction: vi.fn() },
+        },
+        tasks,
+        registry: {},
+        assessment: { modelStep: {} },
+        identification: { compositions: { knowledge: { adapter: { settleAuthoringFailures } } } },
+      });
+      if (scenario === "valid") {
+        expect(await runner.runOnce()).toMatchObject({ settledFailures: 1 });
+        expect(run).toHaveBeenCalledWith(
+          { authorization: envelope.authorization, causalRunRef: envelope.parentRunRef },
+          expect.any(Function),
+        );
+        expect(operation).toHaveBeenCalledOnce();
+      } else {
+        await expect(runner.runOnce()).rejects.toBeInstanceOf(TypeError);
+        expect(run).not.toHaveBeenCalled();
+        expect(operation).not.toHaveBeenCalled();
+      }
+      expect(tasks.getTask).toHaveBeenCalledWith(taskRef);
+    },
+  );
+});
 import { identificationRunIdentityFor } from "../../apps/worker/dist/index.js";
 import { structuredRequest, testRequestBase } from "../../packages/adapters/test/model/fixture.ts";
 import { HTTP_COOKIE_NAME_V1 } from "../../apps/api/dist/index.js";
 import { z } from "../../packages/core/dist/model/index.js";
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
+
+describe("评分冲突复核的当前授权接线", () => {
+  it("创建与决定读取按各自分支和调用身份受权，失败不形成链接", async () => {
+    const authorization = { actorId: "actor", projectId: "project" };
+    const authorizeDownstream = vi.fn(async () => authorization);
+    const task = { kind: "review-task", reference: { entityId: "review", versionId: "1" } };
+    const review = {
+      requestReview: vi.fn(async () => ({ kind: "succeeded", result: { reviewTaskRef: task } })),
+      readRuleConflictDecision: vi.fn(async () => ({
+        kind: "decided",
+        decision: "approve-publication",
+      })),
+    };
+    const policy = { conflictPriorityPolicyRef: { entityId: "priority", versionId: "1" } };
+    const seam = createDeploymentScoringConflictReviewV1({ authorizeDownstream, review, policy });
+    const input = {
+      projectId: "project",
+      authorization,
+      commandId: "create",
+      idempotencyKey: "create",
+      issuedAt: "2030-01-01T00:00:00Z",
+      relation: { relationId: "relation" },
+    };
+    expect(await seam.ensureConflictReviewTask(input)).toEqual({
+      kind: "succeeded",
+      reviewTaskRef: task,
+      reviewAttemptId: "create",
+    });
+    expect(review.requestReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorization,
+        commandId: "create",
+        payload: expect.objectContaining({
+          reviewType: "rule-conflict",
+          targetRef: {
+            kind: "rule-conflict",
+            reference: { entityId: "rule-relation:relation", versionId: "1" },
+          },
+          reviewPolicyRef: policy.conflictPriorityPolicyRef,
+        }),
+      }),
+    );
+    await seam.readRuleConflictDecision({
+      projectId: "project",
+      authorization,
+      invocationId: "read",
+      requestedAt: input.issuedAt,
+      relationRef: { kind: "rule-conflict" },
+      reviewTaskRef: task,
+    });
+    expect(
+      authorizeDownstream.mock.calls.map(([request]) => [request.branch, request.invocationId]),
+    ).toEqual([
+      ["review-audit.request-review", "create"],
+      ["review-audit.trace", "read"],
+    ]);
+    const failed = { kind: "failed", error: { code: "AUTHORIZATION_DENIED" } };
+    review.requestReview.mockResolvedValueOnce(failed);
+    expect(await seam.ensureConflictReviewTask(input)).toEqual(failed);
+    authorizeDownstream.mockResolvedValueOnce({ ...authorization, actorId: "other" });
+    await expect(seam.ensureConflictReviewTask(input)).rejects.toThrow(TypeError);
+    expect(review.requestReview).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("真实 Worker 生命周期接线", () => {
   it("启动 CLI 在连库前拒绝维护角色与未知参数", async () => {
@@ -620,6 +742,77 @@ describe("本地工件的当前权限复验", () => {
     expect(seen[1].authorization).toBe(verified);
     expect(seen[1].requestId).toBe(open.requestId);
   });
+  it("同空间多父工件以唯一空间并集完成当前权限复验", async () => {
+    const scope = { kind: "spatial-scope", reference: ref("shared-scope") };
+    const current = { ...authorization, spatialScopeRefs: [scope] };
+    const store = createDeploymentAuthorizedArtifactStoreV1({
+      access: {
+        verifyDeploymentContext: async (request) => {
+          expect(request.requestedSpatialScopeRefs).toEqual([scope]);
+          return { context: current };
+        },
+      },
+      store: {
+        readManifest: async () => ({
+          ...manifest,
+          access: { ...manifest.access, spatialScopeRefs: [scope] },
+        }),
+        put: async () => ({ stored: true }),
+      },
+    });
+    await expect(
+      store.put(
+        {
+          ...put,
+          authorization: current,
+          parentArtifactRefs: [
+            {
+              ...open.artifactRef,
+              reference: { ...open.artifactRef.reference, entityId: "parent-a" },
+            },
+            {
+              ...open.artifactRef,
+              reference: { ...open.artifactRef.reference, entityId: "parent-b" },
+            },
+          ],
+        },
+        [],
+      ),
+    ).resolves.toEqual({ stored: true });
+  });
+  it.each(["put", "open"])("%s 无逐段证据时仍按登记资料限制复验", async (method) => {
+    const grant = { kind: "source-access-grant", reference: ref("frozen-source-grant") };
+    const current = { ...authorization, sourceAccessGrantRefs: [grant] };
+    const handle = { content: [], completed: Promise.resolve({}) };
+    const store = createDeploymentAuthorizedArtifactStoreV1({
+      access: {
+        verifyDeploymentContext: async (input) => ({
+          context: {
+            ...current,
+            sourceAccessGrantRefs: input.requestedSourceAccessGrantRefs ?? [],
+          },
+        }),
+      },
+      store: {
+        readManifest: async () => ({
+          ...manifest,
+          evidenceReferences: [],
+          access: { ...manifest.access, sourceAccessGrantRefs: [grant] },
+        }),
+        open: async (input) => {
+          expect(input.authorization.sourceAccessGrantRefs).toContainEqual(grant);
+          return handle;
+        },
+        put: async (input) => {
+          expect(input.authorization.sourceAccessGrantRefs).toContainEqual(grant);
+          return handle;
+        },
+      },
+    });
+    expect(
+      await store[method]({ ...(method === "put" ? put : open), authorization: current }, []),
+    ).toBe(handle);
+  });
 });
 
 describe("模型宿主的当前权限复验", () => {
@@ -681,6 +874,22 @@ describe("模型宿主的当前权限复验", () => {
       code: "MODEL_SERVICE_UNAVAILABLE",
       retryable: true,
     });
+  });
+  it("模型复验保留输入资料限制而不要求重复逐段证据", async () => {
+    const sourceAccessGrantRefs = [{ kind: "source-access-grant", reference: ref("model-source") }];
+    const request = structuredRequest();
+    request.authorization = { ...request.authorization, sourceAccessGrantRefs };
+    const result = {};
+    const gateway = createDeploymentAuthorizedModelGatewayV1({
+      access: {
+        verifyDeploymentContext: async (input) => {
+          expect(input.requestedSourceAccessGrantRefs).toEqual(sourceAccessGrantRefs);
+          return { context: request.authorization };
+        },
+      },
+      gateway: { completeStructured: async () => result },
+    });
+    expect(await gateway.completeStructured(request, {})).toBe(result);
   });
   it("流在复验后创建并保留增量与终态", async () => {
     const verified = structuredClone(testRequestBase.authorization);
@@ -1517,9 +1726,13 @@ describe("生产调用的授权作用域", () => {
       readDeploymentAuthorizationSource: async () => ({
         context: authorization,
         branch: "workflow.start-run",
+        sourceVersionRefs: [],
         ...sourceOverrides,
       }),
       authorize: async () => ({ context: authorization }),
+      readSession: vi.fn(async () => ({
+        accountRef: { entityId: authorization.actorId, versionId: "1" },
+      })),
       authorizeBusinessAction: async (input) => {
         calls.push(input);
         return { context: authorization, redacted: false };
@@ -1543,6 +1756,113 @@ describe("生产调用的授权作用域", () => {
     });
     return { boundary, calls, access };
   };
+  it.each(["verify", "verifyDeploymentContext"])(
+    "%s 按原上下文范围复验，保留明确请求并拒绝撤权及未知引用",
+    async (method) => {
+      const ownScope = { kind: "spatial-scope", reference: ref("scope:own") };
+      const otherScope = { kind: "spatial-scope", reference: ref("scope:other") };
+      const ownSource = { kind: "source-version", reference: ref("source:own") };
+      const otherSource = { kind: "source-version", reference: ref("source:other") };
+      const ambient = {
+        ...authorization,
+        authorizationContextRef: {
+          kind: "authorization-context",
+          reference: ref("ambient-context"),
+        },
+        grantedCapabilities: ["workflow.start"],
+        spatialScopeRefs: [ownScope, otherScope],
+      };
+      const original = {
+        ...ambient,
+        authorizationContextRef: {
+          kind: "authorization-context",
+          reference: ref("original-context"),
+        },
+        spatialScopeRefs: [ownScope],
+      };
+      const sources = new Map([
+        ["ambient-context", { context: ambient, sourceVersionRefs: [ownSource, otherSource] }],
+        ["original-context", { context: original, sourceVersionRefs: [ownSource] }],
+      ]);
+      let allowed = true;
+      const reauthorize = vi.fn(async (input) => {
+        if (!allowed) throw Error("CURRENT_AUTHORIZATION_DENIED");
+        return {
+          context: {
+            ...original,
+            sourceAccessGrantRefs: input.requestedSourceVersionRefs.map((source) => ({
+              kind: "source-access-grant",
+              reference: ref(source.reference.entityId, "current"),
+            })),
+          },
+          redacted: false,
+        };
+      });
+      const boundary = createDeploymentAuthorizationScopeV1({
+        access: {
+          readDeploymentAuthorizationSource: async (input) =>
+            sources.get(input.authorizationContextRef.reference.entityId),
+          authorizeBusinessAction: reauthorize,
+        },
+      });
+      const request = {
+        authorizationContextRef: original.authorizationContextRef,
+        projectId: original.projectId,
+        actorId: original.actorId,
+        invocationId: "verify-own",
+        ...(method === "verify"
+          ? { branch: "workflow.start-run" }
+          : { requiredCapability: "workflow.start" }),
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      };
+      const run = (operation) =>
+        boundary.run({ authorization: ambient, causalRunRef: runRef("scope-parent") }, operation);
+      await run(async () => {
+        const current = await boundary.access[method](request);
+        expect(reauthorize.mock.calls.at(-1)[0]).toMatchObject({
+          requestedSpatialScopeRefs: [ownScope],
+          requestedSourceVersionRefs: [ownSource],
+          authorizationContextRef: original.authorizationContextRef,
+        });
+        expect(current.context.sourceAccessGrantRefs).toEqual([
+          { kind: "source-access-grant", reference: ref(ownSource.reference.entityId, "current") },
+        ]);
+        await boundary.access[method]({
+          ...request,
+          invocationId: "verify-explicit",
+          requestedSpatialScopeRefs: [otherScope],
+          requestedSourceVersionRefs: [otherSource],
+        });
+        expect(reauthorize.mock.calls.at(-1)[0]).toMatchObject({
+          requestedSpatialScopeRefs: [otherScope],
+          requestedSourceVersionRefs: [otherSource],
+        });
+        await boundary.authorizeDownstream({
+          projectId: ambient.projectId,
+          actorId: ambient.actorId,
+          branch: "workflow.start-run",
+          invocationId: "new-empty",
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        });
+        expect(reauthorize.mock.calls.at(-1)[0]).toMatchObject({
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        });
+        const calls = reauthorize.mock.calls.length;
+        await expect(
+          boundary.access[method]({
+            ...request,
+            authorizationContextRef: { kind: "authorization-context", reference: ref("unknown") },
+          }),
+        ).rejects.toThrow();
+        expect(reauthorize).toHaveBeenCalledTimes(calls);
+      });
+      allowed = false;
+      await expect(run(() => boundary.access[method](request))).rejects.toThrow();
+    },
+  );
   it("任务租约作用域统一复验模型、工件与领域访问，并保留原幂等身份", async () => {
     const branch = "agent-task.start-task";
     const admission = { ...authorization, grantedCapabilities: ["agent-task.start"] };
@@ -1988,7 +2308,10 @@ describe("生产调用的授权作用域", () => {
     ).rejects.toThrow(TypeError);
   });
   it("同一请求不预签发下游集合，内部动作保留请求主体", async () => {
-    const { boundary, calls } = setup();
+    const { boundary, calls, access } = setup();
+    access.authorize = async () => {
+      throw new Error("historical authorization expired");
+    };
     await boundary.runRequest(async () => {
       await boundary.access.authorize({
         ...request,
@@ -1997,10 +2320,15 @@ describe("生产调用的授权作用域", () => {
         requestedSpatialScopeRefs: [],
         requestedSourceVersionRefs: [],
       });
-      expect(calls).toHaveLength(0);
-      await boundary.authorizeDownstream(request);
       expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({
+        actorId: authorization.actorId,
+        branch: "workflow.start-run",
+        capability: "workflow.start",
+      });
+      await boundary.authorizeDownstream(request);
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toMatchObject({
         actorId: authorization.actorId,
         projectId: authorization.projectId,
         branch: request.branch,
@@ -2010,6 +2338,41 @@ describe("生产调用的授权作用域", () => {
       ).rejects.toThrow();
     });
     await expect(boundary.authorizeDownstream(request)).rejects.toThrow();
+  });
+  it("同一人员调用重放检查当前会话和权限，真实拒权不进入下游", async () => {
+    const { boundary, calls, access } = setup();
+    access.authorize = async () => {
+      throw new Error("historical authorization expired");
+    };
+    const input = {
+      ...request,
+      branch: "workflow.start-run",
+      invocation: { kind: "human-session", sessionToken: "current-session" },
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    };
+    for (let i = 0; i < 2; i += 1) {
+      await expect(
+        boundary.runRequest(() => boundary.access.authorize(input)),
+      ).resolves.toMatchObject({ context: { actorId: authorization.actorId } });
+    }
+    expect(access.readSession).toHaveBeenCalledWith({
+      kind: "introspect-session",
+      sessionToken: "current-session",
+    });
+    expect(calls).toHaveLength(2);
+    access.readSession.mockRejectedValueOnce(new Error("session revoked"));
+    await expect(boundary.runRequest(() => boundary.access.authorize(input))).rejects.toThrow(
+      "session revoked",
+    );
+    expect(calls).toHaveLength(2);
+    access.authorizeBusinessAction = async () => {
+      throw new Error("access denied");
+    };
+    await boundary.runRequest(async () => {
+      await expect(boundary.access.authorize(input)).rejects.toThrow("access denied");
+      await expect(boundary.authorizeDownstream(request)).rejects.toThrow();
+    });
   });
 });
 

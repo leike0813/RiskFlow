@@ -945,6 +945,29 @@ export const createIdentificationGraphRuntime = (
     async resume(command) {
       const execution = await executionAuthorizationFor(command);
       const authorized = execution.authorization;
+      if (command.resumeCause.kind === "agent-task-failed") {
+        const taskRef = command.resumeCause.agentTaskRef;
+        const task = await ports.agentTaskReader.getTask(taskRef);
+        if (
+          task === undefined ||
+          task.state.status !== "terminal-failure" ||
+          taskRef.taskType !== "retrieval-review" ||
+          taskRef.triggerMode !== "embedded" ||
+          sha256CanonicalJson(task.envelope.agentTaskRef) !== sha256CanonicalJson(taskRef) ||
+          sha256CanonicalJson(task.state.agentTaskRef) !== sha256CanonicalJson(taskRef) ||
+          task.envelope.projectId !== command.projectId ||
+          task.envelope.actorId !== command.actorId ||
+          sha256CanonicalJson(task.envelope.parentRunRef) !== sha256CanonicalJson(command.runRef)
+        ) {
+          throw runFailure({
+            stage: "I3",
+            code: "AUTHORIZATION_DENIED",
+            retryable: false,
+            detailCode: "agent-task-failure-binding-mismatch",
+            occurredAt: options.now().toISOString(),
+          });
+        }
+      }
       if (
         command.resumeCause.kind === "agent-task-completed" &&
         command.resumeCause.agentTaskResultRef !== undefined
@@ -1016,7 +1039,8 @@ export const createIdentificationGraphRuntime = (
           runRef: command.runRef,
           expectedRunVersionId: command.expectedRunVersionId,
           resumeKind: command.resumeCause.kind,
-          ...(command.resumeCause.kind === "agent-task-completed"
+          ...(command.resumeCause.kind === "agent-task-completed" ||
+          command.resumeCause.kind === "agent-task-failed"
             ? { agentTaskRef: command.resumeCause.agentTaskRef }
             : {}),
           ...(command.resumeCause.kind === "review-resolved"
@@ -1196,7 +1220,8 @@ export const createIdentificationGraphRuntime = (
           occurredAt: options.now().toISOString(),
         });
       } else if (
-        (command.resumeCause.kind === "agent-task-completed" &&
+        ((command.resumeCause.kind === "agent-task-completed" ||
+          command.resumeCause.kind === "agent-task-failed") &&
           waiting.kind !== "retrieval-review-agent") ||
         (command.resumeCause.kind === "review-resolved" && waiting.kind !== "human-review")
       ) {
@@ -1208,7 +1233,8 @@ export const createIdentificationGraphRuntime = (
           occurredAt: options.now().toISOString(),
         });
       } else if (
-        command.resumeCause.kind === "agent-task-completed" &&
+        (command.resumeCause.kind === "agent-task-completed" ||
+          command.resumeCause.kind === "agent-task-failed") &&
         (waiting.kind !== "retrieval-review-agent" ||
           waiting.agentTaskRef.reference.entityId !==
             command.resumeCause.agentTaskRef.reference.entityId ||

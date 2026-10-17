@@ -258,7 +258,7 @@ export interface StandardizedRiskRecordStoreV1 {
     },
     context?: unknown,
   ): Promise<
-    | { readonly kind: "inserted" }
+    | { readonly kind: "inserted"; readonly insertedRiskRecordIds: readonly string[] }
     | { readonly kind: "replayed" }
     | { readonly kind: "conflict"; readonly detailCode: string }
   >;

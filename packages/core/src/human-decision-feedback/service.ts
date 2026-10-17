@@ -1153,11 +1153,32 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
     /** C28 解析出的真实效果预测：冻结进分段入口，A2/A3 据此核对偏差并驱动校准。 */
     readonly effectForecastRef?: EffectForecastRefV1;
   }): Promise<{ readonly kind: "failed"; readonly error: ModuleErrorV1 } | undefined> {
+    const basis =
+      input.effectForecastRef === undefined
+        ? {
+            frozenAssessmentBasisRef: input.assessment.assessmentInputSnapshotRef,
+            assessmentBasisReleaseSetRef: input.assessment.assessmentBasisReleaseSetRef,
+          }
+        : await this.#ports.responseContext.readForecastBasis({
+            requestId: `${input.command.commandId}:forecast-basis`,
+            requestedAt: input.command.issuedAt,
+            authorization: input.command.authorization,
+            effectForecastRef: input.effectForecastRef,
+          });
+    const payload = {
+      entryMode: "record-response-feedback" as const,
+      graphVersion: this.#ports.workflowStartControl.graphVersion,
+      retryPolicyRef: this.#ports.workflowStartControl.retryPolicyRef,
+      executionRecordRef: input.frozen.executionRecordRef,
+      feedbackRef: input.frozen.snapshot.feedbackRef,
+      ...basis,
+      ...(input.effectForecastRef === undefined ? {} : { forecastRef: input.effectForecastRef }),
+    };
+    const segmentDigest = sha256CanonicalJson(payload);
+    const commandId = `${input.command.commandId}:feedback-segment:${segmentDigest}`;
     const authorization = await this.#issueAuthorization({
       branch: "workflow.start-run",
-      // 必须与 C30 运行时实际使用的调用身份逐字一致：分段启动命令身份是
-      // `${command.commandId}:feedback-segment`，复验按同一身份绑定，签发侧给原始命令 id 会一律拒绝。
-      invocationId: `${input.command.commandId}:feedback-segment`,
+      invocationId: commandId,
       projectId: input.command.projectId,
       actorId: input.command.actorId,
       requestedAt: input.command.issuedAt,
@@ -1165,23 +1186,13 @@ export class HumanDecisionFeedbackService implements HumanDecisionFeedbackPortV1
     });
     const result = await this.#ports.workflow.startRun({
       kind: "start-run",
-      commandId: `${input.command.commandId}:feedback-segment`,
-      idempotencyKey: `${input.command.idempotencyKey}:feedback-segment`,
+      commandId,
+      idempotencyKey: `${input.command.idempotencyKey}:feedback-segment:${segmentDigest}`,
       projectId: input.command.projectId,
       actorId: input.command.actorId,
       issuedAt: input.command.issuedAt,
       authorization,
-      payload: {
-        entryMode: "record-response-feedback",
-        graphVersion: this.#ports.workflowStartControl.graphVersion,
-        retryPolicyRef: this.#ports.workflowStartControl.retryPolicyRef,
-        executionRecordRef: input.frozen.executionRecordRef,
-        feedbackRef: input.frozen.snapshot.feedbackRef,
-        assessmentBasisReleaseSetRef: input.assessment.assessmentBasisReleaseSetRef,
-        frozenAssessmentBasisRef: input.assessment.assessmentInputSnapshotRef,
-        // 预测不可用时不带该字段：分段按既有 `effect-forecast-missing` 语义跳过支路，不补造预测。
-        ...(input.effectForecastRef === undefined ? {} : { forecastRef: input.effectForecastRef }),
-      },
+      payload,
     });
     return result.kind === "failed" ? result : undefined;
   }

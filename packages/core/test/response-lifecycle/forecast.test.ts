@@ -290,6 +290,16 @@ describe("C28 历史统计参数预测", () => {
         }),
       ],
       [
+        "model-unreadable",
+        computeEffectForecast({
+          method: "historical-statistics",
+          model: historicalModel({ calculationScale: 7 }),
+          horizonSteps: 4,
+          baselineValues: baseline,
+          measures: [],
+        }),
+      ],
+      [
         "method-mismatch",
         computeEffectForecast({
           method: "mechanism-model",

@@ -16,6 +16,7 @@ import { join } from "node:path";
 
 import type { VersionReference } from "@riskflow/contracts/common";
 import {
+  IdentificationFinalizationCommandV1Schema,
   ModuleErrorV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   type AgentTaskRefV1,
@@ -953,6 +954,7 @@ const createPortDoubles = (input: {
       };
     },
     async finalize(command) {
+      IdentificationFinalizationCommandV1Schema.parse(command);
       world.calls.finalize.push(command);
       if (command.kind === "merge-run-candidates") {
         return {
@@ -990,14 +992,19 @@ const createPortDoubles = (input: {
       }
       const qualified = world.routes.filter((route) => routeQualifies(route, world));
       if (qualified.length === 0) {
-        return { kind: "succeeded", result: { kind: "skipped", skippedGroupRefs: [] } };
+        return {
+          kind: "succeeded",
+          result: {
+            kind: "skipped",
+            skippedGroupRefs: world.routes.map((route) => route.groupRef),
+          },
+        };
       }
       const records: StandardizedRiskRecordRefV1[] = [];
       const events: DomainEventRefV1[] = [];
       for (const route of qualified) {
         const groupKey = route.groupRef.reference.entityId;
-        // 已入库组按 C22 幂等身份重放为 no-op：不再回传记录，也不重复产生事件。
-        if (world.acceptedGroups.has(groupKey)) continue;
+        // C22返回全部合格引用，旧组仅复用既有记录与事件。
         world.acceptedGroups.add(groupKey);
         const stored = world.recordsByGroup.get(groupKey);
         if (stored === undefined) {

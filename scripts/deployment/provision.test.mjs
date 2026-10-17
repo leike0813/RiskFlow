@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -382,6 +382,57 @@ describe("受控资料预置", () => {
     expect(() => assertPayloadHasNoOwnedFields({ projectId: "spoofed-project" })).toThrow(
       "PAYLOAD_OWNS_COMMAND_FIELD",
     );
+  });
+});
+
+describe("受控工件预置", () => {
+  const artifactStep = (artifactKind, inputFile) => ({
+    id: `put-${artifactKind}`,
+    op: "artifact-put",
+    inputFile,
+    requestedSpatialScopeRefs: [],
+    requestedSourceVersionRefs: [],
+    payload: {
+      schemaVersion: "1",
+      artifactId: `artifact-${artifactKind}`,
+      artifactKind,
+      purposeCode: "engineering-data-source",
+      mediaType: "text/plain",
+      parentArtifactRefs: [],
+      evidenceReferences: [],
+      additionalSpatialScopeRefs: [],
+      additionalSourceAccessGrantRefs: [],
+    },
+  });
+
+  it.each(["content", "diagnostic"])("工件 %s 保留存储返回的完整引用", async (artifactKind) => {
+    const directory = await makeDirectory();
+    const inputFile = join(directory, "artifact-input.bin");
+    const body = `synthetic-${artifactKind}-artifact`;
+    await writeFile(inputFile, body);
+    const artifactRef = versionRef(`${artifactKind}-artifact`, `artifact-${artifactKind}`);
+    const received = [];
+    const put = vi.fn(async (_command, content) => {
+      const chunks = [];
+      for await (const chunk of content) chunks.push(chunk);
+      received.push(Buffer.concat(chunks).toString("utf8"));
+      return { artifactRef };
+    });
+    const foundation = makeFoundation(vi.fn());
+    foundation.artifactStore = { put };
+
+    const output = await runProvisionV1({
+      config: config({ steps: [artifactStep(artifactKind, inputFile)] }),
+      outputFile: join(directory, "checkpoint.json"),
+      foundation,
+      secrets: { "db-app-password": "secret-login-password" },
+    });
+
+    expect(output.status).toBe("COMPLETED");
+    expect(output.steps[0]).toMatchObject({ status: "completed" });
+    expect(put.mock.calls[0][0].artifactKind).toBe(artifactKind);
+    expect(received).toEqual([body]);
+    expect(output.steps[0].resultRef).toEqual(artifactRef);
   });
 });
 

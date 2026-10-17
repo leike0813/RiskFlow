@@ -1,10 +1,10 @@
 本 change 为剩余实现与真实功能取证，当前进度以以下任务勾选及 handoff.md 最新证据为准。任务 checkbox 只在行为与本次证据均成立后勾选。C38 F-01–F-05 是范围移交，不计当前 task；固定检查点和验收不由 CLI 工件存在性替代。
 
-接续依赖：先完成 `reduce-defensive-design-overhead` 的实现及回归，再按新语义继续本清单。当前5/19保持；已完成输入和阶段复用，旧终态失败保留。下文历史“精确授权/完整性”按新入口检查和普通消费语义执行，专业质量与事务要求保持。
+接续依赖：先完成 `reduce-defensive-design-overhead` 的实现及回归，再按新语义继续本清单。当前6/19保持；已完成输入和阶段复用，旧终态失败保留。下文历史“精确授权/完整性”按新入口检查和普通消费语义执行，专业质量与事务要求保持。
 
 ## 1. 来源与环境
 
-- [ ] 1.1（IP-17）核对前置实现检查点、当前配置/发布/迁移/秘密与隔离实例，补齐实际输入身份清单；验证：`pnpm exec vitest run scripts/deployment/entrypoints.test.mjs packages/adapters/test/deployment/config-operations.test.ts`，并记录真实配置、release、000058 与 synthetic-acceptance purpose；缺项不填默认值。
+- [x] 1.1（IP-17）核对前置实现检查点、当前配置/发布/迁移/秘密与隔离实例，补齐实际输入身份清单；环境定向106项及D-97/D-100宿主81项通过，原000058停写副本与审计已保存，显式迁移到减负要求的000059并运行d104-v110，purpose为synthetic-acceptance；基线、未提交源码差异、制品、配置与真实输入见evidence/resume-after-reduction-2026-10-16.md。
 - [ ] 1.2（IP-17）用正式 C19 成员、C24 路线及 C30 空间补证现有通路，修已批准范围内来源缺陷；验证：`pnpm exec vitest run packages/adapters/test/deployment/policies-readers.test.ts scripts/deployment/assessment-composition.test.mjs scripts/deployment/risk-flow-composition.test.mjs`，另记录错版/异空间/无权的实际拒绝及正式来源引用。
 
 ## 2. 完整 Electron 场景

@@ -299,6 +299,7 @@ export interface IdentificationKnowledgeFixtureV1 {
     readonly failureEvidenceReader?: AgentTaskFailureEvidenceReaderV1;
     /** 授权故障注入：命中请求时按 C06 语义在副作用前关闭失败。 */
     readonly authorizeDenial?: (input: IdentificationKnowledgeAuthorizationRequestV1) => boolean;
+    readonly now?: () => Date;
     /** IP-11：脚本化的 C19 delegate 结果来源；每次调用都会被记录。 */
     readonly assessmentBasisResolver?: Pick<PostgresScoringRulesAdapter, "resolve">;
   }): {
@@ -677,7 +678,7 @@ export const startIdentificationKnowledgeFixture =
             return await authorize(input);
           },
           // 收口动作的时钟晚于夹具准备与测试发布时刻，保证发布集合对收口命令已生效。
-          now: () => new Date("2030-01-02T00:00:00.000Z"),
+          now: options?.now ?? (() => new Date("2030-01-02T00:00:00.000Z")),
         };
         const adapter = new PostgresIdentificationKnowledgeAdapter(adapterOptions);
         const agentTaskAdapter = new PostgresAgentTaskAdapter({

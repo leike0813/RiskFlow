@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   CancelAgentTaskCommandV1Schema,
@@ -198,6 +198,28 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
         ...overrides,
       });
     expect(await check()).toBe(true);
+    const slice = await fixture.preparationReader.readSegmentSlice({
+      projectId: world.projectId,
+      preparationSnapshotRef: world.snapshotRef,
+      sourceSegmentSetRef: world.sourceSegmentSetRef,
+      segmentIds: [evidence[0]!.locator.sourceSegmentId],
+      limit: 1,
+      actorId,
+      requestedAt,
+      requestId: nextId("real-segment-text"),
+    });
+    if (slice.kind !== "succeeded") throw new Error("the retained segment was not readable");
+    expect(slice.observation).toMatchObject({
+      sourceVersionRef: manifest.documents[0]!.sourceVersionRef,
+      segments: [
+        {
+          sourceSegmentId: evidence[0]!.locator.sourceSegmentId,
+          textBlocks: fragment.textBlockIds.map((id) =>
+            document.textBlocks.find((block) => block.blockId === id)!,
+          ),
+        },
+      ],
+    });
     for (const [targetBytes, accepted] of [
       [5 * 1024 * 1024, true],
       [STRUCTURED_DOCUMENT_JSON_LD_MAX_BYTES_V1, false],
@@ -1280,6 +1302,32 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       sourceEntryId: "standard-2",
       entry: value.entries[1],
     });
+    // 模拟000059之前发布的原包：条目投影尚未登记，读取仍须取得所属能力。
+    await fixture.cleaning.postgres.adminPool.query(
+      "DELETE FROM business.identification_knowledge_entries WHERE project_id = $1 AND release_id = $2 AND release_version_id = $3",
+      [world.projectId, releaseRef.reference.entityId, releaseRef.reference.versionId],
+    );
+    const deniedAdapter = fixture.createIdentificationKnowledgeAdapter({
+      authorizeDenial: (input) => input.branch === "knowledge-modeling.identification-basis",
+    }).adapter;
+    await expect(
+      deniedAdapter.readVisibleEntries({
+        projectId: world.projectId,
+        releaseRefs: [releaseRef],
+        authorization,
+      }),
+    ).rejects.toThrow();
+    expect(
+      await countBinding("business.identification_knowledge_entries", "project_id = $1", [
+        world.projectId,
+      ]),
+    ).toBe("0");
+    const backfilled = await adapter.readVisibleEntries({
+      projectId: world.projectId,
+      releaseRefs: [releaseRef],
+      authorization,
+    });
+    expect(new Map(backfilled.map((entry) => [entry.sourceEntryId, entry]))).toEqual(byEntryId);
     const unregistered = {
       kind: "knowledge-release" as const,
       reference: { entityId: "c17-unknown-release", versionId: "1" },
@@ -1898,6 +1946,37 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     );
     expect(observation.effect).toBe("none");
     expect(observation.observationArtifactRef).toMatchObject({ kind: "content-artifact" });
+    expect(await adapter.readModelManifest(task)).toEqual(prepared.manifest);
+    expect(
+      await adapter.readModelObservation(task, observation.observationArtifactRef),
+    ).toHaveProperty("segments");
+    await expect(
+      adapter.readModelObservation(
+        {
+          ...task,
+          envelope: {
+            ...task.envelope,
+            agentTaskRef: {
+              ...task.envelope.agentTaskRef,
+              reference: { ...task.envelope.agentTaskRef.reference, entityId: "foreign-task" },
+            },
+          },
+        },
+        observation.observationArtifactRef,
+      ),
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID" } });
+    await expect(
+      adapter.readModelManifest({
+        ...task,
+        envelope: {
+          ...task.envelope,
+          parentRunRef: {
+            kind: "workflow-run",
+            reference: { entityId: "foreign-run", versionId: "1" },
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ details: { code: "AGENT_INPUT_INVALID" } });
 
     // 越界成员必须在目标读取前拒绝：清单外集合、清单外资料段与清单外基线。
     const foreignSetRef = {
@@ -1970,6 +2049,14 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
     };
     const validation = await definition.validateCandidate(candidate, task);
     expect(validation.disposition).toBe("accepted");
+    expect(
+      (
+        await fixture.cleaning.artifactRegistry.readManifest(
+          isolated.projectId,
+          validation.validationArtifactRef,
+        )
+      )?.purposeCode,
+    ).toBe("agent-validation");
     const result = await definition.finalizeCandidate(candidate, task);
     expect(result).toMatchObject({ kind: "agent-task-result", status: "completed" });
     const revisionRef = (result as { candidateRef?: { reference: KnowledgeRevisionRefV1 } })
@@ -2007,178 +2094,303 @@ describe.sequential("PostgreSQL identification-knowledge adapter", () => {
       receipts: "1",
       audits: "1",
     });
+    const { releaseRef } = await publishRevision(adapter, revisionRef, isolated.projectId);
+    const readId = nextId("authoring-baseline");
+    const baseline = await adapter.readExact({
+      projectId: isolated.projectId,
+      actorId: isolated.readAuthorization.actorId,
+      requestedAt: tick(),
+      invocationId: readId,
+      releaseRef,
+      authorization: await fixture.authorizationFor(
+        readId,
+        "knowledge-modeling.identification-basis",
+        isolated.projectId,
+      ),
+    });
+    if (baseline.kind !== "succeeded")
+      throw new Error("the published authoring baseline is missing");
+    const updateId = nextId("authoring-update");
+    const { adapter: updateAdapter } = fixture.createIdentificationKnowledgeAdapter({
+      now: () => new Date("2030-01-03T00:00:00.000Z"),
+    });
+    const update = await updateAdapter.prepareOrReplayAuthoringTask({
+      projectId: isolated.projectId,
+      actorId: isolated.readAuthorization.actorId,
+      issuedAt: tick(),
+      authorization: await fixture.authorizationFor(
+        updateId,
+        "knowledge-modeling.submit-revision",
+        isolated.projectId,
+      ),
+      definitionType: "process-model",
+      preparationSnapshotRef: isolated.snapshotRef,
+      parentRunRef: workflowRunRef,
+      baseReleaseRef: releaseRef,
+      commandId: updateId,
+      idempotencyKey: updateId,
+    });
+    if (update.kind !== "succeeded") throw new Error("authoring update was not prepared");
+    const updateTask = await agentTaskAdapter.getTask(update.agentTaskRef);
+    if (updateTask === undefined) throw new Error("authoring update task is missing");
+    const operation = declareNodeOperations(isolated)[0]!;
+    const updatedResult = await updateAdapter.createTaskDefinition().finalizeCandidate(
+      {
+        ...candidate,
+        operations: [
+          {
+            ...operation,
+            expectedBaselineDigest: baseline.read.validation.packageDigest,
+            node: { ...operation.node, nodeId: "additional-authoring-node" },
+          },
+        ],
+      },
+      updateTask,
+    );
+    expect(updatedResult).toMatchObject({ status: "completed" });
+    const rejectedValidation = await updateAdapter.createTaskDefinition().validateCandidate(
+      {
+        ...candidate,
+        operations: [
+          { ...operation, expectedBaselineDigest: baseline.read.validation.packageDigest },
+        ],
+      },
+      updateTask,
+    );
+    expect(rejectedValidation).toMatchObject({
+      disposition: "rejected",
+      rejectionClass: "repairable",
+    });
+    expect(
+      (
+        await fixture.cleaning.artifactRegistry.readManifest(
+          isolated.projectId,
+          rejectedValidation.validationArtifactRef,
+        )
+      )?.purposeCode,
+    ).toBe("agent-validation");
   }, 300_000);
 
-  it("settles a cancelled authoring task into a failure-only revision and one review", async () => {
-    const reads: AgentTaskFailureEvidenceReadRequestV1[] = [];
-    const readerHolder: { reader?: AgentTaskFailureEvidenceReaderV1 } = {};
-    // 收口只允许经注入的 C08 公共窄读：转发的仍是同一 adapter 的真实实现。
-    const { adapter, agentTaskAdapter } = fixture.createIdentificationKnowledgeAdapter({
-      failureEvidenceReader: {
-        readTerminalFailure: async (request) => {
-          reads.push(request);
-          if (readerHolder.reader === undefined) throw new Error("the reader is not wired");
-          return await readerHolder.reader.readTerminalFailure(request);
+  it.each([false, true])(
+    "settles a cancelled authoring task with published baseline=%s into a failure-only revision and one review",
+    async (published) => {
+      const reads: AgentTaskFailureEvidenceReadRequestV1[] = [];
+      const readerHolder: { reader?: AgentTaskFailureEvidenceReaderV1 } = {};
+      // 收口只允许经注入的 C08 公共窄读：转发的仍是同一 adapter 的真实实现。
+      const { adapter, agentTaskAdapter } = fixture.createIdentificationKnowledgeAdapter({
+        now: () => new Date("2030-01-03T00:00:00.000Z"),
+        failureEvidenceReader: {
+          readTerminalFailure: async (request) => {
+            reads.push(request);
+            if (readerHolder.reader === undefined) throw new Error("the reader is not wired");
+            return await readerHolder.reader.readTerminalFailure(request);
+          },
         },
-      },
-    });
-    readerHolder.reader = agentTaskAdapter;
-    const { isolated, prepared } = await prepareAuthoring(adapter, "settlement");
-    const taskEntityId = prepared.agentTaskRef.reference.entityId;
-    // 任务仍在运行时 C08 窄读按「非终态」同形拒绝：不收口、不写任何失败事实，但原因必须可查。
-    const pendingOutcome = await adapter.settleAuthoringFailures();
-    expect(pendingOutcome.settled).toBe(0);
-    expect(
-      pendingOutcome.failures.find((failure) => failure.taskRef.reference.entityId === taskEntityId)
-        ?.error,
-    ).toMatchObject({ code: "AUTHORIZATION_DENIED" });
-    expect(reads).toHaveLength(1);
-    expect(reads[0]).toMatchObject({
-      projectId: isolated.projectId,
-      taskRef: prepared.agentTaskRef,
-      expectedTaskType: "knowledge-authoring",
-      requestId: `${taskEntityId}:failure-evidence`,
-      actorId: reads[0]?.authorization.actorId,
-    });
-    // 失败证据读取必须使用新鲜签发的唯一 `agent-task.read` 能力，不回退任务信封授权。
-    expect(reads[0]?.authorization.grantedCapabilities).toEqual(["agent-task.read"]);
-    const pending = await fixture.cleaning.postgres.adminPool.query<{
-      stage: string;
-      bindings: string;
-      receipts: string;
-    }>(
-      `SELECT
+      });
+      readerHolder.reader = agentTaskAdapter;
+      const { isolated, prepared } = await prepareAuthoring(adapter, `settlement-${published}`);
+      let currentReleaseRef: KnowledgeReleaseRefV1 | undefined;
+      if (published) {
+        const revision = revisionOf(
+          await submitPackage(
+            adapter,
+            "standard-library",
+            standardLibraryPackage({
+              ...fixture.builderInput(),
+              projectId: isolated.projectId,
+              preparationSnapshotRef: isolated.snapshotRef,
+              evidence: isolated.evidence,
+            }),
+            { projectId: isolated.projectId, evidence: isolated.evidence },
+          ),
+          "settlement baseline",
+        );
+        ({ releaseRef: currentReleaseRef } = await publishRevision(
+          adapter,
+          revision,
+          isolated.projectId,
+        ));
+      }
+      const taskEntityId = prepared.agentTaskRef.reference.entityId;
+      // 任务仍在运行时 C08 窄读按「非终态」同形拒绝：不收口、不写任何失败事实，但原因必须可查。
+      const pendingOutcome = await adapter.settleAuthoringFailures();
+      expect(pendingOutcome.settled).toBe(0);
+      expect(
+        pendingOutcome.failures.find(
+          (failure) => failure.taskRef.reference.entityId === taskEntityId,
+        )?.error,
+      ).toMatchObject({ code: "AUTHORIZATION_DENIED" });
+      expect(reads).toHaveLength(1);
+      expect(reads[0]).toMatchObject({
+        projectId: isolated.projectId,
+        taskRef: prepared.agentTaskRef,
+        expectedTaskType: "knowledge-authoring",
+        requestId: `${taskEntityId}:failure-evidence`,
+        actorId: reads[0]?.authorization.actorId,
+      });
+      // 失败证据读取必须使用新鲜签发的唯一 `agent-task.read` 能力，不回退任务信封授权。
+      expect(reads[0]?.authorization.grantedCapabilities).toEqual(["agent-task.read"]);
+      const pending = await fixture.cleaning.postgres.adminPool.query<{
+        stage: string;
+        bindings: string;
+        receipts: string;
+      }>(
+        `SELECT
          (SELECT stage FROM business.identification_knowledge_authoring_attempts
            WHERE project_id = $1 AND agent_task_ref->'reference'->>'entityId' = $2) AS stage,
          (SELECT count(*)::text FROM business.identification_knowledge_revision_bindings
            WHERE project_id = $1 AND binding_kind = 'failure-review-only') AS bindings,
          (SELECT count(*)::text FROM business.command_receipts
            WHERE project_id = $1 AND command_id = $3) AS receipts`,
-      [isolated.projectId, taskEntityId, `${taskEntityId}:failure-revision`],
-    );
-    expect(pending.rows[0]).toEqual({ stage: "task-started", bindings: "0", receipts: "0" });
-    const cancelCommandId = nextId("c17-authoring-cancel");
-    await agentTaskAdapter.cancelTask(
-      CancelAgentTaskCommandV1Schema.parse({
-        kind: "cancel-task",
-        commandId: cancelCommandId,
-        idempotencyKey: cancelCommandId,
-        projectId: isolated.projectId,
-        actorId: isolated.readAuthorization.actorId,
-        issuedAt: "2030-01-02T00:00:00.000Z",
-        authorization: await fixture.authorizationFor(
-          cancelCommandId,
-          "agent-task.cancel-task",
-          isolated.projectId,
-        ),
-        payload: { agentTaskRef: prepared.agentTaskRef, reasonCode: "operator-cancelled" },
-      }),
-    );
-    const settled = await adapter.settleAuthoringFailures();
-    expect(settled).toMatchObject({ settled: 1, failures: [] });
-    expect(reads).toHaveLength(2);
-    expect(reads[1]?.taskRef).toEqual(prepared.agentTaskRef);
-    const rows = await fixture.cleaning.postgres.adminPool.query<{
-      binding_kind: string;
-      stage: string;
-      review_task_ref: unknown;
-    }>(
-      `SELECT b.binding_kind, a.stage, a.review_task_ref
+        [isolated.projectId, taskEntityId, `${taskEntityId}:failure-revision`],
+      );
+      expect(pending.rows[0]).toEqual({ stage: "task-started", bindings: "0", receipts: "0" });
+      const cancelCommandId = nextId("c17-authoring-cancel");
+      await agentTaskAdapter.cancelTask(
+        CancelAgentTaskCommandV1Schema.parse({
+          kind: "cancel-task",
+          commandId: cancelCommandId,
+          idempotencyKey: cancelCommandId,
+          projectId: isolated.projectId,
+          actorId: isolated.readAuthorization.actorId,
+          issuedAt: "2030-01-02T00:00:00.000Z",
+          authorization: await fixture.authorizationFor(
+            cancelCommandId,
+            "agent-task.cancel-task",
+            isolated.projectId,
+          ),
+          payload: { agentTaskRef: prepared.agentTaskRef, reasonCode: "operator-cancelled" },
+        }),
+      );
+      const cancelledTask = await agentTaskAdapter.getTask(prepared.agentTaskRef);
+      const runAttempt = vi.fn(async (input, operation) => {
+        expect(input).toEqual({
+          projectId: isolated.projectId,
+          actorId: isolated.readAuthorization.actorId,
+          taskRef: prepared.agentTaskRef,
+        });
+        await operation();
+      });
+      const settled = await adapter.settleAuthoringFailures(runAttempt);
+      expect(settled).toMatchObject({ settled: 1, failures: [] });
+      expect(runAttempt).toHaveBeenCalledOnce();
+      expect(await agentTaskAdapter.getTask(prepared.agentTaskRef)).toEqual(cancelledTask);
+      if (published) {
+        const submitted = await fixture.cleaning.postgres.adminPool.query<{
+          base_release_ref: unknown;
+        }>(
+          `SELECT r.base_release_ref FROM business.knowledge_revisions r
+          JOIN business.identification_knowledge_revision_bindings b ON b.revision_id = r.revision_id
+          WHERE b.project_id = $1 AND b.agent_task_ref->'reference'->>'entityId' = $2`,
+          [isolated.projectId, prepared.agentTaskRef.reference.entityId],
+        );
+        expect(submitted.rows[0]?.base_release_ref).toEqual(currentReleaseRef);
+      }
+      expect(reads).toHaveLength(2);
+      expect(reads[1]?.taskRef).toEqual(prepared.agentTaskRef);
+      const rows = await fixture.cleaning.postgres.adminPool.query<{
+        binding_kind: string;
+        stage: string;
+        review_task_ref: unknown;
+      }>(
+        `SELECT b.binding_kind, a.stage, a.review_task_ref
          FROM business.identification_knowledge_authoring_attempts a
          JOIN business.identification_knowledge_revision_bindings b
            ON b.agent_task_ref->'reference'->>'entityId' = a.agent_task_ref->'reference'->>'entityId'
         WHERE a.project_id = $1 AND a.agent_task_ref->'reference'->>'entityId' = $2`,
-      [isolated.projectId, prepared.agentTaskRef.reference.entityId],
-    );
-    expect(rows.rows[0]).toMatchObject({
-      binding_kind: "failure-review-only",
-      stage: "review-linked",
-    });
-    expect(rows.rows[0]?.review_task_ref).not.toBeNull();
-    // 失败修订永不通过发布门：按失败绑定的精确 revision 重新发布也被拒。
-    const failureBinding = await fixture.cleaning.postgres.adminPool.query<{
-      revision_id: string;
-      revision_version_id: string;
-    }>(
-      `SELECT revision_id, revision_version_id
+        [isolated.projectId, prepared.agentTaskRef.reference.entityId],
+      );
+      expect(rows.rows[0]).toMatchObject({
+        binding_kind: "failure-review-only",
+        stage: "review-linked",
+      });
+      expect(rows.rows[0]?.review_task_ref).not.toBeNull();
+      // 失败修订永不通过发布门：按失败绑定的精确 revision 重新发布也被拒。
+      const failureBinding = await fixture.cleaning.postgres.adminPool.query<{
+        revision_id: string;
+        revision_version_id: string;
+      }>(
+        `SELECT revision_id, revision_version_id
          FROM business.identification_knowledge_revision_bindings
         WHERE project_id = $1 AND binding_kind = 'failure-review-only'`,
-      [isolated.projectId],
-    );
-    const failureRevision = failureBinding.rows[0];
-    if (failureRevision === undefined) throw new Error("the failure binding is missing");
-    const failureReleaseCommandId = nextId("c17-publish-failure");
-    const failureReleaseAuthorization = await fixture.authorizationFor(
-      failureReleaseCommandId,
-      "knowledge-modeling.publish-approved-release",
-      isolated.projectId,
-    );
-    const failureRelease = await adapter.govern(
-      KnowledgeGovernanceCommandV1Schema.parse({
-        kind: "publish-approved-release",
-        commandId: failureReleaseCommandId,
-        idempotencyKey: failureReleaseCommandId,
-        projectId: isolated.projectId,
-        actorId: failureReleaseAuthorization.actorId,
-        issuedAt: "2030-01-02T00:01:00.000Z",
-        authorization: failureReleaseAuthorization,
-        payload: {
-          revisionRef: {
-            kind: "knowledge-revision",
-            reference: {
-              entityId: failureRevision.revision_id,
-              versionId: failureRevision.revision_version_id,
+        [isolated.projectId],
+      );
+      const failureRevision = failureBinding.rows[0];
+      if (failureRevision === undefined) throw new Error("the failure binding is missing");
+      const failureReleaseCommandId = nextId("c17-publish-failure");
+      const failureReleaseAuthorization = await fixture.authorizationFor(
+        failureReleaseCommandId,
+        "knowledge-modeling.publish-approved-release",
+        isolated.projectId,
+      );
+      const failureRelease = await adapter.govern(
+        KnowledgeGovernanceCommandV1Schema.parse({
+          kind: "publish-approved-release",
+          commandId: failureReleaseCommandId,
+          idempotencyKey: failureReleaseCommandId,
+          projectId: isolated.projectId,
+          actorId: failureReleaseAuthorization.actorId,
+          issuedAt: "2030-01-02T00:01:00.000Z",
+          authorization: failureReleaseAuthorization,
+          payload: {
+            revisionRef: {
+              kind: "knowledge-revision",
+              reference: {
+                entityId: failureRevision.revision_id,
+                versionId: failureRevision.revision_version_id,
+              },
             },
+            reviewDecisionRef: {
+              kind: "review-decision",
+              reference: { entityId: "failure-decision-unknown", versionId: "1" },
+            },
+            effectiveFrom: "2030-01-02T00:01:00.000Z",
           },
-          reviewDecisionRef: {
-            kind: "review-decision",
-            reference: { entityId: "failure-decision-unknown", versionId: "1" },
-          },
-          effectiveFrom: "2030-01-02T00:01:00.000Z",
+        }),
+      );
+      expect(failureRelease).toMatchObject({
+        kind: "failed",
+        error: {
+          code: "BUSINESS_BLOCKED",
+          blockerKind: "identification-knowledge-binding-required",
         },
-      }),
-    );
-    expect(failureRelease).toMatchObject({
-      kind: "failed",
-      error: {
-        code: "BUSINESS_BLOCKED",
-        blockerKind: "identification-knowledge-binding-required",
-      },
-    });
-    await expect(adapter.settleAuthoringFailures()).resolves.toMatchObject({
-      settled: 0,
-      failures: [],
-    });
-    // D-09 幂等：重放不创建第二个失败修订，也不重复挂复核任务。
-    const replayRows = await fixture.cleaning.postgres.adminPool.query<{
-      bindings: string;
-      reviews: string;
-    }>(
-      `SELECT
+      });
+      await expect(adapter.settleAuthoringFailures()).resolves.toMatchObject({
+        settled: 0,
+        failures: [],
+      });
+      // D-09 幂等：重放不创建第二个失败修订，也不重复挂复核任务。
+      const replayRows = await fixture.cleaning.postgres.adminPool.query<{
+        bindings: string;
+        reviews: string;
+      }>(
+        `SELECT
          (SELECT count(*)::text FROM business.identification_knowledge_revision_bindings
            WHERE project_id = $1 AND binding_kind = 'failure-review-only') AS bindings,
          (SELECT count(*)::text FROM business.identification_knowledge_authoring_attempts
            WHERE project_id = $1 AND stage = 'review-linked' AND review_task_ref IS NOT NULL) AS reviews`,
-      [isolated.projectId],
-    );
-    expect(replayRows.rows[0]).toEqual({ bindings: "1", reviews: "1" });
-    const stageFacts = await fixture.cleaning.postgres.adminPool.query<{
-      receipts: string;
-      audits: string;
-    }>(
-      `SELECT
+        [isolated.projectId],
+      );
+      expect(replayRows.rows[0]).toEqual({ bindings: "1", reviews: "1" });
+      const stageFacts = await fixture.cleaning.postgres.adminPool.query<{
+        receipts: string;
+        audits: string;
+      }>(
+        `SELECT
          (SELECT count(*)::text FROM business.command_receipts
            WHERE project_id = $1 AND completed_at IS NOT NULL AND command_id IN ($2, $3)) AS receipts,
          (SELECT count(*)::text FROM audit.entries
            WHERE project_id = $1 AND command_id IN ($2, $3)) AS audits`,
-      [
-        isolated.projectId,
-        `${prepared.agentTaskRef.reference.entityId}:record-failure-attempt`,
-        `${prepared.agentTaskRef.reference.entityId}:link-failure-review`,
-      ],
-    );
-    expect(stageFacts.rows[0]).toEqual({ receipts: "2", audits: "2" });
-  }, 300_000);
+        [
+          isolated.projectId,
+          `${prepared.agentTaskRef.reference.entityId}:record-failure-attempt`,
+          `${prepared.agentTaskRef.reference.entityId}:link-failure-review`,
+        ],
+      );
+      expect(stageFacts.rows[0]).toEqual({ receipts: "2", audits: "2" });
+    },
+    300_000,
+  );
 
   it("keeps the attempt pending and writes nothing when the failure evidence read is denied", async () => {
     const reads: AgentTaskFailureEvidenceReadRequestV1[] = [];

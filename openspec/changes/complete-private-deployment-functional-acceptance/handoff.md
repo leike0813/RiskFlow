@@ -1,10 +1,330 @@
 # 剩余功能实施交接（2026-10-13）
 
-## 当前接续：独立减负 change 先规划和实施
+用户要求边验收边记录过度防御设计，统一维护[evidence/defensive-design-ledger.md](evidence/defensive-design-ledger.md)；按DD-ID记录证据、影响、修复状态、优化方向和必须保留的约束，不另建分散台账。
 
-用户已确认统一处理14项、保留现有差异权限、接续成果、确定性组合自动生效、下一业务动作检查撤权。减负change [reduce-defensive-design-overhead](../reduce-defensive-design-overhead/handoff.md)已完成18/18任务，全仓verify、Chromium90项、部署378项及一次限定审计均通过，见其[核验报告](../reduce-defensive-design-overhead/verification.md)。现场尚未切换，后续先同步归档减负change，再按原运维流程备份、执行000059、部署兼容版本，继续物理业务验收。原资料、发布、阶段结果、失败及5/19任务状态保留。以下v100等段落为历史记录，实际部署在接续前重新读取。
+## 当前接续：v162已运行，浏览器90项曾全绿，真实Electron及报告/SSE修复继续
 
-减负后接续按实际实现读取：检索代际与全部授权摘要已分离，新增无关监测来源不要求重建已有知识向量；C19为当前准备确定性组装并派生发布规则集，无重复人工审核；评分仅需本阶段配置，正常缺项可补齐后续办。旧记录和旧运行终态保留。000059迁移已在隔离库验证，现场部署前按原运维流程备份并切换兼容版本。工程测试不计作新的实机验收通过。
+当前正式`functional-workspace-20261017-d175-v162`，API session38765/Worker21315，均已返回running；配置/清单`deployment-d175-v162.json`、`release-d175-v162.json`，制品5804277字节，SHA-256 `264ee77b201b39170ef9ab565d43f98436fce1b976d118e51acc4c45f10f811b`，tracked源码/测试diff `99c8a0953d1799c2be87e2fc7ec203a01b356cd7e08e85502dcadbc01bcffad7`。tar比较/预检通过，模型/策略/图/迁移/站点不变，v161均正常stopped/count0。随后D176只改桌面测试helper，运行时代码未改，最终测试身份需重核。
+
+统一设计台账现9条。D172桌面从apps/desktop自身依赖解析Electron；D173捕获ERR_ABORTED=-3仍误覆盖正常页面，已修主框架错误处理，原生复现先红后绿、桌面安全/打包13项及真实TLS拒绝通过。D174客户端向报告窄读透传用户已选择来源，原报告browser扩history/preview/artifact请求断言先红后绿（1 passed/37.8s，`/tmp/riskflow-d174-report-green-built.log`）；桌面从同次overview回执通过产品UI声明实际报告范围。D175正式SSE在框架默认100字符门槛先于Schema返回414，路由现复用公开2048上限；原长运行用例先红，HTTP shell/SSE共55项通过，正式`d172-functional-desktop/sse-http-v162.json`为200/text/event-stream并收到同次事件。8GB完整构建、相关lint/格式/strict/diff通过。此前90/90是D174/D175前完整轮，之后仅相关定向回归，不冒称最终全量已重跑。
+
+真实Electron首轮14项为8 passed/6 failed（3.5m），证据`d172-functional-desktop/desktop-traces/`及`/tmp/riskflow-d172-desktop-full.log`。修后v162共享对象、报告JSON真实下载、越界导航三项通过（`/tmp/riskflow-d175-scoped-desktop.log`）；撤权前置原C31直接读500已记台账，D176改以页面实际使用的C35正式导出工件验证撤权、只在真实修改成员后恢复，并使用实际“管理动作确认”组。最终定向`/tmp/riskflow-d176-confirmation-group.log`为1 passed/11.4s，核验200→404/NOT_FOUND、页面零工件及成员恢复。选定12项汇总为11 passed/1 failed（1.1m，`/tmp/riskflow-d176-twelve.log`），显式排除未成立的关窗继续和完整SSE游标重连；TLS用例在真实-202证书拒绝后出现Electron evaluate目标关闭，原trace保留，单独跟进`/tmp/riskflow-d176-tls-followup.log`为1 passed/4.9s，尚未认定稳定，不写12项全绿或2.2通过。原启动是既有completed运行，不能冒充在途；新v8/v9真实命令未返回agentTaskRef，强制capture正确BLOCKED，原报告保留。v9精确回放已得到正式运行a6c0b89c…/existing，不重开终态。后续须使用合法活动任务及具备后续事件的同次输入，并定位TLS原生进程退出，不能放宽断言。
+
+`d172-functional-desktop/operator-observation-v6/functional.json`为真实CLI PASS/queryCount1，包含同次正式资料重新交付、overview、export及启动回执，但启动返回原4d31ceff…已完成运行；这只补工具与历史重放证据，不代表新完整业务链。正向Electron使用同一既有验收账号的两个独立userData会话；新建业务账号`physical-desktop-operator-d172`仅有工程成员资格、无旧35资料正文授权，C04资料由其正式当前授权登记；其越权登记/导出拒绝保留为负例，没有扩权。秘密仍在受限目录，仓库不复制。tasks仍6/19，无提交/归档/verification，无活动辅助Agent。
+
+## 历史：v160已运行，反馈校准定向通过，完整browser及Electron继续
+
+正式宿主为`functional-workspace-20261017-d170-v160`，API session26563/Worker22156均已返回running。配置/清单为`deployment-d170-v160.json`、`release-d170-v160.json`；制品5804433字节，SHA-256 `bb5f0e147498349b7e0bc644d6c27c3914b7c6339c6adb00e006911beccbfcc2`，tracked源码/测试diff `d7cfdfe46fde94dff3d301dcd1a675b2daec1c40b288210f56c7391520e3d4eb`；v159正常stopped/count0。模型、策略、图、迁移000059和站点保持，身份见`d170-v160-identity.json`。
+
+D170的C29原22项、8GB编译及lint/格式/strict/diff通过；真实反馈→校准→人工批准仅生成未发布草案，以及单风险等级完整链两个browser用例均通过（2 passed/3.3m，`/tmp/riskflow-d170-browser-calibration.log`，trace在`/tmp/riskflow-d170-calibration-traces`）。完整90项browser已全部通过（14.0m，无重试或跳过），原session89735已完成，日志`/tmp/riskflow-d170-browser-full.log`；持久证据在`d170-browser/final-round-v160/`。旧完整轮为85 passed/1 flaky/4 failed，保留历史。该全量是独立browser宿主证据，不能代替当前合置宿主的完整functional/Electron。
+
+D171仅改桌面测试的运行状态读取，使用已有C34 run-read精确runRef及独立stateVersion，删除额外C31投影登记和全对象字符串比较；14项场景列举、lint及格式通过，真实Electron尚未实跑。D171发生在v160制品之后，最终测试身份需重新核对，运行时代码未变。下一步准备同次正式来源登记、启动、overview及export的真实functional回执，趁同次任务仍活动执行关窗继续；现有owner-observation的PASS仅覆盖评估，不能替代。tasks仍6/19，无提交/归档/verification。
+
+## 历史：v159已运行，评估functional通过，D170证据规范化回归在途
+
+当前正式`functional-workspace-20261017-d169-v159`，API59113/Worker57150，配置/清单`deployment-d169-v159.json`、`release-d169-v159.json`；5804410字节，SHA-256 `6889e6a05a6ff9fe15528f94251752cce28c25c3cbde8b6f27982b4c0a9d525c`，tracked diff `c2e5b0164217a5146d0225528180bc685151456c3f75d5fa4d6e877ff959d500`，tar比较/预检通过；模型/策略/图/迁移/站点不变，v158正常stopped/count0。D169原C25 38项及初评/重评运行详情两个browser用例通过。D167/D168的真实评估functional PASS仍仅覆盖评估链路，完整场景未完成。
+
+完整browser session38246尚在途，当前已跑到93（含重试）；原555/681/927已通过，1504/1575运行详情已在D169定向通过；1052反馈后校准失败已由独立Node执行原用例捕获根因：合法偏差事实含重复证据，C29直接传入C04排序唯一Schema。D170私有putArtifact复用现有normalizeEvidenceReferences，原事实不改；扩原准备/幂等/继承用例。C29回归session6674（`/tmp/riskflow-d170-c29.log`）与8GB编译session93761（`/tmp/riskflow-d170-build.log`）在途，尚未部署D170，当前源码/编译物不同于v159。诊断`/tmp/riskflow-d169-node-reproduction2.log`，统一设计记录已7条。tasks仍6/19，无活动辅助Agent、提交/归档/verification。下一步收尾D170回归及原反馈browser，再完整functional/Electron与恢复运维。
+
+## 历史：v158知识发布与会话流通过，D166浏览器及D167 functional在途
+
+当前正式宿主已切`functional-workspace-20261017-d166-v158`，API55381/Worker6085，配置/清单`deployment-d166-v158.json`、`release-d166-v158.json`。5808487字节、SHA-256 `ad74459bb0fe6121001f6de4697b392b6bfd0a45590afd8b820c15ba9b860127`，tracked diff `7b00f02b6fc5519202899147a2d481dbcbaeab778ac83b94e68a17152fc2776a`；模型/策略/图/迁移及站点不变，v157均正常stopped/count0。D166的555浏览器单项已通过（1.3m），C25的38项及组合根63项、8GB构建/工程检查通过；全90项新轮次session38246（`/tmp/riskflow-d166-browser-full.log`）在途。
+
+正式宿主C05流式调用6增量/195字节、stop，224输入/36输出，C04当前授权完整读取及摘要核验成功，见`d166-conversation-stream/result.json`。真实functional初次登录400零业务写，D167共享请求补同源Origin，原测试替身先红后绿、62项通过；修复后CLI session65599（`/tmp/riskflow-d167-functional-after.log`）在途。新工具源码已不同于v158，尚未最终冻结。安全索引`evidence/model-stream-and-functional-2026-10-17.md`。tasks仍6/19，无活动辅助Agent、提交/归档/verification。以下保留v157业务结果及各轮历史。
+
+最新：D167后新评估真实completed，原C31观察因摘要状态版本不同于启动身份而BLOCKED。D168追加已有C34 run-read所属详情观察，严格同次精确runRef及正式run-result，不放宽原C31匹配；工具63项、lint/格式/strict/diff通过。真实CLI`d167-functional/owner-observation/functional.json`已PASS/queryCount1，启动run为4d31ceff…，正式assessment-run-result版本f4e8aee7…，仅证明评估链路。完整browser仍在途，原555/681/927已通过，1052在反馈登记后的分段500；单项诊断session5801（`/tmp/riskflow-d169-browser-diagnosis.log`），无源码诊断补丁，仅临时进程loader。当前所有辅助Agent已关闭，tasks保持6/19。
+
+正式宿主为`functional-workspace-20261017-d165-v157`，API session88062/Worker88417，配置`deployment-d165-v157.json`、清单`release-d165-v157.json`。制品6052826字节，SHA-256 `1c68361b43898005b6d710f2c32080edd98ebff1eb0cfea5f72950a56a392581`，tracked diff `63a7b57924e5d83db11bb463cc210db923c9d961e4d6bd80a6d6c5273a31b43f`；migration000059、原HTTPS/CA及可见Chrome19222保持。v156仅为预检拒绝的草案，从未启用。D161–D164修复及D165策略已纳入当前身份。
+
+新任务`physical-d165-case-authoring-v157:start-task@1`真实completed/version7，5模型响应、3工具、2候选、1纠错，78442输入/9725输出，共88167 context token。第二候选通过确定性校验，retire-case×2/cite-case×2，形成`knowledge-revision-31467344-19ab-40ba-98b3-c871b43c3177@1`；attempt completed且正式result_revision_ref一致。仍使用原16资料准备和案例基线。`d152-knowledge-authoring/formal-authoring-v157.json`核验七旧失败任务完整state及budgetLedger不变。正常修订尚未送审发布，releaseCount=0，不能算发布通过。D165仅为新任务将输入/输出额度重分配为229376/32768，总和/context仍262144，其余硬预算不变。
+
+后续已在可见Chrome真实确认批准并发布：review-task-e44d43c1-5558-486c-b606-821b9d1cb0f6@1，对应`knowledge-release-51754e5d-c577-4d60-a374-e917517d3aeb@1`。`normal-authoring-decision-ui-v157.json`、`normal-authoring-release-v157.json`及两张visible截图留证；`normal-release-and-old-failures-proof-v157.json`核验C16正式发布及C17绑定与正常修订一致，七旧失败均review-linked、正常result_revision_ref仍null且终态/消耗不变。前段releaseCount=0是送审前快照。
+
+报告已实际导出下载：复用v153真实overview，preview/export/download均200，21241字节；导出`riskflow-report:8ec11b58dfefabae7ad9c53e5617abe30933862f21ab1625a338dd0d8917699a`，正文SHA-256 `d2dab2beed995ba534b83c013853f97960b4f286b0ac6e52e8a72566ef25e3d4`与正式引用相符，见`d155-report-export/report-export-v155.json`。D162按当前真实空间/来源权限读取旧风险追溯，不改历史记录；D163模型投影保留原全文/定位/来源，原v154输入163810→101259字节。
+
+D164将两个browser夹具的公共报告限定为实际可见A记录，受限B及拒权用例保持。完整90项browser最终81通过/9失败（`/tmp/riskflow-d164-browser-full.log`），失败集中在真实初评启动。trace已另存`d166-browser-assess/full-run-final-traces`。独立真实诊断在A3写决定工件捕获C04 registry.parent-access拒绝：规则父工件登记两份来源，准备仅风险资料A，写入误用收窄后的准备授权。D166私有putDecisionArtifact改沿既有下游接缝按decision行动取当前evaluate授权，部署原调用来源和C04父工件校验保持，未扩大角色或改历史。C25原38项、lint/格式/strict/diff通过；首次tsc默认4GB内存耗尽，按原8GB pnpm build重跑成功。555针对性browser正在运行（session98276，`/tmp/riskflow-d166-browser-target.log`），当前源码/编译物已不同于v157，尚未冻结下一制品。辅助scout Kepler只读梳理会话流。tasks仍6/19，无提交/归档/verification；下一步完成D166回归与新制品，再会话、完整functional、全部真实Electron及恢复运维。
+
+## 历史：v153五旧失败已正式送审，D161真实正文修复待发布
+
+正式functional-workspace-20261017-d160-v153，API99882/Worker74221，deployment-d160-v153.json/release-d160-v153.json。6050429字节，SHA-256 15eecb3e4d2a05750eb1b17c9c53015c5903eb00e69bbb993ad6f7f79bdb4c64，tracked diff ffe8a63b5d0e8d5ef1b5df1e32ea10f020597f2699bde9ed64973cd514dfdd44，tar比较通过。旧v152正常停止；图仍d148，模型/预算/migration000059/原HTTPS及Chrome不变。D157/D158 v152真实发布与回归见下文，D159长游标9项、D160宿主91项、C17当前基线两分支、build/typecheck/lint/format/deps/strict/diff通过。
+
+五旧编制任务均仍terminal-failure；v153 Worker已将每项推进review-linked，失败诊断/复核引用见d152-knowledge-authoring/failure-settlement-v153-*.json。v148复核700dfef5…→修订219d10af…，v149复核36791ef5…→d016df8f…，v150复核1cc75455…→26c21721…，v151复核14560d2b…→4039d30b…，v152复核b85179af…→345015fa…。正常result_revision_ref仍null，不把诊断当正常编制结果，不发布或复活任务。
+
+v152新任务已终态version6/request.input-quota，账本modelInvocations7含一次调用前拒绝、6真实响应106166输入/7227输出，5工具、1候选/154对象、1纠错。correction-input-proof-v152.json证明下一模型输入101795字节，完整前候选/逐项increment-target-exists已进入，但剩余额度不足。进一步代码调查发现切片工具此前只返回索引/locator，不含正文；D161复用规范检索文本的JSON-LD/片段/原textBlocks读取，保留版本、保留范围、权限、真实坐标/置信度及字节上限。C17全26项、Worker23项通过；构建先检出回调类型收窄，已绑定sourceVersionRef修正，build2通过，最终typecheck/格式/strict在途，尚未发布。当前源码已不同于v153冻结身份，不盲派新任务。
+
+报告：原v150查询摘要实为零来源，修复后当前25grant摘要不同而拒绝，历史不改。新v153正式overview与preview均200，D159修复真实549字符以上游标；完整export仍422/source-page-unreadable。report-pages-target-proof-v153.json逐页证明前14页可读，第15页原df1a0a84…运行risk-overview-incomplete，正在查精确状态/风险追溯；不能冒称导出通过或静默跳过旧运行。d155-report-export/report-run-proof-v153.json诊断在途。
+
+tasks仍6/19；无提交/归档/verification，无活动辅助Agent。下一步完成D161最终检查/新制品/真实独立任务，收口报告追溯缺口，再会话、完整functional/真实Electron、权限及恢复运维。
+
+## 历史：v151纠错预算真实失败，D157授权范围回归通过
+
+正式宿主functional-workspace-20261017-d156-v151，API session60435/Worker72866；deployment-d156-v151.json/release-d156-v151.json，6052487字节，SHA-256 16ff540f1b2f5fdd938ddf52a74a896d234110a9c9f6ae420fcd527e5e1a0c58，tracked diff bfcb9947c54a5871706fd30556019c6050e713163bb3ec900dc065c80e5c28ad。v150正常停止。D155用途修复、D156无损定位及目标Schema缩减已部署，107项及最终组合根14项、build/typecheck/lint/format/deps/strict/diff通过。定位45049→24720字节、Schema21995→5349字节，595定位均可还原。
+
+同一真实waiting父e1c73932…下，v150任务version6/terminal-failure，4真实模型响应116672输入/2849输出，第5模型尝试在输入预算前拒绝；候选v1已登记。v151任务physical-d156-case-authoring-v151:start-task@1最终version10/terminal-failure，7真实响应123239输入/8545输出、4工具、3候选/122对象，corrections3超过max2，budget.settle.corrections终止；最后真实响应及超额消耗均保留。tool-selection-proof-v151.json证明读过正确案例基线及相关资料；不能归因于未读基线。四旧任务全部保留，无正式编制结果。
+
+原报告query-result:synthetic-station-tunnel-project:physical-risk-overview-v150可读，preview/export因部署verify把25grant变0而拒绝source-page-unreadable。D157已在共享actionDecision按原context自己的空间/来源复验，删除C17额外补签；根/C17共111项、C35数据库9项通过，尚未格式/构建/发布。当前工作区已不同于v151身份。D158继续补通用Runner纠错上下文，受权恢复最新拒绝候选与完整校验，不放松规则/预算、不复活终态。失败复核另有缺控制来源及当前基线的实际缺口，尚未修复。
+
+tasks仍6/19，无提交/归档/verification；完整functional、会话、全部真实Electron、权限及恢复运维仍待验收。
+
+## 历史：v149校验用途缺口已定位，D155回归/构建在途
+
+正式宿主functional-workspace-20261017-d153-v149，API69518/Worker57285，deployment-d153-v149.json/release-d153-v149.json。制品6052429字节、sha256 4749af2bc6256ad82b54e13343ba04a0ea133831369d9c72b2549259eb448fb0，tracked diff 7ba2ac18d4196750dd2f5681924b41ac4b8759713c55d6ddac1486a4fcda74d9，tar比较通过。旧v148正常stopped0。D153全25项、最终build/typecheck/lint/format/deps/strict/diff通过；D154桌面真实risk-overview/run-view夹具先红后绿，异查询导出与非overview拒绝及后续typecheck/lint/format/strict/diff通过，尚未全Electron实跑。
+
+同一仍waiting的真实父e1c73932…下，新任务agent-task:synthetic-station-tunnel-project:physical-d153-case-authoring-v149:start-task@1已显式冻结基线dbf33d14…@1及所属16资料准备a968bf3d…@1，task-started-v149.json。3模型/2工具、85449输入/2566输出、1候选/12对象、零纠错/重试，taskVersion3/terminal-failure/latestCandidateVersion0；错误AGENT_TOOL_FAILURE/worker.step/action5。当前公开任务详情200，task-read-v149-*.json。原v148失败和消耗不变，两attempt失败人工复核仍未收口，不复活任务。
+
+candidate-diagnosis-v149.json经当前受权C04只读候选（不读/复制原响应思考）及正式基线确定性复现：1个cite-case直接重用已有case-entry-01，baseline摘要全匹配，领域正确给increment-target-exists/repairable，C17校验Schema合法。C17返回C08的validationArtifactRef却使用identification-knowledge-validation；C08 recordCandidate严格要求agent-validation而拒绝，尚无候选登记/正式修订。D155仅改C17 Agent校验工件用途，包提交用途保持；模型指令解释同候选先retire再声明，领域/预算不改。既有生产manifest用例先红明确用途差异（/tmp/riskflow-d155-red.log）；回归session18187与build/typecheck80330在途，尚未冻结v150。D153源码/测试已不同于当前v149冻结身份。
+
+后续：先收尾D155相关C17/C08/Worker回归及工程检查，再新不可变制品、正常SIGTERM切换、同活动父下以原正式基线/准备启动新独立任务，旧失败保持；继续失败人工复核、会话、完整functional/真实Electron及运维证据。新安全索引evidence/knowledge-authoring-2026-10-17.md；tasks仍6/19，无提交/归档/verification，所有辅助Agent已关闭。
+
+## 历史：v148知识编制已真实读取，D153提交范围/基线修复回归通过
+
+当前正式functional-workspace-20261017-d152-v148，API83170/Worker93644；deployment-d152-v148.json/release-d152-v148.json。制品6052849字节，sha256 883604990e661933b39171391491e86d1663b730f96aeeec664b3fc01d8caeea，tracked diff 50cbf988aba82f9e283a13d956b356840d2960113eb01b03971a643ce242fe98，tar比较通过；旧v147正常stopped0。模型/预算/图仍原d148版本、migration000059/CA/HTTPS/Chrome保持。D152的C17/Worker47项、Worker/宿主92项、build/typecheck/lint/format/deps/strict/diff通过；D150/D151已含本次制品。
+
+新真实C30父risk-flow-run:synthetic-station-tunnel-project:identify-and-assess:e1c7393215d8e8afda5708972145b322@e1c7393215d8e8afda5708972145b32291c6eca98a8f77ca482cdf31eb2edd8e停在knowledge-preparation等待，parent-started-v148.json；C17经现有生产prepare入口消费原五资料准备50efff5a…@1，任务agent-task:synthetic-station-tunnel-project:physical-d152-case-authoring-v148:start-task@1。8模型/7工具、81635输入/3361输出、1候选/39对象、零纠错/重试，候选通过领域校验，但submit的validation事务前AGENT_PERSISTENCE_FAILURE终止，taskVersion3/latestCandidateVersion0。候选包及validation工件耐久，尚无正式修订；attempt仍task-started、失败复核未收口，不冒称通过或复活任务。
+
+d152-knowledge-authoring/reference-scope-proof-v148-corrected.json证明原当前25grant通过C04，verify空来源结果0grant被引用守卫拒绝；早期proof文件错误能力常量断言失败保留，不引用为成功。D153保留原入口及其复验主体/工程/能力检查、拒绝redacted，再沿注入authorize与可信来源取当前真实范围；finalizer透传manifest精确基线。既有fixture模拟生产窄verify，先红同finalize.submit；修后C17全25项通过（/tmp/riskflow-d153-green-corrected.log）。首轮回归检出主体复验检查需先执行及测试时钟早于新发布，均已修正，原失败日志保留。最终build/typecheck session43439在途，尚未冻结v149；当前源码已不同于v148冻结身份。
+
+原正式案例基线knowledge-release-dbf33d14-919f-4f06-a18f-3e650a541504@1的当前受权C17窄读成功：6条目，真实来源s_d2261a936ce020e7b101e6d3ecd3d764@1，所属C15准备identification-preparation-a968bf3d16c9fcddbecbce46a46ee456e2e5cdae@1；baseline-read-v148.json。新任务应在上述仍活动父下显式绑定该基线和所属准备，不再用缺基线的五资料准备更新已有定义。Worker模型指令补先读基线/按其证据选相关成员，预算不改。后续先完成工程检查/新制品，再新任务、旧失败收口和知识正式结果取证。
+
+桌面预检还存在真实契约缺口：sharedObjectUrl导出来源必须risk-overview，当前acceptance.mjs却从该查询payload.workflowRunRef取运行（只有run-view才有），现有夹具未带queryType而掩盖；尚未修复。需把functional观察的同次workflow启动与正式导出查询分别绑定，并校验下载回执确实来自该导出来源，不伪造回执。所有辅助Agent已关闭，tasks仍6/19。
+
+## 历史：v147校准复核与未发布草案已完成，补知识编制和桌面证据
+
+原建议已在可见Chrome经两次二次确认完成复核和创建治理草案，两命令均200：review-decision-e4a47447-facb-4070-9dc2-0bef87ee9b10@1、calibration-draft-2347c5c00fd59c206bd4167c93b05564@1、knowledge-revision-4b2a3d74-b3a3-4bcd-a44c-1e86d1e8bdcf@1。当前view为approved-for-draft，偏差记录第2版；修订零release行，正式阈值未改变。formal-calibration-draft-v147.json证明原反馈及私有偏差各唯一、原Agent version4及5922输入/1209输出预算不变。原父子A4失败终态保持，不冒称整图completed。
+
+D150桌面预检去除历史000058硬编码，改以当前清单和服务器迁移验证；D151运行器接受正式Schema验证的异步202/waiting，桌面在途允许同次queued/running Agent等待。synthetic/functional定向62/62、桌面预检边界1项、lint/format/strict/diff通过（/tmp/riskflow-d151-{observer,desktop}.log）；尚未冻结新release或完成真实Electron场景。当前载入宿主仍下述v147，工作区测试脚本已不同于其冻结diff身份。completed-agent-inventory-v147.json证明五类中knowledge-authoring仍为0；下一步复用C17现有生产接缝和原合格C15准备，先核实真实父引用与当前权限，不新增无需求HTTP或伪造运行/functional回执。tasks仍6/19。
+
+## 历史：v147原正式校准建议可读，物理复核进行中
+
+最新生产functional-workspace-20261017-d149-v147，API43481/Worker5435，deployment-d149-v147.json/release-d149-v147.json，migration000059/原CA HTTPS19443/可见Chrome19222保持。制品6049692字节、sha256 4b4545e297844dd6e667b2e353c95f77dbdcd8de930b042c3ffcf49575af17a3，tracked diff 52576672361115e8f6704a67c1e4a57681ae29b80a7956124b3101bf5ef6c700，tar比较通过；图仍physical-20261017-d148-v1（D149仅修读取），原共享新源码身份沿d132-new-source-identity.json。v146只冻结未启用：并行typecheck结束后二次tar比较报生成文件mtime变化，保留并重新冻结v147；旧v145正常stopped0。tasks6/19，无提交/归档/verification。
+
+D148 v145真实任务dea644cb… completed/version4，1模型5922输入/1209输出、1候选/1操作、零纠错/重试。原候选完成通知已正式提交calibration-suggestion-1b0885991ff6327eced3eb3526ddbf94@1、deviation-record-da66d3c524dfa61cd0cde73baa2f4a4d@1及review-task-4b472ebb-91b7-4d99-99d6-4df73ad36bfb@1。但readCreatedDeviationRecordRef误拒导致原父3cf536bb…/子dea644cb…A4 calibration-created-record-missing终态；不重开、不重算模型或重复建议。formal-calibration-v145.json证明当前授权及候选/正式结果完整对象合法不同，完整taskRef和result身份一致。
+
+D149所属检查点去掉授权完整对象相等，正式结果按共享Schema/completed/完整taskRef/精确result引用绑定，允许finalize候选和校验元数据变化；完整父/版本/摘要/权限保持。原C29检查点先红，修复后全22项及补充当前空增量正例通过，worker评估21通过；build/typecheck12GB/lint/format/deps/strict/diff绿。测试移除以调用日志ID及入口空空间增量冒充当前撤权的旧断言，保留真实deny及错主体/工程/父/版本/结果/完整任务拒绝、零业务写。新制品实机readCreated读回原偏差@1、原view pending-review，formal-calibration-v147.json绿色。
+
+物理Chrome原校准详情查询200/复核按钮可用，physical-calibration-pending-d149.{png,json}和physical-calibration-review-pending-d149.png。review-calibration-d149-v147.mjs在途，先读/tmp/riskflow-d149-review.log及calibration-review-decision-v147.json，不重提决定。确认只批准合成验收的未发布治理草案，原正式阈值不变；后续需通过校准详情填写真实复核决定ref并二次确认创建草案，继续读正式修订/历史/预算。完整图成功、会话、Electron、权限/恢复/运维及报告/最终门禁仍未完成；所有辅助Agent已关闭。
+
+## 历史：v145校准生成绑定已部署，真实任务取证中
+
+最新生产functional-workspace-20261017-d148-v145，API58019/Worker78067，deployment-d148-v145.json/release-d148-v145.json，migration000059/原CA HTTPS19443/可见Chrome19222保持。制品6049632字节、sha256 0064e393626daf4b6f3c09404a0e2dc766098f988747acc41fd5592a0b2e8804，tracked diff 6fbed476c1e86ed557a7515f4e54f7ac0ce24b9b304a27d837004828fbc20f2a，tar比较通过，图physical-20261017-d148-v1。v144正常stopped0，tasks6/19，无提交/归档/verification。
+
+D147 v144新行动1/2/3独立取证成功，前两响应同样缺completed primary output，第三在request.input-quota调用前拒绝；任务version7/terminal-failure，账本modelInvocations3/corrections2，真实两响应19003输入/2857输出。calibration-access-d147.json记录Schema路径resultRef.status，两次操作kind均合法，不含原响应或思考正文。父公开取消200及所属子runtime取消成功，失败任务/账本不改。
+
+D148仅部署response-model-step及既有测试：沿原definition.actionSchema.safeExtend固定当前taskRef/inputSnapshotRef及buildCompletedAgentTaskResult完整结果绑定，候选身份按任务/下一候选版本确定并明示模型，专业增量仍模型产生、原校验/预算不变。定向167、lint/format/deps/strict/diff通过，无TS生产改动复用上次build/typecheck。start-calibration-followup-d148-v145.mjs已执行；先读/tmp/riskflow-d148-start.log、calibration-followup-v145-started.json及/tmp/riskflow-d148-segment.log，不重投。后续真实终态/候选/复核尚待；没有活动辅助Agent。
+
+## 历史：v144纠错行动修复已部署，新校准任务取证中
+
+最新生产functional-workspace-20261017-d147-v144，API66119/Worker33821（进程1303082/1303167），deployment-d147-v144.json/release-d147-v144.json，原CA/HTTPS/Chrome及migration000059保持。制品6049376字节、sha256 7ab8a1b0a97139caabd909628d1d3af17765a8eb84d89293d5737997feb88723，tracked diff c42b9961900bfb57c04becb5343a1f88b903db28832090fb51cc12aab4469a7d，新共享源码身份沿d132-new-source-identity.json，tar比较通过。riskFlow/assessment图physical-20261017-d147-v1。v143正常stopped0，无提交/归档/verification，tasks6/19。
+
+D147新行动/剩余纠错预算回归及adapter43、关联156项通过，build/typecheck12GB/lint/format/deps/strict/diff通过。最初新fixture缺正式候选被worker.result.finalizer正确拒绝，补合法候选后绿。原v143父子已cancelled，原任务失败及账本保持。公开新后续命令physical-d147-calibration-followup-v144返回202，父74d78e63…/子916beef0…等待新校准任务；calibration-followup-v144-started.json保存原回执。read-calibration-task-d147-v144.mjs正在只读取证，先读/tmp/riskflow-d147-task.log，不重投启动。
+
+## 历史：v143校准来源及恒值频谱已取证，D147纠错行动修复在途
+
+生产functional-workspace-20261017-d146-v143，API25416/Worker55672，deployment-d146-v143.json/release-d146-v143.json，migration000059、原CA HTTPS19443和可见Chrome19222保持。制品6047799字节、sha256 65df13503a3ad4f6d340fb91062ac141c10d3acdd90b90bc9e7a8164ffb62af6，tracked diff b89dc67b12fdf82df1d1456387df1e5e111049c8726b48c43a7756f64fdf5a34，新共享源码沿d132-new-source-identity.json；tar比较通过。riskFlow/assessment真实修复图版本physical-20261017-d146-v1；identification仍原版本，模型/预算/业务规则不变。tasks6/19，无提交/归档/verification。
+
+D143部署全406项通过并运行v141；原反馈重放越过当前授权形成正式response-deviation-a431c31dc9445024118f29750aca301e@1，预测2/实际6.8/绝对4.8mm、threshold2mm超限，formal-deviation-v141.json。v141分段a653e333…/237c43cb…A3 UNSUPPORTED_CONTRACT终态保留。D144分离整体policyRef与内层C08 validationPolicyRef，task port精确目录验证对应；定向167项通过。v142原信封重放200，仍唯一feedback-ebf42566…@1，committed/segment_started_at=03:06:40.781Z；新父6f295018…/子eb61261b…到A4，但任务来源为空，模型前拒权且用量零。retrieval专用agent-task-failed通知400保留，父公开取消200，子经所属runtime取消；首次辅助取消漏线程在写入前失败，按原稳定身份函数修正后成功。原任务仍failed，不复活或改预算。
+
+D146输入工件继承基准父/偏差证据，任务前从精确manifest经当前C06冻结实际来源/grant。C29及部署定向76、部署/监测321、C29/频谱34项通过，build/typecheck12GB/lint/format/deps/strict/diff绿。v143新独立公开后续运行589b9905…/1589c7cd…消费原反馈/偏差，来源四版本正确冻结；首次返回202/waiting，误用只接受治理200的helper抛错但原回执已保存，不能重投。calibration-followup-v143-started.json及calibration-access-d146.json保留精确证据。
+
+D145已先红后绿，16点/100ms/恒值6.8无伪主峰，12项core通过。新频谱策略physical-d135-availability-ground-settlement@physical-20261017-d145-v2登记成功，新正式快照monitoring-snapshot:46b1c0f5c629468c7421a32323a7c74d2feb60c0@1为partial/no-dominant-frequency；逐点与原快照一致，旧8ca1cc3e…@1读回仍0.625Hz且完整对象不变，frequency-d145-v143-green.json。旧评估/反馈/偏差继续引用旧快照，不追改历史。
+
+当前v143校准任务terminal-failure/version5：首响应Schema失败实际9493输入/1569输出，后续纠错同action:1带新反馈写同模型输入键，ARTIFACT_IDEMPOTENCY_CONFLICT/registry.register。账本modelInvocations2/corrections1，第二行动尝试在再次外部调用前失败，不能称两次真实模型调用或重置账本。D147已同步design/IP/runtime delta并实施新纠错行动身份与累计预算检查，runner/adapter回归和构建在途；尚未部署。原等待父取消脚本在途，先看/tmp/riskflow-d146-cancel.log再取消子；后续以d147新图版本启动原反馈独立后续运行，不再重放C41登记。所有辅助Agent均关闭。完整校准/人工复核、会话、Electron、权限/恢复/运维及终态报告/最终门禁仍未通过。
+
+## 历史：v140基线修复已部署，D143人员入口当前授权待切换
+
+生产functional-workspace-20261017-d142-v140，API86257/Worker2027（进程1184214/1184286），deployment-d142-v140.json/release-d142-v140.json，migration000059及原CA/HTTPS19443/可见Chrome19222保持。制品5799332字节、sha256 2999404ee462bcce8de93cc3e49eb569ae84114895531829acfeb5994471be6d，tracked diff abc1fb284b55e6e02e4a8f03b69c38ab19e7bd57ad63cf361ef030be0ea87d2e，新共享源码摘要沿d132-new-source-identity.json，tar比较通过。v139正常stopped0，无提交/归档/verification，tasks6/19。
+
+D142 C41测试最初在旧dist导出下红灯精确复现传实际输入，构建后8/8绿（/tmp/riskflow-d142-c41-green.log）；build/typecheck12GB/lint/format/deps/strict/diff通过。实机新readForecastBasis当前授权证明原输入f12caae7…@1及原依据2c4bdc0a…@1，forecast-basis-d142-green.json。v140原反馈信封重放返回401；可见页面重新登录后仍401，两个回执feedback-replay-v140.json及feedback-replay-after-login-v140.json保留。并非业务重登记失败，不再试同UI登记。
+
+D143根因部署authorizationScope.access.authorize首个人员请求仍走旧localAccess.authorize，原命令invocationId命中五分钟context后authorize.context抛SESSION_EXPIRED；HTTP已用当前服务器时间，重新登录不刷新这条旧记录。已同步design/IP/domain delta，start.mjs改用readSession确定当前主体及既有authorizeBusinessAction当前业务权限，再捕获原请求作用域；旧context/TTL、会话验证及当前权限不改。entrypoints84/84、lint/format/strict/diff已绿；实机只读原命令两次当前授权均成功，original-command-current-auth-d143-green.json。部署全回归session3062在途，日志/tmp/riskflow-d143-deployment.log；deps39349在途。stage-d143-v141.mjs和replay-original-feedback-d143-v141.mjs已准备未执行。通过后先冻结新制品、正常重启v141，再重放同一原feedback-receipt-v139.json.request（issuedAt/commandId/idempotencyKey/payload不改）。
+
+唯一正式反馈ebf42566…@1、原committed快照/segment_started_at=null、原失败父62a987f7…/子d7ede78e…保持，零偏差/C29。D142原载荷派生正确分段的新启动身份只在成功当前授权后才可能执行。所有辅助Agent均已关闭，后续反馈/偏差/C29/会话/桌面/运维/报告与最终门禁仍待。
+
+## 历史：v139唯一正式反馈已提交，D142修正反馈分段基线在途
+
+v139生产及下节身份不变。物理Chrome反馈原命令demo-feedback-7d9188d0-52ad-403b-ada8-a2313e274dec返回500，先读效果证明唯一正式feedback-ebf425667eab1bde76fffcfb95a9478a@1已提交，C41输入快照committed/segment_started_at=null，冻结新政策beb608e7…@1和真实effect-forecast-835f7ba1…@1。公开feedback-read200、物理Chrome详情成立，证据d135-response-followup/feedback-effects-v139.json、official-feedback-v139.json、physical-feedback-detail-v139.{png,json}。原500/确认与失败页面保持，未重投或新登记反馈。
+
+原反馈分段父risk-flow-run:synthetic-station-tunnel-project:record-response-feedback:62a987f734b3946f9cb9cfac3ed4b6e3及子suffixd7ede78e0d851929e683a5e186702fa9均terminal-failure/A2，response-deviation-value-incompatible，零偏差/C29。C41把新实际输入传为预测冻结基线，C28同原预测比较正确拒绝。D142已同步design/IP/delta并实施：C28 context reader当前精确readForecastBasis读取正式预测的原输入/依据；C41使用此基线，分段启动身份按原命令和固定载荷摘要派生，避免碰旧终态启动键。已提交快照原命令同载荷重放只启动正确新分段、原反馈唯一；无预测跳过保持。原失败不复活、不手改行。
+
+D142范围core/response-lifecycle/service.ts、core/human-decision-feedback/service.ts、C28 reader与原C41测试。既有反馈重试测试已加入真实可用预测及独立后评估、原基线断言/重放不重复；测试90117和typecheck47963在途（/tmp/riskflow-d142-c41.log、-typecheck.log），定向lint/format绿、strict/diff已运行。当前未构建或切新发布，不可把源码修复当生产生效；完成工程验证后冻结新制品，再精确重放原feedback-receipt-v139.json.request，保持原issuedAt/payload/commandId。record-feedback-d135-v139.mjs有防重复登记保护，不能再次运行UI登记；重放需使用保存的原信封。
+
+## 历史：v139修复公开运行读取，正式反馈提交在途
+
+生产functional-workspace-20261017-d141-v139，API90261/Worker83975（进程1154287/1154409），deployment-d141-v139.json/release-d141-v139.json，migration000059及原CA/HTTPS19443/可见Chrome19222保持。制品5799034字节、sha256 030e3877000deac801cb1c20dbc7b58942a03c26e5bcafb345614a64828525bf，tracked diff 61048d50fde4de9c25bba8d87e4f21c408a4d772884ce742c6b5d042987fd11d，新共享源码摘要沿d132-new-source-identity.json，tar比较通过。原API/Worker均正常SIGTERM/stopped0，无提交/归档/verification，tasks6/19。
+
+D139完整相容比较及D141历史摘要过滤移除已落地，反馈/偏差35、工作流30、C25/C41关联46共111项通过；build/typecheck12GB、定向eslint/prettier、deps边界/策略、change strict/diff通过。实机新reader当前C19/C04两依据读回成功且适用正文除requiredAt相同，basis-reader-d139-green.json；D141原预测public run-read已200/completed并在物理Chrome呈现，未重算预测。证据d126-risk-level-inputs/v2/forecast-run-read-v139.json及physical-forecast-run-v139.{png,json}，旧404保留。辅助Curie定位后关闭，Halley未完成补丁已关闭，父接回实施（中途重复导入/阶段授权漏传被typecheck发现并修正）。
+
+D140单一absolute/threshold2mm合成政策已真实C11转换12格、可见页面确认批准并发布knowledge-release-beb608e7-29dc-493a-b157-2f69a32ef994@1；source s_e3d24ae00978f44dff2b429421933f6d@1，review-decision-ba107152…@1，业务有效02:29:35.047Z及真实发布时间分别留证。旧三政策/阈值保持。v139仅另将calibrationTargetReleaseRef绑定原依据monitoring-warning-threshold de2a8b10…@1，当前窄读及provider resolved已有证明，未改阈值/模型/预算。d140-deviation-inputs复用脚本保留forecast-*文件标签，实际正文definitionType是deviation-policy。
+
+执行后正常assess父99f88703…/子8c4c6a19…已completed；正式risk-assessment-record-dcede53d185c7e82ccacbc59cfcd7e224ad1cc3bc94b298b640f30cd1b7c91a9@1，P3.6/C2/level3、沉降6.8mm和三预警。A7 measure-candidates-failed如实跳过，零新建议/模型，不复活终态。物理Chrome原执行登记d5323f14…@1保持。当前record-feedback-d135-v139.mjs在途（session见工具记录），日志/tmp/riskflow-d135-feedback-v139.log；必须先读d135-response-followup/feedback-receipt-v139.json，不盲重投。完整反馈/偏差/C29/会话/桌面/运维/报告和最终门禁仍未完成。
+
+## 历史：v138正式预测、执行及六类后监测成立，D139反馈依据修复在途
+
+生产functional-workspace-20261017-d135-v138，API91609/Worker66969，deployment-d135-v138.json/release-d135-v138.json，migration000059、原CA HTTPS19443/可见Chrome19222保持。制品6048118字节、sha256 411e71d3beac63b840a7ebedd1bc00141597d46c6f7d39878449a33682b00c9f，tracked diff de223458935611ecdeb2ddf66f4b2626610b332954784709eea64b6f86681830，新graph-execution.ts摘要沿d132-new-source-identity.json；tar比较通过。v137仅冻结未启动，v138只另绑正式新预测政策。无提交/归档/verification，tasks6/19。
+
+D137定向131、D138 core66/adapter9及build/typecheck/deps/strict/diff通过。新六位模型physical-d138-forecast-model-six@sha256:2f2e49199b8f0a817b2cfb248a7400b95a27810f18fb5867104932b8c210741b已正式C04；原八位来源和工件保持。新forecast-policy经真实复核/发布knowledge-release-ae3df367-c72e-451d-a9b0-5fa0d0fc5412@1，业务有效00:00与实际02:07发布分别留证。原预测父0217dc68…及子64b7bd9f…已completed，公开续办200；正式effect-forecast-835f7ba1fad002da154f1642cce8f6be@1 available、2mm、P3.6/C1/level3，专属forecast-read200和物理Chrome页面成立。risk-assessment.read/run-read仍404，保留缺口，scout Curie只读定位。
+
+物理Chrome执行二次确认200，execution-record-d5323f14a6bb1f29dfcd3ffd261fc47b@1，执行发生01:58:34.265Z、实际登记02:16:13.777Z，引用原建议及正式执行CSV证据。d135-response-followup六类后监测共96点正式登记，100%覆盖及逐点原值/时刻一致，沉降6.8mm和姿态available、姿态主频1.25Hz，其余四类no-dominant-frequency保留partial。首版脚本availability硬断言错误已修为真实结果记录及逐值校验，原成功身份重放、失败回执保持。新C11独立准备assessment-preparation-83033bedad6a3399ad1bbd376e015de470a6355b@1保留原126kPa/地层两字段、来源及六快照，正常assess命令physical-d135-post-assess-v138在途，先查回执不可盲重投。
+
+D139已同步design/IP/delta：反馈主规格要求相容而实现强比依据集合ref；C19新准备生成不同集合身份，即便原规则/配置相同。复用当前受权C19读比完整冻结评分成员，独立预测/偏差政策不入评分相容；保留两次集合及所有风险/空间/监测校验。辅助Halley限定core/response-lifecycle/service.ts、adapter及既有test/fixture实现回归在途，父负责审阅/部署。原已completed评估/预测/Agent、失败与预算不改，不用历史回填伪造后评估。实例d135-response-followup、d126-risk-level-inputs/v2保存请求/回执/截图，完整反馈/偏差/校准/会话/桌面/报告和最终门禁未通过。
+
+## 历史：v136预测仍等A0，D137/D138修复及新合成政策在途
+
+最新生产functional-workspace-20261017-d136-v136，API50631/Worker87933，deployment-d136-v136.json/release-d136-v136.json、migration000059、原CA HTTPS19443/物理Chrome19222保持。制品6048441字节、sha256 3d5631ea3a79ba283561196e467eb338fed5f69a0d4df99ded2ebf2e8a6f4855，tracked diff ce757b5c9f6739ff5faa4208d03ad0b45b18e28391455b916e5c3d9d314e8354，新共享源码摘要沿d132-new-source-identity.json；无提交/归档/verification，tasks6/19。
+
+D133辅助已审阅关闭，定向131/部署全312及lint/format通过；v135实机observe-original-agent-d133-v135.mjs返回原completed候选，版本4和原预算不变，报告existing-agent-observed-v135.json。v135只将forecast绑定旧正式050053b0…，制品6048873字节、sha97c858657a9782c6e0be60cefe3d6438281125a0cbf0e051f8ed14748e9d2361、tracked diff f4d961d6919b3ff333c21ef1d9ebeca7bf650a0e31da8853b8663f0d12efa6a4。首次配置通知422源于历史human-decision等待错误阻断，D136只看当前等待，C30全部45及build/typecheck/lint/strict绿。v136通知202仍同A0/同父版本，没有新模型/预测或任务。
+
+D137明确provider将当前asOf/授权变化的查询复用旧稳定ID，resolveConfigurationSet实际IDEMPOTENCY_CONFLICT被映射不可用。composition/assessment.mjs摘要补指定release与当前入口authContext/time，既有测试先红后绿131项及lint/strict/diff；prospective provider当前绿色resolved，报告forecast-policy-provider-d137-green.json。尚未冻结/部署D137。正确C35治理正文契约只支持六种定义，不支持forecast-policy，本次不扩UI/DTO；C18所属当前读及专用配置解析已正式证明旧发布有效。
+
+D135合成输入已在实例d135-response-followup生成、三CSV正式C11登记转换，逐格970+50+34通过。监测source s_a75f01b0f2ee6095b1d4b176faa695b7@1，模型声明s_9a1116125d6bfd47e1e625ab10c25645@1，模拟执行反馈s_23c17c3ca73b8f34807ba3b1667f8659@1。模拟执行01:58:34.265Z，监测01:58:35.265–36.765Z，反馈37.015Z；新沉降6.8mm，其余D126，仍synthetic/待甲方复核。原8位模型已C04但自检RangeError，保留；反馈工件physical-d135-feedback@sha256:f716266b59d5aac113546c3eb3581537f256722f4cb4eb00d7cc897f3d9bc39e已登记，未作执行/反馈业务。
+
+D138发现模型Schema允许32而规范十进制仅6位，core/schema上限已复用唯一常量，原forecast.test非法模型表先红后绿、core66通过；adapter forecast-executors测试77283与build90756仍在途（/tmp/riskflow-d138-adapters-green.log、-build.log），后续typecheck及deps/strict。新6位声明source s_456db2dd81e2467a39c588714ad2e008@1正式转换50格通过；新模型physical-d138-forecast-model-six@sha256:2f2e49199b8f0a817b2cfb248a7400b95a27810f18fb5867104932b8c210741b，原2mm基线确定性预测2mm自检通过。新单目标forecast-policy候选已生成，真实模型requiredRef写入新政策CSV，source s_04841d70ea8b80bc32986f6781a8bbe9@1正式转换。prepare-forecast-policy-d135.mjs在途88596，准备C04候选配置，随后put-forecast-policy-d135.mjs及正式review/publish（尚未执行）。新政策业务有效00:00但真实系统批准/发布须当前，按design双时间处理；不篡改旧事实。
+
+原正式建议fcfc67fb…三项true及物理Chrome采纳保持，原评估父子已completed且历史IDEMPOTENCY跳过保留，不复活。原预测父0217dc68…、子64b7bd9f…仍waiting/A0/forecast-configuration，父版本c3735d01835803a3eacb670eb7b6a1a8de58f9b35914a386b3249af66d6a66c3；必须先完成新政策与制品，再新命令精确通知。当前所有辅助Agent已关闭，全部代码/证据/输入未提交改动保持。
+
+## 历史：v134正式建议及人工采纳成立，预测等待配置
+
+最新生产functional-workspace-20261017-d132-v134，API3770/Worker54519（进程928660/928887），migration000059，原CA/HTTPS19443/物理Chrome19222保持。v134制品6044637字节、sha256 a5cbe48e903838e384d07c0248d076472c571a6cfb626b61d132fb3b1bb5bbb6，tracked含测试diff a759cacdedad141b2f92def384c54f009c625d8810a13c906505a6bac40c1294；新增graph-execution.ts摘要d2057d531ad53aaaddfe9d610afe7d8641f0064e7677d40990bd9e9cb7192bbb另存。D13145+57项通过；D132三套75及build/typecheck12GB/lint/format/deps/strict/diff通过，复用C24独立检查点配置给C25，修checkpoint_id键存在性历史重放边界。
+
+原A7旧命名空间10检查点已精确当前受权读取，逐项核对C03等待/评估/唯一预警/A0后，在业务/模型写屏障下经原graph.recover登记同线程根等待，旧检查点和正式版本不变，证明restored-wait-d132-v134.json。公开通知200使原父43fde507…completed、子139c4a89…completed/A9，但A7因原任务startTask当前授权同键冲突跳过。终态保持不复活。D133已写design/IP/domain delta，辅助Gibbs（01a14786-5831-7c01-b973-6cab61fd25a2，implementer/DeepSeek）仅写composition/assessment.mjs及assessment-composition.test.mjs，先getTask观察原任务，仅缺任务start，当前权限及全部冻结身份校验保持，等待结果。
+
+公开绑定/校验原候选7e613994…，正式建议response-recommendation-fcfc67fbffbe41051600b6db75eb954c@1，三项true/唯一建议、审计及正式查询200、Chrome截图均成立。物理Chrome用原沉降2mm快照da4e74b5…@1二次确认采纳200/adoption，正式人工决定已采纳并建预测父0217dc68f13bacb030c6c8b6cbbf053b，子64b7bd9f85979f433aeb024f03fb037c。当前预测waiting/A0/business-preparation，缺forecast-configuration，父版本c3735d01835803a3eacb670eb7b6a1a8de58f9b35914a386b3249af66d6a66c3。
+
+D134 design/IP已记录仅将forecastPolicyReleaseRef从旧awaiting改为正式knowledge-release-050053b0-0e5f-45cd-b1b9-237278b1bfe9@1，所属C18窄读当前成功、无停用、正文sha6ce6b95…。stage-d134-v135.mjs已准备未执行，可含D133修复；配置其余/模型预算保持。参数模型尚未证明，不能填默认效果。公开治理read-definition-release正确路由及全来源仍404，而C18可读，scout Fermat（01a1478d-1e1b-7a81-bcab-89ae1ec5d817，MiniMax）只读定位，不改文件。实例d126-risk-level-inputs/v2保存全部正式请求/回执/截图/当前证明，详见本change最新evidence。任务仍6/19，执行反馈/实际评估/预测/校准/会话/桌面/报告尚待完成，无提交/归档/verification。
+
+## 历史：v132原Agent完成，D-131补评估恢复转交
+
+以下为最新事实，下文为历史。生产functional-workspace-20261017-d129-v132，API67031/Worker21873（进程789752/789828），deployment-d129-v132.json/release-d129-v132.json，migration000059、原CA/HTTPS19443、原物理Chrome19222保持。制品5789821字节、sha256 eef0be682fa7c345f54681f4855f7e82e9855c03522f921bad387f20c5ee441c，diff cd318df11d8c5967d8eb716c89066c8732bee5a76adf9b97ca6bf37c443dba10，tar比较通过。
+
+D-125原候选已通过物理Chrome正式拒绝，三校验false、正式建议0、原父子completed；原事件exhausted/10保持。D-127仅识别复核事件进入C24，157项通过，新措施知识决定事件published/1。D-128多父空间去重83项通过，新合成监测/措施正式登记、审核发布，详见本change evidence/incremental-acceptance-and-provenance-2026-10-17.md。D-126选原另一node03正式风险，新场景仅风险等级预警，不改原阈值/规则/资源，始终合成待甲方复核。
+
+当前父43fde507fdd0ed83cf95df0a6d57f654、子139c4a89b4453c5367924269c369793a。正式评估eece9572…@1及唯一预警11b6a599…@1成立；Agent agent-task:synthetic-station-tunnel-project:139c4a89b4453c5367924269c369793a61d91e15620fc2e4e60e9f049b297367:A7:recommendation-agent-task@1已completed/version4，1模型2930输入/26输出、0工具/纠错/重试，候选7e613994…@1。D-129已修A0历史scope摘要误拒，workflow/assessment50项及build/typecheck等通过，v132公开恢复父202/waiting、父版本53baf5c7a07e2be16d5a865e237627314f6c1a75e17bf9bb19f7688cb0ccc1cd。
+
+随后公开完成通知202但未推进原子A7。D-131已同步design/IP/domain delta，父正在修改risk-flow/{graph,runtime}.ts及既有runtime.test.ts，复用聚合恢复通路并核对等待任务，只继续原completed结果，不新增评估/Agent。D-130辅助已完成provision原样artifactRef及22项测试，已审阅关闭Agent，待纳入新制品。实例d126-risk-level-inputs/v2保存完整请求/回执/诊断与时间戳查询；原错误回执和全部失败保持。任务仍6/19，无提交/归档/verification；正式建议/反馈/校准/会话/桌面/报告/最终门禁尚未闭合。
+
+## 历史：v128原候选三项失败已正式进入C07待复核
+
+生产functional-workspace-20261016-d125-v128，API10823/Worker84614，migration000059、原CA保持。制品6043992字节、sha256 e0c8f2808108d9ea9d6e6ee7b4bcfde43c71f602ef634310ac491682aba1c677、diff83ce2a1ff39980efe46cac101ded4dc9199744b3f72dcab9ac3dbc9d8593356a，tar比较通过。D-125一行reviewAudit: review注入后，C27/assessment/entrypoints130项及eslint/prettier/strict/diff绿。D-124正式现场工件登记与当前reader已通过，v127只改现场绑定，原候选/评分/预算不改。
+
+原建议任务physical-response-agent-d123-v126 completed（1模型7571输入/23输出token，0工具/纠错/重试），候选recommendation-candidate-e2a4d1da101809a967f4b00e938dd3f6@1，物理Chrome completed截图及5个HTTP200在d120-response-inputs/physical-completed-response-agent-v126.{png,json}。v128新校验命令physical-response-validate-d125-v128正式200/waiting-review，review-task-20e27fb6-4800-4480-aac8-3b2f342ab0ff@1，类型response-candidate，父为原评估子运行。原三项全失败，零正式建议，不复活完成运行或强制批准。原v127失败快照和零效果证据保留，v128应另读正式校验行与复核详情/截图/审计。
+
+只读scout Boole 01a14744-8eb6-7f73-a4fa-630e3c507537（MiniMax）核对已有正向合成场景，尚待结果；无在途模型/业务命令。tasks6/19，无提交/归档/verification。下一步正式待复核页面与行证据、正向场景设计；不得通过增资源/删阈值/伪造标准许可将原失败改通过。
+
+## 最新接续：v126建议Agent完成，D-124补正式现场工件
+
+生产functional-workspace-20261016-d123-v126，API77005/Worker62388，migration000059、原CA保持。v126制品6043978字节、sha256 6c31b3fb71559d10cd59dcfc86a8e2148e665c80c7cdea798be15925ddf6838f、diffd96d38ae53354e3c06ccaa6510c77566a5a5c91bb9583296ad960fa0a4b0fe21，tar比较通过。D-123 C27任务写授权参数映射已部署，composition/model/entrypoints143项及lint/format/strict/diff通过。
+
+原query measure-candidates-1801710793fc7f94844d8b9134cdf84b@1不重建；新任务physical-response-agent-d123-v126 completed、1模型/7571输入/23输出token，0工具/纠错/重试，正式候选recommendation-candidate-e2a4d1da101809a967f4b00e938dd3f6@1，公开create-candidate绑定200。旧v124零调用失败、v125一模型失败终态和预算保持。原评估正式读取200与四预警保持，没有新评分。
+
+校验命令physical-response-validate-d123-v126返回500。D-124 C04诊断证明原site绑定用途synthetic-site-context-candidate，与reader所需recommendation-site-context不同；非权限/空间问题。原现场正文还含未登记合成来源。原校验command_receipts/recommendation_validations/response_recommendations均0已查证，未重投。D-124 design/IP已同步，已从正式C17 process-model f3bda4af…@1窄读原风险node02及10真实证据段，沿原提供node02-resourced场景保持资源/约束/观察时刻，准备新site context、正确用途与真实来源，不增通关资源。实例d124-site-inputs/provision.json已生成，provision正式C04登记在途；完成后只更新新config/release site绑定并以新校验命令消费原候选。
+
+所有辅助Agent关闭，tasks6/19，无提交/归档/verification；专业三项及完整业务链仍未通过。当前在途只有现场C04预置，无模型任务。
+
+## 最新接续：原评估正式可读，v124公开措施候选接线待切换
+
+D-118/D-119已完成：C06/知识50、C34 engine38、C30 workflow30、部署assessment/entrypoints112项通过，build/typecheck12GB/lint/format/deps/strict/diff绿。原评估正式HTTP200，物理Chrome已展示P=3.6、C=2、level-3与四触发，证据official-record-read-v122.json及physical-record-v122.png，未重跑评分。v122制品6038987字节、sha256 cf442c3d431d732956b79607460f986a68174142acbb05290bca5b5f2d23b855、diff7f813bea4c3dd390b45ddd30951d6b23ac9b62ebdf2ec5928029e110d9add89b，tar比较通过。C30分别核对workflow入口摘要与A0准备引用，不再混同。
+
+当前生产v123，API38104/Worker12512，migration000059/原CA保持；只增加D-120生成策略精确风险→掌子面稳定性失效绑定，复用v122制品，旧catalog/policy保留，模型预算/三校验/现场不动。原任务真实entityId=2b3e1d45-2f73-4158-812c-4c575a50684b，kind=warning-response-task（下文历史连写含kind前缀，不作为机器引用）。正式措施库2340f951…@1的measure-01与类别适用性一致。冻结映射仍有联合水位/姿态主频未解析，measure-01未覆盖全部四触发；原事实保持，不计链通过。
+
+公开measure-candidates首次426，零候选/Agent；定位为API把该kind交C17遗漏C27。D-121 design/IP已同步，api-ports.mjs新增精确分派及必需measureCandidates方法，既有api-ports/entrypoints88项先红后绿，eslint/prettier/strict/diff通过。stage-d121-v124.mjs已运行，后续切v124再start-response-d121-v124.mjs（未运行）。原v123失败请求/回执在d120-response-inputs；新脚本用新身份，沿原完成子运行parent，不伪造run。任务6/19，无提交/归档/verification，所有辅助Agent关闭。
+
+## 当前接续：v121正式评估与四预警已成立，D-118修复读取误拒
+
+生产functional-workspace-20261016-d117-v121，API18606/Worker96255，migration000059、原CA HTTPS19443。制品6038873字节、sha256 9079b27e4c310d53560b6311f4a4b23947d13837cdf91827e9c8e4049d28b842，源码diff edd4806581b456c68e9fcc04a358717e9e08fb2ff8c0780b6f0950e9e61f8407。新规则发布knowledge-release-b33aa6a1-7f83-4c88-bdf5-38710647b673@1，10冲突经物理Chrome逐项批准，规则version2，原评分阈值/分值不变。
+
+父8a36fafcd39093f3ab0f1287e03df866 completed/result-summary；子6dbfa06a126aa80be735c385ba5950ea completed/A9；正式评估risk-assessment-record-15526f2ae7fd2295f3b90759fccbe5cb2c153a3257100369993fbe7afc0dce5b@1。确定性P=3.6（126kPa→4×60%+粉质黏土→3×40%）、C=2（6.8mm→2）、level-3，四条预警。A7以measure-candidates-failed跳过，原warning-response-task:2b3e1d45-2f73-4158-812c-4c575a50684b@1保持；无建议/偏差/校准，不计完整链通过。正式记录HTTP404，诊断为当前合法空来源增量被当全量；处置诊断measure-category-unbound，generation bindings为空。证据在实例logs/read-assess-d117-v121-after-start.log、record-and-measures-diagnostic-v121.log。
+
+D-118设计/IP/评估delta已同步；父处理C06当前可见性与C34有界查询，既有记录测试先红复现，修复及回归在途。只读scout Herschel 01a145ff-c6a5-7412-814d-79e707c74af9查独立建议公开入口，不改代码。不能复活终态或重跑评分补建议。tasks6/19，无提交/归档/verification，原识别与预算/历史失败保持。后续先新制品读取原记录，再明确合成类别绑定并沿合法建议通路接续。
+
+## 最新施工：v120已部署，D-117配置包当前读取修复在构建
+
+生产functional-workspace-20261016-d116-v120、API53839/Worker51540、migration000059、原CA200。制品5789713字节、sha256 165984b48d956c2a7928c287376296aa2298e34f9d17c164bf6f580612706653、diff3572fff00d7a91b01e782aca7798ee1c0374ab46c20578141e1c0591179cc9ef，tar比较通过。D116所有工程检查完成；旧candidate提交409后，新C04候选physical-d116-scoring-candidate-v120（同内容b91ebc…、新正式身份）仍409。定向diagnose-scoring-prepare-d116-fixed.mjs明确两命令无回执、新候选无修订；错误来自包固定C18读取键碰当前时刻，不是候选重复，先前关于单纯工件复用的判断已纠正。诊断最初读错revision_ref列，修正为revision_id/version_id后成立，原失败日志保留。
+
+D117 design/IP/knowledge delta已同步，adapter #prepareConfigurationPackage读取ID纳入精确包+当前authorizationContextRef+decidedAt；既有配置包用例新增另一当前授权/时刻prepare，先红同错、修后完整adapter31项通过。lint/strict/diff通过，build52456在途，格式已apply_patch。后续typecheck、原诊断应成功且retain候选2，再stage-d117-v121.mjs、切v121，运行review-publish-scoring-d117-v121.mjs（新command，使用candidate-prepared-v120.json）。原v120两失败无修订，不重投，旧dead48d0关系不改。
+
+尚无新规则复核或发布，旧独立准备/终态/识别结果和预算不变；无在途业务请求、无活动辅助Agent。tasks6/19，无提交/归档/verification。
+
+## 最新施工：D-116整合完成，v120待最终typecheck后切换
+
+生产仍v119 API58498/Worker19804。D-116 core同规则候选优先及47项回归、生产C07创建/trace决定接线及entrypoints82项、C19审核前幂等补链及adapter31项通过；所有变更定向lint/format/deps/strict/diff绿。adapter扩原配置包用例，两个不同审核命令只形成一个conflict任务，未批准仍拒绝，决定批准后才发布；无新模型。DeepSeek辅助未及时返回，已关闭并由父完成，现无活动辅助Agent。
+
+最终typecheck14345在途（12GB），先前build已绿但晚到adapter源码需该轮typecheck输出并最终incremental build。stage-d116-v120.mjs已准备未运行；review-publish-scoring-d116-v120.mjs将对原based candidate（b91ebc…）以新command重新submit产生新关系，旧dead48d0关系不改；request-review预期422同时创建10条冲突任务。随后read-scoring-conflicts-d116-v120.mjs核对全部retain版本2/exclude1与10个link，再approve-scoring-conflicts-d116-v120.mjs按显式[from,to)物理Chrome逐项批准；不可批准旧dead48d0保留v1的方案。所有脚本只准备，未执行。冻结/启动新业务脚本freeze-assessment-d116.mjs、start-assess-d116-v120.mjs、read-assess-d116-v120.mjs亦准备，须待新规则正式发布后才执行。
+
+旧v117/v118父子终态、原识别6风险/2拒绝与预算不变；当前没有在途业务请求。tasks6/19，无提交/归档/verification。
+
+## 最新接续：v119全域等级修复已部署，新合成规则审核发布在途
+
+当前生产functional-workspace-20261016-d115-v119、API58498/Worker19804、migration000059、原CA HTTPS200。D-115删除共享GradeIntervalSchema至少一界限制，保留有限数/递增和C19重叠空洞/离散同类型匹配。契约+规则+评估69项、C19数据库31项及build/typecheck12GB/lint/format/deps/strict/diff通过。v119制品5791510字节，sha256 5f643bd2740668117b74b18f6c50db500d5a392f0cef1a69c6dc5baec9f32594，diff摘要1aa6facd654a79d01f297e3091ad1786095e8ced5dcc78ce72703463d1135b6d，tar比较通过，模型/预算/策略/迁移不变。
+
+D-114新CSV真实转换逐格匹配，package/candidate已C04成立；候选physical-d114-scoring-candidate@sha256:f76f26a5d19917e6ceba5fc5ff23f6cb3171730f20bc5d9f7f1a307e0d242c52。新来源s_9b9e96aa4ed8b193a0f1fa3fa9363cb8@1，真实段s_9b9e96aa4ed8b193a0f1fa3fa9363cb8-csv_1-csv_1；原阈值/分值、配置保持，只gradeIntervals、ruleVersion2、来源定位不同。review-publish-scoring-d114.mjs 正式HTTP提交/复核/物理Chrome批准/发布在途43275，日志logs/review-publish-scoring-d114-v119.log，不盲重投。完成后先核验新C19发布选择，再新正式准备+assess；旧v117/v118终态不复活，识别结果/预算不变。只读scout Tesla 01a145e2-a8d1-77a2-9537-a336e8249196（MiniMax）核对新旧规则发布选择，尚待结果；无其他辅助Agent。tasks6/19，无提交/归档/verification。
+
+## 最新接续：v118运行因果通过，D-114合成规则等级范围修正
+
+当前生产v118 API87202/Worker56773，migration000059、原CA HTTPS200；v118制品与D-113回归见最新evidence。独立准备6a97fb749c82eb314185ce24f1b2ee76b14eecb8@1正式冻结/重放；A0已按D-113冻结本次带因果准备，A1/C19/A2成立。新父759ec70c8b0e558ba2db586b1283dd2f、子c0f2b0b45bb0e2527c1a2fd6bad7e2d8在A3 risk-assessment-rule-coverage终态；无评估/预警或新模型。原失败保留，不重投/复活。
+
+精确当前C19/C04只读证明旧规则gradeIntervals为0–12，而原求值器按实际值落区间；126kPa及地层离散值不被覆盖。D-114已写design/IP：只新增合成规则来源与version2，原阈值/分值等配置不动，数值等级沿原阈值边界、离散无界grade-discrete。实例d114-scoring-inputs/rules.csv及corrected-rules.json已有20项原求值器自检；新来源s_9b9e96aa4ed8b193a0f1fa3fa9363cb8@1与conversion d114-convert-source-convert@1正式成立。prepare-publish-scoring-d114.mjs在途29215，读取新转换逐格匹配后生成正式包/候选，尚未提交审核或发布。保持synthetic/待甲方复核，旧源与规则版本不改，无源码修改/依赖/迁移。tasks6/19，无提交/归档/verification，全部辅助Agent关闭。
+
+## 最新接续：v117准备正式冻结，D-113修正运行因果绑定
+
+生产v117 API18645/Worker32758、migration000059，原CA HTTPS200。D-112的契约/core44项、worker43项、C11全文件46项、C25 engine38项、关联组合/facts52项及build/typecheck12GB/lint/format/deps/strict/diff通过。D-111五监测已正式登记，四常量partial/no-dominant-frequency但点覆盖率1，姿态主频0.25Hz；原阈值不改。D-112独立准备assessment-preparation-dfad50427cc0504ee164892a90c1df05a2cc6fcd@1正式冻结且重放稳定，含六监测及原资料005的126kPa/粉质黏土；合成资料里程矛盾保留，非真实现场同位置证据。
+
+新assess父818112ca34ce032e790a651b45386bd1、子0f25dbd8236ecde812e8d0959ce728d9已A0/A1/A2，A3 risk-assessment-assessment-run-required后父子终态。原独立准备没有causalRunRef，而C25写入/证明需要该引用；不恢复终态。D-113按持续授权同步design/IP/domain delta：A0当前读取匹配后经既有C11冻结带本次因果的准备，透传原字段/证据/监测，原独立准备保持。源码及测试已完成，43项评估图回归、build/lint/strict/diff绿，后续typecheck54135在途；准备stage-d113-v118.mjs及freeze/start脚本但尚未运行。无新DTO/依赖/迁移、无模型调用、无提交/归档/verification；tasks6/19。所有辅助Agent已关闭。证据见evidence/incremental-acceptance-and-provenance-2026-10-17.md与实例d112-assessment-inputs；当前无在途业务请求。
+
+## 最新接续：v116，D-110通过，D-111补监测与字段事实调查
+
+当前functional-workspace-20261016-d110-v116、API82081/Worker2874，migration000059、原CA HTTPS200。D-110先红后绿三套89/89及build/typecheck/lint/format/deps/strict/diff通过；同冻结输入新dist诊断越过误拒，正确BUSINESS_BLOCKED/risk-assessment-monitoring-snapshot-coverage，无正式评估/模型/图写。原I9 completed六风险两拒绝证据保持、原父/首次assess父子终态保持，未发新assess。D-111设计/IP已明确原情景五类其余监测序列80点CSV及正式登记路径，尚未生成；不能删原六类阈值。实际已发布字段映射要求construction-log support.facePressureKpa和geology-report strata.layer.grade，但风险事实reader只投影六风险标量，需先定位现有工程字段读取接缝，不能用模型分数替代。只读scout Planck（01a145ba-da14-7f30-8316-545fd18da908，MiniMax）在核对字段通路，无写权限；其余辅助Agent关闭。详见本轮evidence，tasks6/19，无提交/归档/verification。
+
+## 当前接续：v115识别I9完成，正式评估A3拒权待D-110
+
+当前API1881/Worker50611，functional-workspace-20261016-d109-v115、migration000059、原CA HTTPS19443/物理Chrome19222。原v109识别子I9 completed：6风险、2拒绝、0待定，3成功/2失败工作项保留，八条人工决定/复核事件全部正式成立，首风险未改，未新增模型。原父以spatial-pairing-missing终态保留；原C24正式owner runtime恢复I8后完成，不复活父、不重开识别。完整证明和制品/回归见[evidence/incremental-acceptance-and-provenance-2026-10-17.md](evidence/incremental-acceptance-and-provenance-2026-10-17.md)。六条风险事件各一次，原首exhausted/10，后五条因终态父无法消费仍投递失败，不据此计C30通过。
+
+首次公开assess入口physical-assess-first-d109-v115引用原首风险及D-91更正快照，A0/C19/A2成功、A3 AUTHORIZATION_DENIED后父子终态。父risk-flow-run:synthetic-station-tunnel-project:assess:0d01d6e8aab88422b1b05561a4d8d544@0d01d6e8aab88422b1b05561a4d8d5446843de5728f17ee69c8a32f1295a5f86；子d6104b22d8e6a291c24abfc607673914be98c197451da991bf182cccc83a015b。只读状态logs/read-assess-d109-v115-2.log，C19依据assessment-basis-05a8d53142f6fd7bf61c0cfea0b70453f61be263d534b8d2cafd5ce58283f529@1，正式准备/输入均在原子阶段行。D-110效果屏障诊断证明evaluate将身份0项资料增量作为准备1项增量的强制上界，导致误拒；真实当前权限均通过。设计/IP/domain delta已同步，新增既有engine测试正在跑红灯，生产源码尚未修改；修后先同冻结输入屏障预检，保留全部终态，不能重复识别或冒充评估通过。tasks6/19，无提交/归档/verification；本轮辅助Agent已全部关闭。
+
+## 当前接续：v114父空间配对终态，D-109来源范围修复中
+
+最新事实覆盖下文历史：D-108工程核心/adapter81/81、C24及nested56/56和补充拒绝/待定1/1通过，build/typecheck/lint/format/strict/diff通过；已部署v114，API26774/Worker52340，原CA HTTPS200。原公开恢复请求fetch中断，但正式只读证明父已以spatial-pairing-missing终态（版本d368d0ef807cb6dea4baca74ad34f6696690ece3985e5bc8f220b6d0149c0c71）；不得重放请求或复活父。原C24子仍I8 retryable-failure、版本e9092428dcb8d64c9856e5a279e68b8f74d15ff15a5697aed6529480e6bfa878，首条记录与两条决定保持，其余六组未提交。诊断确认五工程输入来源未包含已登记机理证据来源，reader按子集要求拒绝，D-109修复唯一来源并集及当前权限复验中。后续先零业务写窄读原记录与配对，再原C24正式runtime.resume；终态父保留，评估沿assess-existing-risk引用原正式记录。详见[evidence/incremental-acceptance-and-provenance-2026-10-17.md](evidence/incremental-acceptance-and-provenance-2026-10-17.md)。没有活动Subagent，tasks6/19，无提交/归档/verification。
+
+生产functional-workspace-20261016-d107-v113（API37185/Worker22439），migration000059，原HTTPS19443及原物理Chrome保持。原v109批次仅提交index0/1两条人工决定，第二条HTTP200后子I8 retryable-failure/TRANSACTION_FAILED，父仍waiting/identification；其余index2..7未提交。第一条标准化风险记录保持，原risk-record-accepted事件exhausted/10不重置。最新读取logs/progress-d107-v113-after-review1.log。D-108按持续授权修复旧新混合入库、仅新增事件和C24引用累积，尚未部署；tasks6/19，无verification/提交/归档。下文旧v112及在途描述为历史。
+
+## 当前接续：减负已归档，现场v112，任务6/19
+
+最新状态：D-106已通过核心/adapter/contracts55/55、既有浏览器识别复核单场景1/1、build/typecheck/lint/format/strict/diff，已部署functional-workspace-20261016-d106-v112（API94678/Worker39887，配置deployment-d106-v112.json/release-d106-v112.json）。制品5790138字节、sha256 4e42623a205c42eb9037690efd52a904f6f3547860bb4a290ac6b81298a1d2ba、源码diff3e99880dd2b67a998bf9e6b9e44932bcd9bac404eccb58bee92e701ac0d87b5c，tar比较/原CA HTTPS200通过。物理Chrome原页外任务深链已转绿，截图business-chain-v109/physical-review-before-v112.png；页面仍有冗长内部引用及未呈现候选语义等IP-21整体界面缺口，不据此称UI全部通过。
+
+八组语义审阅私有计划business-chain-v109/review-ui-decisions-v112/plan.json：0/1/3确认合并，2/4/7原样通过，5/6因来源不足/混合故障拒绝（合成验收、待甲方复核）。目前**仅第0组**经物理Chrome确认合并，HTTP200，reviewDecisionRef review-decision-bcfb96e3-66aa-4b47-927e-f6eeece4a300@1；decision-0.json及确认/决定截图保留。原脚本review-decisions-v112.mjs按显式[from,to)执行，无自动重试，剩余1..8尚未执行，勿重复0。
+
+子图已I8自动收口第0组，标准化风险记录首条版本dd80709ca51a8fe8c0f2060010179c1990ce3e037872399a3191bcb91b4415a3（实体以原组5785f6dc…派生），pendingGroupRefs7，原3成功/2失败工作项保留。父仍waiting/identification，acceptedRiskRecordRefs与assessmentRunRefs均空。复核事件published/1，但首risk-record-accepted事件exhausted/10，错误DEPLOYMENT_EVENT_FAILED；原投递台账不能重置。正式事件安全索引见business-chain-v109/review-events-*.json和logs/review-events-v112-worker-session.log。
+
+D-107已同步design/IP/domain delta并实施，仅workflow adapter及既有测试。原事件带业务效果屏障诊断logs/accepted-event-diagnosis-v112.log证明同空间但0资料授权的事件在readEventParentRun被历史全scope摘要拒绝，WORKFLOW_EVENT_PARENT_UNPROVEN；原exhausted/10未变且零模型/工作流/consumer效果。修后删五处历史scope全等，保留当前C06、actor/project/精确父子/thread/C04/状态/消费事实；#eventState按原preparing阶段精确根入口limit2检查当前空间覆盖。既有事件用例加当前资料授权变化/错空间先红，adapter+组合44/44通过。构建/tmp/riskflow-d107-build.log（20199）与父图回归/tmp/riskflow-d107-parent-regression.log（39599）在途；lint/format/strict/diff待确认95054。stage-d107-v113.mjs已准备未执行。下一步：等构建后typecheck、原诊断再次只读应到DIAGNOSTIC_NO_BUSINESS_EFFECTS屏障，旧事件仍exhausted/10；冻结/切v113后先执行review-decisions-v112.mjs 1 2并核对新的正常事件能让原父消费风险/创建评估，再续其余组。无需复活旧事件或重开批次。没有活动Subagent。
+
+诊断脚本read-review-events-v112.mjs最初漏授权数组而失败，补齐后API/graphs基础池因固定app role无法SELECT outbox，原失败日志保留；当前使用单独createPostgresRuntime(...,'riskflow_outbox_worker')按已配置worker角色有界只读当前工程事件，未加权限或改配置。diagnose-accepted-event-v112.mjs复用该方式，设置真实业务/consumer端口屏障，不可去掉后直接dispatch旧exhausted事件。
+
+已受权读15条原知识到business-chain-v109/review-knowledge-v111.json，并读8组原候选/证据。当前C19 resolver在原正式评估准备后自动确定性组装/发布规则集（scoring-rules adapter resolve的required-release-unavailable分支），配置缺项按现有business-preparation等待；无需提前人工发布派生组合，旧交接相反说明仅历史，不据此改代码。
+
+用户已批准D-105并持续授权后续类似修复，不再逐项询问。当前functional-workspace-20261016-d105-v111，API/Worker会话60223/73385；HTTPS19443/物理Chrome19222保留。v109原父df1a0a84ec47d2cef9e8e78f02f894f1已通过正式失败通知收口第四项、继续第五项，未重开批次。原第四任务taskVersion4、terminal-failure、无resultRef、原预算不变；原第二三项成功与校验引用完全相同，证据business-chain-v109/d105-preserved-work-proof.json及preserved-failed-task-v111.json。
+
+第五检索审阅completed（1模型、15523输入/1083输出、0工具/修正/重试），原继续任务5公共202后父进入review等待，父版本297c4db229d20530b4fc5e4a8428956b2d8d7991cd5b60c4f81aeb7f30c031cd。子7f65c2d982036d22879a8cf354d7fac186eb8dec0b52830264bef3574bcd0d54停I8/human-review，成功工作项3、失败2、pending0、合格I5引用3、待审分组8，D-102/D-103已取得真实路径证据。logs/progress-d105-v111-after-task5.log、business-chain-v109/pending-review-groups-v111.json已正式受权窄读全部分组及原候选，尚未提交人工决定。无在途模型/业务命令；下一步逐组核对来源语义，在物理Chrome按真实ReviewDecisionPanel确认，再沿原父继续，先备齐C19评估准备与正式规则集，不能让父评估缺配置终态。
+
+D-105回归：contracts/父图完整64/64，父等待匹配补充后4/4，nested9/9，C24完整46项通过而新用例撤权后误用无权读取断言失败；仅修测试观察方式后该用例1/1通过。build/增量build/typecheck/lint/format/strict/diff通过；IP-17命令三套76/76通过但真实来源负例尚未全闭合。制品6040868字节、sha256 aea33a2378f58e7bf8c3252d1630a8df534e5ac71e574d8bbfe50904d366763e，源码diff bb5401f57eb20897c8f4f6c9a9af80da8fe042da1771c0b0f7ac23a74a68f631，tar比较通过，迁移000059及模型/预算/策略不变。Dalton未交可运行测试已关闭，父收回并完成测试；所有本轮新Agent均关闭。
+
+减负change已[归档](../archive/2026-10-16-reduce-defensive-design-overhead/handoff.md)，现场已保存停写副本、消费2882条C04清单、执行000059并启动functional-workspace-20261016-d104-v110。原账号、资料、知识发布、检索代际、完成阶段与失败保留，任务1.1已完成，当前6/19。发布、源码差异、真实输入及验证见[本轮证据](evidence/resume-after-reduction-2026-10-16.md)。旧段落仅作历史查找，实际状态须重读。
+
+减负后检索代际与授权范围分开，C19确定性组装派生发布，阶段配置缺项可补齐后继续。D-97修正无逐段evidence工件丢失资料授权；D-100删除清洗完成复验的完整授权全等门禁，保留当前权限与输入资格。C15 store35/35、宿主81/81及8GiB build/typecheck、lint/format/strict通过；D-97先前C06及关联回归见证据。两项未提交，v106身份含源码差异摘要，HEAD本身不代表全部运行修正。
+
+D-96/D-98多函数调用诊断均拒绝，原失败保留。D-99显式新清洗策略选择同模型schema-prompt，正式task64657322369a5cb97546e4fe7c42ffe70f8f8b13@1已completed（7模型/6工具、27063输入/532输出、无修正或重试）。D-100在v106通过新当前确认命令消费原任务，准备identification-preparation-64657322369a5cb97546e4fe7c42ffe70f8f8b13@1已形成；立即重放相同快照，恰一个inputs-ready事件published、无错误，任务预算不变。旧确认命令授权到期仍按原期限401拒绝。不得再重跑清洗任务。
+
+API/Worker使用deployment-d104-v110.json与release-d104-v110.json，工具会话87212/22827；HTTPS19443与物理Chrome19222保留。D-91三批次及三快照已正式登记，15/16 partial→补录16/16 available→更正末值6.8，旧快照复读不变，实际监测页七个查询200；浮点尾数/卡片溢出待IP-21修正。D-101修复旧知识发布补条目时授权能力错配，C17 25/25、关联204/204及工程检查通过，原代际15条批准知识已补登记；v106 I3失败终态不恢复。
+
+v107父4a18491ac53a16a3dd298e54208e28fb与子a3102fe289720b90860ad51c198554c9d58677b9377d20490f67b98519a5f63b均已终态失败：五个retrieval-review completed、五项I5、I6及I7已正式提交，I8全组待复核却提交空decisionRefs，被原Schema拒绝UNSUPPORTED_CONTRACT。驱动已退出；日志logs/bounded-driver-v107.log与read-v107-after-driver.log。D-102已修复，真实Schema约束的全待定用例先红，三套121/121及build/typecheck/lint/format/strict通过。
+
+v108父76a2cdee1f2f04f4dc789d8c10369e28及子4a1cdb23c17b422fffbd1a72eb1ece3e0e712f2e9ebe0b5057833a3fe55ed911已在I6终态失败。五个检索审阅completed，首两项I5因candidate-mechanism-not-applicable在原一轮修正后失败（各2模型），后三项I5通过。原批次余项均已串行处理，不重做失败项；日志logs/bounded-remaining3-driver-v108.log及read-v108-after-final-continue.log。
+
+D-103定位C24工作计划投影错误收集失败I5的诊断占位引用，C22以merge-input-incomplete拒绝；现场只读对账先红（应3、实5、保留失败2），原adapter测试扩展同运行失败I5后先红。修后两套82/82及build/typecheck/lint/format/strict通过，原v108只读投影应3实3、精确相等、失败2保留，零模型/业务推进。日志/tmp/riskflow-d103-*及logs/i6-projection-v108-green.log。
+
+v109父df1a0a84ec47d2cef9e8e78f02f894f1、子7f65c2d982036d22879a8cf354d7fac186eb8dec0b52830264bef3574bcd0d54：首项I5失败、第二三项I5通过；第四项检索审阅已failed/AGENT_VALIDATION_REJECTED/candidate-set-mismatch，驱动已停、父仍waiting。只读证据business-chain-v109/review-binding-diagnosis.json：精确引用/冻结授权/成员证据均匹配，唯一错误为模型集合版本2而当前应1；1模型、14857输入/1120输出、无修正/重试。禁止重跑或伪造completed。
+
+D-104已实现：只在C21 render的既有outputSchema收紧当前集合引用/版本，补搜按实际当前集合绑定，解释及确定性校验不改。纯Schema现场探针先红后绿（当前版本可提交、错误版本拒绝），原任务预算不变；C21 context回归7/7、核心20/20及build/typecheck/lint/format/strict/diff通过。辅助implementer Heisenberg已完成并关闭。一次同模型原冻结输入诊断成功生成submit-retrieval-review，15312输入/1154输出tokens；仅保存诊断原响应，未执行工具、候选或工作流写入，原失败任务budgetLedger不变，不计业务通过。证据见logs/review-generation-model-v109.log及business-chain-v109/review-generation-model-diagnostic-*.json。已正常SIGTERM切到v110，制品6040858字节、sha256 f7b53aee5e918422f4828e99560505c1bd5495307179fd380af074dc8fffe921，tar比较通过；HTTPS使用原CA验证返回200，原父仍waiting同一第四项任务（版本cfbf7c9e62c71f89cb18271f475bdd43f93e97ec0daa7c798b825161a619d195），未重开批次。无在途模型/业务控制。
+
+父Agent与只读scout交叉确认：公开恢复必填agentTaskResultRef，C08失败路径没有该引用，C24携结果时只接completed；内部I3虽有终态失败收口分支，公开路径无法触达。用户已批准[失败通知提案](evidence/failed-review-resume-scope-proposal.md)，并明确后续同类修复持续授权、不再逐项询问。D-105设计/IP及三份delta已同步，公开strict agent-task-failed仅携精确内嵌检索任务引用，复用C08 getTask验证真实终态/身份/父子/等待后沿原I3失败收口；无新任务、迁移或依赖。初始公开契约/父转交2项先红，完整contracts/父图64/64、nested9/9及build/typecheck通过；最后补充父等待匹配与C24边界回归仍在进行，尚未部署D-105或发送业务通知。辅助implementer Dalton（01a14554-e5c7-76e3-a398-53afae80b7d0）仅持有C24 runtime测试，待收。MiniMax scout空结果后gpt-6-luna重试已完成并关闭。完整业务、Electron/Chrome场景、真实恢复、verification或归档尚未完成；副本未恢复验证，不计5.3通过。
 
 ## 当前v100：v97五项I5/I6完成后I7终态；D-95修正读取进度中
 

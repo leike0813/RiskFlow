@@ -20,6 +20,7 @@ import {
 import {
   CalibrationCandidateV1Schema,
   CalibrationInputSnapshotV1Schema,
+  CalibrationValidationPolicyV1Schema,
   CALIBRATION_AGENT_TASK_TYPE_V1,
   calibrationCandidateDigest,
   deriveCalibrationInputSnapshotRef,
@@ -117,9 +118,13 @@ const readJson = async ({
 };
 
 /** C29 的 C08 任务接缝：只读取冻结 C04 正文并保存真实确定性校验工件。 */
-export const createDeploymentCalibrationTaskPortV1 = ({ artifactStore, access }) => {
+export const createDeploymentCalibrationTaskPortV1 = ({ artifactStore, access, policyCatalog }) => {
   required(artifactStore, "artifactStore");
   required(access, "access");
+  required(policyCatalog, "policyCatalog");
+  if (typeof policyCatalog.resolve !== "function") {
+    throw new TypeError("CALIBRATION_TASK_POLICY_CATALOG_INVALID");
+  }
   if (typeof artifactStore.open !== "function" || typeof artifactStore.put !== "function") {
     throw new TypeError("CALIBRATION_TASK_ARTIFACT_STORE_INVALID");
   }
@@ -186,6 +191,13 @@ export const createDeploymentCalibrationTaskPortV1 = ({ artifactStore, access })
         requestId: `${envelope.agentTaskRef.reference.entityId}:calibration-input`,
       }),
     );
+    const policy = CalibrationValidationPolicyV1Schema.parse(
+      policyCatalog.resolve({
+        projectId: snapshot.projectId,
+        policyType: "calibration",
+        policyRef: snapshot.calibrationValidationPolicyRef,
+      }),
+    );
     const derived = deriveCalibrationInputSnapshotRef({
       projectId: snapshot.projectId,
       deviationFactRef: snapshot.deviationFactRef.reference,
@@ -198,7 +210,9 @@ export const createDeploymentCalibrationTaskPortV1 = ({ artifactStore, access })
       !sameRef(snapshot.promptTemplateRef, envelope.promptTemplateRef) ||
       !sameRef(snapshot.toolPolicyRef, envelope.toolPolicyRef) ||
       !sameRef(snapshot.budgetPolicyRef, envelope.budgetPolicyRef) ||
-      !sameRef(snapshot.calibrationValidationPolicyRef, envelope.validationPolicyRef)
+      policy.projectId !== snapshot.projectId ||
+      !sameRef(policy.policyRef, snapshot.calibrationValidationPolicyRef) ||
+      !sameRef(policy.validationPolicyRef, envelope.validationPolicyRef)
     )
       throw new TypeError("CALIBRATION_TASK_SNAPSHOT_BINDING_INVALID");
 

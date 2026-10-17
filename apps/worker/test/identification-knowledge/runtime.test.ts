@@ -213,6 +213,38 @@ const baselineReadRequest = {
   },
 } satisfies KnowledgeAuthoringBaselineReadRequestV1;
 
+const modelTextBlock = Object.freeze({
+  blockId: "original-block-1",
+  sourceBlockId: "converter-original-block-1",
+  sourceVersionRef: { kind: "source-version", reference: SOURCE_VERSION },
+  sourceSegmentId: SEGMENT_ID,
+  sequence: 1,
+  text: "扩径准备的真实合成资料段",
+  headingPath: ["扩径准备"],
+  confidence: 0.97,
+});
+const modelReaders: Pick<KnowledgeAuthoringModelStepOptionsV1, "loadManifest" | "readObservation"> =
+  {
+    loadManifest: async () => ({
+      targetDefinitionType: "process-model",
+      preparationSnapshotRef: {
+        kind: "identification-preparation-snapshot",
+        reference: versionRef("preparation-1"),
+      },
+      members: [
+        {
+          sourceVersionRef: { kind: "source-version", reference: SOURCE_VERSION },
+          sourceSegmentSetRef: segmentSliceRequest.sourceSegmentSetRef,
+          retainedSegmentIds: [SEGMENT_ID],
+          excludedSegmentIds: [],
+        },
+      ],
+    }),
+    readObservation: async () => ({
+      segments: [{ sourceSegmentId: SEGMENT_ID, textBlocks: [modelTextBlock] }],
+    }),
+  };
+
 const candidateIncrement = {
   schemaVersion: "1" as const,
   candidateVersion: 1,
@@ -424,6 +456,9 @@ const setup = (options: {
   readonly script: readonly unknown[];
   readonly segmentSlice?: AgentDomainToolResultV1;
   readonly storeOverrides?: Record<string, unknown>;
+  readonly readers?: Partial<
+    Pick<KnowledgeAuthoringModelStepOptionsV1, "loadManifest" | "readObservation">
+  >;
 }) => {
   const store = makeStore(options.storeOverrides);
   const port = makePort(options.segmentSlice);
@@ -444,7 +479,13 @@ const setup = (options: {
     },
   );
   const definition = createKnowledgeAuthoringTaskDefinition({ policy, port });
-  const modelStep = withKnowledgeAuthoringModelStep({ policy, persistArtifact, now: () => NOW });
+  const modelStep = withKnowledgeAuthoringModelStep({
+    policy,
+    persistArtifact,
+    ...modelReaders,
+    ...options.readers,
+    now: () => NOW,
+  });
   const renderModelStep = vi.fn(modelStep.renderModelStep);
   const gateway = makeGateway(...options.script);
   const runner = new AgentRuntimeRunner({
@@ -473,6 +514,103 @@ const setup = (options: {
 };
 
 describe("knowledge authoring model step", () => {
+  it("preserves every frozen locator with smaller repeated input and restricts generation to the current target and version", async () => {
+    const manifest = await modelReaders.loadManifest(task);
+    const member = manifest.members[0]!;
+    const ids = Array.from(
+      { length: 128 },
+      (_, index) => `${SOURCE_VERSION.entityId.repeat(4)}:段-${index}`,
+    );
+    const members = [{ ...member, retainedSegmentIds: ids }];
+    const step = withKnowledgeAuthoringModelStep({
+      policy,
+      ...modelReaders,
+      persistArtifact: async () => observationRef,
+      loadManifest: async () => ({ ...manifest, members }),
+    });
+    const rendered = await step.renderModelStep(
+      task,
+      createKnowledgeAuthoringTaskDefinition({ policy, port: makePort() }),
+    );
+    const payload = JSON.parse(rendered.messages[1]!.content);
+    const listing = payload.members[0];
+    expect(
+      new Set(listing.segmentIdSuffixes.map((suffix: string) => listing.segmentIdPrefix + suffix)),
+    ).toEqual(new Set(ids));
+    expect(Buffer.byteLength(JSON.stringify(payload.members))).toBeLessThan(
+      Buffer.byteLength(JSON.stringify(members)),
+    );
+    const schema = rendered.outputSchema!;
+    expect(schema.safeParse(segmentSliceRequest).success).toBe(true);
+    expect(schema.safeParse(baselineReadRequest).success).toBe(true);
+    expect(schema.safeParse(candidateSubmission).success).toBe(true);
+    expect(
+      schema.safeParse({
+        ...candidateSubmission,
+        candidate: { ...candidateIncrement, candidateVersion: 2 },
+      }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        kind: "submit-knowledge-candidate",
+        candidate: {
+          schemaVersion: "1",
+          candidateVersion: 1,
+          definitionType: "case-library",
+          operations: [
+            {
+              operation: "retire-case",
+              expectedBaselineDigest: sha256("baseline"),
+              reasonCode: "replace",
+              evidence,
+              entryId: "case-1",
+            },
+          ],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unavailable input before calling the model and only reads completed tool observations", async () => {
+    const { gateway, authoringRunner } = setup({
+      script: [],
+      readers: {
+        loadManifest: async () => {
+          throw new Error("current access denied");
+        },
+      },
+    });
+    await authoringRunner.runOnce();
+    expect(gateway.completeStructured).not.toHaveBeenCalled();
+    const readObservation = vi.fn(modelReaders.readObservation);
+    const step = withKnowledgeAuthoringModelStep({
+      policy,
+      persistArtifact: async () => observationRef,
+      ...modelReaders,
+      readObservation,
+    });
+    const budgeted = structuredClone(task);
+    budgeted.budgetLedger.used.inputTokens = 10;
+    budgeted.budgetLedger.reserved.inputTokens = 5;
+    budgeted.budgetLedger.used.contextTokens = 10;
+    budgeted.budgetLedger.reserved.contextTokens = 5;
+    budgeted.budgetLedger.used.toolInvocations = 1;
+    const rendered = await step.renderModelStep(
+      budgeted,
+      createKnowledgeAuthoringTaskDefinition({ policy, port: makePort() }),
+      { previousObservationArtifactRef: observationRef },
+    );
+    expect(readObservation).not.toHaveBeenCalled();
+    expect(JSON.parse(rendered.messages[1]!.content)).toMatchObject({
+      completedObservations: [],
+      remainingBudget: {
+        inputTokens:
+          (budgeted.budgetPolicy.maxInputTokens ?? budgeted.budgetPolicy.maxContextTokens) - 15,
+        toolInvocations: budgeted.budgetPolicy.maxToolInvocations - 1,
+      },
+    });
+  });
+
   it("routes reads to the frozen tools and drives tool to candidate to validation to revision", async () => {
     const { store, port, persisted, renderModelStep, settleAuthoringFailures, authoringRunner } =
       setup({ script: [segmentSliceRequest, candidateSubmission] });
@@ -500,13 +638,39 @@ describe("knowledge authoring model step", () => {
       previousObservationArtifactRef: observationRef,
     });
 
-    // 渲染请求只携带引用与策略预算，不设置领域工具。
-    const firstStep = renderModelStep.mock.results[0]?.value as RenderedStepV1 | undefined;
+    // 冻结定位和真实工具观察进入模型消息，不增通用读取工具。
+    const firstStep = (await renderModelStep.mock.results[0]?.value) as RenderedStepV1 | undefined;
     expect(firstStep?.maxOutputTokens).toBe(policy.agent.budgetPolicy.maxOutputTokens);
     expect(firstStep?.domainTool).toBeUndefined();
     expect(firstStep?.messages).toHaveLength(2);
-    expect(JSON.parse(firstStep?.messages[1]?.content ?? "")).toEqual({
+    expect(JSON.parse(firstStep?.messages[1]?.content ?? "")).toMatchObject({
       frozenManifestArtifactRef: task.envelope.frozenInputRef,
+      targetDefinitionType: "process-model",
+      members: [{ segmentIdPrefix: SEGMENT_ID, segmentIdSuffixes: [""] }],
+      completedObservations: [],
+    });
+    const secondStep = (await renderModelStep.mock.results[1]?.value) as RenderedStepV1;
+    expect(JSON.parse(secondStep.messages[1]!.content)).toMatchObject({
+      completedObservations: [
+        {
+          input: { requestedSegmentCount: 1 },
+          observation: {
+            segments: [
+              {
+                sourceSegmentId: SEGMENT_ID,
+                textBlocks: [
+                  {
+                    blockId: modelTextBlock.blockId,
+                    text: modelTextBlock.text,
+                    headingPath: modelTextBlock.headingPath,
+                    confidence: modelTextBlock.confidence,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
     });
 
     // 候选与增量各落一份 JSON 工件，同一候选正文既用于逐项校验也用于 revision 收口。
@@ -601,7 +765,12 @@ describe("knowledge authoring model step", () => {
 describe("knowledge authoring model step routing", () => {
   const now = () => NOW;
   const persistArtifact = vi.fn(async () => observationRef);
-  const options: KnowledgeAuthoringModelStepOptionsV1 = { policy, persistArtifact, now };
+  const options: KnowledgeAuthoringModelStepOptionsV1 = {
+    policy,
+    persistArtifact,
+    ...modelReaders,
+    now,
+  };
   const foreignTask = {
     ...task,
     envelope: {

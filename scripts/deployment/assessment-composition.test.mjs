@@ -7,11 +7,41 @@ import {
   createDeploymentAssessmentGraphPoliciesV1,
   createDeploymentMeasureReleaseReaderV1,
   createDeploymentRecommendationAgentV1,
+  createDeploymentRecommendationTaskAuthorizationV1,
   createRecommendationPolicyProviderV1,
   createWarningRuntimePolicyProviderV1,
 } from "./composition/assessment.mjs";
 
 const reference = (entityId, versionId = "v1") => ({ entityId, versionId });
+
+it.each(["increment-validation", "recommendation-candidate"])(
+  "处置任务写授权映射 %s",
+  async (purpose) => {
+    const decision = { current: true };
+    const authorize = vi.fn(async () => decision);
+    const envelope = {
+      projectId: "project",
+      actorId: "operator",
+      agentTaskRef: { kind: "agent-task", reference: reference("task") },
+      authorization: {
+        spatialScopeRefs: [{ kind: "spatial-scope", reference: reference("scope") }],
+      },
+    };
+    expect(
+      await createDeploymentRecommendationTaskAuthorizationV1(authorize).authorize({
+        task: { envelope },
+        purpose,
+      }),
+    ).toBe(decision);
+    expect(authorize).toHaveBeenCalledWith({
+      projectId: "project",
+      actorId: "operator",
+      branch: "warning-response.create-candidate",
+      invocationId: `task:${purpose}`,
+      requestedSpatialScopeRefs: envelope.authorization.spatialScopeRefs,
+    });
+  },
+);
 
 const budgetPolicy = (projectId, prefix) => ({
   schemaVersion: "1",
@@ -533,28 +563,71 @@ describe("C25 预测与校准策略按冻结依据精确解析", () => {
     });
 
   it("预测阶段从专用配置集合取策略，评分集合可不含预测成员", async () => {
-    const resolveConfigurationSet = vi.fn(async () => ({
-      kind: "succeeded",
-      configurationSet: {
-        members: [
-          {
-            definitionType: "forecast-policy",
-            releaseRef: projects.get("project-a").binding.forecastPolicyReleaseRef,
-          },
-        ],
-      },
-    }));
+    const seen = new Map();
+    const resolveConfigurationSet = vi.fn(async (request) => {
+      const digest = JSON.stringify([request.authorization, request.asOfRecordedAt]);
+      if (seen.has(request.idempotencyKey) && seen.get(request.idempotencyKey) !== digest)
+        return { kind: "failed", error: { code: "IDEMPOTENCY_CONFLICT" } };
+      seen.set(request.idempotencyKey, digest);
+      return {
+        kind: "succeeded",
+        configurationSet: {
+          members: [
+            {
+              definitionType: "forecast-policy",
+              releaseRef: projects.get("project-a").binding.forecastPolicyReleaseRef,
+            },
+          ],
+        },
+      };
+    });
     const basisRead = vi.fn();
     const provider = createDeploymentAssessmentGraphPoliciesV1({
       projects,
       basis: { readAssessmentBasisReleaseSet: basisRead },
       configuration: { resolveConfigurationSet },
-      authorizeDownstream: authorizationFor,
+      authorizeDownstream: async (request) =>
+        authorizationFor({ ...request, decidedAt: currentAt }),
     });
-    await expect(provider.resolveForecastPolicy(graphPolicyInput())).resolves.toEqual({
+    let currentAt = "2026-10-11T00:00:00.000Z";
+    const input = {
+      ...graphPolicyInput(),
+      authorization: {
+        ...graphPolicyInput().authorization,
+        authorizationContextRef: {
+          kind: "authorization-context",
+          reference: reference("current-a"),
+        },
+        decidedAt: currentAt,
+      },
+    };
+    await expect(provider.resolveForecastPolicy(input)).resolves.toEqual({
       kind: "resolved",
       forecastPolicyRef: reference("forecast:project-a"),
     });
+    await expect(provider.resolveForecastPolicy(input)).resolves.toMatchObject({
+      kind: "resolved",
+    });
+    currentAt = "2026-10-11T01:00:00.000Z";
+    await expect(
+      provider.resolveForecastPolicy({
+        ...input,
+        authorization: {
+          ...input.authorization,
+          authorizationContextRef: {
+            kind: "authorization-context",
+            reference: reference("current-b"),
+          },
+          decidedAt: currentAt,
+        },
+      }),
+    ).resolves.toMatchObject({ kind: "resolved" });
+    expect(resolveConfigurationSet.mock.calls[0][0].requestId).toBe(
+      resolveConfigurationSet.mock.calls[1][0].requestId,
+    );
+    expect(resolveConfigurationSet.mock.calls[2][0].requestId).not.toBe(
+      resolveConfigurationSet.mock.calls[0][0].requestId,
+    );
     expect(resolveConfigurationSet.mock.calls[0][0].purpose).toBe("forecast");
     expect(basisRead).not.toHaveBeenCalled();
   });
@@ -582,7 +655,7 @@ describe("C25 预测与校准策略按冻结依据精确解析", () => {
     await expect(provider.resolveCalibrationPolicy(input)).resolves.toEqual({
       kind: "resolved",
       targetReleaseRef: projects.get("project-a").binding.calibrationTargetReleaseRef,
-      calibrationValidationPolicyRef: reference("calibration-validation:project-a"),
+      calibrationValidationPolicyRef: reference("calibration:project-a"),
       agentPolicy: projects.get("project-a").policies.calibration,
     });
     await provider.resolveForecastPolicy(input);
@@ -889,34 +962,38 @@ describe("C27/C29 生产 Agent provider", () => {
       },
     });
 
-  it("C27 用 actionId 幂等启动真实任务，pending 等待，completed 只返回 C08 终态结果", async () => {
-    const input = {
-      run: runForAgentTask(),
-      actionId: "run-a:A7:recommendation-agent",
-      queryResultRef: {
-        kind: "knowledge-query-result",
-        reference: reference("query-a"),
-      },
-      warningResponseTaskRef: {
-        kind: "warning-response-task",
-        reference: reference("warning-task-a"),
-      },
-      responseGenerationPolicyRef: reference("response-generation:project-a"),
-      responseAgentPolicyRef: reference("response-agent:project-a"),
-    };
+  const recommendationInput = (actionId) => ({
+    run: runForAgentTask(),
+    actionId,
+    queryResultRef: {
+      kind: "knowledge-query-result",
+      reference: reference("query-a"),
+    },
+    warningResponseTaskRef: {
+      kind: "warning-response-task",
+      reference: reference("warning-task-a"),
+    },
+    responseGenerationPolicyRef: reference("response-generation:project-a"),
+    responseAgentPolicyRef: reference("response-agent:project-a"),
+  });
+
+  const outOfContractRef = reference("out-of-contract");
+
+  const mutatePolicyRef = (snapshot, field) => {
+    snapshot.envelope[field] = outOfContractRef;
+    snapshot.state.agentTaskRef[field] = outOfContractRef;
+  };
+
+  it("C27 缺任务才启动真实任务，已有 completed 只按当前授权观察原任务", async () => {
+    const input = recommendationInput("run-a:A7:recommendation-agent");
     const taskRef = agentTaskRefFor(input, "response-recommendation");
     const candidateRef = {
       kind: "recommendation-candidate",
       reference: reference("recommendation-candidate-a"),
     };
-    let state = agentTaskSnapshot({
-      taskRef,
-      input,
-      taskType: "response-recommendation",
-      status: "running",
-    });
+    let state;
     const starts = [];
-    const authorizations = [];
+    const grants = [];
     const provider = createDeploymentRecommendationAgentV1({
       tasks: {
         startTask: async (command) => {
@@ -929,12 +1006,17 @@ describe("C27/C29 生产 Agent provider", () => {
         },
       },
       resolveProject: (projectId) => projects.get(projectId),
-      authorizeDownstream: async (request) => {
-        authorizations.push(request);
-        return {
+      authorizeDownstream: async () => {
+        const grant = {
           ...input.run.authorization,
+          authorizationContextRef: {
+            kind: "authorization-context",
+            reference: reference("authorization-" + String(grants.length + 1)),
+          },
           grantedCapabilities: ["agent-task.start"],
         };
+        grants.push(grant);
+        return grant;
       },
       siteBindings: [],
       siteContextReader: { read: vi.fn() },
@@ -955,10 +1037,14 @@ describe("C27/C29 生产 Agent provider", () => {
       agentTaskRef: taskRef,
       agentTaskResultRef: { candidateRef },
     });
-    expect(starts).toHaveLength(2);
+    expect(starts).toHaveLength(1);
+    expect(grants).toHaveLength(2);
+    expect(grants[1].authorizationContextRef).not.toEqual(grants[0].authorizationContextRef);
     expect(starts[0].commandId).toBe(input.actionId);
     expect(starts[0].idempotencyKey).toBe(input.actionId);
-    expect(starts[1]).toEqual(starts[0]);
+    expect(starts[0].authorization.authorizationContextRef).toEqual(
+      grants[0].authorizationContextRef,
+    );
     expect(starts[0].payload).toMatchObject({
       taskType: "response-recommendation",
       triggerMode: "embedded",
@@ -966,10 +1052,163 @@ describe("C27/C29 生产 Agent provider", () => {
       frozenInputRef: input.queryResultRef,
       budgetPolicyRef: projects.get("project-a").policies["response-agent"].budgetPolicy.policyRef,
     });
-    expect(authorizations.map(({ invocationId, branch }) => ({ invocationId, branch }))).toEqual([
-      { invocationId: input.actionId, branch: "agent-task.start-task" },
-      { invocationId: input.actionId, branch: "agent-task.start-task" },
-    ]);
+  });
+
+  it.each([
+    [
+      "工程",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        snapshot.envelope.projectId = "project-b";
+      },
+    ],
+    [
+      "主体",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        snapshot.envelope.actorId = "actor-2";
+      },
+    ],
+    [
+      "actionID",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        snapshot.envelope.commandId = "run-a:A7:other";
+      },
+    ],
+    [
+      "幂等键",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        snapshot.envelope.idempotencyKey = "run-a:A7:other";
+      },
+    ],
+    [
+      "父运行",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        snapshot.envelope.parentRunRef = {
+          kind: "workflow-run",
+          reference: reference("run-other"),
+        };
+      },
+    ],
+    [
+      "冻结输入",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        snapshot.envelope.frozenInputRef = {
+          kind: "knowledge-query-result",
+          reference: reference("query-other"),
+        };
+      },
+    ],
+    [
+      "任务身份版本",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        snapshot.envelope.agentTaskRef = {
+          ...snapshot.envelope.agentTaskRef,
+          reference: reference(snapshot.envelope.agentTaskRef.reference.entityId, "2"),
+        };
+      },
+    ],
+    [
+      "任务类型",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        snapshot.envelope.taskType = "calibration-suggestion";
+      },
+    ],
+    [
+      "触发模式",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        snapshot.state.agentTaskRef.triggerMode = "interactive";
+      },
+    ],
+    [
+      "模型部署",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        mutatePolicyRef(snapshot, "modelDeploymentRef");
+      },
+    ],
+    [
+      "提示模板",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        mutatePolicyRef(snapshot, "promptTemplateRef");
+      },
+    ],
+    [
+      "工具策略",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        mutatePolicyRef(snapshot, "toolPolicyRef");
+      },
+    ],
+    [
+      "预算策略",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        mutatePolicyRef(snapshot, "budgetPolicyRef");
+      },
+    ],
+    [
+      "增量Schema",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        mutatePolicyRef(snapshot, "incrementSchemaRef");
+      },
+    ],
+    [
+      "校验策略",
+      "agent-task-identity-mismatch",
+      (snapshot) => {
+        mutatePolicyRef(snapshot, "validationPolicyRef");
+      },
+    ],
+    [
+      "终态结果身份",
+      "agent-task-completed-result-mismatch",
+      (snapshot) => {
+        snapshot.state.resultRef = {
+          ...snapshot.state.resultRef,
+          agentTaskRef: {
+            ...snapshot.state.resultRef.agentTaskRef,
+            toolPolicyRef: outOfContractRef,
+          },
+        };
+      },
+    ],
+  ])("C27 已有任务身份错配（%s）不启动也不返回候选", async (_name, reasonCode, mutate) => {
+    const input = recommendationInput("run-a:A7:mismatched-identity");
+    const taskRef = agentTaskRefFor(input, "response-recommendation");
+    const snapshot = completedTask({
+      taskType: "response-recommendation",
+      taskRef,
+      candidateRef: {
+        kind: "recommendation-candidate",
+        reference: reference("recommendation-candidate-mismatch"),
+      },
+      input,
+    });
+    mutate(snapshot);
+    const startTask = vi.fn();
+    const provider = createDeploymentRecommendationAgentV1({
+      tasks: { startTask, getTask: async () => snapshot },
+      resolveProject: (projectId) => projects.get(projectId),
+      authorizeDownstream: async () => ({
+        ...input.run.authorization,
+        grantedCapabilities: ["agent-task.start"],
+      }),
+      siteBindings: [],
+      siteContextReader: { read: vi.fn() },
+    });
+
+    await expect(provider.ensureTask(input)).resolves.toEqual({ kind: "failed", reasonCode });
+    expect(startTask).not.toHaveBeenCalled();
   });
 
   it("C27 有冻结候选集时按原冻结策略与预算启动任务，当前工程策略换版不影响", async () => {
@@ -1102,7 +1341,7 @@ describe("C27/C29 生产 Agent provider", () => {
     expect(startTask).not.toHaveBeenCalled();
   });
 
-  it("C27 任务失败显式失败，C29 使用本次冻结工件和项目校准预算", async () => {
+  it("C27 已有终态失败或取消按真实终态失败不重开，C29 使用本次冻结工件和项目校准预算", async () => {
     const recommendationInput = {
       run: runForAgentTask(),
       actionId: "run-a:A7:failed-agent",
@@ -1115,17 +1354,15 @@ describe("C27/C29 生产 Agent provider", () => {
       responseAgentPolicyRef: reference("response-agent:project-a"),
     };
     const failedRef = agentTaskRefFor(recommendationInput, "response-recommendation");
+    let recommendationState = agentTaskSnapshot({
+      taskRef: failedRef,
+      input: recommendationInput,
+      taskType: "response-recommendation",
+      status: "terminal-failure",
+    });
+    const recommendationStarts = vi.fn();
     const recommendation = createDeploymentRecommendationAgentV1({
-      tasks: {
-        startTask: async () => ({ kind: "succeeded", result: { agentTaskRef: failedRef } }),
-        getTask: async () =>
-          agentTaskSnapshot({
-            taskRef: failedRef,
-            input: recommendationInput,
-            taskType: "response-recommendation",
-            status: "terminal-failure",
-          }),
-      },
+      tasks: { startTask: recommendationStarts, getTask: async () => recommendationState },
       resolveProject: (projectId) => projects.get(projectId),
       authorizeDownstream: async () => ({
         ...recommendationInput.run.authorization,
@@ -1138,6 +1375,17 @@ describe("C27/C29 生产 Agent provider", () => {
       kind: "failed",
       reasonCode: "AGENT_MODEL_FAILED",
     });
+    recommendationState = agentTaskSnapshot({
+      taskRef: failedRef,
+      input: recommendationInput,
+      taskType: "response-recommendation",
+      status: "cancelled",
+    });
+    await expect(recommendation.ensureTask(recommendationInput)).resolves.toEqual({
+      kind: "failed",
+      reasonCode: "operator-cancelled",
+    });
+    expect(recommendationStarts).not.toHaveBeenCalled();
 
     const calibrationInput = {
       run: runForAgentTask(),
@@ -1145,23 +1393,37 @@ describe("C27/C29 生产 Agent provider", () => {
       frozenInputRef: { kind: "content-artifact", reference: reference("calibration-input") },
       inputSnapshotRef: { kind: "calibration-input-snapshot", reference: reference("snapshot-a") },
       deviationRecordRef: { kind: "deviation-record", reference: reference("deviation-a") },
-      calibrationValidationPolicyRef: reference("calibration-validation:project-a"),
+      calibrationValidationPolicyRef: reference("calibration:project-a"),
     };
     const calibrationTaskRef = agentTaskRefFor(calibrationInput, "calibration-suggestion");
     let calibrationCommand;
+    let calibrationState;
+    let calibrationStarts = 0;
+    const calibrationAuthorizations = [];
+    let calibrationManifest = {
+      artifactRef: calibrationInput.frozenInputRef,
+      purposeCode: "warning-response.calibration-input-snapshot",
+      access: { projectId: "project-a", sourceAccessGrantRefs: [] },
+      evidenceReferences: [{ sourceVersion: reference("calibration-source") }],
+    };
     const calibration = createDeploymentCalibrationAgentV1({
+      readArtifactManifest: async () => calibrationManifest,
       tasks: {
         startTask: async (command) => {
           calibrationCommand = command;
+          calibrationStarts += 1;
           return { kind: "succeeded", result: { agentTaskRef: calibrationTaskRef } };
         },
-        getTask: async () => undefined,
+        getTask: async () => calibrationState,
       },
       resolveProject: (projectId) => projects.get(projectId),
-      authorizeDownstream: async () => ({
-        ...calibrationInput.run.authorization,
-        grantedCapabilities: ["agent-task.start"],
-      }),
+      authorizeDownstream: async (request) => {
+        calibrationAuthorizations.push(request);
+        return {
+          ...calibrationInput.run.authorization,
+          grantedCapabilities: ["agent-task.start"],
+        };
+      },
     });
     await expect(calibration.ensureTask(calibrationInput)).resolves.toEqual({
       kind: "waiting",
@@ -1172,8 +1434,52 @@ describe("C27/C29 生产 Agent provider", () => {
       frozenInputRef: calibrationInput.frozenInputRef,
       budgetPolicyRef: projects.get("project-a").policies.calibration.budgetPolicy.policyRef,
       incrementSchemaRef: projects.get("project-a").policies.calibration.incrementSchemaRef,
-      validationPolicyRef: calibrationInput.calibrationValidationPolicyRef,
+      validationPolicyRef: projects.get("project-a").policies.calibration.validationPolicyRef,
     });
+    expect(calibrationAuthorizations[0]).toMatchObject({
+      requestedSourceVersionRefs: [
+        { kind: "source-version", reference: reference("calibration-source") },
+      ],
+      requestedSourceAccessGrantRefs: [],
+    });
+    calibrationState = agentTaskSnapshot({
+      taskRef: calibrationTaskRef,
+      input: calibrationInput,
+      taskType: "calibration-suggestion",
+      status: "terminal-failure",
+    });
+    await expect(calibration.ensureTask(calibrationInput)).resolves.toEqual({
+      kind: "failed",
+      reasonCode: "AGENT_MODEL_FAILED",
+    });
+    expect(calibrationStarts).toBe(1);
+    const validManifest = calibrationManifest;
+    for (const invalidManifest of [
+      undefined,
+      { ...validManifest, evidenceReferences: [] },
+      { ...validManifest, purposeCode: "other-purpose" },
+      { ...validManifest, access: { ...validManifest.access, projectId: "other-project" } },
+      {
+        ...validManifest,
+        artifactRef: { ...validManifest.artifactRef, reference: reference("other-input") },
+      },
+    ]) {
+      calibrationManifest = invalidManifest;
+      await expect(calibration.ensureTask(calibrationInput)).resolves.toEqual({
+        kind: "failed",
+        reasonCode: "calibration-agent-input-unavailable",
+      });
+      expect(calibrationStarts).toBe(1);
+    }
+    calibrationManifest = validManifest;
+    await expect(
+      calibration.ensureTask({
+        ...calibrationInput,
+        calibrationValidationPolicyRef:
+          projects.get("project-a").policies.calibration.validationPolicyRef,
+      }),
+    ).resolves.toEqual({ kind: "failed", reasonCode: "calibration-agent-policy-mismatch" });
+    expect(calibrationStarts).toBe(1);
   });
 
   it("C27 现场 ref 必须同时出现在本次 frozenRefs 和同工程绑定中且唯一", async () => {

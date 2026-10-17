@@ -1,13 +1,13 @@
 import type { Kysely } from "kysely";
 
-import type { LocalIdentityAccessV1 } from "@riskflow/core/access";
 import type { JsonValue } from "@riskflow/core/persistence";
-import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
   RiskRecordTraceReadRequestV1Schema,
   RiskRecordTraceReadResultV1Schema,
+  SpatialScopeRefV1Schema,
+  SourceVersionRefV1Schema,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type ModuleBranchV1,
@@ -15,11 +15,13 @@ import {
   type RiskRecordTraceReadPortV1,
   type RiskRecordTraceReadResultV1,
   type StandardizedRiskRecordRefV1,
+  type SourceVersionRefV1,
 } from "@riskflow/contracts/ports";
 import { StandardizedRiskRecordEnvelopeSchema } from "@riskflow/contracts/records";
 
 import { mapPostgresError } from "../../postgres/pool.js";
 import type { PostgresDatabase } from "../../postgres/types.js";
+import type { PostgresLocalIdentityAccess } from "../../auth/index.js";
 
 const RECORDS_TABLE = "business.standardized_risk_records";
 const STAGE_CODE_V1 = "identification-candidate-finalization.trace-read";
@@ -31,7 +33,7 @@ const MAX_MECHANISM_ENTRIES_V1 = 64;
 
 /**
  * design D-06：本读接缝不新增 capability，只复用调用方已持有的 `projection.query` 能力位；
- * 空间与资料可见性由复验上下文与记录冻结的范围摘要逐条对账（见 `#itemFor`）。
+ * 空间与资料可见性由 C06 按记录登记的实际范围检查，历史摘要只留作审计。
  * 复验 branch 由请求携带（外层调用入口的路由 branch），本端口不硬编码——C06 verify 精确
  * 绑定 branch，而 capability 与 branch 一对多，反推恒可能错配。
  */
@@ -50,7 +52,8 @@ interface StandardizedRiskRecordTraceDbRow {
   source_segment_ids: JsonValue;
   mechanism_entry_ids: JsonValue;
   payload: JsonValue;
-  authorization_scope_digest: string;
+  spatial_scope_refs: JsonValue | null;
+  source_version_refs: JsonValue | null;
   audit_entry_id: string;
 }
 
@@ -77,7 +80,7 @@ export interface PostgresRiskRecordTraceReaderOptionsV1 {
   /** 传 `runtime.db` 即可；类型为 `Kysely<PostgresDatabase & RiskRecordTraceDatabase>`。 */
   readonly db: unknown;
   /** C06 当前授权复验端口：每次批读在披露任何目标之前按当前 actor/工程/空间/资料范围复验。 */
-  readonly authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly authorization: Pick<PostgresLocalIdentityAccess, "verify" | "authorizeBusinessAction">;
   readonly now?: () => Date;
 }
 
@@ -88,13 +91,11 @@ export interface PostgresRiskRecordTraceReaderOptionsV1 {
  * 的记录收口为逐字相同的 `ENTITY_NOT_FOUND`（不提供存在性 oracle）。批/单条越界返回
  * `BUSINESS_BLOCKED` 与稳定 `blockerKind`，不静默截断。
  *
- * 逐条可见性只依据 C22 自有事实：记录冻结的 `authorization_scope_digest` 必须等于复验上下文
- * 的范围摘要（`authorizationScopeDigest` 只含工程、空间与资料范围，不含调用者身份与能力），
- * 因此同一工程内范围一致的历史记录可见，撤权或范围收窄后历史记录不可见——不跨模块读其私表。
+ * 逐条可见性使用 C22 登记的来源与空间，通过 C06 检查当前权限，不跨模块读取权限私表。
  */
 export class PostgresRiskRecordTraceReader implements RiskRecordTraceReadPortV1 {
   readonly #db: RiskRecordTraceQueryExecutorV1;
-  readonly #authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly #authorization: PostgresRiskRecordTraceReaderOptionsV1["authorization"];
   readonly #now: () => Date;
 
   constructor(options: PostgresRiskRecordTraceReaderOptionsV1) {
@@ -149,17 +150,80 @@ export class PostgresRiskRecordTraceReader implements RiskRecordTraceReadPortV1 
     }
 
     const rows = await this.#readRows(valid.projectId, valid.riskRecordRefs);
-    const scopeDigest = authorizationScopeDigest(verified);
-    const items = valid.riskRecordRefs.map((riskRecordRef) =>
-      this.#itemFor({
-        riskRecordRef,
-        row: rows.get(riskRecordRef.reference.entityId),
-        scopeDigest,
-        invocationId,
-        occurredAt: valid.requestedAt,
-      }),
-    );
+    const visibility = new Map<string, Promise<boolean>>();
+    const items: RiskRecordTraceItemV1[] = [];
+    for (const riskRecordRef of valid.riskRecordRefs) {
+      const row = rows.get(riskRecordRef.reference.entityId);
+      let visible = false;
+      if (row?.version_id === riskRecordRef.reference.versionId) {
+        const scopes = SpatialScopeRefV1Schema.array()
+          .min(1)
+          .max(64)
+          .safeParse(row.spatial_scope_refs);
+        const sources = SourceVersionRefV1Schema.array()
+          .min(1)
+          .max(64)
+          .safeParse(row.source_version_refs);
+        if (scopes.success && sources.success) {
+          const key = JSON.stringify([scopes.data, sources.data]);
+          let decision = visibility.get(key);
+          if (decision === undefined) {
+            decision = this.#canReadScope({
+              authorization: verified,
+              invocationId,
+              branch: valid.branch,
+              spatialScopeRefs: scopes.data,
+              sourceVersionRefs: sources.data,
+            });
+            visibility.set(key, decision);
+          }
+          visible = await decision;
+        }
+      }
+      items.push(
+        this.#itemFor({
+          riskRecordRef,
+          row,
+          visible,
+          invocationId,
+          occurredAt: valid.requestedAt,
+        }),
+      );
+    }
     return RiskRecordTraceReadResultV1Schema.parse({ kind: "succeeded", items });
+  }
+
+  async #canReadScope(input: {
+    readonly authorization: AuthorizationContextV1;
+    readonly invocationId: string;
+    readonly branch: ModuleBranchV1;
+    readonly spatialScopeRefs: AuthorizationContextV1["spatialScopeRefs"];
+    readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+  }): Promise<boolean> {
+    try {
+      const decision = await this.#authorization.authorizeBusinessAction({
+        actorId: input.authorization.actorId,
+        projectId: input.authorization.projectId,
+        branch: input.branch,
+        capability: MODULE_BRANCH_CAPABILITY_V1[input.branch],
+        invocationId: input.invocationId,
+        requestedSpatialScopeRefs: input.spatialScopeRefs,
+        requestedSourceVersionRefs: input.sourceVersionRefs,
+        authorizationContextRef: input.authorization.authorizationContextRef,
+        ...(input.authorization.invocation.kind === "agent-task"
+          ? { taskRef: input.authorization.invocation.agentTaskRef }
+          : {}),
+      });
+      return (
+        !decision.redacted &&
+        decision.context.actorId === input.authorization.actorId &&
+        decision.context.projectId === input.authorization.projectId &&
+        decision.context.grantedCapabilities.length === 1 &&
+        decision.context.grantedCapabilities[0] === MODULE_BRANCH_CAPABILITY_V1[input.branch]
+      );
+    } catch {
+      return false;
+    }
   }
 
   /** 一条 SQL 读齐本批身份，不做逐条查询；版本与范围在逐条组装时精确核对。 */
@@ -178,7 +242,8 @@ export class PostgresRiskRecordTraceReader implements RiskRecordTraceReadPortV1 
           "source_segment_ids",
           "mechanism_entry_ids",
           "payload",
-          "authorization_scope_digest",
+          "spatial_scope_refs",
+          "source_version_refs",
           "audit_entry_id",
         ])
         .where("project_id", "=", projectId)
@@ -193,7 +258,7 @@ export class PostgresRiskRecordTraceReader implements RiskRecordTraceReadPortV1 
   #itemFor(input: {
     readonly riskRecordRef: StandardizedRiskRecordRefV1;
     readonly row: StandardizedRiskRecordTraceDbRow | undefined;
-    readonly scopeDigest: string;
+    readonly visible: boolean;
     readonly invocationId: string;
     readonly occurredAt: string;
   }): RiskRecordTraceItemV1 {
@@ -224,7 +289,7 @@ export class PostgresRiskRecordTraceReader implements RiskRecordTraceReadPortV1 
     if (
       row === undefined ||
       row.version_id !== input.riskRecordRef.reference.versionId ||
-      row.authorization_scope_digest !== input.scopeDigest
+      !input.visible
     ) {
       return notFound();
     }

@@ -23,6 +23,7 @@ import {
   type ModuleBranchV1,
   type ModuleCapabilityV1,
   type ReviewTaskRefV1,
+  type SourceVersionRefV1,
 } from "@riskflow/contracts/ports";
 import type {
   ModelOutputResult,
@@ -382,6 +383,24 @@ export const uniqueRefsByEntityId = <
   [
     ...new Map(references.map((reference) => [reference.reference.entityId, reference])).values(),
   ].sort((left, right) => left.reference.entityId.localeCompare(right.reference.entityId));
+
+export const riskRecordSourceVersionsFor = (
+  sources: readonly SourceVersionRefV1[],
+  evidence: readonly EvidenceReference[],
+): SourceVersionRefV1[] =>
+  [
+    ...new Map(
+      [
+        ...sources,
+        ...evidence.map((entry) => ({
+          kind: "source-version" as const,
+          reference: entry.sourceVersion,
+        })),
+      ].map((ref) => [referenceKey(ref.reference), ref]),
+    ).values(),
+  ].sort((left, right) =>
+    referenceKey(left.reference).localeCompare(referenceKey(right.reference)),
+  );
 
 /**
  * 由五项上下文构造确定性证据索引。候选没有机理字段，因此“机理条目适用性”只能由证据定位
@@ -3921,11 +3940,12 @@ export class RiskCandidateFinalizationService {
       const spatialScopeRefs = uniqueRefsByEntityId(
         memberWorkItems.flatMap((item) => item.spatialScopeRefs),
       );
-      const sourceVersionRefs = uniqueRefsByEntityId(
-        memberWorkItems.flatMap((item) => item.sourceVersionRefs),
-      );
       const evidenceReferences = uniqueEvidenceReferences(
         group.members.flatMap((member) => member.evidenceReferences),
+      );
+      const sourceVersionRefs = riskRecordSourceVersionsFor(
+        memberWorkItems.flatMap((item) => item.sourceVersionRefs),
+        evidenceReferences,
       );
       const candidatePayload = (await this.#readArtifactJson({
         artifactRef: representative.candidateRef.reference,
@@ -4066,7 +4086,8 @@ export class RiskCandidateFinalizationService {
       | { readonly kind: "replayed" }
       | { readonly kind: "conflict"; readonly detailCode: string }
       | undefined;
-    let eventRefs: { readonly eventId: string }[] = [];
+    let insertedRecordCount: number | undefined;
+    let eventCount: number;
     try {
       const receipt = await options.transactionUnit.execute(
         atomicCommand,
@@ -4083,8 +4104,11 @@ export class RiskCandidateFinalizationService {
             abort = insertion;
             throw new FinalizationTransactionAbort();
           }
+          const insertedIds = new Set(insertion.insertedRiskRecordIds);
+          const insertedRecords = records.filter((record) => insertedIds.has(record.riskRecordId));
+          insertedRecordCount = insertedRecords.length;
           const recordedAt = this.#now().toISOString();
-          const events: DomainEventV1[] = records.map((record) =>
+          const events: DomainEventV1[] = insertedRecords.map((record) =>
             DomainEventV1Schema.parse({
               schemaVersion: "1",
               eventId: `identification-risk-record-accepted:${record.riskRecordId}:${record.version.reference.versionId}`,
@@ -4144,9 +4168,9 @@ export class RiskCandidateFinalizationService {
           };
         },
       );
-      eventRefs = receipt.eventRefs.map((ref) => ({ eventId: ref.eventId }));
+      eventCount = receipt.eventRefs.length;
     } catch (error: unknown) {
-      if (error instanceof FinalizationTransactionAbort) {
+      if (abort !== undefined) {
         if (abort?.kind === "replayed") {
           return {
             kind: "accepted",
@@ -4174,7 +4198,7 @@ export class RiskCandidateFinalizationService {
       }
       throw error;
     }
-    if (eventRefs.length !== records.length) {
+    if (insertedRecordCount !== undefined && eventCount !== insertedRecordCount) {
       throw new RiskCandidateFinalizationError(
         terminalFailure({
           causalRunId: commandId,
@@ -4189,9 +4213,9 @@ export class RiskCandidateFinalizationService {
         kind: "standardized-risk-record",
         reference: record.version.reference,
       })),
-      assessmentEventRefs: records.map((record, index) => ({
+      assessmentEventRefs: records.map((record) => ({
         kind: "domain-event",
-        eventId: eventRefs[index]?.eventId ?? "",
+        eventId: `identification-risk-record-accepted:${record.riskRecordId}:${record.version.reference.versionId}`,
         eventVersion: 1,
       })),
     };

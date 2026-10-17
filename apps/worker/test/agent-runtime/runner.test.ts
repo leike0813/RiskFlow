@@ -7,6 +7,7 @@ import {
   buildCompletedAgentTaskResult,
   emptyAgentBudgetUsage,
   makeAgentError,
+  reserveAgentBudget,
   type AgentTaskDefinitionV1,
   type AgentDomainToolResultV1,
   type AgentTaskSnapshotV1,
@@ -291,6 +292,339 @@ const makeStore = (overrides: Record<string, unknown> = {}) => {
 };
 
 describe("agent runtime worker", () => {
+  it.each(["direct", "after-tool", "wrong-task", "wrong-action", "wrong-candidate-task"])(
+    "恢复完整候选校验且保持原证据：%s",
+    async (scenario) => {
+      const current = structuredClone(task);
+      const records = new Map<string, unknown>();
+      const actions = new Map<string, AgentTaskActionV1>();
+      const candidatePayload = { operation: "candidate" };
+      const validation = {
+        schemaVersion: "1" as const,
+        items: [
+          {
+            checkId: "entry-1",
+            disposition: "rejected" as const,
+            rejectionClass: "repairable" as const,
+            reasonCode: "field-format-invalid",
+            evidenceReferences: [],
+          },
+        ],
+        disposition: "rejected" as const,
+        rejectionClass: "repairable" as const,
+        validationArtifactRef: artifact,
+        validatedAt: "2030-01-01T00:00:00.000Z",
+      };
+      const candidate = {
+        schemaVersion: "1" as const,
+        taskRef,
+        candidateVersion: 1,
+        parentCandidateVersion: 0,
+        candidateArtifactRef: {
+          ...artifact,
+          reference: { ...artifact.reference, entityId: "candidate-1" },
+        },
+        incrementArtifactRef: artifact,
+        disposition: "pending" as const,
+        createdAt: "2030-01-01T00:00:00.000Z",
+      };
+      records.set("candidate-1", candidatePayload);
+      const failTask = vi.fn(async () => current);
+      const recordCandidate = vi.fn(async ({ candidate: value }) => {
+        current.state = { ...current.state, latestCandidateVersion: value.candidateVersion };
+      });
+      const store = makeStore({
+        claim: async () => ({ ...claim, task: current }),
+        findAction: async (_ref, id) => actions.get(id),
+        recordCandidate,
+        failTask,
+        failAction: async (input) => {
+          actions.set(input.actionId, {
+            actionId: input.actionId,
+            actionType: "model-invocation",
+            status: "failed",
+            sequence: 1,
+            errorCode: input.error.code,
+            resultArtifactRef: input.resultArtifactRef,
+          } as AgentTaskActionV1);
+          return current;
+        },
+      });
+      const gateway = {
+        completeStructured: vi.fn(async (request) => ({
+          schemaVersion: "1",
+          invocationId: request.invocationId,
+          modelDeploymentRef: request.modelDeploymentRef,
+          promptTemplateRef: request.promptTemplateRef,
+          outputSchemaRef: request.outputSchemaRef,
+          serverBuildRef: { entityId: "server", versionId: "1" },
+          modelVersionRef: { entityId: "model", versionId: "1" },
+          usage: { available: true, inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+          rawResponseRef: artifact,
+          value: candidatePayload,
+          finishReason: "stop",
+        })),
+      } as unknown as ModelGatewayPortV1;
+      const runner = new AgentRuntimeRunner({
+        store,
+        registry: new AgentTaskDefinitionRegistry([
+          { ...definition(), validateCandidate: () => validation },
+        ]),
+        workerId: "worker-1",
+        leaseDurationMs: 30_000,
+        maxConcurrentTasks: 1,
+        modelGateway: gateway,
+        renderModelStep: () => ({
+          messages: [{ role: "user", content: "clean" }],
+          maxOutputTokens: 10,
+        }),
+        interpretModelStep: () => ({
+          kind: "completed",
+          candidate,
+          candidatePayload,
+          increment: candidatePayload,
+          usage: emptyAgentBudgetUsage(),
+        }),
+        persistArtifact: async ({ actionId, purposeCode, value }) => {
+          const id = `${actionId}:${purposeCode}`;
+          records.set(id, value);
+          return { ...artifact, reference: { ...artifact.reference, entityId: id } };
+        },
+        artifactStore: {
+          open: async (request) => ({
+            manifest: {} as never,
+            content: (async function* () {
+              yield new TextEncoder().encode(
+                JSON.stringify(records.get(request.artifactRef.reference.entityId)),
+              );
+            })(),
+            completed: Promise.resolve({} as never),
+          }),
+        } as unknown as ArtifactStoreV1,
+        now: () => "2030-01-01T00:00:01.000Z",
+      });
+      await runner.runOnce();
+      const firstActionId = `${taskRef.reference.entityId}:action:1`;
+      const feedback = records.get(`${firstActionId}:candidate-feedback:agent-action-result`) as {
+        taskRef: AgentTaskRefV1;
+        actionId: string;
+        actionResultArtifactRef: typeof artifact;
+        candidateFeedback: typeof candidate & { validation: typeof validation };
+      };
+      expect(recordCandidate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          candidate: expect.objectContaining({ validation, disposition: "rejected" }),
+        }),
+      );
+      expect(feedback.actionResultArtifactRef.reference.entityId).toBe(
+        `${firstActionId}:agent-action-result`,
+      );
+      expect(records.get(feedback.actionResultArtifactRef.reference.entityId)).toMatchObject({
+        rawResponseRef: artifact,
+      });
+      if (scenario === "after-tool") {
+        const requestRef = {
+          ...artifact,
+          reference: { ...artifact.reference, entityId: "tool-request" },
+        };
+        const observationRef = {
+          ...artifact,
+          reference: { ...artifact.reference, entityId: "tool-observation" },
+        };
+        records.set("tool-request", {
+          disposition: "tool-request",
+          toolRef,
+          toolInput: candidatePayload,
+        });
+        records.set("tool-observation", { observationArtifactRef: artifact });
+        actions.set(`${taskRef.reference.entityId}:action:2`, {
+          actionType: "model-invocation",
+          status: "completed",
+          resultArtifactRef: requestRef,
+        } as AgentTaskActionV1);
+        actions.set(`${taskRef.reference.entityId}:action:3`, {
+          actionType: "domain-tool",
+          status: "completed",
+          resultArtifactRef: observationRef,
+        } as AgentTaskActionV1);
+      }
+      if (scenario === "wrong-task")
+        feedback.taskRef = {
+          ...taskRef,
+          modelDeploymentRef: { entityId: "other", versionId: "1" },
+        };
+      if (scenario === "wrong-action") feedback.actionId = "other-action";
+      if (scenario === "wrong-candidate-task")
+        feedback.candidateFeedback.taskRef = {
+          ...taskRef,
+          promptTemplateRef: { entityId: "other", versionId: "1" },
+        };
+      const invalid = scenario.startsWith("wrong-");
+      await runner.runOnce();
+      if (invalid) {
+        expect(gateway.completeStructured).toHaveBeenCalledTimes(1);
+        expect(failTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            error: expect.objectContaining({ code: "AGENT_ARTIFACT_FAILURE", retryable: false }),
+          }),
+        );
+      } else {
+        expect(gateway.completeStructured).toHaveBeenCalledTimes(2);
+        const requests = vi.mocked(gateway.completeStructured).mock.calls;
+        const feedbackMessage = requests[1]![0].messages
+          .map((message) => {
+            try {
+              return JSON.parse(message.content);
+            } catch {
+              return undefined;
+            }
+          })
+          .find((value) => value?.validationFeedback !== undefined);
+        expect(feedbackMessage.validationFeedback.previousCandidate).toEqual({
+          candidateVersion: 1,
+          candidate: candidatePayload,
+          validation,
+        });
+      }
+    },
+  );
+
+  it.each([0, 1])("模型纠错使用新行动且受剩余纠错预算%s约束", async (maxCorrections) => {
+    const failedAction = Object.freeze({
+      actionId: `${taskRef.reference.entityId}:action:1`,
+      sequence: 1,
+      actionType: "model-invocation",
+      status: "failed",
+      errorCode: "AGENT_VALIDATION_REJECTED",
+    }) as AgentTaskActionV1;
+    const current = structuredClone(task);
+    current.budgetPolicy = { ...current.budgetPolicy, maxCorrections };
+    current.budgetLedger = {
+      ...current.budgetLedger,
+      used: {
+        ...current.budgetLedger.used,
+        modelInvocations: 1,
+        inputTokens: 4,
+        outputTokens: 2,
+        contextTokens: 6,
+      },
+    };
+    const reserve = vi.fn(
+      async (input: Parameters<AgentTaskExecutionStoreV1["reserveAction"]>[0]) => {
+        const budget = reserveAgentBudget(current.budgetPolicy, current.budgetLedger, input);
+        return {
+          task: { ...current, budgetLedger: budget.ledger },
+          reservation: budget.reservation,
+        };
+      },
+    );
+    const completeAction = vi.fn(async () => current);
+    const failAction = vi.fn(async () => current);
+    const store = makeStore({
+      claim: vi
+        .fn()
+        .mockResolvedValueOnce({ ...claim, task: current, attemptNumber: 2 })
+        .mockResolvedValue(undefined),
+      findAction: async (_ref: AgentTaskRefV1, actionId: string) =>
+        actionId === failedAction.actionId ? failedAction : undefined,
+      reserveAction: reserve,
+      completeAction,
+      failAction,
+    });
+    const gateway = {
+      completeStructured: vi.fn(async (request) => ({
+        schemaVersion: "1",
+        invocationId: request.invocationId,
+        modelDeploymentRef: request.modelDeploymentRef,
+        promptTemplateRef: request.promptTemplateRef,
+        outputSchemaRef: request.outputSchemaRef,
+        serverBuildRef: { entityId: "server", versionId: "1" },
+        modelVersionRef: { entityId: "model", versionId: "1" },
+        usage: { available: true, inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+        rawResponseRef: artifact,
+        value: { operation: "candidate" },
+        finishReason: "stop",
+      })),
+    } as unknown as ModelGatewayPortV1;
+    const originalInput = `${failedAction.actionId}:agent-model-input`;
+    const persisted = new Map<string, unknown>([[originalInput, { original: true }]]);
+    const runner = new AgentRuntimeRunner({
+      store,
+      registry: new AgentTaskDefinitionRegistry([definition()]),
+      workerId: "worker-1",
+      leaseDurationMs: 30_000,
+      maxConcurrentTasks: 1,
+      modelGateway: gateway,
+      renderModelStep: () => ({
+        messages: [{ role: "user", content: "clean" }],
+        maxOutputTokens: 10,
+      }),
+      interpretModelStep: () => ({
+        kind: "completed",
+        candidate: {
+          schemaVersion: "1",
+          taskRef,
+          candidateVersion: 1,
+          parentCandidateVersion: 0,
+          candidateArtifactRef: artifact,
+          incrementArtifactRef: artifact,
+          disposition: "pending",
+          createdAt: "2030-01-01T00:00:01.000Z",
+        },
+        candidatePayload: { operation: "candidate" },
+        increment: { operation: "candidate" },
+        usage: emptyAgentBudgetUsage(),
+      }),
+      persistArtifact: async ({ actionId, purposeCode, value }) => {
+        const key = `${actionId}:${purposeCode}`;
+        if (persisted.has(key)) expect(value).toEqual(persisted.get(key));
+        persisted.set(key, value);
+        return artifact;
+      },
+      now: () => "2030-01-01T00:00:01.000Z",
+    });
+    expect(await runner.runOnce()).toBe(1);
+    expect(persisted.get(originalInput)).toEqual({ original: true });
+    expect(failedAction.status).toBe("failed");
+    expect(reserve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionId: `${taskRef.reference.entityId}:action:2`,
+        amount: expect.objectContaining({ corrections: 1 }),
+      }),
+    );
+    if (maxCorrections === 0) {
+      expect(gateway.completeStructured).not.toHaveBeenCalled();
+      expect(completeAction).not.toHaveBeenCalled();
+    } else {
+      expect(failAction).not.toHaveBeenCalled();
+      expect(gateway.completeStructured).toHaveBeenCalledOnce();
+      expect(gateway.completeStructured).toHaveBeenCalledWith(
+        expect.objectContaining({
+          invocationId: `${taskRef.reference.entityId}:action:2`,
+          messages: expect.arrayContaining([
+            expect.objectContaining({
+              content: expect.stringContaining("AGENT_VALIDATION_REJECTED"),
+            }),
+          ]),
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(completeAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          usage: expect.objectContaining({
+            corrections: 1,
+            modelInvocations: 1,
+            inputTokens: 4,
+            outputTokens: 2,
+          }),
+        }),
+      );
+      expect(failAction).not.toHaveBeenCalled();
+      expect(store.calls).toContain("complete-task");
+    }
+  });
+
   it.each(
     (
       [

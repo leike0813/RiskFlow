@@ -527,6 +527,27 @@ describe("deployment response model step", () => {
     expect(fixture.calls.persist).toHaveLength(0);
   });
 
+  it.each([RECOMMENDATION_TASK_TYPE_V1, CALIBRATION_AGENT_TASK_TYPE_V1])(
+    "%s 当前决定的时间或资料增量变化不阻断原冻结输入",
+    async (taskType) => {
+      const fixture = setup({
+        taskType,
+        context: {
+          ...authorization,
+          decidedAt: "2030-02-01T10:01:00.000Z",
+          sourceAccessGrantRefs: [],
+        },
+        source: {
+          context: { ...authorization, decidedAt: "2030-02-01T09:59:00.000Z" },
+          sourceVersionRefs: SOURCE_VERSIONS,
+        },
+      });
+      expect(
+        (await fixture.step.renderModelStep(fixture.task, fixture.definition)).messages,
+      ).toHaveLength(2);
+    },
+  );
+
   it("C29 把真实快照、基准与超限偏差传入模型输入", async () => {
     const fixture = setup({ taskType: CALIBRATION_AGENT_TASK_TYPE_V1 });
     const rendered = await fixture.step.renderModelStep(fixture.task, fixture.definition, {
@@ -535,6 +556,12 @@ describe("deployment response model step", () => {
     expect(userPayload(rendered)).toEqual({
       taskRef: fixture.task.envelope.agentTaskRef,
       inputSnapshotRef: INPUT_SNAPSHOT_REF,
+      resultRef: buildCompletedAgentTaskResult(fixture.task.envelope.agentTaskRef, {
+        kind: "calibration-suggestion",
+        reference: ref(
+          `calibration-candidate:${fixture.task.envelope.agentTaskRef.reference.entityId}:1`,
+        ),
+      }),
       snapshot: inputSnapshotOf(),
       document: baseDocument(),
       fact: deviationFactOf(),
@@ -552,6 +579,26 @@ describe("deployment response model step", () => {
       "agent-task.start",
       MODULE_BRANCH_CAPABILITY_V1["warning-response.calculate-deviation"],
     ]);
+    const binding = userPayload(rendered);
+    const candidate = calibrationCandidateOf(binding.taskRef, { resultRef: binding.resultRef });
+    expect(rendered.outputSchema.parse(candidate)).toEqual(candidate);
+    for (const changed of [
+      { ...candidate, resultRef: { ...binding.resultRef, candidateRef: undefined } },
+      { ...candidate, taskRef: { ...binding.taskRef, reference: ref("other-task") } },
+      {
+        ...candidate,
+        inputSnapshotRef: { ...binding.inputSnapshotRef, reference: ref("other-input") },
+      },
+      {
+        ...candidate,
+        resultRef: {
+          ...binding.resultRef,
+          candidateRef: { kind: "calibration-suggestion", reference: ref("other-candidate") },
+        },
+      },
+      { ...candidate, operations: [] },
+    ])
+      expect(rendered.outputSchema.safeParse(changed).success).toBe(false);
   });
 
   it.each([
@@ -664,10 +711,10 @@ describe("deployment response model step", () => {
       "deployment.response-model.authorization-source",
     ],
     [
-      "当前授权来源正文不符",
+      "当前授权来源主体不符",
       {
         source: {
-          context: { ...authorization, grantedCapabilities: ["agent-task.start"] },
+          context: { ...authorization, actorId: "foreign-actor" },
           sourceVersionRefs: SOURCE_VERSIONS,
         },
       },

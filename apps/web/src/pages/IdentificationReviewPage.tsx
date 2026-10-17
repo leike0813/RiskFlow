@@ -81,16 +81,10 @@ export default function IdentificationReviewPage() {
                 </Card>
               );
             }
-            if (
-              result.kind === "not-in-queue" ||
-              result.taskRef === undefined ||
-              result.detail === undefined
-            ) {
+            if (result.taskRef === undefined || result.detail === undefined) {
               return (
                 <Card title="识别候选复核">
-                  <div className="rv-muted">
-                    当前队列页中未见该实体标识与身份版本组合：任务可能已被决定、被取代，或超出本页范围。
-                  </div>
+                  <div className="rv-muted">复核任务不可用，请返回复核队列选择任务。</div>
                   <Link className="rv-back" to={projectPath("/review")}>
                     返回复核队列
                   </Link>

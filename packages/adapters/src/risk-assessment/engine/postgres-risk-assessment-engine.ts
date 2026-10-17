@@ -20,12 +20,12 @@ import {
 import {
   ACCESS_POLICY_REF_V1,
   AccessServiceError,
-  isAuthorizationSubset,
   type LocalIdentityAccessV1,
 } from "@riskflow/core/access";
 import {
   ArtifactPutCommandV1Schema,
   ArtifactReadRequestV1Schema,
+  normalizeEvidenceReferences,
   type ArtifactReadHandleV1,
   type ArtifactStoreV1,
 } from "@riskflow/core/artifacts";
@@ -108,6 +108,7 @@ import {
   AssessmentPreparationCommandV1Schema,
   AssessmentPreparationResultV1Schema,
   AssessmentInputSnapshotRefV1Schema,
+  ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1,
   AssessmentPreparationSnapshotRefV1Schema,
   ContentArtifactRefV1Schema,
   ContractReferenceV1Schema,
@@ -928,7 +929,7 @@ export class PostgresRiskAssessmentEngine
       requestedSourceVersionRefs: [...(requested?.sourceVersionRefs ?? [])],
       requestedAt: command.authorization.decidedAt,
     });
-    if (decision.context.actorId !== command.actorId) {
+    if (decision.redacted || decision.context.actorId !== command.actorId) {
       throw moduleError("AUTHORIZATION_DENIED", command.commandId, {}, capability);
     }
     return decision.context;
@@ -1116,6 +1117,8 @@ export class PostgresRiskAssessmentEngine
     readonly actorId: string;
     readonly issuedAt: string;
     readonly riskInput: AssessmentPreparationSnapshotV1["riskInput"];
+    /** 准备显式冻结的资料字段：与风险标量合并后统一经事实 Schema 复验。 */
+    readonly sourceFieldFacts: AssessmentPreparationSnapshotV1["sourceFieldFacts"];
     /**
      * 已由 `#verifyCommand` 复验的准备绑定：事实读取授权只能按这里的精确空间与来源范围签发，
      * 既不从自由请求、风险标识或最新资料推断，也不扩大调用方已获准范围。
@@ -1173,7 +1176,49 @@ export class PostgresRiskAssessmentEngine
     ) {
       throw moduleError("AUTHORIZATION_DENIED", input.commandId);
     }
-    return facts;
+    return this.#withSourceFieldFacts(input.commandId, facts, input.sourceFieldFacts);
+  }
+
+  /**
+   * 准备显式冻结的资料字段按 documentType+fieldPath 合并进风险事实：重复键或超出原事实/证据
+   * 总量按 BUSINESS_BLOCKED 收口，既不覆盖风险字段也不静默截断；无补充字段时保持原载荷。
+   */
+  #withSourceFieldFacts(
+    causalRunId: string,
+    facts: RiskInputFactsV1,
+    sourceFieldFacts: AssessmentPreparationSnapshotV1["sourceFieldFacts"],
+  ): RiskInputFactsV1 {
+    if (sourceFieldFacts === undefined || sourceFieldFacts.length === 0) return facts;
+    const fieldKey = (field: RiskInputFactsV1["fields"][number]): string =>
+      `${field.documentType}\u0000${field.fieldPath.join("\u0000")}`;
+    const keys = new Set(facts.fields.map(fieldKey));
+    const fields = [...facts.fields];
+    for (const field of sourceFieldFacts) {
+      const key = fieldKey(field);
+      if (keys.has(key)) {
+        throw moduleError("BUSINESS_BLOCKED", causalRunId, {
+          blockerKind: "risk-input-facts-field-conflict",
+          blockerRef: facts.riskInput,
+        });
+      }
+      keys.add(key);
+      fields.push(field);
+    }
+    const merged = RiskInputFactsV1Schema.safeParse({
+      ...facts,
+      fields,
+      evidenceReferences: normalizeEvidenceReferences([
+        ...facts.evidenceReferences,
+        ...sourceFieldFacts.flatMap((field) => field.evidenceReferences),
+      ]),
+    });
+    if (!merged.success) {
+      throw moduleError("BUSINESS_BLOCKED", causalRunId, {
+        blockerKind: "risk-input-facts-overflow",
+        blockerRef: facts.riskInput,
+      });
+    }
+    return merged.data;
   }
 
   async #loadBasis(input: {
@@ -2023,41 +2068,8 @@ export class PostgresRiskAssessmentEngine
         inputSnapshot.preparationSnapshotRef,
       );
       const preparation = preparationRead.preparation;
-      /**
-       * 准备快照的空间与来源身份由当前授权复验后才继续；之后只用验证后的上下文。
-       *
-       * 收窄的证明与评估上下文必须分开取得：评估要写出的决策工件以依据成员为父工件，
-       * 而依据成员的来源授权宽于准备快照的证据来源（C19 规则编制来自 C15 清洗结果）。
-       * 若把准备身份当作收窄请求交给 C06，得到的上下文装不下父工件的来源授权，C04
-       * 会在 `ARTIFACT_ACCESS_DENIED` 处关闭失败。因此这里按准备身份单独窄签一次作为
-       * 「可授予」证明，再取不收窄的评估上下文（上限仍是调用方按 branch 签发的那份），
-       * 并断言前者落在后者之内——与本文件读取路径的既有包含检查同一口径。
-       */
       const binding = this.#preparationBinding(valid.commandId, valid.authorization, preparation);
-      const preparationScoped = await this.#verifyCommand(
-        valid,
-        "risk-assessment.evaluate",
-        binding,
-      );
-      const verified = await this.#verifyCommand(valid, "risk-assessment.evaluate");
-      if (
-        !preparationScoped.spatialScopeRefs.every((ref) =>
-          verified.spatialScopeRefs.some(
-            (scope) => versionKey(scope.reference) === versionKey(ref.reference),
-          ),
-        ) ||
-        !preparationScoped.sourceAccessGrantRefs.every(
-          (ref) =>
-            ref.kind === "source-access-grant" &&
-            verified.sourceAccessGrantRefs.some(
-              (grant) =>
-                grant.kind === "source-access-grant" &&
-                versionKey(grant.reference) === versionKey(ref.reference),
-            ),
-        )
-      ) {
-        throw moduleError("AUTHORIZATION_DENIED", valid.commandId, {}, "risk-assessment.evaluate");
-      }
+      const verified = await this.#verifyCommand(valid, "risk-assessment.evaluate", binding);
       const runRef = this.#assessmentRunRef(verified, preparation, valid.commandId);
       const businessAt =
         inputRow.entry_kind === "historical-backfill" && inputRow.effective_at !== null
@@ -2069,6 +2081,7 @@ export class PostgresRiskAssessmentEngine
         actorId: verified.actorId,
         issuedAt: valid.issuedAt,
         riskInput: preparation.riskInput,
+        sourceFieldFacts: preparation.sourceFieldFacts,
         binding,
       });
       const basis = await this.#loadBasis({
@@ -2499,6 +2512,18 @@ export class PostgresRiskAssessmentEngine
     basis: LoadedBasisV1,
     assessment: DeterministicAssessmentV1,
   ): Promise<{ readonly ref: ContentArtifactRefV1; readonly digest: string }> {
+    // 决定同时继承规则来源；准备快照的风险资料范围不足以授权全部父工件。
+    const authorization = await this.#authorizeFor(
+      {
+        branch: "risk-assessment.evaluate",
+        invocationId: `${command.commandId}:decision`,
+        projectId: command.projectId,
+        actorId: command.actorId,
+        requestedAt: command.issuedAt,
+        requestedSpatialScopeRefs: verified.spatialScopeRefs,
+      },
+      "risk-assessment.evaluate",
+    );
     const parentArtifactRefs = [
       basis.applicableRuleSetMember.artifactRef,
       ...basis.scoringRuleMembers.map((member) => member.artifactRef),
@@ -2520,7 +2545,7 @@ export class PostgresRiskAssessmentEngine
           projectId: command.projectId,
           actorId: command.actorId,
           issuedAt: command.issuedAt,
-          authorization: verified,
+          authorization,
           requiredCapability: "risk-assessment.evaluate",
           artifactId: artifactRef.reference.entityId,
           artifactKind: "content",
@@ -2536,7 +2561,7 @@ export class PostgresRiskAssessmentEngine
       putRef = put.artifactRef as ContentArtifactRefV1;
     } catch (error) {
       // 并发重复：同一内容寻址工件已由另一事务登记；能按同一引用读出且摘要一致即为同一逻辑结果。
-      const handle = await this.#openDecisionArtifact(command, verified, artifactRef);
+      const handle = await this.#openDecisionArtifact(command, authorization, artifactRef);
       if (handle === undefined) throw error;
       await handle.completed;
       putRef = { kind: "content-artifact", reference: handle.manifest.artifactRef.reference };
@@ -3588,20 +3613,6 @@ export class PostgresRiskAssessmentEngine
     ) {
       throw new RiskAssessmentReadFailure(this.#readDenied(command));
     }
-    const sources = await this.#entryContext.readAuthorizedSourceVersions({
-      queryId: command.queryId,
-      projectId: command.projectId,
-      actorId: command.actorId,
-      requestedAt: command.requestedAt,
-      authorization: verified,
-      kind: "read-assessment-entry-source-versions",
-      payload: { spatialScopeRef: requestedScope ?? verified.spatialScopeRefs[0]! },
-    });
-    if (sources.kind !== "succeeded")
-      throw new RiskAssessmentReadFailure(this.#readDenied(command));
-    const allowedSources = JSON.stringify(
-      sources.result.sourceVersionRefs.map((ref) => ref.reference),
-    );
     let query = this.#db
       .selectFrom("business.risk_assessment_records as r")
       .innerJoin("business.assessment_input_snapshots as i", (join) =>
@@ -3618,12 +3629,9 @@ export class PostgresRiskAssessmentEngine
       )
       .where("r.project_id", "=", command.projectId)
       .where(sql<SqlBool>`p.spatial_scope_ref -> 'reference' ->> 'entityId' = ANY(${scopeIds})`)
-      .where(sql<SqlBool>`jsonb_typeof(p.snapshot_payload -> 'sourceEvidenceReferences') = 'array'`)
-      .where(sql<SqlBool>`NOT EXISTS (
-        SELECT 1 FROM jsonb_array_elements(p.snapshot_payload -> 'sourceEvidenceReferences') evidence
-        WHERE evidence -> 'sourceVersion' IS NULL
-           OR NOT ${allowedSources}::jsonb @> jsonb_build_array(evidence -> 'sourceVersion')
-      )`);
+      .where(
+        sql<SqlBool>`jsonb_typeof(p.snapshot_payload -> 'sourceEvidenceReferences') = 'array'`,
+      );
     if (requestedScope !== undefined)
       query = query.where(
         sql<SqlBool>`p.spatial_scope_ref = ${JSON.stringify(requestedScope)}::jsonb`,
@@ -3636,7 +3644,60 @@ export class PostgresRiskAssessmentEngine
           sql<SqlBool>`i.snapshot_payload -> 'riskMatrixRef' = ${JSON.stringify(command.payload.riskMatrixVersion)}::jsonb`,
         );
     }
-    return query;
+    if (command.payload.operation === "record-read") {
+      query = query
+        .where("r.record_id", "=", command.payload.assessmentRecordRef.reference.entityId)
+        .where("r.version_id", "=", command.payload.assessmentRecordRef.reference.versionId);
+    } else if (command.payload.operation === "resolve") {
+      query = query.where("r.record_id", "=", command.payload.entityId);
+      if (command.payload.versionId !== undefined)
+        query = query.where("r.version_id", "=", command.payload.versionId);
+    }
+    if ("riskInput" in command.payload && command.payload.riskInput !== undefined) {
+      const risk = command.payload.riskInput;
+      query = query
+        .where("r.risk_input_kind", "=", risk.kind)
+        .where(
+          risk.kind === "standardized-risk-record"
+            ? "r.risk_record_id"
+            : "r.external_risk_event_id",
+          "=",
+          risk.reference.entityId,
+        )
+        .where("p.risk_input_version_id", "=", risk.reference.versionId);
+    }
+    // 仅定位本次记录的来源元数据；权限过滤先于记录分页和SQL聚合。
+    const declared = await query
+      .select(
+        sql<unknown>`jsonb_array_elements(p.snapshot_payload -> 'sourceEvidenceReferences') -> 'sourceVersion'`.as(
+          "source",
+        ),
+      )
+      .distinct()
+      .limit(ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1 + 1)
+      .execute();
+    if (
+      declared.length > ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1 ||
+      this.#access.filterVisibleSources === undefined
+    )
+      throw new RiskAssessmentReadFailure(this.#readDenied(command));
+    const sources: SourceVersionRefV1[] = [];
+    for (const row of declared) {
+      const reference = VersionReferenceSchema.safeParse(row.source);
+      if (!reference.success) throw new RiskAssessmentReadFailure(this.#readDenied(command));
+      sources.push({ kind: "source-version", reference: reference.data });
+    }
+    const visible = await this.#access.filterVisibleSources({
+      branch: "risk-assessment.read",
+      authorization: verified,
+      sourceVersionRefs: sources,
+    });
+    const allowedSources = JSON.stringify(visible.map((ref) => ref.reference));
+    return query.where(sql<SqlBool>`NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(p.snapshot_payload -> 'sourceEvidenceReferences') evidence
+      WHERE evidence -> 'sourceVersion' IS NULL
+         OR NOT ${allowedSources}::jsonb @> jsonb_build_array(evidence -> 'sourceVersion')
+    )`);
   }
 
   #inputSnapshotKeyOf(row: {
@@ -4400,7 +4461,7 @@ export class PostgresRiskAssessmentEngine
     return readWith(await this.#artifactReadAuthorization(command, identity, verified));
   }
 
-  /** 读取身份独立签发，空间与来源上限保持调用方已复验范围。 */
+  /** 内部读取沿当前主体和空间，工件来源由C04登记限制核验。 */
   async #artifactReadAuthorization(
     command: RiskAssessmentReadQueryV1,
     invocationId: string,
@@ -4409,17 +4470,6 @@ export class PostgresRiskAssessmentEngine
   ): Promise<AuthorizationContextV1> {
     const scope = verified.spatialScopeRefs[0];
     if (scope === undefined) throw new RiskAssessmentReadFailure(this.#readDenied(command));
-    const sources = await this.#entryContext.readAuthorizedSourceVersions({
-      kind: "read-assessment-entry-source-versions",
-      queryId: command.queryId,
-      projectId: command.projectId,
-      actorId: command.actorId,
-      requestedAt: command.requestedAt,
-      authorization: verified,
-      payload: { spatialScopeRef: scope },
-    });
-    if (sources.kind !== "succeeded")
-      throw new RiskAssessmentReadFailure(this.#readDenied(command));
     const authorization = await this.#authorizeFor(
       {
         branch,
@@ -4428,20 +4478,11 @@ export class PostgresRiskAssessmentEngine
         actorId: command.actorId,
         requestedAt: command.requestedAt,
         requestedSpatialScopeRefs: verified.spatialScopeRefs,
-        requestedSourceVersionRefs: sources.result.sourceVersionRefs,
       },
       branch,
     ).catch(() => {
       throw new RiskAssessmentReadFailure(this.#readDenied(command));
     });
-    // 能力由独立 branch 签发/复验；这里只比较主体、策略、空间与来源上限。
-    if (
-      !isAuthorizationSubset(
-        { ...verified, grantedCapabilities: authorization.grantedCapabilities },
-        authorization,
-      )
-    )
-      throw new RiskAssessmentReadFailure(this.#readDenied(command));
     return authorization;
   }
 

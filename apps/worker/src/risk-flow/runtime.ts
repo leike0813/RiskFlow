@@ -450,11 +450,35 @@ const assertResumeReferences = (input: {
     if (!accepted) blocked("human-decision-reference-mismatch");
     return matched;
   }
-  if (humanDecisionWaitings.length > 0 && input.cursor.status === "waiting") {
+  if (input.cursor.status === "waiting" && input.cursor.lastWaitingRef?.kind === "human-decision") {
     // 人工采纳事实成立前，等待中的预测运行不接受任何其它恢复原因（design D2）。
     blocked("human-decision-pending");
   }
   switch (input.cause.kind) {
+    case "agent-task-completed": {
+      const waiting = input.cursor.lastWaitingRef;
+      if (
+        input.cursor.stage === "assessment" &&
+        input.cursor.status === "waiting" &&
+        (waiting?.kind !== "agent-task" ||
+          !sameReference(waiting.agentTaskRef, input.cause.agentTaskResultRef.agentTaskRef))
+      )
+        blocked("agent-task-waiting-reference-mismatch");
+      return;
+    }
+    case "agent-task-failed": {
+      const waiting = input.cursor.lastWaitingRef;
+      if (
+        input.cursor.stage !== "identification" ||
+        input.cursor.identificationRunRef === undefined ||
+        (input.cursor.status !== "waiting" && input.cursor.status !== "retryable-failure") ||
+        (input.cursor.status === "waiting" &&
+          (waiting?.kind !== "agent-task" ||
+            !sameReference(waiting.agentTaskRef, input.cause.agentTaskRef)))
+      )
+        blocked("agent-task-waiting-reference-mismatch");
+      return;
+    }
     case "business-preparation-ready": {
       const waiting = input.cursor.lastWaitingRef;
       if (
@@ -663,6 +687,8 @@ const resumeValueOfCause = (cause: ResumeCauseV1): RiskFlowResumeValueV1 => {
       return { kind: cause.kind, preparationRef: cause.preparationRef };
     case "agent-task-completed":
       return { kind: cause.kind, agentTaskResultRef: cause.agentTaskResultRef };
+    case "agent-task-failed":
+      return { kind: cause.kind, agentTaskRef: cause.agentTaskRef };
     case "review-resolved":
       return { kind: cause.kind, reviewDecisionRef: cause.reviewDecisionRef };
     case "identification-preparation-ready":
@@ -1024,8 +1050,9 @@ export const createRiskFlowGraphRuntime = (
       graphVersion: cursorBefore.graphVersion ?? provisional.graphVersion,
       frozenRefs,
       pairing: pairingsFromRowsV1(rows),
-      ...(command.resumeCause.kind === "business-preparation-ready"
-        ? { businessPreparationResume: command.resumeCause }
+      ...(command.resumeCause.kind === "business-preparation-ready" ||
+      command.resumeCause.kind === "agent-task-completed"
+        ? { assessmentResumeCause: command.resumeCause }
         : {}),
       ...(primaryRiskRef === undefined ? {} : { primaryRiskRef }),
       ...(resumePreparation === undefined
@@ -1041,16 +1068,18 @@ export const createRiskFlowGraphRuntime = (
               agentTaskResultRef: command.resumeCause.agentTaskResultRef,
             },
           }
-        : command.resumeCause.kind === "review-resolved"
-          ? {
-              identificationResumeCause: {
-                kind: "review-resolved" as const,
-                reviewDecisionRef: command.resumeCause.reviewDecisionRef,
-              },
-            }
-          : command.resumeCause.kind === "transient-recovered"
-            ? { identificationResumeCause: { kind: "transient-recovered" as const } }
-            : {}),
+        : command.resumeCause.kind === "agent-task-failed"
+          ? { identificationResumeCause: command.resumeCause }
+          : command.resumeCause.kind === "review-resolved"
+            ? {
+                identificationResumeCause: {
+                  kind: "review-resolved" as const,
+                  reviewDecisionRef: command.resumeCause.reviewDecisionRef,
+                },
+              }
+            : command.resumeCause.kind === "transient-recovered"
+              ? { identificationResumeCause: { kind: "transient-recovered" as const } }
+              : {}),
     };
     if (command.bindIdentificationPreparation && cursorBefore.status === "cancelled") {
       throw runFailure({
@@ -1357,7 +1386,8 @@ export const createRiskFlowGraphRuntime = (
       invocation:
         command.resumeCause.kind === "transient-recovered" ||
         (cursorBefore.status === "retryable-failure" &&
-          command.resumeCause.kind === "agent-task-completed")
+          (command.resumeCause.kind === "agent-task-completed" ||
+            command.resumeCause.kind === "agent-task-failed"))
           ? { kind: "retry", state: checkpointState }
           : provable
             ? { kind: "recover", state: checkpointState, completedNode: checkpointState.stage }

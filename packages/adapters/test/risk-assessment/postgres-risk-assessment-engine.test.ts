@@ -74,13 +74,154 @@ describe("C25 PostgreSQL risk assessment engine", () => {
   }, 60_000);
 
   /** 每个用例冻结自己的准备快照，使输入快照身份互不相同。 */
-  const freshPreparation = async (suffix: string) =>
+  const freshPreparation = async (suffix: string, sourceFieldFacts?: unknown) =>
     fixture.freezePreparation({
       suffix,
       entryMode: "assess",
       triggerReasonCode: `test-${suffix}`,
       monitoringSnapshotRefs: fixture.monitoringSnapshotRefs,
+      ...(sourceFieldFacts === undefined ? {} : { sourceFieldFacts }),
     });
+
+  it("当前身份检查不携资料授权增量时仍按准备和实际输入权限评估", async () => {
+    const preparation = await freshPreparation("current-evaluate-scope");
+    const prepared = await fixture.engine.prepare(
+      (await fixture.prepareCommand({
+        commandId: "c25-current-evaluate-prepare",
+        preparation,
+      })) as never,
+    );
+    expect(prepared.kind).toBe("succeeded");
+    if (prepared.kind !== "succeeded") throw new Error("preparation required");
+    const command = await fixture.evaluateCommand({
+      commandId: "c25-current-evaluate",
+      inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+    });
+    const verify = fixture.postgres.access.verify.bind(fixture.postgres.access);
+    const spy = vi.spyOn(fixture.postgres.access, "verify").mockImplementation(async (request) => {
+      const decision = await verify(request);
+      return request.branch === "risk-assessment.evaluate" &&
+        request.requestedSourceVersionRefs.length === 0
+        ? { ...decision, context: { ...decision.context, sourceAccessGrantRefs: [] } }
+        : decision;
+    });
+    try {
+      const result = await fixture.engine.evaluate(command as never);
+      expect(result.kind).toBe("succeeded");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("准备冻结的资料字段参与取值且不覆盖风险事实", async () => {
+    // 识别 owner reader 只拥有风险标量（模型/综合置信度也在其中）：施工与地质取值只能来自准备。
+    const field = (documentType: string, fieldPath: readonly string[], value: string | number) => ({
+      documentType,
+      fieldPath,
+      value,
+      evidenceReferences: [fixture.evidenceReference],
+    });
+    const riskOnlyFacts = (fields: readonly unknown[]) => ({
+      schemaVersion: "1",
+      projectId: fixture.projectId,
+      riskInput: C25_FIXTURE_RISK_RECORD_REF,
+      fields: [...fields],
+      evidenceReferences: [fixture.evidenceReference],
+    });
+    const evaluate = async (suffix: string, preparation: unknown) => {
+      const prepared = await fixture.engine.prepare(
+        (await fixture.prepareCommand({
+          commandId: `c25-prepare-${suffix}`,
+          preparation: preparation as never,
+        })) as never,
+      );
+      expect(prepared).toMatchObject({ kind: "succeeded" });
+      if (prepared.kind !== "succeeded") throw new Error("preparation required");
+      return fixture.engine.evaluate(
+        (await fixture.evaluateCommand({
+          commandId: `c25-evaluate-${suffix}`,
+          inputSnapshotRef: prepared.result.assessmentInputSnapshotRef,
+        })) as never,
+      );
+    };
+    const recordsBefore = await countRows(
+      fixture,
+      "business.risk_assessment_records",
+      fixture.projectId,
+    );
+    try {
+      // 原输入没有工程取值：不补充字段时按原指标映射闭合失败，任何置信度都不顶替。
+      fixture.setFacts(
+        riskOnlyFacts([
+          field("standardized-risk-record", ["record", "riskSource"], "risk-source"),
+          field("standardized-risk-record", ["record", "modelConfidence"], 0.42),
+          field("standardized-risk-record", ["compositeConfidence", "value"], 0.88),
+        ]),
+      );
+      const bare = await evaluate("risk-only", await freshPreparation("risk-only"));
+      expect(bare).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+      expect(JSON.stringify(bare)).toContain("risk-assessment-indicator-missing");
+
+      // 同一输入补充显式冻结的施工/地质字段：评估按既有确定性期望成立。
+      const evaluated = await evaluate(
+        "source-field-facts",
+        await freshPreparation("source-field-facts", [
+          field("geology-report", ["strata", "layer", "gradeIndex"], 2),
+          field("design-report", ["support", "pressure"], 30),
+        ]),
+      );
+      expect(evaluated).toMatchObject({ kind: "succeeded" });
+      if (evaluated.kind !== "succeeded") return;
+      const record = await fixture.postgres.postgres.adminPool.query<{
+        record_payload: {
+          likelihoodScore: number;
+          consequenceScore: number;
+          riskLevel: string;
+        };
+      }>("SELECT record_payload FROM business.risk_assessment_records WHERE record_id = $1", [
+        evaluated.result.assessmentRecordRef.reference.entityId,
+      ]);
+      expect(record.rows[0]!.record_payload).toMatchObject({
+        likelihoodScore: 1.4,
+        consequenceScore: 3,
+        riskLevel: "level-2",
+      });
+
+      // 重复键与总量越界：明确 BUSINESS_BLOCKED，既不覆盖风险字段也不静默截断。
+      fixture.setFacts(
+        riskOnlyFacts([field("geology-report", ["strata", "layer", "gradeIndex"], 2)]),
+      );
+      const conflicted = await evaluate(
+        "field-conflict",
+        await freshPreparation("field-conflict", [
+          field("geology-report", ["strata", "layer", "gradeIndex"], 2),
+        ]),
+      );
+      expect(conflicted).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+      expect(JSON.stringify(conflicted)).toContain("risk-input-facts-field-conflict");
+
+      fixture.setFacts(
+        riskOnlyFacts(
+          Array.from({ length: 1024 }, (_, index) =>
+            field("standardized-risk-record", ["record", `field-${index}`], index),
+          ),
+        ),
+      );
+      const overflowed = await evaluate(
+        "field-overflow",
+        await freshPreparation("field-overflow", [
+          field("design-report", ["support", "pressure"], 30),
+        ]),
+      );
+      expect(overflowed).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+      expect(JSON.stringify(overflowed)).toContain("risk-input-facts-overflow");
+      expect(await countRows(fixture, "business.risk_assessment_records", fixture.projectId)).toBe(
+        recordsBefore + 1,
+      );
+    } finally {
+      fixture.resetFacts();
+    }
+  }, 180_000);
 
   it("checkpoint 证明精确输入/记录与准备绑定且不产生读取事实", async () => {
     const preparation = await freshPreparation("checkpoint");
@@ -2121,7 +2262,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       );
       expect(denied).toMatchObject({
         kind: "succeeded",
-        result: { recordedAssessmentCount: 0, riskLevelCounts: [] },
+        result: { recordedAssessmentCount: initialOverview.result.recordedAssessmentCount + 5001 },
       });
       const sqlMeasurements = await Promise.all(
         sqlReads.mock.results.map(async (result, index) => {
@@ -2241,6 +2382,31 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     });
     const factsBefore = await storedFactsText(assessed.assessmentRecordRef);
     const scores = await storedScores(assessed.assessmentRecordRef);
+
+    const emptyIncrementQuery = await entryReadQuery({
+      queryId: "c25-record-empty-increment",
+      sourceVersionRefs: [],
+      payload: { operation: "record-read", assessmentRecordRef: assessed.assessmentRecordRef },
+    });
+    expect(emptyIncrementQuery.authorization.sourceAccessGrantRefs).toEqual([]);
+    expect(
+      await fixture.postgres.access.filterVisibleSources!({
+        branch: "risk-assessment.read",
+        authorization: emptyIncrementQuery.authorization,
+        sourceVersionRefs: [fixture.sourceVersionRef],
+      }),
+    ).toEqual([fixture.sourceVersionRef]);
+    await expect(
+      fixture.postgres.access.filterVisibleSources!({
+        authorization: emptyIncrementQuery.authorization,
+        sourceVersionRefs: [fixture.sourceVersionRef],
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+    const emptyIncrementRead = await fixture.engine.read(emptyIncrementQuery);
+    expect(emptyIncrementRead, JSON.stringify(emptyIncrementRead)).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "record-read", assessmentRecordRef: assessed.assessmentRecordRef },
+    });
 
     const catalog = await fixture.engine.read(
       await entryReadQuery({

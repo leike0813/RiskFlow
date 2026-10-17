@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   DataCleaningResultV1Schema,
@@ -163,6 +163,8 @@ describe("C15 PostgreSQL data cleaning store", () => {
   afterAll(async () => {
     await fixture?.close();
   }, 60_000);
+
+  afterEach(() => vi.restoreAllMocks());
 
   const projectCounts = async (projectId: string): Promise<ProjectCountsV1> => {
     const result = await fixture.postgres.adminPool.query<ProjectCountsV1>(
@@ -2406,6 +2408,14 @@ describe("C15 PostgreSQL data cleaning store", () => {
       candidate: { exclusions: [] },
     });
     const before = await requireTaskSnapshot(world.pipeline, completed.taskRef);
+    const verify = fixture.access.verify.bind(fixture.access);
+    const verification = vi.spyOn(fixture.access, "verify").mockImplementation(async (request) => {
+      const decision = await verify(request);
+      return request.branch === "engineering-data.complete-identification-preparation" &&
+        request.requestedSourceVersionRefs.length === 0
+        ? { ...decision, context: { ...decision.context, sourceAccessGrantRefs: [] } }
+        : decision;
+    });
     const make = async (id: string) => ({
       commandId: id,
       idempotencyKey: id,
@@ -2481,6 +2491,17 @@ describe("C15 PostgreSQL data cleaning store", () => {
       kind: "failed",
       error: { code: "AUTHORIZATION_DENIED" },
     });
+    const redacted = await make("completion-redacted");
+    verification.mockImplementationOnce(async (request) => ({
+      ...(await verify(request)),
+      redacted: true,
+    }));
+    expect(
+      await world.pipeline.store.completeIdentificationPreparation(
+        redacted,
+        world.pipeline.agentTaskAdapter,
+      ),
+    ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
     const fake = await make("completion-wrong-task");
     expect(
       await world.pipeline.store.completeIdentificationPreparation(

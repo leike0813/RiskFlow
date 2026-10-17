@@ -71,6 +71,7 @@ import {
   WorkflowRunStageV1Schema,
   AssessmentRunProjectionV1Schema,
   workflowGraphInvocationIdV1,
+  workflowEntryIdentityFor,
   type AssessmentEntryMetadataV1,
   type AssessmentEntriesReadPortV1,
   type AssessmentRunProjectionV1,
@@ -853,7 +854,6 @@ class WorkflowGraphPersistence {
     const parsed = workflowGraphResultRowFromDb(row);
     if (
       parsed.actorRef !== input.actorId ||
-      parsed.authorizationScopeDigest !== authorizationScopeDigest(verified) ||
       parsed.artifactRef === undefined ||
       parsed.threadId === undefined ||
       this.#runBindingProof === undefined ||
@@ -900,6 +900,30 @@ class WorkflowGraphPersistence {
       },
     );
     if (!valid) throw new TypeError("WORKFLOW_EVENT_STATE_UNPROVEN");
+    if (state === undefined) throw new TypeError("WORKFLOW_EVENT_STATE_UNPROVEN");
+    // 执行批次参与运行身份；空间事实来自 preparing 阶段冻结的业务入口。
+    const entries = await this.#db
+      .selectFrom(RESULTS_TABLE)
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("run_id", "=", runRef.reference.entityId)
+      .where("result_kind", "=", "entry-snapshot")
+      .where("stage", "=", "preparing")
+      .limit(2)
+      .execute();
+    if (entries.length !== 1) throw new TypeError("WORKFLOW_EVENT_ENTRY_UNPROVEN");
+    const entry = workflowGraphResultRowFromDb(entries[0]!);
+    const scopes = entry.frozenRefs.filter((ref) => ref.kind === "spatial-scope");
+    if (
+      entry.actorRef !== input.actorId ||
+      entry.threadId !== parsed.threadId ||
+      entry.entryMode !== state.entryMode ||
+      scopes.length === 0 ||
+      !scopes.every((scope) =>
+        verified.spatialScopeRefs.some((ref) => isDeepStrictEqual(ref, scope)),
+      )
+    )
+      throw new TypeError("WORKFLOW_EVENT_SCOPE_UNPROVEN");
     return state;
   }
 
@@ -926,8 +950,7 @@ class WorkflowGraphPersistence {
       if (
         link.runId !== runRef.reference.entityId ||
         link.actorRef !== input.actorId ||
-        link.sourceStage !== "identification" ||
-        link.authorizationScopeDigest !== authorizationScopeDigest(verified)
+        link.sourceStage !== "identification"
       )
         throw new TypeError("WORKFLOW_EVENT_PARENT_UNPROVEN");
     }
@@ -972,7 +995,6 @@ class WorkflowGraphPersistence {
     });
     if (
       stageResult?.actorRef !== input.actorId ||
-      stageResult.authorizationScopeDigest !== authorizationScopeDigest(verified) ||
       !isDeepStrictEqual(stageResult.stageResultRef, state.lastStageResultRef)
     )
       return false;
@@ -1013,7 +1035,6 @@ class WorkflowGraphPersistence {
       const entry = workflowGraphResultRowFromDb(rows[0]!);
       return (
         entry.actorRef === input.actorId &&
-        entry.authorizationScopeDigest === authorizationScopeDigest(verified) &&
         (await progressedAfter(entry)) &&
         isDeepStrictEqual(entry.frozenRefs, [input.cause.identificationPreparationSnapshotRef])
       );
@@ -1036,11 +1057,7 @@ class WorkflowGraphPersistence {
     });
     // 子图返回时父图可能已纳入该风险；正式状态与精确链边同样证明输入已消费。
     if (route === undefined) return true;
-    return (
-      route.actorRef === input.actorId &&
-      route.authorizationScopeDigest === authorizationScopeDigest(verified) &&
-      route.routeKind === "risk-record-accepted"
-    );
+    return route.actorRef === input.actorId && route.routeKind === "risk-record-accepted";
   }
 
   async verifyCheckpointDomainReference(
@@ -1234,7 +1251,20 @@ class WorkflowGraphPersistence {
       .execute();
     if (rows.length !== 1) return undefined;
     const row = workflowGraphResultRowFromDb(rows[0]!);
-    if (row.authorizationScopeDigest !== authorizationScopeDigest(verified)) return undefined;
+    if (row.artifactRef === undefined) return undefined;
+    const body = await this.#openBody({
+      projectId: input.projectId,
+      artifactRef: row.artifactRef,
+      actorId: input.actorId,
+      requestedAt: input.requestedAt,
+      authorization: verified,
+    });
+    if (
+      body?.bodyKind !== "run-state" ||
+      body.runState.projectId !== input.projectId ||
+      body.runState.runId !== input.runId
+    )
+      return undefined;
     const ref = row.inputSnapshotRef;
     const entry =
       ref?.kind === "assessment-preparation-snapshot"
@@ -1720,7 +1750,20 @@ class WorkflowGraphPersistence {
         if (state.entryMode !== entryRow.entryMode) {
           return failed("assessment-entry-mode-mismatch");
         }
-        if (!sameVersion(state.entryIdentity, entryRow.entryIdentity)) {
+        if (
+          !sameVersion(
+            state.entryIdentity,
+            workflowEntryIdentityFor({
+              projectId: input.projectId,
+              entryMode: entryRow.entryMode,
+              frozenRefs: entryRow.frozenRefs,
+              reassessmentEntry: state.reassessmentEntry,
+            }),
+          ) ||
+          (entryRow.inputSnapshotRef !== undefined &&
+            (!("reference" in entryRow.inputSnapshotRef) ||
+              !sameVersion(entryRow.entryIdentity, entryRow.inputSnapshotRef.reference)))
+        ) {
           return failed("assessment-entry-identity-mismatch");
         }
         if (!state.assessmentRecordRefs.some((ref) => sameRef(ref, assessmentRecordRef))) {
@@ -1844,7 +1887,6 @@ class WorkflowGraphPersistence {
         parentRunRef: input.workflowRunRef,
         parentState: state,
         requested: input.assessmentRunRef,
-        scopeDigest: row.authorizationScopeDigest,
         verified,
         requestedAt: input.requestedAt,
       });
@@ -1855,13 +1897,11 @@ class WorkflowGraphPersistence {
           ? await this.#runStages({
               projectId: input.projectId,
               runId,
-              scopeDigest: target.scopeDigest,
             })
           : target.stages;
       const references = await this.#runReferences({
         projectId: input.projectId,
         runId: target.runId,
-        scopeDigest: target.scopeDigest,
         resultCursor: input.resultCursor,
         reviewTaskCursor: input.reviewTaskCursor,
       });
@@ -1912,7 +1952,6 @@ class WorkflowGraphPersistence {
     readonly parentRunRef: WorkflowRunRefV1;
     readonly parentState: WorkflowGraphRunStateV1;
     readonly requested: WorkflowRunRefV1 | undefined;
-    readonly scopeDigest: string;
     readonly verified: AuthorizationContextV1;
     readonly requestedAt: string;
   }): Promise<
@@ -1921,7 +1960,6 @@ class WorkflowGraphPersistence {
     | {
         readonly kind: "ok";
         readonly runId: string;
-        readonly scopeDigest: string;
         readonly selectedAssessmentRunRef: WorkflowRunRefV1 | undefined;
         readonly stages: readonly AssessmentRunStageV1[] | undefined;
       }
@@ -1936,7 +1974,6 @@ class WorkflowGraphPersistence {
         childRunId: requested.reference.entityId,
         parentRunRef: input.parentRunRef,
         childRunRef: requested,
-        scopeDigest: input.scopeDigest,
       });
       if (childLink !== true) return { kind: "denied" };
       const child = await this.#latestRunStateWith({
@@ -1949,12 +1986,10 @@ class WorkflowGraphPersistence {
       return {
         kind: "ok",
         runId: requested.reference.entityId,
-        scopeDigest: child.row.authorizationScopeDigest,
         selectedAssessmentRunRef: requested,
         stages: await this.#runStages({
           projectId: input.projectId,
           runId: requested.reference.entityId,
-          scopeDigest: child.row.authorizationScopeDigest,
         }),
       };
     }
@@ -1963,7 +1998,6 @@ class WorkflowGraphPersistence {
       return {
         kind: "ok",
         runId: input.parentRunId,
-        scopeDigest: input.scopeDigest,
         selectedAssessmentRunRef: undefined,
         stages: undefined,
       };
@@ -1975,7 +2009,6 @@ class WorkflowGraphPersistence {
       childRunId: only.reference.entityId,
       parentRunRef: input.parentRunRef,
       childRunRef: only,
-      scopeDigest: input.scopeDigest,
     });
     if (childLink !== true) return { kind: "denied" };
     const child = await this.#latestRunStateWith({
@@ -1988,12 +2021,10 @@ class WorkflowGraphPersistence {
     return {
       kind: "ok",
       runId: only.reference.entityId,
-      scopeDigest: child.row.authorizationScopeDigest,
       selectedAssessmentRunRef: only,
       stages: await this.#runStages({
         projectId: input.projectId,
         runId: only.reference.entityId,
-        scopeDigest: child.row.authorizationScopeDigest,
       }),
     };
   }
@@ -2005,7 +2036,6 @@ class WorkflowGraphPersistence {
     readonly childRunId: string;
     readonly parentRunRef: WorkflowRunRefV1;
     readonly childRunRef: WorkflowRunRefV1;
-    readonly scopeDigest: string;
   }): Promise<boolean> {
     const rows = await this.#db
       .selectFrom(LINKS_TABLE)
@@ -2013,7 +2043,6 @@ class WorkflowGraphPersistence {
       .where("project_id", "=", input.projectId)
       .where("run_id", "in", [input.parentRunId, input.childRunId])
       .where("relation", "=", "parent-child")
-      .where("authorization_scope_digest", "=", input.scopeDigest)
       .where(sql<SqlBool>`from_ref = ${JSON.stringify(input.parentRunRef)}::jsonb`)
       .where(sql<SqlBool>`to_ref = ${JSON.stringify(input.childRunRef)}::jsonb`)
       .limit(1)
@@ -2025,7 +2054,6 @@ class WorkflowGraphPersistence {
   async #runStages(input: {
     readonly projectId: string;
     readonly runId: string;
-    readonly scopeDigest: string;
   }): Promise<readonly AssessmentRunStageV1[]> {
     const rows = await this.#db
       .selectFrom(RESULTS_TABLE)
@@ -2033,7 +2061,6 @@ class WorkflowGraphPersistence {
       .where("project_id", "=", input.projectId)
       .where("run_id", "=", input.runId)
       .where("result_kind", "=", "stage-result")
-      .where("authorization_scope_digest", "=", input.scopeDigest)
       .distinctOn("stage")
       .orderBy("stage", "asc")
       .orderBy("recorded_at", "desc")
@@ -2055,11 +2082,10 @@ class WorkflowGraphPersistence {
     });
   }
 
-  /** 结果与复核任务引用有界分页：游标是偏移游标，绑定到当前授权摘要。 */
+  /** 当前受权精确运行的结果与复核任务引用有界分页。 */
   async #runReferences(input: {
     readonly projectId: string;
     readonly runId: string;
-    readonly scopeDigest: string;
     readonly resultCursor: string | undefined;
     readonly reviewTaskCursor: string | undefined;
   }): Promise<
@@ -2086,7 +2112,6 @@ class WorkflowGraphPersistence {
         .select(["result_kind", "run_result_ref", "stage_result_ref", "waiting_ref"])
         .where("project_id", "=", input.projectId)
         .where("run_id", "=", input.runId)
-        .where("authorization_scope_digest", "=", input.scopeDigest)
         .orderBy("recorded_at", "asc")
         .orderBy("result_id", "asc");
     const resultRows = await ordered()

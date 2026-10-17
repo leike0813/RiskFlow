@@ -20,6 +20,28 @@ IP-17–IP-22 不与前置 IP 混淆。顺序为 IP-17 → IP-18/IP-19 → IP-20
 
 ## 2. 复用与接缝
 
+D-117纳入IP-19/IP-21：adapters scoring-rules/postgres-scoring-rules-adapter.ts及既有同名test，包配置读取ID按本次授权/时刻与包引用共同派生，既有C18当前读/幂等不变；扩当前不同调用重复准备回归。工程后先无修订写诊断、再新正式命令，不改旧回执/版本/预算。
+
+D-116生产装配补充：scripts/deployment/start.mjs及entrypoints.test.mjs新增原C07冲突review linker，当前分支/调用身份签发、精确关系投影与原策略引用，失败无link、重投幂等。无新增模块/依赖/迁移。
+
+D-116纳入IP-19/IP-21：core scoring-rules/validation.ts及既有scoring-rules.test.ts，adapters scoring-rules/postgres-scoring-rules-adapter.ts及既有同名test，配置包审核前幂等补冲突链接；同ruleId明确候选替换声明基线时保留候选，仍强制C07逐项批准。不同规则原优先级保持，旧关系/修订不改。无公开DTO/依赖/迁移，工程后新修订和真实复核发布。
+
+D-115纳入IP-19/IP-21：contracts/src/records/index.ts删除全域等级拒绝，既有contract-kernel及core/test/scoring-rules/scoring-rules.test.ts覆盖Schema、离散等值/未声明值/类型及全域重叠；复用原统一求值，不改评分阈值/分值。同步评分delta，工程验证及新制品后续D-114审核发布。
+
+D-114纳入IP-17/IP-19合成输入修正：仅design/IP/handoff/证据及实例新规则CSV、登记/转换/包/候选/复核/发布与新准备回执。等级区间按design D-114，原阈值/分值及配置保持，复用C11/C19及统一求值器自检；无源码/依赖/迁移。正式新版本发布后再assess，旧失败与规则版本不变。
+
+D-113纳入IP-19/IP-21：worker/src/assessment/graph.ts及既有runtime.test.ts，修正D-112直接复用为当前核验后经C11幂等冻结本次带运行因果的准备。复用同一冻结路径及完整原字段/证据/监测；不新增公开字段、依赖、迁移。匹配只冻结一次、错绑定零效果、原路线回归，工程检查后新制品和新正式输入再assess，保留旧终态/预算。
+
+D-112纳入IP-17/IP-19/IP-21：文件范围与公开契约/边界见design D-112。contracts统一sourceFieldFacts数组与可选正式准备引用，core workflow门禁将准备纳入入口；C11冻结和回读真实字段/证据，C25合并准备输入而不扩风险记录，A0当前核验精确准备并复用。复用RiskInputFactFieldV1、C11证据/权限/C04/幂等、C25确定性取值；无新依赖/迁移。对应工程资料实际取值、评估准备重放/当前授权及精确入口场景。先契约/所属模块红绿及最小关联回归，再工程门禁、效果屏障和正式原资料值输入，原失败/预算/记录不改，不重复识别。
+
+D-111纳入IP-17/IP-19输入范围：仅当前design/IP/handoff/证据与实例d111-monitoring-inputs新CSV/manifest、metadata/source/conversion/样本工件、五序列/策略及正式batch/snapshot回执。实际数值以design D-111为准，复用D-89/D-91原生产入口与原生解析/监测Schema；无源码/依赖/迁移/主规格变化。验证80格来源一致、五series/策略Schema、正式回执重放与快照稳定，原D-91快照及评分阈值不改；六类齐备仍不替代source-field事实与正式评估终态。
+
+D-110纳入IP-19/IP-21：仅packages/adapters/src/risk-assessment/engine/postgres-risk-assessment-engine.ts和既有同名测试。evaluate复用准备范围当前C06上下文，删除与空资料身份增量的包含比较，明确拒绝redacted，保留所属输入/工件/提交前校验。对应确定性评估当前授权及事务场景。先红后绿，engine/风险事实/部署assessment-composition回归、build/typecheck/lint/format/deps/strict/diff，原冻结输入效果屏障探针先于正式新assess入口；原父子终态/准备/依据/输入和识别结果不改，不重开识别批次，无新依赖/迁移/公开DTO。
+
+D-109纳入IP-17/IP-19/IP-21：仅packages/core/src/identification/candidate-finalization/service.ts与既有core候选测试、packages/adapters/src/identification/read/postgres-standardized-risk-input-facts-reader.ts与既有test/risk-assessment/postgres-risk-input-facts-reader.test.ts。C22登记来源与真实证据精确并集，reader由同条不可变登记推导并集、沿64项原上限并复验C06非redacted当前权限。对应正式风险事实投影/权限与追溯场景。先红后绿，运行核心候选、风险事实reader、部署配对测试，build/typecheck/lint/format/strict/diff；原首记录窄读和配对验证零业务写后，原C24正式resume，父终态保持，评估仅引用原正式记录的新assess-existing-risk入口。无新依赖/迁移/公开DTO。
+
+D-108纳入IP-19/IP-21：修改packages/core/src/identification/candidate-finalization/{ports,service}.ts、packages/adapters/src/identification/candidate-finalization/postgres-risk-candidate-adapter.ts、apps/worker/src/identification/graph/graph.ts及既有core/test/identification/candidate-finalization.test.ts、adapter对应测试、worker graph fixture.ts/runtime.test.ts。内部写入结果携实际新增ID，混合批次校验旧摘要后只发新事件，回滚语义不依赖C03保留异常类，C24按精确引用去重；对应标准化风险记录与评估事件原子成立及分批复核场景。先红后绿，运行上述三套测试和nested-boundary、build/typecheck/lint/format/strict/diff，再原批次正式恢复并核对两条决定/首条记录不变、事件与记录各一次。无新依赖、迁移或公开DTO。
+
 D-96纳入IP-19/IP-21，沿D-95四文件：runner内部模型步可选outputSchema交给原网关且保留registry复验，C15用冻结资料/快照精确引用收紧原动作Schema。测试验证真实资料引用通过、清单工件/其它来源/错版本/越界offset/未登记工具与无快照动作拒绝，以及runner使用收紧Schema而不跳过原解析。同步design/清洗delta/进度证据/handoff，实例清洗策略显式绑定同模型的function-call部署并升精确引用，数值预算/工具/质量不变。工程回归通过后先一次原冻结首步诊断止于工具/领域写入前，再正式新任务；旧v101失败保持。
 
 D-95纳入IP-19/IP-21：Worker agent-runtime/runner.ts的内部模型步上下文和已完成工具事实重建，engineering-data/cleaning/runtime.ts的有界completedReads投影；仅扩对应既有两份runtime/runner测试。同步design、当前清洗与Agent局部delta、handoff及新增evidence/cleaning-read-progress-2026-10-16.md；实例新清洗policy/prompt/budget精确引用数值不变。先证明两个读取事实保留和恢复不重执行，再验证三来源精确分页/段/样本边界、未知/超限拒绝及原预算计量，运行两套/关联回归、build/typecheck/lint/format/deps/strict/diff。旧失败不恢复，原来源新任务另记正式证据，不新增依赖/HTTP/迁移或第二记忆。
@@ -29,6 +51,20 @@ D-94纳入IP-17/IP-19：源码仅provision.mjs的监测两步骤授权分支选�
 D-93纳入IP-17/IP-19输入配置范围：仅当前design/proposal/handoff、evidence/monitoring-longitudinal-2026-10-16.md和实例新策略目录/部署/发布/制品/清洗脚本与回执。新清洗版本补三份原生CSV实际质量引用、requiredSegmentKinds=table，保护类型和三个100%门槛、工具/模型/预算不变，精确差异按design。复用现有DataCleaningPolicyV1Schema及清洗纯函数/已有测试，原五资料快照不重复清洗。核对真实转换和段、Schema/确定性自检/strict/diff、同制品比较后以新命令发起新CSV任务；旧422保留。不改源码、主规格或用户资料。
 
 D-92纳入IP-17/IP-19/IP-21实例配置范围：同步design/proposal/handoff、evidence/minimax-function-call-2026-10-16.md及新增evidence/confidence-policy-2026-10-16.md。实例新增置信度缺项策略及精确关联策略版本、目录/部署/发布/制品，正文差异限design D-92；复用原核心calculateCompositeConfidence/forcedReviewReasonFor与当前授权的C04读取，不改源码或主规格。先只读原v97全部分组/校验集并证明新策略可计算、未参与依据不伪造、强制人工复核保持；旧策略同输入仍应阻断。既有Schema自检、相关核心置信度回归、strict/diff、制品身份比较后切换正常生产宿主。独立新批次正式继续，旧终态/预算不重写，不自动连续重开运行。
+
+D-101纳入IP-19原C17文件范围：只改identification-knowledge/postgres-identification-knowledge-adapter.ts及其既有测试。旧发布条目补登记分支通过原#authorize签发identification-basis，精确调用原readExact，原hybrid授权保留给可见来源过滤。已有用例模拟旧发布空投影，先验证拒权零登记，再验证合法重建/重复读取和原批准正文一致；保留未知发布/撤权覆盖。新制品先对真实旧发布有界取证，不恢复v106父子终态，不把工程回归计完整业务PASS。与design D-101及减负D-05旧发布条目语义对应，无公共契约、依赖或迁移变化。
+
+D-102纳入IP-19原C24图与runtime测试/fixture范围：submitGroupAcceptance无已决引用时本轮零收口，沿现有pendingGroupRefs与human-review等待。fixture的finalize按生产Schema解析，新全待定用例先红，再回归完整runtime与nested-boundary、C22候选收口。对应主规格识别仍有待复核组不得完成的Scenario，不改公开accept-groups契约或人工决定。保留v107五项I5、I6、I7与复核任务及终态，原模型预算不改。
+
+D-103纳入IP-19已有C24 adapter及测试范围：validatedCandidateSetRefsFor以I5.failedCandidateSetRef判别失败资格，只返回成功结果；不按引用前缀判断。扩展原精确C21/C22读用例混合成功/失败I5，先红后绿，并回归adapter与C22合并契约。真实v108工作计划投影与游标三份成功集合只读对账，保留两个失败项、原终态和严格整集校验。与主规格失败工作项不阻止其它合格工作项处理的行为对齐，无公共契约或依赖/迁移变化。
+
+D-104纳入IP-19已有C21 runtime及其既有runtime.test.ts范围：只在可信渲染的outputSchema中以受权当前集合引用/版本收紧原动作生成Schema；补搜后取当前版本，不改interpret、registry动作Schema或成员/证据/权限校验。父Agent实现，辅助implementer只持有单测试文件，覆盖当前值合法、错绑定拒绝与补搜版本；生产回归后原v109冻结输入一次诊断，不推进旧任务。关联design D-104和检索审阅有界输入要求，不增加公开字段/依赖/迁移或模型预算。
+
+D-105经用户批准纳入IP-19：packages/contracts/src/ports/index.ts与test/contract-kernel.test.ts新增strict agent-task-failed原因（仅retrieval-review/embedded精确taskRef）；packages/core/src/identification/graph/ports.ts、apps/worker/src/identification/graph/{graph,runtime}.ts与risk-flow/{graph,runtime}.ts接C30转交和C24精确终态/身份/等待绑定，复用既有C08 getTask及I3失败收口，不新增部署接缝。既有C24 runtime.test.ts/必要fixture及nested-boundary、C30 runtime.test.ts覆盖真实失败、非终态/错绑定/撤权拒绝、父技术重试转交、原成功项和命令幂等；辅助implementer仅持有C24测试。验证pnpm exec vitest run packages/contracts/test/contract-kernel.test.ts apps/worker/test/identification/graph/runtime.test.ts apps/worker/test/identification/graph/nested-boundary.test.ts apps/worker/test/risk-flow/runtime.test.ts，及build/typecheck/定向lint/format/change strict/diff。关联domain/module-interfaces-events-workflows、identification/graph、relationship-context-and-retrieval-agent-review新增失败通知场景。新制品仅沿原v109父等待正式HTTP通知第四项失败、处理原第五项；不伪造结果、不复活终态、不重开整批，无依赖/迁移变化。
+
+D-106纳入IP-21，源范围见design D-106：contracts统一任务身份引用，core/review-audit/ui-read.ts的taskDetailPayload接受精确身份，adapter #taskState复用单点查询和原事实/完整引用绑定，前端useLocatedReviewTask直接readReviewTaskDetail，移除队列反查及页外缺席状态，两页沿受权完整详情构造原决定引用。现有核心review-audit.test.ts和adapter既有精确定位测试加最小身份/错版本，真实Chrome页外任务已红。验证pnpm exec vitest run packages/core/test/review-audit/review-audit.test.ts packages/adapters/test/review-audit/postgres-review-audit-adapter.test.ts、pnpm exec playwright test -c playwright.config.ts --project=chromium apps/web/test/browser/agent-audit-operations.spec.ts -g '识别分组复核'，以及build/typecheck/lint/format/strict/diff与v109原8组物理深链/决定。无全库/队列扫描、迁移或依赖变化。当前C19 resolver已具备减负后的自动确定性组装，旧交接里需提前人工派生发布的说明仅作历史；以当前代码/实际回执继续验收。
+
+D-107纳入IP-19/IP-21，文件限packages/adapters/src/workflow/postgres-workflow-adapter.ts及其既有test/workflow/postgres-workflow-adapter.test.ts。readEventParentRun/#eventState/verifyEventConsumption以当前权限与真实父子/运行/消费事实取代历史全scope摘要相等，#eventState按原preparing阶段精确根入口登记limit2验证当前空间覆盖。现有事件测试加来源授权变化与真实错空间拒绝，并保留所有现有拒权/错版/零写；验证pnpm exec vitest run packages/adapters/test/workflow/postgres-workflow-adapter.test.ts scripts/deployment/risk-flow-composition.test.mjs及build/typecheck/lint/format/change strict/diff。真实原事件diagnose-accepted-event-v112.mjs使用effects屏障，旧实现WORKFLOW_EVENT_PARENT_UNPROVEN为红，修后到DIAGNOSTIC_NO_BUSINESS_EFFECTS为绿，原exhausted/10不变。新制品以原批次其余7组真实决定事件继续，不重开运行/重放旧exhausted，不把读证明计业务通过。
 
 D-91纳入IP-17/IP-19/IP-21输入范围：同步当前design、proposal、handoff及evidence/monitoring-input-correction-plan.md，新增evidence/monitoring-longitudinal-2026-10-16.md；实例d91-monitoring-inputs/保存新合成情景的baseline.csv（15点）、supplement.csv（缺失第7点）、correction.csv（第15点7.0到6.8）、生成清单及独立源配置/正式回执。具体时间、规则、策略数值以design D-91为唯一事实源。复用现有CSV转换/C15、provision及公开监测批次/快照入口，不修改源码或原资料包。自检唯一时间、15+1成员、更正范围及现有strict Schema；沿正式来源/清洗回执再登记序列和策略，验证重复不增事实、旧快照稳定、更正/补录追加和当前权限拒绝。不启动第二驱动，不在当前请求在途时导航或另发控制；未取得正式回执不得勾选任务。文档strict/diff检查即可，不因输入文档变更重复全仓构建。
 
@@ -101,7 +137,7 @@ D-51已获用户批准，作为IP-19/IP-21补充：按[evidence/workflow-identif
 
 ## 5. Schema、状态与持久化落实
 
-生产 Schema、错误码、图状态、C03/C04/C06/C08/C19 事务和版本沿既有事实源，数据库最终迁移仍为 000058。本 change 不增加生产迁移、表或第二引用登记；公开契约补充仅按已批准D-36/D-39落实。三类终态观察：Agent 任务详情、识别运行详情、运行总览投影；Unsupported DTO 保持 BLOCKED。全链其他引用从正式所属查询与已登记关系逐项证明，不给任意 query 添加通用 status 判定。
+生产 Schema、错误码、图状态、C03/C04/C06/C08/C19 事务和版本沿既有事实源，数据库最终迁移为已归档减负change的000059。本 change 不增加生产迁移、表或第二引用登记；公开契约补充按已批准D-ID落实。三类终态观察：Agent 任务详情、识别运行详情、运行总览投影；Unsupported DTO 保持 BLOCKED。全链其他引用从正式所属查询与已登记关系逐项证明，不给任意 query 添加通用 status 判定。
 
 唯一新增测试宿主 Schema 按 D-28，位于 desktop e2e acceptance.mjs，不进入产品 DTO。只读配置/报告及新证据写入新文件；秘密文件不提交，模型/资料原始响应继续 C04 权限保护，不复制进普通 Markdown/JSON。
 
@@ -294,7 +330,15 @@ IP-17/IP-19纳入contracts/src/ports/index.ts及既有module-interfaces-events-w
 
 新公共字段、迁移、权限、事务、依赖、范围外文件、前置语义漂移或 CLI 不存在须升级并补 design；现有批准路径内普通缺陷在当前任务修复。没有对应修复需要时不为文案、提示词、DOM/CSS 或实现顺序补测试。实际环境缺项保留 BLOCKED，不删除关键断言或增加默认值。
 
+### D-97已批准施工补充
+
+IP-19/IP-21依必要修正持续授权，补无逐段evidence工件的资料授权解析：修改`packages/core/src/access/authorization.ts`内部业务输入、`packages/adapters/src/auth/postgres-local-identity-access.ts`所属grant到来源映射及当前/任务范围检查、`scripts/deployment/start.mjs`工件与模型接缝；仅扩既有`packages/adapters/test/auth/local-identity-project-authorization.test.ts`和`scripts/deployment/entrypoints.test.mjs`。验证无evidence受限工件、写入/模型限制保留，未知/跨工程grant、撤权与任务越界拒绝；定向回归、build/typecheck/lint/format/strict通过后新制品取证。无HTTP/core领域Schema、依赖、迁移、角色或预算变化，v103失败及旧终态保留。
+
 ## 8. 验收 Agent 授权与限定审计
+
+IP-19/IP-21依持续授权纳入D-100，仅修改`packages/adapters/src/engineering-data/cleaning/postgres-data-cleaning-store.ts`完成准备的当前权限复验，删除完整授权快照全等，保留脱敏/权限/绑定及事务；扩既有`packages/adapters/test/engineering-data/cleaning/postgres-data-cleaning-store.test.ts`完成用例验证有效增量及原拒绝/并发。定向回归与工程检查后新制品沿原v105 completed任务收口，不新增模型任务、依赖、迁移或公共契约。
+
+IP-19的D-98串行提示诊断失败，未修改生产runtime，也不发布该提示。D-99仅增加隔离实例新清洗policy/prompt/budget、catalog及发布身份：固定既有同模型schema-prompt部署，当前短选项Schema、Zod、工具与数值预算保持。先一次冻结输入诊断，通过后新配置按原Schema及预算深比较、冻结新制品并正式新任务取证。无生产源码或新测试文件、HTTP/领域Schema、依赖、迁移或权限变化，旧失败与实际用量保留。
 
 ### 本次批准的施工图补充（2026-10-14）
 
@@ -319,5 +363,123 @@ IP-17/IP-19纳入contracts/src/ports/index.ts及既有module-interfaces-events-w
 - IP-21：用户已批准 `evidence/checkpoint-start-binding-scope-proposal.md`，纳入 `packages/adapters/src/postgres/transaction-unit.ts` 及既有 `test/postgres/postgres-foundation.test.ts`。启动绑定读取按生产命令/审计动作精确配对，保留完整引用、线程、主体、授权、父运行与提交证明；补真实配对和错配拒绝回归，继续原命令实机复验。不改公共契约、权限、事务、迁移或历史记录。
 
 - IP-19/IP-21 / D-40：用户已批准检索投影与图版本提案。纳入 `packages/adapters/src/auth/postgres-local-identity-access.ts`、既有 `test/auth/local-identity-project-authorization.test.ts`，发布命令因果授权仅补hybrid-evidence精确分支并保持当前权限/有效期/关联；纳入 `apps/worker/src/risk-flow/graph.ts`，graphStateOf使用同运行冻结图版本，既有runtime测试校验真实检查点图版本。新增本change的local-identity-project-authorization delta；复用已列部署回归。先红后绿、build/lint/format/strict/diff后冻结新制品切换，继续真实检索及工作流，不改历史事实或投递次数。
+
+- IP-19/IP-21 / D-118：C06既有filterVisibleSources增加可选risk-assessment.read分支并按当前事实判断；C34共享查询从请求实际记录准备取得有界来源，在分页/聚合前过滤。精确查询先绑定目标，删除工件读取的旧增量子集门禁，C04当前来源检查保持。范围core/access/service.ts、adapters/src/auth/postgres-local-identity-access.ts、adapters/src/risk-assessment/engine/postgres-risk-assessment-engine.ts及既有auth/engine测试。本change评估delta与证据同步，无依赖/迁移。复用既有正式解释、5001可见/隐藏分页和撤权测试，补空增量；部署后只读原v121记录，不重跑评分。A7建议缺类别绑定另行处理，不计通过。
+
+- IP-19/IP-21 / D-119：C30入口元数据读区分workflow运行摘要和A0准备引用；用原workflowEntryIdentityFor及登记frozenRefs复核运行，inputSnapshotRef与准备身份单独核对。仅adapters/src/workflow/postgres-workflow-adapter.ts、既有workflow测试和risk-assessment/fixture.ts。扩既有入口元数据用例覆盖真实两身份及错配拒绝，保留全部历史记录和终态，新制品只读原记录取证，无DTO/依赖/迁移。
+
+- IP-19 / D-120：只新增实例response-generation精确类别绑定及不可变catalog/config/release；使用已发布measure-01，不改模型预算或三项校验。原评估/预警任务沿公开measure-candidates、start-task、create-candidate、validate-and-record接续并记录正式结果。真实未解析触发项/覆盖/现场或规范缺项必须拒绝，拒绝不计完整链通过；不重跑原评分。无生产源码/DTO/依赖/迁移，证据在d120-response-inputs及本change evidence/handoff。
+
+- IP-17/IP-19 / D-121：scripts/deployment/composition/api-ports.mjs将公开measure-candidates查询交C27既有方法，保留其它知识端口receiver；既有必需方法清单补measureCandidates。扩scripts/deployment/api-ports.test.mjs原分派回归，对象/结果原样传递和缺方法拒绝；无DTO/路由/依赖/迁移。新制品后原预警任务查询接续，原426无Agent或候选，不算通过。
+
+- IP-19 / D-122：response-model-step.mjs删除历史授权完整JSON/空间版本集合全等，保留来源存在/主体/工程、当前C06能力和redacted及任务冻结范围；原所属数据精确绑定检查保持。扩response-model-step.test.mjs已有C27/C29用例，覆盖新时间/空来源增量仍正常及错主体/缺权拒绝。新制品只以新任务身份消费原冻结措施查询，原v124零模型调用终态保留；无DTO/依赖/迁移。
+
+- IP-19 / D-123：composition/assessment.mjs将C27 {task,purpose}写授权请求映射到原受信envelope工程/主体/空间和固定create-candidate分支、taskId:purpose；start.mjs注入，原活动任务来源上界保持。既有assessment-composition.test.mjs扩两purpose映射回归并保留宿主检查。新任务消费原候选，v125一模型失败与终态保持；无DTO/依赖/迁移/预算变化。
+
+- IP-19 / D-124：实例新增正式recommendation-site-context用途工件，原风险node02/C17正式process-model来源和原提供node02合成现场场景绑定真实空间、资料段；不添加通关资源。只更新新config/release的siteContextBindings，复用v126制品，旧候选/现场保留，策略/模型/预算不改。查原校验效果后以新命令及新现场引用继续原正式候选校验，专业失败如实记录，无源码/DTO/依赖/迁移。
+
+- IP-19 / D-125：composition/assessment.mjs仅补C27 reviewAudit: review，使用原已要求的C07端口。复用adapters/test/recommendation/postgres-recommendation-adapter.test.ts及assessment-composition/entrypoints测试，覆盖失败快照、待复核、事务回滚与同reviewRef重放。新命令仍原候选/现场及原三项校验，不调用模型、不修改失败或正式评分；旧422零业务行证据保留，无DTO/依赖/迁移。
+
+- IP-19 / D-126：实例新增独立单风险等级预警合成场景来源、六监测序列/可用性策略、新措施配置修订及正式审核发布、新校验策略和新评估/处置命令。原八阈值/联合规则/矩阵/评分/126kPa与地层事实、模型预算和原现场资源不变。使用原C04/C11原生CSV、C18/C16/C07和现有公开处置入口；逐格证明新措施、许可及监测值来自已登记合成来源，姿态按100ms真实采样计算频率。原四预警/失败/拒绝保持，不复活原评估。无生产源码/DTO/迁移/依赖；输入生成留assert自检，正式每步保留精确回执和实际结果。覆盖主规格“单独风险等级预警可形成正式建议”，不能提前勾选3.2。
+
+- IP-19/IP-21 / D-127：apps/worker/src/identification/graph/composition.ts及既有composition.test.ts，既有幂等消费中仅identification-group进入C24授权/恢复；其它四类C07决定以原reviewDecisionRef形成无识别动作耐久回执。未知事件、当前来源复验和识别授权失败保持拒绝；原response事件exhausted/10不重置。参数化既有测试先红后绿，再识别runtime/部署回归与build/typecheck/lint/strict/diff，新制品的新合法事件取证，无DTO/迁移/依赖/权限变化。
+
+- IP-19 / D-128：scripts/deployment/start.mjs的C04包装器按精确kind/entityId/versionId合并多父工件空间并集，扩既有entrypoints.test.mjs共享空间回归；当前C06/资料及各父访问检查保持。先红后绿、build/typecheck/lint/strict/diff，再新制品/新put命令核验原D126候选，不改旧失败、Schema、依赖、迁移或权限。
+
+- IP-19/IP-21 / D-129：packages/adapters/src/workflow/postgres-workflow-adapter.ts的readAssessmentEntrySnapshot复用现有#openBody当前C04读取，保留唯一A0及精确正文归属，去掉历史scope摘要全等；扩既有workflow测试的A0夹具为正式C04正文及当前来源增量变化回归。验证错工程/阶段/缺正文/多义/撤权拒绝，workflow与assessment runtime回归及build/typecheck/lint/strict/diff；部署后以原completed Agent及原retryable父/等待子继续，禁止新评估/Agent替代，无DTO/依赖/迁移。
+
+- IP-19 / D-130：scripts/deployment/provision.mjs及既有provision.test.mjs，原样投影C04真实artifactRef，参数化content/diagnostic临时文件回执，相关provision测试/lint/format/strict/diff；保留旧错误报告，恢复另取当前C04正式引用，无DTO/权限/依赖/迁移变化。
+
+- IP-19/IP-21 / D-131：apps/worker/src/risk-flow/{graph,runtime}.ts及既有runtime.test.ts，统一评估恢复上下文并复用原聚合恢复通路，将公开agent-task-completed完整引用转交给等待同一任务的原评估子运行，按冻结身份、当前版本及当前权限恢复后回读。错任务拒绝，兄弟及终态不推进；配置/识别恢复保持。先红后绿、相关runtime回归/build/typecheck/lint/strict/diff，新制品后仅以新命令消费原completed任务，无新模型/预算/DTO/依赖/迁移。
+
+- IP-19/IP-21 / D-132：将C24已有executableConfig移至apps/worker/src/graph-execution.ts，C24/C25图包装器复用，全部执行/回读固定本图saver及根命名空间、清空父checkpoint_id/map/scratchpad。既有assessment/runtime测试新增真实父MemorySaver调用真实PG子图的等待/独立回读/恢复回归，并跑C24 nested-boundary与相关runtime/build/typecheck/lint/deps/strict/diff。原A7旧命名空间检查点按design逐项核验，经原getTuple和graph.recover受控接续同一等待状态，业务/模型写屏障、保留旧记录，禁止自动猜测或重评。新制品只继续原completed任务，无DTO/依赖/迁移/权限/预算变化。
+
+- IP-19/IP-21 / D-133：scripts/deployment/composition/assessment.mjs及既有assessment-composition.test.mjs，复用core/agent-runtime.agentTaskRefFor先精确观察已有任务，当前授权检查保持，仅缺任务才start；共享observe验证原冻结身份/策略/主体/父及真实终态，不重复读已取得快照。先红后绿验证当前授权变化不重启原completed、错身份/失败/缺任务边界，组合/entrypoints/lint/format/strict/diff后新制品。原v134终态保留，父沿公开入口消费已成立候选，不新评估/Agent，无DTO/依赖/迁移/预算变化。
+
+- IP-19/IP-21 / D-134：实例新config/release将forecastPolicyReleaseRef绑定已实际发布的050053b0…@1，当前权限窄读证明工程/类型，沿原预测0217dc68…当前版本business-preparation-ready恢复，不改策略正文/评分/建议/决定/模型/预算。参数模型不存在如实不可用，保留旧引用及等待；无源码/DTO/依赖/迁移。
+
+- IP-19/IP-21 / D-135：实例d135-response-followup新增模型声明、合成执行/反馈和执行后监测CSV；C11正式转换逐格核对、C04真实父/来源生成显式零措施效果趋势模型与反馈工件，C18/C16/C07发布精确requiredRef的新单目标预测政策，业务有效时刻与真实系统时刻分别保存。新config绑定后只恢复原A0等待；执行后六监测正式快照及同风险原规则确定性评估，再反馈/偏差/原预算C29候选与人工复核。原评分/阈值/资源/终态不改，无代码/依赖/迁移/预算变化，所有合成样本待甲方复核并保留失败。
+
+- IP-19/IP-21 / D-136：apps/worker/src/risk-flow/runtime.ts及原runtime.test.ts C41/S2，仅当前human-decision等待阻断其它原因，历史采纳等待不拦后续精确business-preparation恢复；保留首次C41证明与唯一等待/版本/权限检查。扩原采纳后配置等待接续测试，相关runtime/build/typecheck/lint/strict/diff后新制品续原预测，无DTO/依赖/迁移/预算变化。
+
+- IP-19/IP-21 / D-137：scripts/deployment/composition/assessment.mjs及原assessment-composition.test.mjs，阶段查询ID摘要包含指定发布及当前入口授权context/time，保留requestId=幂等键=签发身份、冻结requiredAt/当前asOf。扩既有专用预测配置用例同调用重放和新当前上下文不冲突，部署回归/lint/format/strict/diff后新制品续原A0，无DTO/依赖/迁移/预算变化。
+
+- IP-19/IP-21 / D-138：packages/core/src/response-lifecycle/schema.ts模型精度上限复用既有规范十进制6位常量，扩原core/test/response-lifecycle/forecast.test.ts非法模型表，相关core/adapter模型回归及build/typecheck/lint/strict/diff。实例新6位声明来源及模型C04、新政策来源含实际requiredRef，保留8位输入/工件和失败；无依赖/迁移/预算或其它数值域变化。
+
+- IP-19/IP-21 / D-139：core/response-lifecycle/service.ts及adapters/response-lifecycle/postgres-response-lifecycle-adapter.ts集中C19当前受权精确集合读取，反馈按评分规则/assessment配置完整冻结成员及适用集正文除requiredAt外全部结构判断相容；适用集经当前C04原用途及原摘要校验，保留不同准备/集合/适用集/时间与原风险空间监测校验。扩既有response-lifecycle测试/fixture同成员异集合成功、配置/适用决定变化或不可读拒绝及零部分写；相关反馈/偏差回归/build/typecheck/lint/strict/diff后新制品，新正式C11准备/正常assess形成实际评估，不通过历史回填绕过。无HTTP字段/依赖/迁移/预算变化。
+
+- IP-19/IP-21 / D-140：实例新增单一绝对偏差政策CSV及候选，原threshold2mm不改，C11逐格核验/C04/C18/C16/C07正式审核发布，新反馈首次按purpose=deviation冻结；新config/release校准目标仅绑定原依据已包含的monitoring-warning-threshold de2a8b10…@1。先当前受权窄读、保留旧三政策/占位/失败，实际偏差决定C29及人工复核，不提前宣称生效。无生产代码/字段/依赖/迁移/预算变化。
+
+- IP-19/IP-21 / D-141：adapters/src/workflow/postgres-workflow-adapter.ts及既有workflow测试，运行读面在当前C06/C04及精确父子链边通过后，按精确运行有界读取历史阶段/结果，删除历史scopeDigest过滤及闲置参数。扩原唯一子运行夹具覆盖阶段/链边/最新状态不同摘要，缺链/错归属/错版/撤权仍拒绝。相关workflow/C25/runtime/build/typecheck/lint/strict/diff后新制品，只读原completed预测公开200及完整阶段，不重算或补写历史。无字段/依赖/迁移/预算变化。
+
+- IP-19/IP-21 / D-142：core/response-lifecycle/service.ts、core/human-decision-feedback/service.ts、adapters/src/response-lifecycle/postgres-response-lifecycle-adapter.ts及既有C41测试，增加当前受权正式预测基线窄读，反馈分段固定原预测输入/依据，实际反馈仍新实际评估；启动身份按原命令及固定载荷派生，原committed快照重放后仅启动新正确分段，旧终态及唯一反馈保持。扩真实预测/独立后评估/重放零重复回归，相关C28/C41/build/typecheck/lint/strict/diff后新制品原载荷重放；无HTTP字段/迁移/依赖/预算变化。
+
+- IP-19/IP-21 / D-143：scripts/deployment/start.mjs及既有entrypoints.test.mjs，部署首个人员入口以readSession确定当前主体，再authorizeBusinessAction当前业务权限，捕获原作用域；不复用旧authorize的invocationId五分钟记录。验证旧authorize不可用下原调用重放、失效会话/真实拒权零下游，定向宿主/lint/format/deps/strict/diff及新制品后原信封重放，旧context/TTL/失败/唯一反馈保持。无字段/依赖/迁移/预算变化。
+
+- IP-19/IP-21 / D-144：scripts/deployment/composition/{assessment,calibration-task}.mjs、start.mjs及既有assessment-composition/calibration-task测试，外层policyRef传C29与Agent入口，内层validationPolicyRef留C08信封；task port注入精确policyCatalog解析共享Schema并核验两身份及工程对应，当前权限/输入/预算校验保持。定向assessment-composition/calibration-task/response-model-step/entrypoints、lint/format/deps/strict/diff后新制品及riskFlow/assessment真实新图版本physical-20261017-d144-v1，以原反馈信封消费唯一反馈和偏差，旧两个terminal运行不重开。不改公共字段/依赖/迁移/预算，不重算原业务事实。
+
+- IP-19 / D-145：packages/core/src/engineering-data/monitoring/features.ts及既有packages/core/test/engineering-data/monitoring.test.ts，恒值频谱返回no-dominant-frequency，先红后绿覆盖16点6.8/100ms/零功率与原整数。保留原非恒值算法及数值/连续性检查，相关core/monitoring adapter回归/build/typecheck/lint/strict/diff后新制品，以新频谱算法策略创建独立快照复用原样本核验，保留旧快照/业务引用。无字段/依赖/迁移/阈值变化。
+
+- IP-19/IP-21 / D-146：adapters/src/calibration/postgres-calibration-adapter.ts及既有C29测试、scripts/deployment/composition/assessment.mjs、start.mjs及assessment-composition测试；冻结输入/治理候选继承真实基准父工件和事实/候选证据，任务前精确输入manifest绑定并通过当前C06冻结实际来源及grant。保留任务来源上界，空/错清单或当前拒权零启动。C29/部署相关回归/build/typecheck/lint/deps/strict/diff后新制品及d146图版本；原失败任务不支持retrieval专用通知，400保留，公开取消原等待运行，再沿公开record-response-feedback工作流启动新独立后续运行，原唯一反馈/偏差和旧终态保持。无公共字段/依赖/迁移/预算变化。
+
+- IP-19/IP-21 / D-147：apps/worker/src/agent-runtime/runner.ts及既有runner.test.ts，可修复模型校验失败推进新行动身份、保留原失败及工件，行动游标从序号1重建，不由候选版本代替；新纠错预留原累计corrections预算并保留验证反馈，技术失败原行动重试不变。连续claim既有测试扩展、runner/adapter相关回归/build/typecheck/lint/deps/strict/diff后新制品/真实新图版本，取消旧等待运行并以原反馈/偏差新独立后续运行取证。无字段/依赖/迁移/预算变化。
+
+- IP-19/IP-21 / D-148：scripts/deployment/composition/response-model-step.mjs及既有response-model-step.test.mjs，C29生成Schema沿原actionSchema.safeExtend固定taskRef/inputSnapshotRef/可信完整completed结果，将确定性候选身份及绑定明确提供模型。专业字段仍由模型及原校验决定，原DTO/解释器/预算不变。扩原输入测试验证合法生成、缺主输出及错绑定拒绝，相关模型步/校准/宿主/lint/format/deps/strict/diff后新制品/新图版本，取消旧等待运行后原反馈/偏差独立后续取证。
+
+- IP-19/IP-21 / D-149：adapters/src/calibration/postgres-calibration-adapter.ts及既有calibration测试/fixture，检查点信任所属当前C06决定，结果以共享Schema/completed/完整task绑定及精确result引用核验，允许候选提交与finalize主输出/校验元数据差异。扩原检查点合法差异/错任务/错结果及原拒权/归属零写边界，C29/graph/build/typecheck/lint/deps/strict/diff后新制品，只读原正式建议及偏差并继续人工复核，零新模型/重复建议；原terminal图保持且不冒称completed。
+
+- IP-18 / D-150：apps/desktop/test/e2e/acceptance.mjs删除历史后端迁移号常量，client.spec.ts原预检夹具使用000059先红后绿，保留当前清单/release/config/code/origin/正式报告与输入边界，数据库由正式服务器按清单验证；同步本施工图当前迁移事实。不改生产代码/依赖/迁移，预检不替代完整Electron实跑。
+
+- IP-18/IP-20 / D-151：scripts/acceptance/synthetic.mjs及既有synthetic.test.mjs、apps/desktop/test/e2e/{acceptance.mjs,client.spec.ts}，正式Schema验证后的异步waiting记submitted并从真实回执统一捕获引用，非异步/缺ref/失败仍拒绝。桌面可绑定同次agentTaskRef，运行waiting时仅当前正式任务queued/running才可验证关窗继续，最终仍要求原运行completed。既有异步/桌面边界回归、lint/format/strict/diff及真实场景取证，无生产契约/预算/依赖/迁移变化。
+
+- IP-19 / D-152：adapters/identification-knowledge/postgres-identification-knowledge-adapter.ts、Worker identification-knowledge/{runtime,composition}.ts及既有测试，沿当前C04读取冻结清单定位与所属工具观察；核验完整任务/清单绑定，正文仅来自原白名单工具，模型消费真实观察及目标质量约束。基线观察提供原精确包/摘要，单次输出有界而累计预算保持。相关C17/runtime/组合根、build/typecheck/lint/deps/strict/diff及新制品后真实取证，不新增HTTP/工具/依赖/迁移，不复活旧图或伪造父引用。
+
+- IP-19 / D-153：C17 adapter及既有fixture/test保留当前入口复验，再沿注入authorize按真实声明范围取得当前分支上下文，拒绝redacted/撤权；finalizer透传manifest基线给C16。fixture模拟空来源verify先红后绿，扩已有发布基线的同项目编制提交；相关C17/宿主/build/typecheck/lint/deps/strict/diff后新制品及真实新任务，原失败与预算不改，无HTTP/字段/依赖/迁移变化。
+
+- IP-18/IP-20 / D-154：apps/desktop/test/e2e/{acceptance.mjs,client.spec.ts}以同份functional配置观察的唯一正式启动回执绑定运行，sharedObjectUrl独立绑定同次risk-overview查询，下载回执核验export请求sourceRef等于该查询。原夹具补真实run-view/overview双查询及引用模板，边界回归/格式/strict/diff后真实Electron取证；无生产契约/依赖/迁移变化。
+
+- IP-19 / D-155：C17 #validateAuthoringCandidate仅把C08校验工件用途改为agent-validation，保留C17包校验用途及C08严格用途守卫；Worker runtime说明已有目标须先退役再声明。既有C17测试核验accepted/repairable两类工件manifest用途，相关C08/runtime/宿主回归、build/typecheck/lint/deps/strict/diff后新制品新任务，旧终态与预算保持，无Schema/依赖/迁移/预算变化。
+
+- IP-19 / D-156：Worker identification-knowledge/runtime.ts及既有runtime.test.ts对模型成员定位使用公共前缀/全部后缀无损投影，复用正式Schema限定当前目标与下一候选版本，保持两工具/解释器/原manifest/DTO及预算；同步composition.test.ts按正式分支能力签发的C06夹具及目标读取断言，不固定内部当前授权调用次数。验证完整往返、重复定位缩小、异目标/版本拒绝，相关回归/build/typecheck/lint/deps/strict/diff后新制品新任务；原v150用量/终态不改，无依赖/迁移/公共Schema变化。
+
+- IP-19/IP-20 / D-157：共享start.mjs/actionDecision复用上下文时从C06精确元数据按原上下文自己的空间/来源复验，显式非空/新授权空集合保持，未知ref和当前撤权拒绝，task/租约及审计不变；删除C17重复current-scope补签及其专用fixture，保留所有绑定/基线/用途约束。根入口、C17/C35/宿主回归及build/typecheck/lint/deps/strict/diff后新制品重读原报告来源；无公共Schema/依赖/迁移/预算变化。
+
+- IP-19 / D-158：apps/worker/src/agent-runtime/runner.ts及既有runner.test.ts使用独立稳定agent-action-result反馈工件保留原证据链，当前受权恢复精确任务/行动绑定的最新拒绝候选和完整校验，通用模型上下文跨工具/claim保持；旧reason-only行动保持。覆盖证据保存/恢复/错任务拒绝及原预算边界，相关回归/build/typecheck/lint/format/deps/strict/diff后新制品；无依赖/迁移/公共Schema变化，旧失败与预算不改。
+
+- IP-20 / D-159：packages/core/src/workflow/report.ts预览nextCursor复用C31的IdentifierSchema，既有packages/adapters/test/workflow/postgres-report-export.test.ts验证真实长引用游标/续页与预览Schema往返，不改历史登记/分页预算/编码；工程检查后新制品实机重新登记真实查询并预览/导出/下载。
+
+- IP-19 / D-160：C17 adapter的逐attempt运行回调和真实当前C16基线，既有adapter测试扩已发布定义失败送审；scripts/deployment/start.mjs从精确任务信封核验主体/工程/任务建立独立控制来源，既有entrypoints.test.mjs覆盖绑定与拒绝。当前重授权/C08公共失败窄读/不可发布绑定/CAS保持；回归/build/typecheck/lint/format/deps/strict/diff后实机收口原失败，不复活任务、不改manifest或预算，无依赖/迁移/公共DTO。
+
+- IP-19 / D-161：C17 adapter准备读取器抽取既有规范正文核验的精确JSON-LD/证据片段/文本块读，segment工具返回原textBlocks/sourceVersionRef；既有adapter测试核验真实块/定位/置信度及错版/排除/无权，规范正文检查共用同一实现。回归/build/typecheck/lint/format/deps/strict/diff后新制品/独立任务，无新工具/依赖/迁移/预算，旧终态保持。
+
+- IP-19/IP-20 / D-162：C22 postgres-risk-record-trace-reader.ts按既有000054登记空间/来源经C06业务动作检查当前权限，移除历史完整授权摘要全等前置，同批相同资源复用决定；既有C22 adapter测试和Worker risk-flow acceptance夹具覆盖真实当前可见性/撤权/缺元数据/错版/额外授权及原批量边界。C22/报告/Worker及工程验证后新制品重读原第15页和完整报告，不改旧数据，无依赖/迁移/领域Schema变化。
+
+- IP-19 / D-163：apps/worker/src/identification-knowledge/runtime.ts及既有runtime.test.ts对已受权segment观察按正式TextBlock Schema投影完整text/真实坐标置信度/块与段引用，模型输入去掉重复请求段ID与内部块链，完整原证据不变；提供真实剩余额度。回归/原v154输入离线大小和正文一致性证明、工程验证后新制品/独立任务，不扩预算，无依赖/迁移/公共DTO。
+
+- IP-21 / D-164：apps/web/test/browser/business-server.mjs、demo/test/browser/server.mjs公共报告chain-a/b仅引用实际可读recordAuto/A，受限B及原人工复核识别/证据夹具不变；不更改权限或生产代码，不删场景，先重跑公共初始化及完整90项browser后记录真实结果。
+
+- IP-17/IP-19 / D-165：按已批准预算重分配提案，新建隔离宿主catalog/config，追加knowledge-budget与knowledge-validation@physical-20261017-d165-v1，输入229376/输出32768，总和及context262144、其它上限/模型/工具不变，保留旧catalog条目与七失败。正式Schema与配置差异自检、工程strict/diff后新制品/新独立任务，实机核验终态与预算；无代码/依赖/迁移/公共Schema变化。
+
+- IP-19/IP-21 / D-166：packages/adapters/src/risk-assessment/engine/postgres-risk-assessment-engine.ts私有putDecisionArtifact按decision行动签发当前evaluate上下文，使用已验证空间和部署受控来源，C04继续核验全部规则父工件；并发回读复用该授权。既有C25权限/幂等用例及browser真实初评先定向回归，再完整browser；无公共DTO/依赖/迁移变化。
+
+- IP-20 / D-167：scripts/acceptance/synthetic.mjs私有requestJson按受限目标URL发送同源Origin；现有synthetic.test.mjs替身遵守API的Origin检查，synthetic/functional既有回归及真实functional CLI验证，保留首次登录400零业务写的报告。无公开Schema/依赖/迁移变化。
+
+- IP-20 / D-168：scripts/acceptance/functional.mjs追加既有risk-assessment.read/run-read观察，严格同次runRef与正式run-result引用白名单，stateVersion独立；functional.test.mjs覆盖错运行/错版本/辅助引用拒绝及真实CLI。保留原C31严格观察，无生产DTO/依赖/迁移变化。
+
+- IP-19/IP-21 / D-169：C25 adapter共享artifactReadAuthorization删除显式空requestedSourceVersionRefs，沿部署原调用来源签发当前读取授权，保持已验证空间与C04来源核验；现有C25权限回归及browser启动运行详情验证，不添加全库来源查找或重复完整快照比对。
+
+- IP-19/IP-21 / D-170：C29 adapter共享putArtifact复用core/artifacts.normalizeEvidenceReferences，适配合法重复领域证据到C04规范集合；扩已有校准准备/幂等/继承测试，并重跑真实反馈校准browser，不改原事实/Schema/依赖/迁移。
+
+- IP-18 / D-171：apps/desktop/test/e2e/client.spec.ts私有readRunStatusV1复用C34所属run-read，原运行引用精确匹配后读顶层status，删除两次C31登记/读页及JSON.stringify身份比对；原关窗继续/SSE等真实Electron场景验证，不放宽在途与终态要求。
+
+- IP-18 / D-172：client.spec.ts共享launchClientV1通过Node createRequire从apps/desktop/package.json解析已声明electron并传给executablePath；不依赖根workspace的未声明依赖，不改产品、不安装依赖，沿原14项真实Electron场景验证。
+
+- IP-18 / D-173：apps/desktop/src/main.ts的did-fail-load仅对主框架非-3失败展示连接页，首屏loadURL拒绝同样忽略ERR_ABORTED的errno=-3。沿既有真实导航/TLS场景及原生复现验证，不放宽导航、证书、子框架或权限边界。
+
+- IP-18/IP-21 / D-174：apps/web/src/api/client.ts的postQuery复用现有来源选择，向projection.report-read转发用户声明；原agent-audit-operations.spec.ts报告用例验证history/preview/artifact请求来源；acceptance.mjs从已匹配overview回执保留reportSourceVersionRefs，client.spec.ts登录后通过产品选择UI声明该同次来源，导航断言用原isVisible避免等待已取消的导航；保留真实下载和权限边界。
+
+- IP-18/IP-21 / D-175：apps/api/src/http.ts集中既有运行编码上限2048，app.ts路由参数上限复用该值；扩原http-shell.test.ts逐事件授权用例为真实长引用，验证入口不先于公开契约拒绝，原解码/权限/游标边界保留。
+
+- IP-18 / D-176：client.spec.ts的queryV1允许显式来源，撤权用例读取同次报告时使用reportSourceVersionRefs；修订helper按真实“确认执行”及目录结果等待，仅已执行撤权才在finally恢复。沿原用例验证，不改产品权限或添加恢复分支。
 
 未通过当前证据、待审计或主仓库门禁失败不得 PASS。C38 的未来物理平台/介质/硬件场景只登记移交状态，不能当作本 change 已通过任务，也不能用其缺项掩盖当前功能缺陷。

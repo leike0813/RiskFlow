@@ -5,6 +5,7 @@ import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/a
 import { ArtifactReadRequestV1Schema, type ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import {
   ASSESSMENT_CONFIGURATION_ARTIFACT_PURPOSE_CODE_V1,
+  ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE,
   DeviationPolicyDocumentV1Schema,
   ForecastPolicyDocumentV1Schema,
   IndicatorSystemDocumentV1Schema,
@@ -28,6 +29,8 @@ import { decimalFromFiniteNumber } from "@riskflow/core/risk-assessment/engine";
 import type { AssessmentMonitoringReaderV1 } from "@riskflow/core/risk-assessment/engine";
 import {
   AssessmentBasisReleaseSetReadResultV1Schema,
+  APPLICABLE_RULE_SET_ARTIFACT_PURPOSE_CODE_V1,
+  ApplicableRuleSetDocumentV1Schema,
   type AssessmentBasisReleaseSetReaderV1,
 } from "@riskflow/core/scoring-rules";
 import {
@@ -1097,7 +1100,7 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
     return parseBasisReleaseSetRef(row.basis_release_set_ref, targetRef);
   }
 
-  async readBasisMembers(input: {
+  async #readBasisReleaseSet(input: {
     readonly requestId: string;
     readonly requestedAt: string;
     readonly authorization: AuthorizationContextV1;
@@ -1105,9 +1108,7 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
       readonly kind: "assessment-basis-release-set";
       readonly reference: VersionReference;
     };
-    readonly definitionTypes: readonly string[];
-    readonly policyRef?: VersionReference;
-  }): Promise<readonly ResponseLifecycleBasisMemberV1[]> {
+  }) {
     const authorization = input.authorization;
     const targetRef: LifecycleTargetRefV1 = {
       kind: "assessment-basis-release-set",
@@ -1148,6 +1149,89 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
           : "TERMINAL_FAILURE",
       );
     }
+    if (
+      !sameRef(
+        basisResult.data.assessmentBasisReleaseSetRef.reference,
+        input.basisReleaseSetRef.reference,
+      )
+    ) {
+      failResponseLifecycle("response-lifecycle-contract-drift", targetRef);
+    }
+    return { basis: basisResult.data, basisAuthorization };
+  }
+
+  async readAssessmentBasis(
+    input: Parameters<ResponseLifecycleContextReaderV1["readAssessmentBasis"]>[0],
+  ): ReturnType<ResponseLifecycleContextReaderV1["readAssessmentBasis"]> {
+    const { basis } = await this.#readBasisReleaseSet(input);
+    const authorization = await this.#authorizeFor(
+      {
+        branch: CONFIGURATION_BRANCH_V1,
+        invocationId: `${input.requestId}:applicable-rule-set`,
+        projectId: input.authorization.projectId,
+        actorId: input.authorization.actorId,
+        requestedAt: input.requestedAt,
+        requestedSpatialScopeRefs: [...input.authorization.spatialScopeRefs],
+      },
+      "knowledge-modeling.retrieve",
+    );
+    const member = basis.applicableRuleSetMember;
+    const document = await this.#readArtifactDocument(
+      `${input.requestId}:applicable-rule-set`,
+      input.requestedAt,
+      authorization,
+      member.artifactRef,
+      APPLICABLE_RULE_SET_ARTIFACT_PURPOSE_CODE_V1,
+    );
+    const parsed = ApplicableRuleSetDocumentV1Schema.safeParse(document);
+    if (!parsed.success || sha256CanonicalJson(document) !== member.contentDigest) {
+      failResponseLifecycle("response-lifecycle-contract-drift", member.artifactRef);
+    }
+    return { ...basis, applicableRuleSetDocument: parsed.data };
+  }
+
+  async readForecastBasis(
+    input: Parameters<ResponseLifecycleContextReaderV1["readForecastBasis"]>[0],
+  ): ReturnType<ResponseLifecycleContextReaderV1["readForecastBasis"]> {
+    const row = await this.#db
+      .selectFrom("business.response_forecast_outcomes")
+      .selectAll()
+      .where("project_id", "=", input.authorization.projectId)
+      .where("forecast_id", "=", input.effectForecastRef.reference.entityId)
+      .where("version_id", "=", input.effectForecastRef.reference.versionId)
+      .where(
+        "spatial_scope_entity_id",
+        "in",
+        input.authorization.spatialScopeRefs.map((scope) => scope.reference.entityId),
+      )
+      .executeTakeFirst();
+    if (row === undefined)
+      failResponseLifecycle(
+        "response-lifecycle-authorization-required",
+        input.effectForecastRef,
+        "AUTHORIZATION_DENIED",
+      );
+    const outcome = parseForecastOutcome(row, input.effectForecastRef.reference);
+    return {
+      frozenAssessmentBasisRef: outcome.frozenAssessmentBasisRef,
+      assessmentBasisReleaseSetRef: await this.readBasisReleaseSetRefForInputSnapshot({
+        ...input,
+        assessmentInputSnapshotRef: outcome.frozenAssessmentBasisRef,
+      }),
+    };
+  }
+
+  async readBasisMembers(input: {
+    readonly requestId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+    readonly basisReleaseSetRef: ResponseLifecycleAssessmentChainV1["basisRef"];
+    readonly definitionTypes: readonly string[];
+    readonly policyRef?: VersionReference;
+  }): Promise<readonly ResponseLifecycleBasisMemberV1[]> {
+    const { basis, basisAuthorization } = await this.#readBasisReleaseSet(input);
+    const authorization = input.authorization;
+    const targetRef = input.basisReleaseSetRef;
     const configurationAuthorization = await this.#authorizeFor(
       {
         branch: CONFIGURATION_BRANCH_V1,
@@ -1161,7 +1245,7 @@ export class PostgresResponseLifecycleContextReader implements ResponseLifecycle
     );
     const members: ResponseLifecycleBasisMemberV1[] = [];
     for (const definitionType of input.definitionTypes) {
-      const member = basisResult.data.configurationMembers.find(
+      const member = basis.configurationMembers.find(
         (candidate) =>
           candidate.definitionType === definitionType &&
           ((definitionType !== "forecast-policy" && definitionType !== "deviation-policy") ||
@@ -2307,14 +2391,47 @@ export class PostgresResponseLifecycleAdapter
       // 实际评估必须与原风险输入和冻结评估依据相容。
       if (
         adoptedChain !== undefined &&
-        (!sameRef(adoptedChain.basisReleaseSetRef.reference, assessment.basisRef.reference) ||
-          adoptedChain.riskInputRef.reference.entityId !== assessment.riskInput.entityId ||
+        (adoptedChain.riskInputRef.reference.entityId !== assessment.riskInput.entityId ||
           adoptedChain.riskInputRef.kind !== assessment.riskInput.kind)
       ) {
         failResponseLifecycle(
           "response-feedback-actual-assessment-mismatch",
           valid.actualAssessmentRecordRef,
         );
+      }
+      if (
+        adoptedChain !== undefined &&
+        !sameRef(adoptedChain.basisReleaseSetRef.reference, assessment.basisRef.reference)
+      ) {
+        const bases = await Promise.all(
+          [adoptedChain.basisReleaseSetRef, assessment.basisRef].map((basisReleaseSetRef, index) =>
+            this.#reader.readAssessmentBasis({
+              requestId: `${publicCommand.commandId}:assessment-basis:${index}`,
+              requestedAt: publicCommand.issuedAt,
+              authorization: verified,
+              basisReleaseSetRef,
+            }),
+          ),
+        );
+        const normalized = bases.map(
+          ({ applicableRuleSetDocument, scoringRuleMembers, configurationMembers }) => {
+            return {
+              applicableRuleSet: { ...applicableRuleSetDocument, requiredAt: undefined },
+              scoringRuleMembers,
+              configurationMembers: configurationMembers.filter((member) =>
+                ASSESSMENT_CONFIGURATION_TYPES_BY_PURPOSE.assessment.some(
+                  (type) => type === member.definitionType,
+                ),
+              ),
+            };
+          },
+        );
+        if (!isDeepStrictEqual(normalized[0], normalized[1])) {
+          failResponseLifecycle(
+            "response-feedback-actual-assessment-mismatch",
+            valid.actualAssessmentRecordRef,
+          );
+        }
       }
       const forecast = await this.#resolveFeedbackForecast({
         projectId: publicCommand.projectId,

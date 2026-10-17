@@ -62,6 +62,9 @@ const stubFetch = ({ login = sessionMetadata(), routes = {}, loginCookie = true 
         status,
         headers: { "content-type": "application/json", ...headers },
       });
+    if (new globalThis.Headers(init.headers).get("origin") !== target.origin) {
+      return reply(400, { code: "CONTRACT_INVALID" });
+    }
     if (target.pathname === "/api/v1/session/login") {
       return reply(
         200,
@@ -346,6 +349,72 @@ describe("正式入口运行", () => {
     expect(result.state.blocked.join("\n")).toContain("submitted");
     expect(seen).toHaveLength(0);
   });
+
+  it.each(["succeeded", "waiting", "missing-reference"])(
+    "异步%s回执只保存实际受理引用",
+    async (kind) => {
+      const workflowRunRef = reference("workflow-run", "run-1");
+      const agentTaskRef = {
+        ...reference("agent-task", "task-1"),
+        taskType: "retrieval-review",
+        triggerMode: "embedded",
+        modelDeploymentRef: versionReference("model"),
+        promptTemplateRef: versionReference("prompt"),
+        toolPolicyRef: versionReference("tools"),
+        budgetPolicyRef: versionReference("budget"),
+        incrementSchemaRef: versionReference("increment"),
+        validationPolicyRef: versionReference("validation"),
+      };
+      const body =
+        kind === "succeeded"
+          ? { kind: "succeeded", result: { workflowRunRef, disposition: "created" } }
+          : {
+              kind: "waiting",
+              waiting: { kind: "agent-task", agentTaskRef },
+              ...(kind === "waiting" ? { workflowRunRef } : {}),
+            };
+      const { fetchImpl } = stubFetch({
+        routes: {
+          "/api/v1/projects/project-1/commands/workflow.start-run": {
+            status: kind === "succeeded" ? 200 : 202,
+            body,
+          },
+        },
+      });
+      const configPath = withBindings([
+        {
+          stepId: "start-run",
+          type: "http",
+          operationId: operationIdFor("command", "workflow.start-run"),
+          payload: {
+            graphVersion: versionReference("graph"),
+            retryPolicyRef: versionReference("retry"),
+            entryMode: "identify-and-assess",
+            projectRevisionRef: reference("project-revision", "project-1"),
+            spatialScopeRefs: [reference("spatial-scope", "scope-1")],
+            sourceVersionRefs: [sourceVersionRef],
+          },
+          captures: {
+            workflowRunRef: ["result", "workflowRunRef"],
+            ...(kind !== "waiting" ? {} : { agentTaskRef: ["result", "agentTaskRef"] }),
+          },
+        },
+      ]);
+      const result = await runPack({
+        packDir: PACK_DIR,
+        configPath,
+        outputDir: tempDir(),
+        fetchImpl,
+      });
+      expect(result.status).toBe(kind === "missing-reference" ? "BLOCKED" : "SUBMITTED");
+      if (kind !== "missing-reference") {
+        expect(result.state.steps[0].resultRef.workflowRunRef).toEqual(workflowRunRef);
+        expect(result.state.steps[0].status).toBe("submitted");
+      }
+      if (kind === "waiting")
+        expect(result.state.steps[0].resultRef.agentTaskRef).toEqual(agentTaskRef);
+    },
+  );
 
   it("人工前置缺引用时阻塞且不发出业务请求", async () => {
     const { fetchImpl, seen } = stubFetch({ routes: registerRoutes() });

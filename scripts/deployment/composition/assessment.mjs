@@ -21,6 +21,7 @@ import {
 } from "../../../packages/adapters/dist/response-lifecycle/index.js";
 import { createPostgresCalibrationAdapter } from "../../../packages/adapters/dist/calibration/index.js";
 import { PostgresAgentTaskAdapter } from "../../../packages/adapters/dist/agent-runtime/index.js";
+import { agentTaskRefFor } from "../../../packages/core/dist/agent-runtime/index.js";
 import {
   createResponseRecommendationTaskDefinition,
   RECOMMENDATION_TASK_TYPE_V1,
@@ -135,6 +136,9 @@ export const createDeploymentAssessmentGraphPoliciesV1 = ({
           input.basisReleaseSetRef.reference.versionId,
           actionType,
           input.requiredAt,
+          releaseRef,
+          input.authorization.authorizationContextRef,
+          input.authorization.decidedAt,
         ]),
       )
       .digest("hex");
@@ -237,7 +241,7 @@ export const createDeploymentAssessmentGraphPoliciesV1 = ({
         : {
             kind: "resolved",
             targetReleaseRef: resolved.releaseRef,
-            calibrationValidationPolicyRef: agentPolicy.data.validationPolicyRef,
+            calibrationValidationPolicyRef: agentPolicy.data.policyRef,
             agentPolicy: agentPolicy.data,
           };
     },
@@ -360,7 +364,7 @@ const projectOf = (resolveProject, projectId) => {
   return project;
 };
 
-const authorizationForTask = async (authorizeDownstream, input) => {
+const authorizationForTask = async (authorizeDownstream, input, sourceScope) => {
   const run = input.run;
   const authorization = await authorizeDownstream({
     projectId: run.projectId,
@@ -368,6 +372,7 @@ const authorizationForTask = async (authorizeDownstream, input) => {
     branch: "agent-task.start-task",
     invocationId: input.actionId,
     requestedSpatialScopeRefs: run.authorization.spatialScopeRefs,
+    ...sourceScope,
   });
   if (
     authorization?.projectId !== run.projectId ||
@@ -379,8 +384,7 @@ const authorizationForTask = async (authorizeDownstream, input) => {
   return authorization;
 };
 
-const observeAgentTask = async ({ tasks, taskRef, input, taskType, policy, frozenInputRef }) => {
-  const task = await tasks.getTask(taskRef);
+const observeAgentTask = async ({ task, taskRef, input, taskType, policy, frozenInputRef }) => {
   if (task === undefined) return { kind: "waiting", agentTaskRef: taskRef };
   const envelope = task.envelope;
   if (
@@ -446,6 +450,19 @@ const observeAgentTask = async ({ tasks, taskRef, input, taskType, policy, froze
   return { task, result };
 };
 
+export const createDeploymentRecommendationTaskAuthorizationV1 = (authorizeDownstream) => ({
+  authorize({ task, purpose }) {
+    const envelope = task.envelope;
+    return authorizeDownstream({
+      projectId: envelope.projectId,
+      actorId: envelope.actorId,
+      branch: "warning-response.create-candidate",
+      invocationId: `${envelope.agentTaskRef.reference.entityId}:${purpose}`,
+      requestedSpatialScopeRefs: envelope.authorization.spatialScopeRefs,
+    });
+  },
+});
+
 const startEmbeddedTask = async ({
   tasks,
   authorizeDownstream,
@@ -453,6 +470,7 @@ const startEmbeddedTask = async ({
   policy,
   taskType,
   frozenInputRef,
+  sourceScope,
 }) => {
   const { run, actionId } = input;
   const command = StartAgentTaskCommandV1Schema.parse({
@@ -462,7 +480,7 @@ const startEmbeddedTask = async ({
     projectId: run.projectId,
     actorId: run.actorId,
     issuedAt: run.issuedAt,
-    authorization: await authorizationForTask(authorizeDownstream, input),
+    authorization: await authorizationForTask(authorizeDownstream, input, sourceScope),
     payload: {
       taskType,
       triggerMode: "embedded",
@@ -476,6 +494,22 @@ const startEmbeddedTask = async ({
       validationPolicyRef: policy.validationPolicyRef,
     },
   });
+  const taskRef = agentTaskRefFor(command);
+  // 已登记任务按原身份观察终态：当前授权可以变化，重提原启动命令必然同键异载荷冲突。
+  const registered = await tasks.getTask(taskRef);
+  if (registered !== undefined) {
+    const observed = await observeAgentTask({
+      task: registered,
+      taskRef,
+      input,
+      taskType,
+      policy,
+      frozenInputRef,
+    });
+    return observed.kind === undefined
+      ? { kind: "completed", agentTaskRef: taskRef, agentTaskResultRef: observed.result }
+      : observed;
+  }
   const started = await tasks.startTask(command);
   if (started?.kind !== "succeeded" || started.result?.agentTaskRef === undefined) {
     return { kind: "failed", reasonCode: started?.error?.code ?? "agent-task-start-failed" };
@@ -497,9 +531,8 @@ const startEmbeddedTask = async ({
   ) {
     return { kind: "failed", reasonCode: "agent-task-start-identity-mismatch" };
   }
-  const taskRef = parsedTaskRef.data;
   const observed = await observeAgentTask({
-    tasks,
+    task: await tasks.getTask(taskRef),
     taskRef,
     input,
     taskType,
@@ -630,10 +663,12 @@ export const createDeploymentCalibrationAgentV1 = ({
   tasks: taskPort,
   resolveProject,
   authorizeDownstream,
+  readArtifactManifest,
 }) => {
   const tasks = requireTaskPorts(taskPort);
   requiredMethod({ resolveProject }, "resolveProject", "resolveProject");
   requiredMethod({ authorizeDownstream }, "authorizeDownstream", "authorizeDownstream");
+  requiredMethod({ readArtifactManifest }, "readArtifactManifest", "readArtifactManifest");
 
   return Object.freeze({
     async ensureTask(input) {
@@ -650,9 +685,20 @@ export const createDeploymentCalibrationAgentV1 = ({
       );
       if (
         policy.projectId !== input.run.projectId ||
-        !sameRef(policy.validationPolicyRef, input.calibrationValidationPolicyRef)
+        !sameRef(policy.policyRef, input.calibrationValidationPolicyRef)
       ) {
         return { kind: "failed", reasonCode: "calibration-agent-policy-mismatch" };
+      }
+      const manifest = await readArtifactManifest(input.run.projectId, input.frozenInputRef);
+      if (
+        manifest === undefined ||
+        manifest.access.projectId !== input.run.projectId ||
+        !sameRef(manifest.artifactRef.reference, input.frozenInputRef.reference) ||
+        manifest.artifactRef.kind !== input.frozenInputRef.kind ||
+        manifest.purposeCode !== "warning-response.calibration-input-snapshot" ||
+        manifest.evidenceReferences.length === 0
+      ) {
+        return { kind: "failed", reasonCode: "calibration-agent-input-unavailable" };
       }
       const result = await startEmbeddedTask({
         tasks,
@@ -661,6 +707,17 @@ export const createDeploymentCalibrationAgentV1 = ({
         policy,
         taskType: CALIBRATION_AGENT_TASK_TYPE_V1,
         frozenInputRef: input.frozenInputRef,
+        sourceScope: {
+          requestedSourceVersionRefs: [
+            ...new Map(
+              manifest.evidenceReferences.map(({ sourceVersion }) => [
+                JSON.stringify([sourceVersion.entityId, sourceVersion.versionId]),
+                { kind: "source-version", reference: sourceVersion },
+              ]),
+            ).values(),
+          ],
+          requestedSourceAccessGrantRefs: manifest.access.sourceAccessGrantRefs,
+        },
       });
       if (result.kind !== "completed") return result;
       if (result.agentTaskResultRef.candidateRef === undefined) {
@@ -901,6 +958,7 @@ export const createDeploymentAssessmentV1 = (options) => {
       resolveDeploymentPolicies.reader,
     ),
     agentTasks,
+    reviewAudit: review,
     taskAuthorization,
     reviewAuthorization,
   });

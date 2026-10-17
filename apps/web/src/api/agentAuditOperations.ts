@@ -634,7 +634,7 @@ export interface ReviewTaskRefView {
   readonly reference: VersionRef;
   readonly reviewType: string;
   readonly targetRef: KindRef;
-  readonly waitingRunRef?: KindRef;
+  readonly waitingRunRef: KindRef;
 }
 
 const asReviewTaskRef = (value: unknown): ReviewTaskRefView => {
@@ -646,9 +646,7 @@ const asReviewTaskRef = (value: unknown): ReviewTaskRefView => {
     reference: asVersionRef(record.reference),
     reviewType: asString(record.reviewType),
     targetRef: asKindRef(record.targetRef),
-    ...(record.waitingRunRef === undefined
-      ? {}
-      : { waitingRunRef: asKindRef(record.waitingRunRef) }),
+    waitingRunRef: asKindRef(record.waitingRunRef),
   };
 };
 
@@ -676,7 +674,7 @@ export interface ReviewTaskDetailView {
 
 export const readReviewTaskDetail = async (
   projectId: string,
-  reviewTaskRef: ReviewTaskRefView,
+  reviewTaskRef: Pick<ReviewTaskRefView, "kind" | "reference">,
   signal?: AbortSignal,
 ): Promise<ReviewTaskDetailView> => {
   const result = asRecord(

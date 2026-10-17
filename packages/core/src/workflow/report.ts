@@ -79,7 +79,7 @@ export const ReportExportPreviewV1Schema = z.strictObject({
   policy: ReportExportPolicyV1Schema,
   /** 预览只给出有界首页条目；引用超过页大小时由用户续页，不扫完整工程。 */
   items: z.array(ProjectionResultItemV1Schema).max(REPORT_EXPORT_PAGE_SIZE_MAX_V1),
-  nextCursor: readCursor.optional(),
+  nextCursor: IdentifierSchema.optional(),
 });
 export type ReportExportPreviewV1 = z.infer<typeof ReportExportPreviewV1Schema>;
 

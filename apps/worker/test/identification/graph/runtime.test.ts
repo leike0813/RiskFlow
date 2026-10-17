@@ -574,6 +574,68 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     }
   });
 
+  it("D105 失败通知核验真实终态和原等待，保留成功项并幂等收口失败项", async () => {
+    const { world, access } = harness;
+    const run = harness.scope("failed-task-notification");
+    world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP)];
+    world.agentTaskStatus.set(NODE_NEIGHBOR, "running");
+    const started = await harness.runtime.start(harness.startCommand(run));
+    if (started.state.waitingRef?.kind !== "agent-task") throw new TypeError("task wait required");
+    const taskRef = started.state.waitingRef.agentTaskRef;
+    const cursor = await harness.latestRunState(run);
+    expect(cursor.state.completedWorkItemRefs).toEqual([workItemCurrentFor(run)]);
+    const rowsBefore = await harness.rows(run);
+    const command = () =>
+      harness.resumeCommand(run, {
+        expectedRunVersionId: cursor.runVersionId,
+        resumeCause: { kind: "agent-task-failed", agentTaskRef: taskRef },
+      });
+    const reject = async () => {
+      await expect(harness.runtime.resume(command())).rejects.toMatchObject({
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+      expect(await harness.rows(run)).toEqual(rowsBefore);
+    };
+    for (const status of [
+      "pending",
+      "running",
+      "retryable-failure",
+      "completed",
+      "cancelled",
+    ] as const) {
+      world.agentTaskStatus.set(NODE_NEIGHBOR, status);
+      await reject();
+    }
+    world.agentTaskStatus.set(NODE_NEIGHBOR, "terminal-failure");
+    world.agentTaskParents.set(NODE_NEIGHBOR, {
+      ...run.runRef,
+      reference: { ...run.runRef.reference, versionId: "wrong-parent" },
+    });
+    await reject();
+    world.agentTaskParents.set(NODE_NEIGHBOR, run.runRef);
+    access.revoke();
+    try {
+      await expect(harness.runtime.resume(command())).rejects.toMatchObject({
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+    } finally {
+      access.restore();
+    }
+    expect(await harness.rows(run)).toEqual(rowsBefore);
+    const valid = command();
+    const resumed = await harness.runtime.resume(valid);
+    expect(resumed.state.status).toBe("completed");
+    expect(resumed.state.failedWorkItemRefs).toEqual([workItemNeighborFor(run)]);
+    const after = await harness.latestRunState(run);
+    expect(after.state.completedWorkItemRefs).toEqual([workItemCurrentFor(run)]);
+    expect(after.state.validatedCandidateSetRefs).toEqual(cursor.state.validatedCandidateSetRefs);
+    expect(world.calls.startTask).toHaveLength(2);
+    const rowsAfter = await harness.rows(run);
+    await harness.runtime.resume(valid);
+    expect(await harness.rows(run)).toEqual(rowsAfter);
+    expect(world.calls.startTask).toHaveLength(2);
+  }, 120_000);
+
   it("I3 Agent 尚未完成时登记等待并暂停，恢复沿用原任务与线程", async () => {
     const { world } = harness;
     const run = harness.scope("agent-task-waiting");
@@ -929,11 +991,32 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
     expect(i8StageResult.eventRefs).toEqual([acceptedEventRefFor(AUTO_GROUP)]);
   }, 120_000);
 
+  it("全部分组待人工复核时保持等待且不生成正式记录", async () => {
+    const { world } = harness;
+    const run = harness.scope("all-groups-pending-review");
+    const route = reviewRouteFor(WORK_PLAN_ENTITY_ID, REVIEW_GROUP, run.runRef);
+    world.routes = [route];
+
+    const outcome = await harness.runtime.start(harness.startCommand(run));
+
+    expect(outcome.state.status).toBe("waiting");
+    expect(outcome.state.acceptedRiskRecordRefs).toEqual([]);
+    const cursor = await harness.latestRunState(run);
+    expect(cursor.state.pendingGroupRefs).toEqual([route.groupRef]);
+    expect(cursor.state.lastWaitingRef?.kind).toBe("human-review");
+    expect(await harness.rows(run, "run-result")).toHaveLength(0);
+  }, 120_000);
+
   it("I6～I8 待定组后续有决定后恰入库一次，重复恢复事件同回执无副作用", async () => {
     const { world } = harness;
     const run = harness.scope("pending-then-decided");
     const reviewRoute = reviewRouteFor(WORK_PLAN_ENTITY_ID, REVIEW_GROUP, run.runRef);
-    world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP), reviewRoute];
+    const rejectedRoute = reviewRouteFor(WORK_PLAN_ENTITY_ID, SECOND_REVIEW_GROUP, run.runRef);
+    world.routes = [automaticRouteFor(WORK_PLAN_ENTITY_ID, AUTO_GROUP), reviewRoute, rejectedRoute];
+    world.reviewDecisions.set(rejectedRoute.groupRef.reference.entityId, {
+      kind: "reject",
+      ref: reviewDecisionRefFor(SECOND_REVIEW_GROUP),
+    });
 
     const started = await harness.runtime.start(harness.startCommand(run));
     expect(started.state.status).toBe("waiting");
@@ -978,7 +1061,7 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       riskRecordRefFor(AUTO_GROUP).reference.entityId,
       riskRecordRefFor(REVIEW_GROUP).reference.entityId,
     ]);
-    expect(runResult.rejectedGroupRefs).toEqual([]);
+    expect(runResult.rejectedGroupRefs).toEqual([rejectedRoute.groupRef]);
     expect(runResult.pendingReviewTaskRefs).toEqual([]);
 
     // 重复事件：同一恢复命令身份重放返回原回执且不产生新的业务事实。
@@ -1015,6 +1098,23 @@ describe("C24 识别子图运行时（真实 LangGraph + PostgreSQL checkpointer
       row.auditEntryId.includes("I8"),
     );
     expect(i8Rows.length).toBeGreaterThan(0);
+  });
+
+  it("仅拒绝组有决定时不把其余待定跳过计为拒绝", async () => {
+    const { world } = harness;
+    const run = harness.scope("rejected-and-pending");
+    const rejected = reviewRouteFor(WORK_PLAN_ENTITY_ID, REVIEW_GROUP, run.runRef);
+    const pending = reviewRouteFor(WORK_PLAN_ENTITY_ID, SECOND_REVIEW_GROUP, run.runRef);
+    world.routes = [rejected, pending];
+    world.reviewDecisions.set(rejected.groupRef.reference.entityId, {
+      kind: "reject",
+      ref: reviewDecisionRefFor(REVIEW_GROUP),
+    });
+    const outcome = await harness.runtime.start(harness.startCommand(run));
+    expect(outcome.state.status).toBe("waiting");
+    expect(outcome.state.acceptedRiskRecordRefs).toEqual([]);
+    expect(outcome.state.rejectedGroupRefs).toEqual([rejected.groupRef]);
+    expect((await harness.latestRunState(run)).state.pendingGroupRefs).toEqual([pending.groupRef]);
   });
 
   it("I6～I8 全部组被封闭时按 skipped 幂等空结果收口", async () => {

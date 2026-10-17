@@ -446,7 +446,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       entityId,
     });
 
-  it("配置包通过正式修订和人工发布且不读取评分 Agent 任务", async () => {
+  it("配置包冲突补齐唯一复核任务，批准后正式发布且不读取评分 Agent 任务", async () => {
     const project = await startProjectWorld("configuration-package");
     const sourceVersionRef = project.world.sourceVersionRefs()[0]!;
     const sourceSegmentId = "configuration-package-segment";
@@ -493,6 +493,16 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
         },
       ],
     };
+    const originalMember = configurationPackage.members[0]!;
+    configurationPackage.members.push({
+      ...originalMember,
+      rule: {
+        ...originalMember.rule,
+        ruleId: `${ruleId}-conflict`,
+        ruleVersion: { entityId: `${ruleId}-conflict`, versionId: "1" },
+        scoringThresholds: [{ thresholdId: "conflict", operator: "gte", value: 0, score: 5 }],
+      },
+    });
     const packageRef = await requireFixture().putJson({
       projectId: project.projectId,
       artifactId: "configuration-package-input",
@@ -549,6 +559,55 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     ).toBe("succeeded");
     if (submitted.kind !== "succeeded" || submitted.result.kind !== "revision")
       throw new Error("package revision unavailable");
+    const laterAt = new Date(Date.parse(RULE_AUTHORING_AT) + 1_000).toISOString();
+    const laterAuthorization = requireFixture().authorize({
+      projectId: project.projectId,
+      actorId: authoringActor,
+      branch: "knowledge-modeling.submit-revision",
+      entityId: "configuration-package-current-read",
+      requestedAt: laterAt,
+    });
+    await expect(
+      requireFixture().scoringRules.prepareRevision({
+        projectId: project.projectId,
+        definitionType: "structured-scoring-rule",
+        candidateArtifactRef: artifactRef,
+        authorization: laterAuthorization,
+      }),
+    ).resolves.toMatchObject({ itemCount: 2 });
+    expect(await reviewLinkRows(project.projectId)).toHaveLength(0);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const commandId = `configuration-package-pending-review-${attempt}`;
+      const pending = await requireFixture().governance.govern(
+        KnowledgeGovernanceCommandV1Schema.parse({
+          kind: "request-review",
+          commandId,
+          idempotencyKey: commandId,
+          projectId: project.projectId,
+          actorId: authoringActor,
+          issuedAt: RULE_AUTHORING_AT,
+          authorization: requireFixture().authorize({
+            projectId: project.projectId,
+            actorId: authoringActor,
+            branch: "knowledge-modeling.request-review",
+            entityId: commandId,
+            requestedAt: RULE_AUTHORING_AT,
+          }),
+          payload: {
+            revisionRef: submitted.result.knowledgeRevisionRef,
+            reviewPolicyRef: { entityId: "rule-review", versionId: "1" },
+          },
+        }),
+      );
+      expect(pending).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+      expect(await reviewLinkRows(project.projectId)).toHaveLength(1);
+    }
+    const [conflictLink] = await reviewLinkRows(project.projectId);
+    await requireFixture().decideConflictReview({
+      projectId: project.projectId,
+      relationId: conflictLink!.relation_id,
+      kind: "approve-publication",
+    });
     const reviewDecisionRef = await approveRuleRevision({
       projectId: project.projectId,
       revisionRef: submitted.result.knowledgeRevisionRef,

@@ -248,6 +248,15 @@ describe("C35 统一复核详情与活动读取契约", () => {
       actions: [],
     };
     expect(ReviewTaskDetailV1Schema.safeParse(detail).success).toBe(true);
+    expect(
+      ReviewAuditReadQueryV1Schema.safeParse({
+        ...readQueryBase,
+        kind: "task-detail",
+        payload: {
+          reviewTaskRef: { kind: "review-task", reference: identificationTaskRef.reference },
+        },
+      }).success,
+    ).toBe(true);
     // 原任务状态里的请求方授权引用不得进入详情：出现即失败关闭。
     expect(
       ReviewTaskDetailV1Schema.safeParse({

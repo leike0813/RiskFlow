@@ -43,6 +43,7 @@ export class AccessServiceError extends Error {
 
 export interface LocalIdentityAccessV1 {
   filterVisibleSources?(input: {
+    readonly branch?: "knowledge-modeling.hybrid-evidence" | "risk-assessment.read";
     readonly authorization: AuthorizationContextV1;
     readonly sourceVersionRefs: readonly SourceVersionRefV1[];
   }): Promise<readonly SourceVersionRefV1[]>;

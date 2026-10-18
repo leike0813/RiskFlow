@@ -11,6 +11,8 @@ import { KNOWLEDGE_ROUTES } from './knowledge/routes';
 import { OPS_ROUTES } from './ops/routes';
 import { OVERVIEW_ROUTES } from './overview/routes';
 import { PROJECT_ROUTES } from './project/routes';
+// PROTOTYPE · THROWAWAY — 一次性原型路由，不进 57 页清单。
+import { PROTOTYPE_ROUTES } from './prototype/routes';
 import { REPORT_ROUTES } from './report/routes';
 import { RESPONSE_ROUTES } from './response/routes';
 import { REVIEW_ROUTES } from './review/routes';
@@ -29,6 +31,7 @@ export const BASE_ROUTES: readonly RouteContribution[] = [
   ...REPORT_ROUTES,
   ...OPS_ROUTES,
   ...COMPOSE_ROUTES,
+  ...PROTOTYPE_ROUTES,
 ];
 
 export const REVIEW_CONSOLE_PATH = '/__review';

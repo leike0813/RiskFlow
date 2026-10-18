@@ -117,6 +117,12 @@ export function App() {
     granted,
   });
 
+  // PROTOTYPE · THROWAWAY — 票 05 的原型自带外壳，绕过 v2 AppShell，
+  // 否则新设计会被套进旧深蓝左导航里（那正是要否掉的东西）。
+  if (route.routeId === 'prototype.ui') {
+    return <>{route.render?.({ route, params, pathname: pathOnly, pageState, capabilities: granted })}</>;
+  }
+
   return (
     <AppShell
       pathname={pathOnly}

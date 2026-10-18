@@ -1,6 +1,6 @@
 本 change 为剩余实现与真实功能取证，当前进度以以下任务勾选及 handoff.md 最新证据为准。任务 checkbox 只在行为与本次证据均成立后勾选。C38 F-01–F-05 是范围移交，不计当前 task；固定检查点和验收不由 CLI 工件存在性替代。
 
-接续依赖：两项减负change均已归档并进入HEAD，按新语义继续本清单。当前17/19；本轮关闭2.2、5.1、6.1，证据见[evidence/batch-closeout-d189-d190-2026-10-17.md](evidence/batch-closeout-d189-d190-2026-10-17.md)及[逐场景索引](evidence/scenario-index-2026-10-17.md)。6.2尚缺授权Git检查点，6.3尚未生成verification。旧终态失败保留。下文历史“精确授权/完整性”按新入口检查和普通消费语义执行，专业质量与事务要求保持。
+接续依赖：两项减负change均已归档并进入HEAD，按新语义完成本清单。当前19/19；2026-10-18经用户明确批准，45个文件形成固定实现检查点`96d98651d495fd4a48055aff908c8ae47fa2f577`，最终结论及边界见[verification.md](verification.md)。批量验收证据见[evidence/batch-closeout-d189-d190-2026-10-17.md](evidence/batch-closeout-d189-d190-2026-10-17.md)及[逐场景索引](evidence/scenario-index-2026-10-17.md)。旧终态失败保留。下文历史“精确授权/完整性”按新入口检查和普通消费语义执行，专业质量与事务要求保持。
 
 ## 1. 来源与环境
 
@@ -31,8 +31,8 @@
 ## 6. 收口
 
 - [x] 6.1（IP-22；依赖全部功能场景）同步 ACCEPTANCE/OPERATIONS 与本 change 安全证据索引，核对每个 Requirement/Scenario/IP、原任务与 F-ID，无遗漏或把未完成列成通过；验证：`pnpm exec openspec validate complete-private-deployment-functional-acceptance --strict --no-interactive`、`git diff --check` 和逐场景实际报告。2026-10-17：24份delta/112 Requirement/213 Scenario完整索引、原任务/IP及F-ID保持；11项定位疑点对照既有测试并统一9套件236项补证，20份原日志与安全汇总在d190-closeout；6.2/6.3及C38未改判，见本轮批量收口。
-- [ ] 6.2（IP-22；依赖 6.1）运行 `NODE_OPTIONS=--max-old-space-size=8192 pnpm verify`、`pnpm test:browser`、`pnpm test:deployment`，记录实际结果并闭合门禁；原已归档规格 strict 失败按责任范围解决，不删 strict 或静默忽略；按授权形成固定实现检查点。
-- [ ] 6.3（IP-22；依赖 6.2）由 Finalizer/必要一次限定审计完成核验、范围内修复与回归，再创建 verification.md；验证：最终 HEAD 与实际证据一致，security/persistence/integration 及必要 performance 审计完成，无当前缺陷、缺证据或待审计的 PASS。
+- [x] 6.2（IP-22；依赖 6.1）运行 `NODE_OPTIONS=--max-old-space-size=8192 pnpm verify`、`pnpm test:browser`、`pnpm test:deployment`，记录实际结果并闭合门禁；原已归档规格 strict 失败按责任范围解决，不删 strict 或静默忽略；按授权形成固定实现检查点。2026-10-18：用户明确批准后提交45个清单文件，检查点`96d98651d495fd4a48055aff908c8ae47fa2f577`；文件及日志摘要匹配、无范围外暂存。复用完整browser90/90、含完整deployment范围的24套件572项与后半门禁、全仓strict44/44；原verify的2735通过/1过时断言失败/3外部smoke skip如实保留，删除过时断言后所属及受影响回归通过，未重跑或宣称monolithic verify最终exit0。
+- [x] 6.3（IP-22；依赖 6.2）由 Finalizer/必要一次限定审计完成核验、范围内修复与回归，再创建 verification.md；验证：最终 HEAD 与实际证据一致，security/persistence/integration 及必要 performance 审计完成，无当前缺陷、缺证据或待审计的 PASS。2026-10-18：固定检查点的12个生产文件与v173证据摘要一致，20份原日志摘要、24份delta/112 Requirement/213 Scenario索引及链接核对无遗漏；沿已完成唯一限定审计及范围内修复回归生成最终verification，结论为当前平台合成功能验收PASS。只更新收口文档，C38 F-01–F-05仍未通过，未归档。
 
 ## 7. 已批准原件与Agent修正
 

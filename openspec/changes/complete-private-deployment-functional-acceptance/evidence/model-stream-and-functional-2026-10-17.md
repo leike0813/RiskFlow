@@ -1,5 +1,9 @@
 # 会话流与functional实机取证
 
+当前已接续至v164，任务10/19，四项新增收口及C19原命令实机修复见[逐任务证据](task-closeout-2026-10-17.md)。下文各轮6/19保留为历史时点；完整functional及Electron仍未通过。
+
+本轮已接续至v163，当前结论见 [v163验收接续](resume-v163-2026-10-17.md)：两份functional为PASS/queryCount1，最终Electron选定13项为12通过/1个SSE失败，关窗继续尚未执行。以下v162及更早记录保留各轮实际边界。
+
 当前正式宿主及完整任务进度见[handoff.md](../handoff.md)，设计问题统一维护[defensive-design-ledger.md](defensive-design-ledger.md)。当前为v162：D173正常导航取消处理、D174报告来源透传及D175合法运行编码路由上限均已部署。v160完整browser为90/90通过（14.0m，无重试/跳过），之后D174报告定向1项通过、D175 HTTP shell/SSE 55项通过；不把旧完整轮说成最终版本全量回归。正式SSE在v161返回414、v162返回200/text/event-stream并收到同次事件，证据`d172-functional-desktop/sse-http-v161.json`、`sse-http-v162.json`及`sse-owner-diagnosis-v161.json`。
 
 `d172-functional-desktop/operator-observation-v6/functional.json`为真实CLI PASS/queryCount1，包含同次资料交付、overview和export，但启动沿领域幂等返回原4d31ceff…completed运行，只证明该工具组合与历史重放。v8/v9显式capture不存在的agentTaskRef而BLOCKED，不能手补报告或当作活动任务。v162真实Electron共享对象、JSON工件下载、越界导航三个定向用例已通过；完整关窗继续与SSE游标重连仍未完成。当前仍6/19，无verification/提交/归档。以下为分轮历史，文中“在途”只代表该轮时点。

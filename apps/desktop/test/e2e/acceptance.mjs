@@ -92,6 +92,17 @@ export const DesktopAcceptanceInputV1Schema = z.strictObject({
   functionalReportFile: boundedText,
   sharedObjectUrl: boundedText,
   downloadArtifactRef: ArtifactRefV1Schema,
+  sseIdentificationRun: z
+    .strictObject({
+      workflowRunRef: WorkflowRunRefV1Schema,
+      readSnapshotRef: WorkflowRunRefV1Schema,
+      sourceVersionRefs: z.array(SourceVersionRefV1Schema).min(1).max(256),
+    })
+    .refine(
+      (input) =>
+        input.workflowRunRef.reference.entityId === input.readSnapshotRef.reference.entityId,
+    )
+    .optional(),
   invalidCertificateOrigin: boundedText,
   unapprovedOrigin: boundedText,
 });

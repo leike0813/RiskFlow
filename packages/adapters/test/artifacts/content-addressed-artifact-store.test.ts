@@ -1017,6 +1017,20 @@ describe("content-addressed artifact store", () => {
         policy: artifactPolicy(),
       });
       try {
+        const dryRun = await fresh.maintenance.sweepOrphans({
+          ...command,
+          runId: `${command.runId}-dry-run`,
+          commandId: `${command.commandId}-dry-run`,
+          idempotencyKey: `${command.idempotencyKey}-dry-run`,
+          dryRun: true,
+        });
+        expect(dryRun.orphanRemoved).toBe(0);
+        expect(dryRun.orphanQuarantined).toBe(0);
+        expect(dryRun.stagingRemoved).toBe(0);
+        await expect(
+          readFile(join(fixture.rootDirectory, "quarantine", command.runId, hash)),
+        ).resolves.toEqual(Buffer.from(content));
+        await expect(stat(objectPath)).rejects.toMatchObject({ code: "ENOENT" });
         await fresh.maintenance.sweepOrphans(command);
       } finally {
         await fresh.close();
@@ -1386,10 +1400,31 @@ describe("content-addressed artifact store", () => {
   });
 
   it("hash manifest writes deterministically and reconciles database and files", async () => {
-    await fixture.store.put(
-      putCommand("hash-source", { artifactId: "hash-source" }),
-      textChunks("hash source"),
-    );
+    for (const artifactId of [
+      "hash-source",
+      "hash-model6-source",
+      "hash-model-source",
+      "hash-\ue000",
+      "hash-😀",
+    ]) {
+      await fixture.store.put(putCommand(artifactId, { artifactId }), textChunks(artifactId));
+    }
+    const ordinary = [];
+    for await (const manifest of fixture.registry.listManifests(projectId, 2)) {
+      ordinary.push(manifest.artifactRef);
+    }
+    const snapshot = await fixture.registry.openManifestSnapshot(projectId);
+    try {
+      const frozen = [];
+      for await (const manifest of snapshot.listManifests(2)) frozen.push(manifest.artifactRef);
+      expect(frozen).toEqual(ordinary);
+      expect(new Set(frozen.map((ref) => JSON.stringify(ref))).size).toBe(frozen.length);
+      const ids = frozen.map((ref) => ref.reference.entityId);
+      expect(ids.indexOf("hash-model-source")).toBeLessThan(ids.indexOf("hash-model6-source"));
+      expect(ids.indexOf("hash-\ue000")).toBeLessThan(ids.indexOf("hash-😀"));
+    } finally {
+      await snapshot.close(true);
+    }
     const command = {
       schemaVersion: "1",
       commandId: "hash-manifest-command",

@@ -713,6 +713,66 @@ describe("C09 HTTP shell", () => {
     await app.close();
   });
 
+  it("forwards an explicit site artifact through the public assessment start", async () => {
+    let seen: unknown;
+    const app = appFor({
+      workflow: {
+        ...workflowPort(() => {}),
+        startRun: async (command) => {
+          seen = command.payload;
+          return {
+            kind: "succeeded",
+            result: {
+              workflowRunRef: {
+                kind: "workflow-run",
+                reference: { entityId: "run-site", versionId: "1" },
+              },
+              disposition: "created",
+            },
+          };
+        },
+      },
+    });
+    const site = { kind: "content-artifact", reference: { entityId: "site", versionId: "1" } };
+    const payload = {
+      entryMode: "assess",
+      graphVersion: { entityId: "graph", versionId: "1" },
+      retryPolicyRef: { entityId: "retry", versionId: "1" },
+      riskInput: { kind: "external-risk-event", reference: { entityId: "event", versionId: "1" } },
+      spatialScopeRef: scope,
+      applicabilityMetadataSnapshotRef: {
+        kind: "applicability-metadata-snapshot",
+        reference: { entityId: "applicability", versionId: "1" },
+      },
+      siteContextArtifactRef: site,
+    };
+    const post = (body: unknown) =>
+      app.inject({
+        method: "POST",
+        url: "/api/v1/projects/project/commands/workflow.start-run",
+        headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+        payload: {
+          schemaVersion: "1",
+          commandId: "start-site",
+          idempotencyKey: "start-site",
+          issuedAt: NOW,
+          requestedSpatialScopeRefs: [scope],
+          requestedSourceVersionRefs: [],
+          payload: body,
+        },
+      });
+    try {
+      expect((await post(payload)).statusCode).toBe(200);
+      expect(seen).toEqual(payload);
+      expect(
+        (await post({ ...payload, siteContextArtifactRef: { ...site, kind: "source-version" } }))
+          .statusCode,
+      ).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("forwards the identification-preparation-ready resume cause through the shared strict schema", async () => {
     const resumed: Record<string, unknown>[] = [];
     const app = buildApi({

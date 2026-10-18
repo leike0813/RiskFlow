@@ -84,12 +84,74 @@ Agent预算在策略目录`budgetPolicies`唯一登记。清洗V3、知识编制
 4. 人工确认精确目标后切换；输入变化必须重新确认；
 5. 切换失败保留双根，按记录显式回退，不自动删除任何一端。
 
+完成副本核验后，使用独立 Qdrant 为原 active 代际重建双索引。运维任务 JSON
+包含 `operationId`、`sourceConfigFile`、`configFile`、`manifestFile`、`projectId`、
+`generationRef`、`loginName`、`passwordSecretFile`、`requestedSpatialScopeRefs` 和
+`requestedSourceVersionRefs`。配置、发布清单及原代际引用均使用精确版本；口令只放在
+受限秘密文件中。目标实例、数据库、工件根和 Qdrant 必须分别独立于源实例。
+
+```bash
+node scripts/deployment/restore.mjs --job /secure/restore-generation-job.json --output /secure/restore-generation-result.json
+```
+
+该命令使用当前用户权限读取原发布事实，重新生成向量并通过原双索引对账及质量门，
+仅写独立投影与运维审计，不启动 Worker 消费循环，不重投已完成事件，也不改变原
+消费回执或激活序号。输出文件必须不存在；失败保留诊断与双根，不能据此进行切换。
+
 ## 5. 升级与回退
 
 软件、模型、Embedding 与业务定义分别发布。兼容的旧发布可在维护窗口人工切换；
 **不兼容的数据库或工件版本必须先构造匹配副本的隔离实例，不能只换旧镜像**。
 
+当前合置功能宿主使用已构建的发布目录及正式启动入口。先在受限操作记录中固定
+源/目标发布、清单摘要、配置摘要、数据库名、工件根、Qdrant、API 端口和旧进程 PID。
+目标配置的 `api.port` 必须与源不同，配置和清单的 `releaseId` 必须一致。保留原配置，
+不原地改写。以下路径均须替换为本次记录中的精确绝对路径：
+
+```bash
+cd /opt/riskflow/releases/selected-release
+node scripts/deployment/start.mjs --role api --config /secure/target-config.json --manifest /secure/target-release.json
+```
+
+在独立终端以前台方式启动目标 API；正式启动会检查实际迁移兼容性。若拒绝，保留
+失败日志和原入口，不启动该目标的 Worker、不切换 Caddy，也不修改清单迁移号绕过。
+目标可读后，使用当前会话经其临时受信 HTTPS 入口核对原业务精确引用、权限拒绝及
+同一命令重放。准备目标 Caddy 配置，仅将反代端口和静态发布根指向目标，证书和同源
+路径保持；先验证配置：
+
+```bash
+caddy validate --config /secure/Caddyfile-target --adapter caddyfile
+```
+
+在停写窗口向记录中的源 API/Worker PID 发送 `kill -TERM <pid>`，等待两端正式
+`stopped` 回执且 `count=0`。未排空则不切换。按 `createActivationPlanV1` 固定目标，
+由操作者核对同一目标并调用 `confirmActivationV1`；通过 `activateTargetV1` 的
+`switchTo` 执行下列入口动作。目标或发布变化须重新确认，不能沿用旧确认。
+
+开启本机受限管理端口的 Caddy 可加载已验证配置：
+
+```bash
+caddy reload --config /secure/Caddyfile-target --adapter caddyfile --address 127.0.0.1:2019
+```
+
+使用本仓库 `admin off` 配置时，reload 不可用：向精确 Caddy PID 发送 SIGTERM，
+确认退出，再以前台 `caddy run --config /secure/Caddyfile-target --adapter caddyfile`
+启动。按现场服务管理器保持前台进程，不使用通配符杀进程。源 Worker 排空后才在
+目标发布目录启动目标 Worker：
+
+```bash
+node scripts/deployment/start.mjs --role worker --config /secure/target-config.json --manifest /secure/target-release.json
+```
+
+切换后经原 HTTPS 地址重新登录，检查业务读、权限拒绝、原命令重放和 Worker 就绪，
+保存实际进程/发布及回执。任一步失败，停止目标写者并按同样顺序用保留的源配置、
+源发布及源 Caddy 配置显式恢复；保留双根和失败记录。不兼容回退只允许启动与旧发布
+匹配的隔离副本，当前数据库不能接给旧发布；没有匹配副本时记录拒绝及未完成恢复，
+不能将兼容探针或配置验证写成实际回退成功。
+
 ## 6. 故障排查
+
+任务completed与等待它的父运行completed分别取证。当前Worker完成内嵌任务后，不自动发送父运行完成通知；有权运维/验收驱动须读取C08正式agentTaskResultRef及C34父运行当前stateVersion.versionId，再沿既有workflow.resume-run提交agent-task-completed原因，保存原命令及回执。不得用任务completed代替父运行终态，也不重开旧失败任务。实机命令/回执及同发布SIGTERM/count0边界见[本轮收口](../openspec/changes/complete-private-deployment-functional-acceptance/evidence/batch-closeout-d189-d190-2026-10-17.md)。客户端关窗后重开时，先确保API就绪；会话自省失败沿产品恢复按钮重试，不能把无登录框当成已登录。
 
 | 现象                     | 首先检查                                             |
 | ------------------------ | ---------------------------------------------------- |

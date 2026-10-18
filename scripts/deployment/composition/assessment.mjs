@@ -567,14 +567,24 @@ export const createDeploymentRecommendationAgentV1 = ({
       const bindings = siteBindings.filter(
         (binding) =>
           binding.projectId === run.projectId &&
-          run.frozenRefs.some((ref) => sameRef(ref.reference, binding.siteContextRef)),
+          run.frozenRefs.some(
+            (ref) => ref.kind === "content-artifact" && sameRef(ref.reference, binding.artifactRef),
+          ),
       );
       const exact = [];
       for (const binding of bindings) {
+        const requestId = `${run.runRef.reference.entityId}:site-context:${binding.siteContextRef.entityId}`;
+        const authorization = await authorizeDownstream({
+          projectId: run.projectId,
+          actorId: run.actorId,
+          branch: "warning-response.validate-and-record",
+          invocationId: requestId,
+          requestedSpatialScopeRefs: [run.spatialScopeRef],
+        });
         const context = await siteContextReader.read({
-          requestId: `${run.runRef.reference.entityId}:site-context:${binding.siteContextRef.entityId}`,
-          requestedAt: requiredAt,
-          authorization: run.authorization,
+          requestId,
+          requestedAt: authorization.decidedAt,
+          authorization,
           siteContextRef: binding.siteContextRef,
         });
         if (

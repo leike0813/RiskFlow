@@ -492,11 +492,11 @@ export class PostgresArtifactRegistry {
           if (cursor !== undefined) {
             parameters.push(cursor.artifactKind, cursor.artifactId, cursor.versionId);
             predicates.push(
-              `(artifact_kind, artifact_id, version_id) > ($${parameters.length - 2}, $${parameters.length - 1}, $${parameters.length})`,
+              `(artifact_kind COLLATE "C", artifact_id COLLATE "C", version_id COLLATE "C") > ($${parameters.length - 2}, $${parameters.length - 1}, $${parameters.length})`,
             );
           }
           parameters.push(batchSize);
-          const query = `SELECT ${manifestColumns.join(", ")} FROM business.artifact_manifests WHERE ${predicates.join(" AND ")} ORDER BY artifact_kind, artifact_id, version_id LIMIT $${parameters.length}`;
+          const query = `SELECT ${manifestColumns.join(", ")} FROM business.artifact_manifests WHERE ${predicates.join(" AND ")} ORDER BY artifact_kind COLLATE "C", artifact_id COLLATE "C", version_id COLLATE "C" LIMIT $${parameters.length}`;
           let rows: ArtifactManifestRow[];
           try {
             const result = await client.query<ArtifactManifestRow>(query, parameters);
@@ -948,9 +948,9 @@ export class PostgresArtifactRegistry {
           .selectFrom("business.artifact_manifests")
           .selectAll()
           .where("project_id", "=", projectId)
-          .orderBy("artifact_kind", "asc")
-          .orderBy("artifact_id", "asc")
-          .orderBy("version_id", "asc")
+          .orderBy(sql`artifact_kind COLLATE "C"`, "asc")
+          .orderBy(sql`artifact_id COLLATE "C"`, "asc")
+          .orderBy(sql`version_id COLLATE "C"`, "asc")
           .limit(batchSize);
         if (exclude !== undefined) {
           const kind = exclude.kind === "content-artifact" ? "content" : "diagnostic";
@@ -960,7 +960,7 @@ export class PostgresArtifactRegistry {
         }
         if (cursor !== undefined) {
           query = query.where(
-            sql<boolean>`(artifact_kind, artifact_id, version_id) > (${cursor.artifactKind}, ${cursor.artifactId}, ${cursor.versionId})`,
+            sql<boolean>`(artifact_kind COLLATE "C", artifact_id COLLATE "C", version_id COLLATE "C") > (${cursor.artifactKind}, ${cursor.artifactId}, ${cursor.versionId})`,
           );
         }
         const rows = await query.execute();

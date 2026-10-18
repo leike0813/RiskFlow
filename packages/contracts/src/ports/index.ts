@@ -1902,6 +1902,7 @@ const WorkflowAssessmentContextV1Schema = z.strictObject({
   spatialScopeRef: SpatialScopeRefV1Schema,
   applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
   monitoringSnapshotRefs: z.array(MonitoringSnapshotRefV1Schema).min(1).optional(),
+  siteContextArtifactRef: ContentArtifactRefV1Schema.optional(),
 });
 
 const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
@@ -1919,6 +1920,7 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     ...workflowStartControlShape,
     entryMode: z.literal("assess"),
     assessmentPreparationSnapshotRef: AssessmentPreparationSnapshotRefV1Schema.optional(),
+    siteContextArtifactRef: ContentArtifactRefV1Schema.optional(),
     riskInput: RiskInputVersionRefV1Schema,
     applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
     monitoringSnapshotRef: MonitoringSnapshotRefV1Schema.optional(),
@@ -1932,6 +1934,7 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     previousAssessmentRecordRef: RiskAssessmentRecordRefV1Schema,
     reason: WorkflowReassessmentReasonV1Schema,
     changedInputRefs: z.array(ContractReferenceV1Schema).min(1).max(64),
+    siteContextArtifactRef: ContentArtifactRefV1Schema.optional(),
     riskInput: RiskInputVersionRefV1Schema.optional(),
     projectRevisionRef: ProjectRevisionRefV1Schema.optional(),
     spatialScopeRef: SpatialScopeRefV1Schema.optional(),
@@ -1944,6 +1947,7 @@ const StartWorkflowPayloadV1Schema = z.discriminatedUnion("entryMode", [
     riskInput: RiskInputVersionRefV1Schema,
     applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1Schema,
     effectiveAt: IsoDateTimeSchema,
+    siteContextArtifactRef: ContentArtifactRefV1Schema.optional(),
     assessmentBasisReleaseSetRef: AssessmentBasisReleaseSetRefV1Schema,
     projectRevisionRef: ProjectRevisionRefV1Schema.optional(),
     spatialScopeRef: SpatialScopeRefV1Schema.optional(),

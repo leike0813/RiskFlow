@@ -859,6 +859,84 @@ describe("versioned hybrid retrieval projection handler", () => {
     expect(projection.collections.get(expectedCollectionName)?.size).toBe(3);
   });
 
+  it("rebuilds the registered generation into an empty projection without consuming or activating again", async () => {
+    const original = buildHandler({});
+    await original.handler.handle(eventFor({}));
+    const generation = [...original.store.generations.values()][0]!;
+    const before = structuredClone({
+      transitions: original.store.transitions,
+      activations: original.store.activations,
+      receipts: original.consumer.receipts,
+    });
+    const restored = buildHandler({ store: original.store, consumer: original.consumer });
+    const result = await restored.handler.rebuildGeneration({
+      event: eventFor({}),
+      generationRef: generation.generationRef,
+      authorization,
+      operationId: "restore-c20",
+    });
+    expect(result).toEqual({
+      kind: "rebuilt",
+      generationRef: generation.generationRef,
+      memberCount: 3,
+    });
+    const points = [...restored.projection.collections.get(generation.collectionName)!.values()];
+    expect(points).toHaveLength(3);
+    expect(points.every((point) => point.hasDenseVector && point.hasSparseVector)).toBe(true);
+    expect({
+      transitions: original.store.transitions,
+      activations: original.store.activations,
+      receipts: original.consumer.receipts,
+    }).toEqual(before);
+    expect(original.consumer.runs).toBe(1);
+    expect(original.store.ensureCalls).toBe(1);
+  });
+
+  it.each(["event", "manifest", "quality"] as const)(
+    "refuses restore %s drift without changing formal generation facts",
+    async (failure) => {
+      const original = buildHandler({});
+      await original.handler.handle(eventFor({}));
+      let generation = [...original.store.generations.values()][0]!;
+      if (failure === "manifest") {
+        generation = { ...generation, manifestSha256: "0".repeat(64) };
+        original.store.generations.set(generation.generationRef.reference.versionId, generation);
+      }
+      const restored = buildHandler({
+        store: original.store,
+        consumer: original.consumer,
+        ...(failure === "quality"
+          ? {
+              qualityGate: {
+                evaluate: async () => ({ passed: false, detailCode: "gate-refused" }),
+              },
+            }
+          : {}),
+      });
+      const before = structuredClone({
+        transitions: original.store.transitions,
+        activations: original.store.activations,
+        receipts: original.consumer.receipts,
+      });
+      const result = await restored.handler.rebuildGeneration({
+        event: eventFor(failure === "event" ? { eventId: "other-event" } : {}),
+        generationRef: generation.generationRef,
+        authorization,
+        operationId: "restore-refused-c20",
+      });
+      expect(result.kind).toBe("rejected");
+      expect({
+        transitions: original.store.transitions,
+        activations: original.store.activations,
+        receipts: original.consumer.receipts,
+      }).toEqual(before);
+      expect(original.consumer.runs).toBe(1);
+      expect(original.store.ensureCalls).toBe(1);
+      if (failure !== "quality")
+        expect((restored.modelGateway as RecordingModelGateway).requests).toHaveLength(0);
+    },
+  );
+
   it("activates the next generation in a series after the policy changes", async () => {
     const first = buildHandler({});
     expect((await first.handler.handle(eventFor({}))).kind).toBe("projected");

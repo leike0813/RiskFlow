@@ -168,13 +168,28 @@ D-51已获用户批准，作为IP-19/IP-21补充：按[evidence/workflow-identif
 | 同上 / 当前功能验收与 C38 平台证据缺失                                    | IP-18/IP-22                             | 当前平台完整 Electron                                   | 当前桌面特有行为实跑，未来不冒称通过       | V7、V6                                          |
 | 同上 / 兼容界面更新与正式平台证据                                         | IP-18/IP-22 → F-01/F-02                 | 同 HTTPS 界面更新                                       | 无 UI 副本/自动升级，缺签名不制正式包      | V7、V6                                          |
 
+| 工作流显式冻结现场工件 / 公开入口携带精确现场工件 | IP-18/IP-19/IP-21 | ports启动载荷、core入口身份、C30/C25冻结传递、现场所属授权 | 原Schema/HTTP/core/runtime/composition及v172正式完成链 | V1、V4、V7 |
+| 同上 / 冻结引用不匹配现场 | IP-18/IP-21 | C27部署组合与原现场reader | 错工件/异工程空间/多候选仍拒绝，旧失败保留 | V1、V7 |
+| 同上 / 多空间交换现场工件 | IP-18/IP-21 | workflowEntryIdentityFor、pairingFrozenRefsV1、登记恢复 | 交换关联身份不同、顺序稳定、历史无现场身份保持、子运行不混传 | V1 |
+
 - **V1**：`pnpm test:deployment`，以及 `pnpm exec vitest run packages/adapters/test/workflow/postgres-workflow-adapter.test.ts apps/worker/test/risk-flow/runtime.test.ts apps/worker/test/assessment/runtime.test.ts`。
+- IP-18/IP-21 / D-190：原acceptance.mjs增加可选精确SSE识别运行与来源输入，原client.spec.ts在订阅前经C33当前会话核对精确completed运行，再执行原同运行2+2/游标/零写断言；预检覆盖非法输入。关窗继续使用同次原活动任务，分别记录13/14原批次和SSE定向闭合证据，不重开模型。同步ACCEPTANCE及安全索引，无生产改动/依赖/迁移。
 - **V2**：`pnpm exec vitest run scripts/acceptance/synthetic.test.mjs scripts/acceptance/functional.test.mjs`。
 - **V3**：`RISKFLOW_NETWORK_API_SMOKE=1 pnpm exec vitest run packages/adapters/test/model/network-api-model-gateway.smoke.test.ts`；完整 MinerU 资格按其 V2 真实 smoke 配置与 manifest，不复用 V1 失败件。
 - **V4**：`node scripts/deployment/start.mjs --role api|worker --config <实际部署配置> --manifest <同发布清单>`（role 实际逐个选）；`node scripts/deployment/provision.mjs --config <真实预置配置> --output <新预置报告>`，部署配置与同发布清单分别由 RISKFLOW_DEPLOYMENT_CONFIG/RISKFLOW_RELEASE_MANIFEST 传路径；`node scripts/acceptance/functional.mjs --pack <批准包> --config <真实functional配置> --output <新证据目录> [--resume]`。秘密只走文件。
 - **V5**：`NODE_OPTIONS=--max-old-space-size=8192 pnpm verify`、`pnpm test:browser`、`pnpm test:deployment`；工程命令不等于 V4/可见交互通过。
 - **V6**：核对 handoff.md 原任务/IP/F-ID、实际 Git 检查点、全部场景报告与必要审计，`pnpm exec openspec validate complete-private-deployment-functional-acceptance --strict --no-interactive`。
 - **V7**：`NODE_OPTIONS=--max-old-space-size=8192 pnpm build`、`pnpm exec playwright test -c playwright.desktop.config.ts`；无签名包亦必须有真实 Electron、受信任 HTTPS 与完整场景，关键 skip 不通过。
+
+- IP-20 / D-183：`scripts/acceptance/functional.mjs`及既有test增加显式只读既有正式引用模式，复用原会话与观察循环，精确目标/集合及主结果路径检查；原提交模式、桌面启动回执不变。`deployment/functional-run-config.example.json`及`ACCEPTANCE.md`同步四类DTO及只读来源说明。运行synthetic/functional回归及实际七目标只读观察，正式查询索引另记逐边业务追溯；无新业务命令、模型任务、依赖或迁移。
+
+- IP-18/IP-20/IP-21/IP-22 / D-184：`scripts/deployment/restore.mjs`及原test集中修活动操作归属与cleanup；`scripts/acceptance/functional.mjs`及原test、`deployment/functional-run-config.example.json`按kind选择唯一主产出及新观察身份；`packages/adapters/test/engineering-data/context-source/postgres-engineering-context-source-registry.test.ts`删除与归档减负D-04冲突的清单篡改测试，保留其它事务/权限/维护覆盖；`deployment/OPERATIONS.md`补正式启停/Caddy人工确认切换回退顺序。安全证据、ledger/handoff同步。实例只准备独立合成外部风险事件与精确新类别绑定、原措施/预算，先离线核对全输入，再统一验证及正式运行。不新增依赖、迁移或公共业务字段，不重复browser90项，不复活旧终态。
+
+- IP-18/IP-19/IP-21 / D-185：`packages/contracts/src/ports/index.ts`启动载荷及逐空间上下文增加可选`siteContextArtifactRef`，复用ContentArtifactRef；`packages/core/src/workflow/service.ts`及原test冻结该引用并纳入入口身份；`apps/worker/src/risk-flow/graph.ts`及原runtime测试将现场工件传到评估子运行；`scripts/deployment/composition/assessment.mjs`及原test通过冻结content-artifact匹配同工程配置artifactRef，保留原现场reader和唯一性。`apps/api/test/http-shell.test.ts`原入口覆盖新字段严格解析，局部module-interfaces-events-workflows delta同步。外部合成输入、类别/措施/现场/预算一并离线核验，统一构建及core/worker/HTTP/部署回归，再正式验收；无新依赖、迁移或引用种类。
+
+- IP-18/IP-21 / D-186/D-187：`apps/desktop/test/e2e/client.spec.ts`活动状态使用公共pending/running；原`composition/assessment.mjs`及`assessment-composition.test.mjs`为现场读取签发所属validate-and-record新鲜授权，并保留冻结工件/同工程/空间/业务时刻/唯一性。使用原正式完成通知、同发布重启及真实HTTP回执中断/原信封重放取证，测试与模型预算不重置，旧terminal父不复活。与本轮其余问题统一回归/部署，公开契约保持D-185定义，无新依赖/迁移。
+
+- IP-18/IP-21/IP-22 / D-188/D-189：原client.spec.ts等待原生文档提交、按可见认证状态处理恢复；原restore.mjs/test每调用独立会话；core workflow/service.ts及test为新增现场的逐空间配对纳入canonical入口身份；worker原graph.ts/runtime.ts及runtime.test.ts只向对应子运行传其现场并按登记恢复配对。复用所有旧无现场身份及已批准边界，无新增依赖/迁移/公共业务DTO。限定审计不另派第二轮；父负责身份决定、合并验证及真实完整Electron/来源证据。
 
 ## 7. 文件清单与升级条件
 
@@ -481,5 +496,17 @@ IP-19的D-98串行提示诊断失败，未修改生产runtime，也不发布该�
 - IP-18/IP-21 / D-175：apps/api/src/http.ts集中既有运行编码上限2048，app.ts路由参数上限复用该值；扩原http-shell.test.ts逐事件授权用例为真实长引用，验证入口不先于公开契约拒绝，原解码/权限/游标边界保留。
 
 - IP-18 / D-176：client.spec.ts的queryV1允许显式来源，撤权用例读取同次报告时使用reportSourceVersionRefs；修订helper按真实“确认执行”及目录结果等待，仅已执行撤权才在finally恢复。沿原用例验证，不改产品权限或添加恢复分支。
+
+- IP-17/IP-19 / D-177：仅packages/adapters/src/scoring-rules/postgres-scoring-rules-adapter.ts及既有test/scoring-rules/postgres-scoring-rules-adapter.test.ts，组装通过当前校验及确定性计算后复用精确匹配的已有派生发布；沿所属治理查询和C19元数据，不跨层直查C04或改变其幂等语义。扩原正式组装用例，先红后绿验证另一当前调用/时刻的同输入复用、引用及修订发布数量不变，保留同键异载荷/撤权/新准备隔离；所属全套、编译/格式及原物理Chrome命令复验后才判断8.1。范围内普通缺陷依用户持续授权实施，无新增公共接口、依赖、迁移或事务。
+
+- IP-20/IP-21 / D-178：仅C33原postgres-risk-identification-read.ts及既有同名test，复用auth/deployment-authorization的createRegisteredResourceAuthorizerV1和C06当前业务动作接缝，对四类只读按真实登记资源授权，替换完整历史摘要相等筛选。图/路由/候选保持C04、精确快照时界和归属，记录按真实范围及证据来源；列表SQL有界扫描后过滤，游标按扫描位置前进，不拉全库填页。覆盖宽范围/阶段变化、撤权/缺来源/异空间、分页及历史重放。先所属红绿，再与本批其他修改统一执行functional工具、workflow/部署、browser和工程构建；仅统一部署后复跑batch-discovery-v164同组真实探针。无公共DTO/依赖/迁移/事务变化，不重复业务/模型任务。
+
+- IP-21 / D-181：原`packages/adapters/src/artifacts/maintenance.ts`仅在非dry-run时调用既有隔离恢复；扩原C04四处真实SIGKILL恢复用例，在正式恢复前证明dry-run不移动/删除已有隔离对象。原C04及backup/restore统一回归，权限/策略/锁/审计和正式SIGKILL恢复保持；局部delta、design及安全索引同步，不引入新文件/DTO/依赖/迁移，不对未授权实机对象做删除。
+
+- IP-21 / D-182：`apps/worker/src/retrieval/projection-handler.ts`提取共享构建的维护分支，核对原active代际再原地重建独立投影，既有test覆盖重建后消费者/激活不变及身份/质量拒绝；`scripts/deployment/restore.mjs`复用完整宿主与当前C06接线为JSON输入CLI，既有restore.test.mjs覆盖目标隔离与失败状态；`deployment/OPERATIONS.md`补可执行命令。复用C20质量门、C37操作审计，无新事件/依赖/迁移，保留旧根与旧回执。合并D-181统一构建，当前运行实例不逐项重启。
+
+- IP-21 / D-179：C04 postgres-artifact-registry.ts两个清单迭代器的排序/游标显式C collation；maintenance.ts逐字段UTF-8字节比较。扩既有content-addressed-artifact-store.test.ts的清单往返及跨页覆盖，包含数字/连字符与非BMP；不改旧清单或权限。工程C04全套（含既有万条性能）、backup/restore回归后统一编译，新副本C/新根恢复实证；保留B的17处顺序冲突和失败根。不以索引重建/回退尚缺证据宣布5.3完成，无新公共字段/依赖/迁移/事务。
+
+- IP-21 / D-180：仅apps/web/test/browser/identification-review.spec.ts、demo/test/browser/identification-review.spec.ts三项旧断言改按B真实无权处理，可见A字段/筛选/深链/证据及投影闭合保持，B精确读404且不披露。原夹具和权限不变，人工验收正面来自同批可见Chrome正式record-read及review-decision。保留统一90项旧失败和trace后，统一定向执行两平台三项并记录与未改其它场景的覆盖关系；不将带失败的原全套报告改成PASS。
 
 未通过当前证据、待审计或主仓库门禁失败不得 PASS。C38 的未来物理平台/介质/硬件场景只登记移交状态，不能当作本 change 已通过任务，也不能用其缺项掩盖当前功能缺陷。

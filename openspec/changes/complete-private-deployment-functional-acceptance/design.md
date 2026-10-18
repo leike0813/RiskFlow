@@ -1072,6 +1072,88 @@ D166后浏览器初评已正式完成，启动向导跳到运行页却显示无�
 
 原撤权用例在前置读取时误用启动的36份来源，而同次overview只有35份。原finally即使没有修订成员也尝试恢复，未登录的管理窗口再失败，掩盖首个错误。queryV1允许调用方显式提供既有来源范围，撤权前后通过页面实际使用的projection.report-read/artifact读取同一正式导出工件，并传入reportSourceVersionRefs；其它读保持原默认。C31直接读的500另留未解决证据，不冒称该问题已修复。成员修订helper使用产品已有“管理动作确认”组及“确认执行”，以确认组关闭及目录状态确认成功，不再等不存在的对话框和确认标记；只有真实执行removed成功后才登记需恢复，恢复成功清除。复用原真实撤权场景，仍核对200→404/NOT_FOUND、页面不泄露工件及原成员恢复，不改产品授权。范围仅client.spec.ts。
 
+### D-177：同输入组装复用已有派生发布
+
+8.1在v163物理Chrome正式入口复现500。调试原命令得到C04载荷冲突：相同工件、相同5066字节正文摘要，当前issuedAt为2026-10-17T08:53:06.137Z，旧写入为02:22:05.618Z；仅将当前载荷issuedAt替换旧值，其规范摘要即精确匹配原回执。不是规则正文变化，不能改写旧时间或放宽C04幂等校验。
+
+沿减负D-13/D-14已批准的同输入派生复用语义，在C19原组装方法完成当前权限、准备、配置、父发布及冲突校验和确定性计算后，按精确准备与派生结果匹配已有正式发布及元数据；匹配则复用原release/revision/artifact，不再次put。不同父发布、配置、策略或正文不得仅凭准备相同复用。原命令请求回执、同键异载荷拒绝、当前撤权及新准备隔离保持。不跨模块直查C04，不新增公共字段、依赖、迁移或事务边界。生产文件和回归限原C19 adapter及既有测试；若并发闭合需要改变公共契约或事务，升级处理。
+
+### D-178：C33四类只读复用当前登记资源授权
+
+v164批量实机探针确认：最终状态以空来源登记，早期阶段/工作计划以25来源登记；25来源请求最终详情404、风险目录0项，35来源请求运行列表0项，空来源请求虽返回completed与6风险却只有2阶段/0计划项。证据`batch-discovery-v164/summary.json`。不能以这些不完整投影作为完整functional通过；当前账号具有来源权限，空来源返回本身不证明越权。
+
+按已归档主规格的当前授权覆盖语义，C33登记行复用`createRegisteredResourceAuthorizerV1`：历史authorizationContextRef只定位资源空间/来源，当前调用方资格交由C06判断；每次查询内复用相同登记资源的决定，正文仍经精确C04用途、完整消费与completed读取。图状态、阶段、计划、路由及候选不得再按完整历史scopeDigest筛掉。精确状态版本、persisted_at快照上界、真实运行/工作项归属及集合上界保持。风险记录沿自身登记的真实空间、来源及证据来源复用当前业务动作授权，不读身份模块私表，不枚举全工程来源；缺元数据、撤权、范围不足、跨工程、错版本同形拒绝。
+
+列表先在SQL按工程及既有业务筛选有界取页，再逐项检查当前资源权限；不可见项不披露，游标继续按实际扫描位置推进，不能为了填满一页读取全库。运行列表还须核验该快照内已有工作计划的读取资格，避免空来源终态掩盖资料范围；状态筛选按同一有界页的正式正文求值。已有单测扩展跨阶段范围变化、更宽当前权限、撤权/缺来源/异空间、不可见条目分页及精确历史版本不混入后续事实。生产与测试限`packages/adapters/src/identification/read/postgres-risk-identification-read.ts`及既有同名test；现有生产/Web/demo调用方均传完整access，复用现成C06接缝，无公共业务字段、依赖、迁移、事务或历史数据变化。C33的运行身份/状态快照语义另核实，不通过本修复放宽functional精确归属。
+
+### D-179：C04清单与恢复使用同一UTF-8字节排序
+
+000059真实副本完整恢复到新库/新根后，原恢复器在`reconcile.order`拒绝。清单4258条、无重复，工件摘要和条目摘要均匹配；源库`en_US.utf8`排序与恢复器JavaScript字符串排序有17处冲突，证据`batch-discovery-v164/restore-manifest-order-diagnosis.json`。不能改写已发布清单、删除失败项或取消有序校验。
+
+仅修改C04 registry的快照/普通清单两个迭代器及maintenance内比较器：SQL排序和游标范围比较显式使用`COLLATE "C"`，恢复比较逐字段按UTF-8字节顺序，保留工程/种类/实体/版本、分页、精确排除及完整性/当前授权。沿既有哈希清单往返测试加入数字/连字符、大小写及非BMP名称，并核对两个迭代器跨页均无遗漏或重放。文件限`packages/adapters/src/artifacts/postgres-artifact-registry.ts`、`maintenance.ts`及既有`packages/adapters/test/artifacts/content-addressed-artifact-store.test.ts`。无公共DTO、依赖、迁移或事务变化。旧副本B和失败新根保留；修复工程验证后生成新的清单/副本C、新库及新根，不能把旧B结果改成PASS。与本轮其他变更统一编译，C04/备份恢复及既有性能回归后实跑；Web/业务未变部分按精确版本与兼容性复用。
+
+### D-180：浏览器断言遵守受限风险记录的当前资料权限
+
+统一90项browser发现三项旧断言仍要求operator看到仅引用受限B资料的recordReview；夹具本身已明确B只对无业务角色的纯管理员开放。D-178正确按真实来源权限过滤后，列表、详情和关联图应隐藏该记录，不能为旧断言扩大operator或管理员权限。保留原B夹具及纯管理员边界，仅调整Web/demo的既有`identification-review.spec.ts`三项：列表在可见A上验证正常字段、筛选、空态和深链，同时确认B不出现；详情保留A七字段及真实证据抽屉，B目录不可见且不泄露正文或证据按钮，另用正式HTTP精确读断言404/NOT_FOUND；页面按目录解析引用，隐藏B时不要求其发送详情请求；关联图降级视图只列当前可见A，投影正向闭合保持。实际人工验收记录的正面UI另由v166可见Chrome从原识别运行点击正式review-decision记录取证，不用受限B冒充公开记录。无产品、夹具权限、公共字段或依赖变化。收齐原全套结果后统一跑三项受影响Web/demo回归，保留原失败trace，不逐失败重跑90项。
+
+### D-181：孤儿维护dry-run不执行隔离区恢复
+
+批量维护预检发现`ArtifactMaintenance.#sweepLocked`无条件调用`#recoverQuarantine`；后者会还原、删除旧隔离对象并记录实际恢复批次，即使当前命令为dry-run。当前实机dry-run之前已核实quarantine完全为空，未触发该路径，原零删除证据保持。
+
+仅在非dry-run时执行现有隔离恢复；dry-run仍执行当前权限、策略、排他锁、候选发现及审计，保留允许的诊断登记，但不更改既有objects/staging/quarantine字节。非dry-run的审计提交、引用复核及SIGKILL恢复语义保持。复用`content-addressed-artifact-store.test.ts`原“closes quarantines after real SIGKILLs at maintenance boundaries”用例：隔离改名、审计前、审计提交后及响应前真实SIGKILL留下隔离对象，先dry-run断言隔离字节保留、原路径仍不存在，再执行原正式恢复并断言收口。范围仅原maintenance.ts、该既有测试、C04局部delta及本change设计/IP/安全索引，无新文件、公共DTO、依赖、迁移或业务规则。先确认行为红态，再与C04/backup/restore统一回归；本修复不代表过期孤儿已获删除授权或恢复已通过。
+
+### D-182：隔离恢复重建原双索引代际
+
+恢复数据库保留已完成消费者回执，正常投影重放不会重新构建丢失的Qdrant。恢复维护入口复用C20同一成员读取、规范化、Embedding、双索引写入/对账和原七项质量门；不删除回执、不重发布、不生成新事件或激活序号。既有projection handler增加维护方法，接收原正式事件、精确已登记active代际及当前授权。重建前核对原事件/策略/模型/服务兼容版本、成员数量/摘要及授权资源摘要均一致，再对独立目标重建；原业务代际与激活事实保持。维护Embedding使用独立操作身份，模型及硬预算仍沿原策略。
+
+`scripts/deployment/restore.mjs`提供原代际重建的可执行入口，读取受限JSON任务文件（部署/发布路径、工程、代际、账号/口令文件和原资源范围）。使用现有完整宿主组合但不启动Worker消费循环，按真实当前C06及原下游策略执行；只接受synthetic-acceptance、明确的恢复目标数据库/工件根及独立Qdrant，不接受源目标重合。实际结果记运维操作和安全报告，失败保持失败且保留双根。运维手册补精确命令和输入字段。批准范围为原projection-handler.ts及测试、restore.mjs及测试、OPERATIONS.md和本change工件；无新增依赖、迁移、公共业务HTTP或第二套投影算法。先回归维护重建与不改消费者/激活事实的稳定行为，再统一构建后在已恢复clean根和新Qdrant实跑原质量门；人工切换仍须精确目标确认。
+
+### D-183：已有正式引用的只读功能观察
+
+现观察器把观察集合限定为本次新提交步骤，无法在保留原终态与模型预算的条件下复用已完成的识别子运行和五类Agent事实。为IP-20增加显式`existing-formal-references`模式：配置逐项声明精确workflow/task引用、正式查询及当前资源范围，集合必须与观察项一一对应；复用同一只读会话、正式DTO、终态/主结果校验和有界轮询。该模式不调用runPack、不发业务命令、不制造synthetic/run.json或启动回执，报告明确记录证据来源及目标引用；不宣称旧失败父运行成功，也不得用于桌面在途关窗证明。原提交模式与桌面绑定保持。
+
+同一报告中各目标按精确引用和当前查询核验，业务链归属另以正式查询引用索引逐边核对，不通过放宽版本匹配拼接异运行。四类DTO的所有必需路径均须为正式主结果，混入辅助引用整组拒绝。配置严格校验、目标/观察集合、等待/超时/异引用/拒权及报告无业务命令由既有functional测试覆盖。文件限functional.mjs及原test、functional-run-config.example.json、ACCEPTANCE.md与本change工件，无依赖、迁移或生产业务契约变化。
+
+### D-184：批量验收问题收口与独立活动任务输入
+
+本批先完整收集2.2/5.2/5.3与工程失败再统一修改：browser90/90通过；全仓2735通过、1失败、3个既有skip。唯一工程失败是C11测试外部改写`manifest_sha256`后仍要求普通登记重新验算，已与归档减负D-04冲突；删除该过时测试，保留未登记/无权来源、审计回滚、幂等及C04独立维护核验。
+
+恢复CLI仅由本调用成功CAS取得running后才允许在异常路径结算失败，重复调用不得改变其他活动操作。注销与各连接关闭均须尝试，清理失败输出安全计数，不把已完成业务误报为未完成。仅修restore.mjs及原test，不增加通用运维框架。OPERATIONS补现有生产启动/Caddy手工切换及回退的可执行顺序；精确确认、匹配迁移与双根保留继续由现有函数和正式启动门核验，不把纯兼容探针写成实际回退。
+
+functional必需引用路径支持以`{kind}`精确选取数组中的唯一正式主结果，沿原DTO种类/目标匹配，歧义、缺失及辅助引用拒绝；避免不同合法阶段计划改变结果数组位置。既有只读报告每次新观察使用独立运行ID，resume保留原ID。仅改functional.mjs、原test及functional-run-config.example.json，无业务DTO变化。
+
+旧桌面试跑C/E已形成终态，不重开。C的未关闭预警任务混合六个依据版本；E的风险不在批准类别绑定中，均在A7进入模型前拒绝，本批不修改这些业务门。后续活动任务采用明确独立的合成风险输入，先核对正式C11/C04、当前来源权限、类别绑定、措施触发类型/适用性、现场约束、任务预算、启动回执及SSE事件来源。复用现有外部风险事件登记及已批准措施；新的合成输入和策略绑定使用独立版本并标注待甲方复核，不覆盖原识别/评估/任务事实。不满足前置不再启动图试错。仅必要的一次活动任务用于桌面关窗和同发布重启，回执故障复用同一命令身份。
+
+### D-185：公开工作流入口冻结精确现场工件
+
+活动任务离线前置发现：`resolveSiteContextRef`要求现场逻辑引用已在frozenRefs中，但公开assess入口不能携带该引用，ContractReference联合也不含site-context；原私有组合测试绕过了公开Schema。不得靠跳过A8或从最新配置猜测现场完成桌面验收。
+
+复用已有ContentArtifactRef，在assess/reassess/historical-backfill启动载荷和identify-and-assess逐空间上下文提供可选`siteContextArtifactRef`。入口冻结该精确C04引用，父/子图沿既有frozenRefs传递；C27部署组合按同工程配置的artifactRef匹配该冻结content-artifact，再由原reader核验精确用途、逻辑身份、当前权限、空间和观察时刻，必须唯一。缺少现场不推断默认值；旧输入不补写历史，A8仍明确失败。无新引用种类、依赖、迁移或现场正文，现场绑定仍由服务端配置解析。
+
+文件范围为contracts原ports/index.ts、core原workflow/service.ts及既有test、worker原risk-flow/graph.ts及既有runtime测试、原deployment composition/assessment.mjs和test、HTTP原http-shell.test.ts及当前change局部delta/IP/证据。测试覆盖公开Schema可达、现场工件进入冻结身份及子运行、改变版本产生不同入口身份、错工件/异工程/异空间/多候选仍拒绝。与外部风险字段/类别/原措施/预算一并离线校验，统一构建及受影响回归后才发起实机活动任务。
+
+### D-186：桌面活动状态遵守公共Agent任务契约
+
+完整14项真实Electron一次收齐：12通过；关窗用例把公共AgentTaskStatusV1的pending错写为不存在的queued，SSE因同一任务尚未领取、父运行仅两条事件而无后续事件。仅把client.spec.ts原活动断言改为pending/running，仍要求同次精确任务与完成终态。公开Contract的pending表示已受理待领取，不接受waiting/failed/completed等代替活动状态。保留本轮全部失败trace，使用原queued任务、不重开模型；关窗后的同发布重启使Worker领取原任务，再统一验证这两个关联场景，复用其余12项当前v171证据。临时运行监督器按真实Playwright Close context步骤观察关窗，不新增产品IPC或文件信号。
+
+### D-187：现场窄读使用所属动作的当前授权
+
+本轮活动Agent真实completed，原完成通知随后在A8形成terminal-failure，旧终态保持。完整Electron12通过、关窗/SSE两失败及后续两项复验失败均保留。独立只读复现`d187-site-read-proof-c.json`证明：现场reader要求warning-response.recommend，但组合传入workflow.resume-run授权，C04入口Schema因requiredCapability缺失拒绝；未读取正文或修改业务。这是所属动作授权未接线，不放宽C04或旧授权。
+
+仅在原composition/assessment.mjs的resolveSiteContextRef沿已有authorizeDownstream获取warning-response.validate-and-record当前授权，调用编号与原现场窄读一致，限定本次空间；读取时使用当前决定时刻，现场observedAt仍不得晚于原业务requiredAt。原精确冻结工件/同工程配置匹配、用途、身份、空间及唯一性保持。扩原assessment-composition.test.mjs的同一现场用例，核对reader消费新授权及能力，不新增生产抽象、公共契约、依赖或迁移。与桌面驱动的正式完成通知及响应丢失证据统一回归；旧失败父不复活，后续必须独立合成风险/策略绑定版本，不重置原任务预算。
+
+临时验收驱动显式调用已有workflow.resume-run/agent-task-completed契约，使用C08正式结果及C34当前stateVersion.versionId；Worker本身没有自动完成通知，不把临时驱动写成生产自动恢复。原通知脚本把stateVersion对象传给字符串字段的400及独立复现复用已注销loginAttemptId的拒绝均保留，不修改服务端门禁。可见Chrome另已通过正式人工确认后故意中断真实HTTP回执，再按原信封重放200，确认事实及Outbox事件均恰一条；证据d187-visible-response-loss。
+
+### D-188/D-189：客户端启动取证与限定审计收口
+
+v172正式业务与同次functional终态PASS，完整Electron10通过/4失败均保留。8次独立启动有1次登录网络失败；另16次带网络观测的立即导航/等待原生首屏对照均8/8通过，未据此宣称网络故障已复现或修复。真实Caddy记录证明关窗后的API重启窗口返回session自省502；原loginV1把30秒内没有登录表单当作已登录，导致后续读取null。仅修改已有client.spec.ts：等待原生首个非about:blank文档提交后才导航；登录只在登录表单或正式登出按钮可见后判断，恢复失败沿产品已有按钮在API自省401就绪后重试。保留原时限与在途/同一终态/SSE条件，不增加测试重试次数。
+
+唯一限定审计修复restore每次调用独立登录/授权身份（业务operation幂等身份不变）及多空间现场工件只传本空间、恢复重建同一配对；163项/60项回归、类型/lint通过，尚未部署。审计升级的身份问题由父级决定：仅当新增现场工件存在时，在workflowEntryIdentityFor现有canonical JSON中纳入按空间排序的空间→现场工件配对；上下文顺序不改变身份，交换配对必须改变身份。没有现场工件的历史输入沿原身份，无历史迁移或改写。公共启动runtime传递原gate.assessmentContexts，不接受客户端自报运行身份。文件限core workflow/service.ts及原test、worker risk-flow/runtime.ts及审计已改graph.ts/runtime.test.ts、restore.mjs及原test、desktop原client.spec.ts和本change工件；无新依赖、迁移或公共业务DTO。统一构建/受影响回归后再部署，不把未部署审计修复写成v172成果。
+
+### D-190：按正式事件资格独立绑定SSE样例
+
+v173完整Electron实跑13/14通过；新评估父运行按正式登记仅含1条assessment.recorded事件，首次订阅有事件而续订有界空批，不能满足原2+2场景。既有同工程正式识别运行拥有足够事件，当前只读观察已证明其完整终态。仅在桌面测试输入增加可选sseIdentificationRun，显式提供事件身份workflowRunRef、读取快照readSnapshotRef及来源，两个身份必须属同一实体；SSE场景先经当前会话调用C33所属run-read，核对精确快照和completed，再对事件身份执行原2+2、游标不重放、同运行及零写断言。首次误把C33状态版本当事件身份的空流失败保留，未放宽服务端版本匹配。缺项时仍沿原活动运行；非法输入在原预检拒绝，当前权限及正式读取失败不得切换样例或计通过。关窗续接保持本次新提交的原活动任务与运行，不用历史完成态代替。保留13/14原失败，以同一未变生产发布的SSE定向结果闭合该场景，不为重复在途前置重新调用模型；报告明确分别标注两类运行及证据。本次仅修改原acceptance.mjs/client.spec.ts、ACCEPTANCE及当前工件，无生产代码、依赖、迁移或业务契约变化。
+
 ## Migration Plan
 
 1. 固定并核对前置实现和本规划基线；正式模块/主规格按前置 change 归档同步顺序消费。

@@ -1,6 +1,6 @@
 ## Why
 
-当前接续：过度防御性设计减负已由独立 [reduce-defensive-design-overhead](../archive/2026-10-16-reduce-defensive-design-overhead/proposal.md) 完成并归档，责任见其 handoff.md。当前任务6/19，现场v110、000059；新清洗准备、纵向监测三批次/快照及旧发布条目补登记已完成，D-102修复全组待复核的空决定收口、D-103修复工作计划混入失败I5诊断引用，D-104约束检索审阅生成绑定且一次真实模型诊断通过。当前原父等待失败检索任务，D-105公开失败通知已获用户批准并在实施，范围见 evidence/failed-review-resume-scope-proposal.md；完整业务尚未通过，证据见 evidence/resume-after-reduction-2026-10-16.md。原成果与历史证据保留。下文 D-ID 保留历史实施记录。
+当前接续：两项减负change均已归档并进入当前HEAD，任务17/19，现场v173、000059。正式业务链、五类任务、终态观察、维护/恢复/双索引及回退、14个Electron场景与可见Chrome均已取得通过证据；桌面完整13项与显式SSE样例定向结果分别记录，原失败保持。逐场景索引及工程补证已闭合，6.2尚缺授权Git检查点，6.3尚未生成verification。最新身份、证据和剩余义务以handoff.md当前接续及tasks.md为准。下文D-ID为历史实施记录，不代表当前缺项。
 
 前置 change 已实现大部分部署、业务宿主与验收程序，但正式来源补证、完整 Electron 场景和真实业务报告尚未完成。将这些剩余义务独立规划，以完整终态证据判断功能是否可交付。
 
@@ -71,4 +71,4 @@ D-47已获批准：按[evidence/jsonld-read-bound-scope-proposal.md](evidence/js
 - **所有权**：仅补当前功能验收及已批准范围内缺陷，按 IP-17–IP-22 施工图。完整跨 VM host、签名/原生平台安装、禁网和硬件证据移交 C38；不开放远程正文证明协议。
 - **公共契约**：复用strict Schema、C06/C04与人工确认；D-36新增原件DTO/GET、可选原文件名及Web直接pdfjs-dist@6.3.289依赖，D-39新增适用规则集组装窄命令/端口及HTTP入口，无迁移或pnpm别名。
 - **RI/RA**：覆盖 RI-S1–RI-S6、RA-S1–RA-S7 和完整追溯；合成样本明确待甲方复核，不宣称甲方验收或真实工程准确率。
- - **当前操作**：D-50七门槛及活动代际、D-51五资料绑定保持，D-53控制与领域授权接线已部署v59，HTTPS19443。真实C06预检通过控制/执行身份及正式准备读取，所属工程验证通过；旧父的发布/范围、策略缺项和C21读取问题按已批准D-54实施中。原父仍identification/retryable-failure、游标和任务数10保持，未重试或修改预算。详见[D-53记录](evidence/identification-domain-authorization-2026-10-15.md)。没有识别/评估终态，tasks仍5/19。不修改执行图/Orca，不提交或归档。规划基线固定为 `b6e39eb41e9cc8b0c9840f6f58057155eb37de54`；已有dirty是显式前置叠加层，不能把HEAD当作包含所有实现的检查点。
+- **当前操作**：D-50七门槛及活动代际、D-51五资料绑定保持，D-53控制与领域授权接线已部署v59，HTTPS19443。真实C06预检通过控制/执行身份及正式准备读取，所属工程验证通过；旧父的发布/范围、策略缺项和C21读取问题按已批准D-54实施中。原父仍identification/retryable-failure、游标和任务数10保持，未重试或修改预算。详见[D-53记录](evidence/identification-domain-authorization-2026-10-15.md)。没有识别/评估终态，tasks仍5/19。不修改执行图/Orca，不提交或归档。规划基线固定为 `b6e39eb41e9cc8b0c9840f6f58057155eb37de54`；已有dirty是显式前置叠加层，不能把HEAD当作包含所有实现的检查点。

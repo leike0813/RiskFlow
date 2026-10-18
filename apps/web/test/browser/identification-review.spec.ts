@@ -161,13 +161,13 @@ test("等待与失败运行详情如实呈现暂停与可重试失败", async ({
 test("风险记录列表支持工序节点与验收方式筛选，行点击进入详情", async ({ page }) => {
   await login(page, server.operatorLogin, withProject("/identification/records"));
   await expect(page.getByText(ids().recordAutoId)).toBeVisible();
-  await expect(page.getByText(ids().recordReviewId)).toBeVisible();
+  await expect(page.getByText(ids().recordReviewId)).toHaveCount(0);
   await expect(page.getByText("0.80")).toBeVisible();
-  await expect(page.getByText("0.50")).toBeVisible();
+  await expect(page.getByText("0.50")).toHaveCount(0);
   await expect(page.getByText("现行", { exact: true }).first()).toBeVisible();
 
   await page.getByLabel("按工序节点筛选").fill("PN-EXPAND-03");
-  await expect(page.getByText(ids().recordReviewId)).toBeVisible();
+  await expect(page.getByText(ids().recordReviewId)).toHaveCount(0);
   await expect(page.getByText(ids().recordAutoId)).toHaveCount(0);
 
   await page.getByLabel("按工序节点筛选").fill("");
@@ -175,6 +175,9 @@ test("风险记录列表支持工序节点与验收方式筛选，行点击进�
   await expect(page.getByText(ids().recordAutoId)).toBeVisible();
   await expect(page.getByText(ids().recordReviewId)).toHaveCount(0);
 
+  await page.getByLabel("按验收方式筛选").selectOption("review");
+  await expect(page.getByText(ids().recordAutoId)).toHaveCount(0);
+  await expect(page.getByText(ids().recordReviewId)).toHaveCount(0);
   await page.getByLabel("按验收方式筛选").selectOption("");
   await page.getByText(ids().recordAutoId).click();
   await page.waitForURL(
@@ -183,7 +186,7 @@ test("风险记录列表支持工序节点与验收方式筛选，行点击进�
   await expect(page.getByText("标准化风险记录", { exact: true })).toBeVisible();
 });
 
-test("风险记录详情呈现契约字段与信封，证据抽屉呈现真实定位与受限脱敏两态", async ({ page }) => {
+test("风险记录详情呈现契约字段与真实定位，受限来源记录失败关闭", async ({ page }) => {
   await login(
     page,
     server.operatorLogin,
@@ -215,32 +218,65 @@ test("风险记录详情呈现契约字段与信封，证据抽屉呈现真实�
   await expect(page.getByRole("link", { name: "打开资料详情并定位该段" })).toBeVisible();
   await page.getByRole("button", { name: "关闭证据抽屉" }).click();
 
-  // 人工验收记录：验收决定标签 + 受限资料 B 段固定脱敏提示。
+  // B 资料没有当前授权，派生记录正文与证据按钮也不得披露。
+  const catalogRead = page.waitForResponse((response) =>
+    response.url().endsWith("/queries/risk-identification.record-catalog"),
+  );
   await gotoSpa(
     page,
     withProject(`/identification/records/${encodeURIComponent(ids().recordReviewId)}`),
   );
-  await expect(page.getByText("人工复核决定")).toBeVisible();
-  await expect(page.getByText("刀盘扩径卡顿导致围岩扰动")).toBeVisible();
-  await page
-    .getByRole("button", {
-      name: new RegExp(`${server.sourceBVersionEntityId}-chapter_1-segment_1`),
-    })
-    .first()
-    .click();
-  await expect(page.locator(".evidence-drawer-title")).toBeVisible();
+  const catalog = await (await catalogRead).json();
+  expect(
+    catalog.result.items.some(
+      (item) => item.riskRecordRef.reference.entityId === ids().recordReviewId,
+    ),
+  ).toBe(false);
+  const denied = await page.evaluate(
+    async ({ projectId, recordId }) => {
+      const response = await fetch(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/queries/risk-identification.record-read`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            schemaVersion: "1",
+            queryId: `browser-denied-record-${Date.now()}`,
+            requestedAt: new Date().toISOString(),
+            requestedSpatialScopeRefs: [],
+            requestedSourceVersionRefs: [],
+            payload: {
+              riskRecordRef: {
+                kind: "standardized-risk-record",
+                reference: { entityId: recordId, versionId: "1" },
+              },
+            },
+          }),
+        },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { projectId: server.projectId, recordId: ids().recordReviewId },
+  );
+  expect(denied.status).toBe(404);
+  expect(denied.body.code).toBe("NOT_FOUND");
+  await expect(page.getByText("刀盘扩径卡顿导致围岩扰动")).toHaveCount(0);
   await expect(
-    page.getByText("当前会话无该资料来源版本的访问授权，仅呈现定位摘要，不提供段正文。"),
-  ).toBeVisible();
+    page
+      .getByRole("button", {
+        name: new RegExp(`${server.sourceBVersionEntityId}-chapter_1-segment_1`),
+      })
+      .first(),
+  ).toHaveCount(0);
 });
 
 test("关联图无主体时呈现引导与按工序分组降级视图；带主体时呈现可证明关联边", async ({ page }) => {
   await login(page, server.operatorLogin, withProject("/identification/graph"));
   await expect(page.getByText(/在下方「按工序分组的风险记录」中选择一条记录/)).toBeVisible();
-  // 降级视图来自记录目录真实读取：两个工序分组可点。
+  // 降级视图只呈现当前可见记录，受限 B 不进入分组。
   await expect(page.getByText("按工序分组的风险记录").first()).toBeVisible();
   await expect(page.getByText("过挖导致地表沉降超限")).toBeVisible();
-  await expect(page.getByText("刀盘扩径卡顿导致围岩扰动")).toBeVisible();
+  await expect(page.getByText("刀盘扩径卡顿导致围岩扰动")).toHaveCount(0);
 
   await page.getByRole("button", { name: "过挖导致地表沉降超限" }).click();
   await page.waitForURL(new RegExp(`/identification/graph\\?.*subject=`));

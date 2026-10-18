@@ -6,7 +6,9 @@
 
 ## 当前接入
 
-当前减负实现与回归记录见 [reduce-defensive-design-overhead](../openspec/changes/reduce-defensive-design-overhead/handoff.md)。运行清单按阶段准备配置，资料访问独立记账，检索按当前可见条目筛选，确定性组装复用已批准来源。切换现场前按运维说明备份、执行000059并部署兼容版本，再接续原工程的已完成成果。下文带日期的工程核验保留当时记录，当前运行约束以该change及其实际实现为准。
+2026-10-17当前任务17/19，运行v173/000059；真实桌面全部14场景由完整批次13项与SSE定向结果分别闭合，可见Chrome正式确认/拒权/跨页追溯及同次functional PASS已取证。原失败报告保留，未声称单次完整14项或最终monolithic verify exit0。详见[本轮批量收口](../openspec/changes/complete-private-deployment-functional-acceptance/evidence/batch-closeout-d189-d190-2026-10-17.md)及[112 Requirement/213 Scenario索引](../openspec/changes/complete-private-deployment-functional-acceptance/evidence/scenario-index-2026-10-17.md)。固定Git检查点及最终verification仍未完成，C38未计通过。
+
+当前减负实现与回归记录见 [reduce-defensive-design-overhead](../openspec/changes/archive/2026-10-16-reduce-defensive-design-overhead/handoff.md)。运行清单按阶段准备配置，资料访问独立记账，检索按当前可见条目筛选，确定性组装复用已批准来源。切换现场前按运维说明备份、执行000059并部署兼容版本，再接续原工程的已完成成果。下文带日期的工程核验保留当时记录，当前运行约束以该change及其实际实现为准。
 
 资料原件与Agent入口修正的当前平台实跑见[2026-10-15取证](../openspec/changes/complete-private-deployment-functional-acceptance/evidence/original-and-agent-ui-2026-10-15.md)。资料详情默认原件：PDF/图片在应用内查看，文本严格解码，DOCX/XLSX保存原文件后用本机软件打开。解析失败不阻止受权原件读取。正常业务页从“打开停靠区”进入Agent，任务详情可续页查看行动、候选校验和预算。该修正不代表整个RI/RA及桌面场景已经通过。
 
@@ -23,6 +25,8 @@ Embedding 使用 `http://192.168.13.11:11434` 的 `qwen3-embedding:4b`，原生 
 桌面预检读取 `RISKFLOW_DEPLOYMENT_CONFIG`、`RISKFLOW_RELEASE_MANIFEST`、`RISKFLOW_DESKTOP_BUILD_CONFIG` 与 `RISKFLOW_DESKTOP_ACCEPTANCE_CONFIG` 指定的真实文件。验收 JSON 的字段及本次正式回执绑定见准备记录；`functionalReportFile` 必须指向同次 `functional.json`，相邻 `synthetic/run.json` 不得换用历史报告。运行、查询、资料及导出工件须在对应正式回执中成立。管理员测试账号还须具备同一工程的业务读取授权，纯系统管理员不能读取业务报告。
 
 “关窗后任务继续”先执行，要求本次运行已受理且尚未完成；已完成、等待人审、失败或取消不能替代。SSE 样例须有游标后的正式事件；TLS 拒绝目标须真实可达且证书不可信，DNS/连接失败不能替代证书拒绝。撤权场景仅修改隔离工程成员，随后恢复其 active 状态。
+
+若活动评估运行的正式事件不足以满足SSE的2+2前置，可在桌面验收输入显式声明`sseIdentificationRun: { workflowRunRef, readSnapshotRef, sourceVersionRefs }`。事件流身份与C33状态快照分别固定，必须属于同一运行实体；测试先通过当前会话的C33正式读取核对精确快照及completed，再对事件身份执行两次订阅。不得改变两次订阅的身份或放宽游标/事件/零写断言。关窗场景继续使用本次活动提交，证据分别记录。该字段仅用于测试样例，不改变产品订阅范围。
 
 `functional-run-config.example.json` 展示运行与五类 Agent 的观察结构。示例步骤名需逐项绑定本次运行计划的真实 `stepId` 与 captures；旧基础 run-config 示例未包含这些任务，不可直接拼接后声称完整配置。正式建议、执行/反馈、审计与 C04 全链另由所属查询补证，三类观察器不接受任意 DTO 的通用 status。
 
@@ -134,7 +138,14 @@ MINERU_REAL_SMOKE=1 MINERU_SMOKE_SUITE=references/acceptance/mineru-v2/manifest.
 
 补充同源试运行扫描件的5页/60条记录真实检查，127个关键字段、全部记录关联及原页定位通过，共72段、JSON-LD合规；受限证据 `/tmp/riskflow-mineru-smoke-Lp9925`，诊断清单 `/tmp/riskflow-mineru-trial-suite-rsaiw7y3/manifest.json`。旧扫描样例响应使用最终映射重放为12/13非空页，仍缺SEG-002-GEO，被质量门拒绝。上述证据证明隔离parser和JSON-LD功能；不代表生产C04/C11登记、完整业务终态、可见浏览器或本地硬件验收完成。
 
-终态观察目前支持 Agent 任务详情、识别运行详情和运行总览投影三种正式结果。观察必须与同次提交的精确任务或运行引用匹配，并取得必需的正式结果引用；其他查询 DTO、零结果缺少所需引用、人工等待和超时均保留 BLOCKED。配置示例见 [functional-run-config.example.json](functional-run-config.example.json)。
+终态观察支持 Agent 任务详情、识别运行详情、评估运行详情和运行总览投影四种正式结果。观察必须与精确任务或运行引用匹配，并取得必需的正式主结果引用；其他查询 DTO、辅助引用、零结果缺少所需引用、人工等待和超时均不能 PASS。配置示例见 [functional-run-config.example.json](functional-run-config.example.json)。
+
+复用已有正式结果时显式指定 `mode: "existing-formal-references"`，并以 `targets`
+逐项声明 `stepId`、`resultRef`（`workflowRunRef` 或完整 `agentTaskRef`）、
+`requestedSpatialScopeRefs` 和 `requestedSourceVersionRefs`，与 `observations` 一一对应。
+此模式只登录并执行正式查询，报告标记只读证据来源，不产生启动回执；运行配置只需
+查询会话字段。精确业务链、来源、模型、配置和审计另由正式查询索引逐边核对。
+桌面在途关窗与重启续接仍须真实提交回执，不使用只读报告替代。
 
 可见浏览器必须打开在用户正在观看的桌面会话中。无界面模式和虚拟 X 屏幕不能替代观看要求；浏览器可以通过 CDP 操作，但业务请求仍走原 HTTPS/会话/确认契约。
 

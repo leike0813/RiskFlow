@@ -46,6 +46,7 @@ export interface WorkflowAssessmentContextV1 {
   readonly spatialScopeRef: SpatialScopeRefV1;
   readonly applicabilityMetadataSnapshotRef: ApplicabilityMetadataSnapshotRefV1;
   readonly monitoringSnapshotRefs?: readonly MonitoringSnapshotRefV1[] | undefined;
+  readonly siteContextArtifactRef?: ContentArtifactRefV1 | undefined;
 }
 
 /** 登记结果：同键同载荷重放返回既有事实，异载荷为不可重试冲突（design D-08）。 */
@@ -621,6 +622,9 @@ export const evaluateWorkflowEntryGate = (payload: WorkflowStartPayloadV1): Work
         ...payload.sourceVersionRefs,
         ...contexts.map((context) => context.applicabilityMetadataSnapshotRef),
         ...perContext.flatMap((entry) => entry.monitoring),
+        ...contexts.flatMap((context) =>
+          context.siteContextArtifactRef ? [context.siteContextArtifactRef] : [],
+        ),
       ];
       return {
         kind: "ready",
@@ -663,6 +667,7 @@ export const evaluateWorkflowEntryGate = (payload: WorkflowStartPayloadV1): Work
         payload.applicabilityMetadataSnapshotRef,
         riskInput,
         ...monitoringRefs,
+        ...(payload.siteContextArtifactRef === undefined ? [] : [payload.siteContextArtifactRef]),
         ...(payload.entryMode === "assess" && payload.assessmentPreparationSnapshotRef !== undefined
           ? [payload.assessmentPreparationSnapshotRef]
           : []),
@@ -736,12 +741,29 @@ export const workflowEntryIdentityFor = (input: {
   readonly frozenRefs: readonly ContractReferenceV1[];
   readonly executionBatchId?: string | undefined;
   readonly reassessmentEntry?: WorkflowReassessmentInputV1 | undefined;
+  readonly assessmentContexts?: readonly WorkflowAssessmentContextV1[] | undefined;
 }): VersionReference => ({
   entityId: `workflow-entry:${input.projectId}:${input.entryMode}`,
   versionId: sha256CanonicalJson({
     entryMode: input.entryMode,
     projectId: input.projectId,
     frozenRefs: input.frozenRefs.map(refKey).sort(),
+    ...(input.assessmentContexts?.some((context) => context.siteContextArtifactRef !== undefined)
+      ? {
+          siteContextBindings: input.assessmentContexts
+            .flatMap((context) =>
+              context.siteContextArtifactRef === undefined
+                ? []
+                : [
+                    [
+                      refKey(context.spatialScopeRef),
+                      refKey(context.siteContextArtifactRef),
+                    ] as const,
+                  ],
+            )
+            .sort((left, right) => (left[0] < right[0] ? -1 : 1)),
+        }
+      : {}),
     ...(input.executionBatchId === undefined ? {} : { executionBatchId: input.executionBatchId }),
     ...(input.reassessmentEntry === undefined
       ? {}

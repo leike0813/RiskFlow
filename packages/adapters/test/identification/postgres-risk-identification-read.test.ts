@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
+import { AccessServiceError } from "@riskflow/core/access";
 import {
   ArtifactPutCommandV1Schema,
   type ArtifactRefV1,
@@ -22,6 +22,7 @@ import {
   RiskCandidateFinalizationResultRowV1Schema,
   StandardizedRiskRecordWriteV1Schema,
   candidateSetRefFor,
+  RiskCandidateSetV1Schema,
 } from "@riskflow/core/identification/candidate-finalization";
 import {
   IdentificationGraphArtifactBodyV1Schema,
@@ -43,6 +44,7 @@ import {
   type ReviewTaskRefV1,
   type RiskIdentificationReadQueryV1,
   type StandardizedRiskRecordRefV1,
+  type SpatialScopeRefV1,
   type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
 import { StandardizedRiskRecordEnvelopeSchema } from "@riskflow/contracts/records";
@@ -57,6 +59,11 @@ import {
   type PostgresIdentificationGraphAdapterV1,
 } from "../../src/identification/graph/index.js";
 import { PostgresRiskIdentificationReadAdapter } from "../../src/identification/read/index.js";
+import {
+  bootstrapInitialSystemAdministrator,
+  createPostgresLocalIdentityAccess,
+  type PostgresLocalIdentityAccess,
+} from "../../src/auth/index.js";
 import { runPostgresMigrations } from "../../src/postgres/migrations/run.js";
 import { createPostgresRuntime, type PostgresRuntime } from "../../src/postgres/pool.js";
 import { PostgresTransactionUnit } from "../../src/postgres/transaction-unit.js";
@@ -110,9 +117,15 @@ interface IssuedAccessV1 {
 }
 
 interface ReadAccessControllerV1 {
-  readonly port: Pick<LocalIdentityAccessV1, "verify">;
+  readonly port: Pick<
+    PostgresLocalIdentityAccess,
+    "verify" | "readDeploymentAuthorizationSource" | "authorizeBusinessAction"
+  >;
   revoke(): void;
   narrowScope(): void;
+  widenScope(): void;
+  denySource(sourceId: string): void;
+  hideResource(contextId: string): void;
   restore(): void;
   issue(input: {
     readonly invocationId: string;
@@ -120,6 +133,7 @@ interface ReadAccessControllerV1 {
     readonly capability: ModuleCapabilityV1;
     readonly projectId?: string;
     readonly actorId?: string;
+    readonly emptySources?: boolean;
   }): IssuedAccessV1;
 }
 
@@ -127,6 +141,21 @@ const createReadAccess = (): ReadAccessControllerV1 => {
   const issued = new Map<string, IssuedAccessV1>();
   let revoked = false;
   let scopeNarrowed = false;
+  let scopeWidened = false;
+  const deniedSources = new Set<string>();
+  const hiddenResources = new Set<string>();
+  const historical = AuthorizationContextV1Schema.parse({
+    schemaVersion: "1",
+    authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+    actorId: ACTOR_ID,
+    projectId: PROJECT_ID,
+    grantedCapabilities: ["risk-identification.read"],
+    spatialScopeRefs: [...SCOPES],
+    sourceAccessGrantRefs: [...SOURCE_GRANTS],
+    authorizationPolicyRef: plainRef("authorization-policy"),
+    decidedAt: TIMESTAMP,
+    invocation: { kind: "human" },
+  });
   const denied: (stage: string) => never = (stage) => {
     throw new AccessServiceError({
       code: "AUTHORIZATION_DENIED",
@@ -146,9 +175,21 @@ const createReadAccess = (): ReadAccessControllerV1 => {
     narrowScope: () => {
       scopeNarrowed = true;
     },
+    widenScope: () => {
+      scopeWidened = true;
+    },
+    denySource: (sourceId) => {
+      deniedSources.add(sourceId);
+    },
+    hideResource: (contextId) => {
+      hiddenResources.add(contextId);
+    },
     restore: () => {
       revoked = false;
       scopeNarrowed = false;
+      scopeWidened = false;
+      deniedSources.clear();
+      hiddenResources.clear();
     },
     issue: (input) => {
       const projectId = input.projectId ?? PROJECT_ID;
@@ -161,7 +202,11 @@ const createReadAccess = (): ReadAccessControllerV1 => {
           projectId,
           grantedCapabilities: [input.capability],
           spatialScopeRefs: [...SCOPES],
-          sourceAccessGrantRefs: [...SOURCE_GRANTS],
+          sourceAccessGrantRefs: input.emptySources
+            ? []
+            : scopeWidened
+              ? [...SOURCE_GRANTS, refOf("source-access-grant", "unrelated-grant")]
+              : [...SOURCE_GRANTS],
           authorizationPolicyRef: plainRef("authorization-policy"),
           decidedAt: TIMESTAMP,
           invocation: { kind: "human" },
@@ -174,6 +219,61 @@ const createReadAccess = (): ReadAccessControllerV1 => {
       return access;
     },
     port: {
+      readDeploymentAuthorizationSource: async (request) => {
+        const id = request.authorizationContextRef.reference.entityId;
+        if (hiddenResources.has(id)) return undefined;
+        const context =
+          id === "authorization-c33"
+            ? historical
+            : id === "authorization-c33-empty"
+              ? {
+                  ...historical,
+                  authorizationContextRef: request.authorizationContextRef,
+                  sourceAccessGrantRefs: [],
+                }
+              : issued.get(id)?.authorization;
+        if (
+          context === undefined ||
+          context.projectId !== request.projectId ||
+          context.authorizationContextRef.reference.versionId !==
+            request.authorizationContextRef.reference.versionId
+        )
+          return undefined;
+        return {
+          context,
+          invocationId: id,
+          branch: "risk-identification.run-read",
+          parentContextRef: undefined,
+          causalRunRef: undefined,
+          causalCommandRef: undefined,
+          sourceVersionRefs:
+            context.sourceAccessGrantRefs.length === 0
+              ? []
+              : [refOf("source-version", "source-version-c33")],
+        };
+      },
+      authorizeBusinessAction: async (request) => {
+        if (
+          revoked ||
+          scopeNarrowed ||
+          request.requestedSourceVersionRefs.some((ref) =>
+            deniedSources.has(ref.reference.entityId),
+          )
+        )
+          denied("authorize.current-resource");
+        const context = AuthorizationContextV1Schema.parse({
+          ...historical,
+          actorId: request.actorId,
+          projectId: request.projectId,
+          authorizationContextRef:
+            request.authorizationContextRef ?? historical.authorizationContextRef,
+          grantedCapabilities: [request.capability],
+          spatialScopeRefs: request.requestedSpatialScopeRefs,
+          sourceAccessGrantRefs:
+            request.requestedSourceVersionRefs.length === 0 ? [] : [...SOURCE_GRANTS],
+        });
+        return { context, contextRef: context.authorizationContextRef, redacted: false };
+      },
       verify: async (request) => {
         if (revoked) denied("verify.current");
         const stored = issued.get(request.authorizationContextRef.reference.entityId);
@@ -338,7 +438,7 @@ const groupRefFor = (runId: string, groupId: string): IdentificationGroupRefV1 =
 /** 经图适配器写入 C04 正文：身份与生产读侧使用同一 `body-write` 派生约定。 */
 const putGraphBody = (
   fixture: ReadTestFixture,
-  input: { readonly artifactId: string; readonly body: unknown },
+  input: { readonly artifactId: string; readonly body: unknown; readonly emptySources?: boolean },
 ): Promise<ArtifactRefV1> => {
   const issued = fixture.access.issue({
     invocationId: identificationGraphReadInvocationIdV1({
@@ -348,6 +448,7 @@ const putGraphBody = (
     }),
     branch: "risk-identification.plan",
     capability: "risk-identification.run",
+    emptySources: input.emptySources,
   });
   return fixture.graphAdapter.putBody({
     projectId: PROJECT_ID,
@@ -371,6 +472,7 @@ const graphRowFor = (input: {
   readonly workPlanRef?: ReturnType<typeof refOf>;
   readonly stageResultRef?: ReturnType<typeof refOf>;
   readonly inputSnapshotRef?: ReturnType<typeof refOf>;
+  readonly emptySources?: boolean;
 }): IdentificationGraphResultRowV1 => {
   const base = {
     schemaVersion: "1" as const,
@@ -383,9 +485,12 @@ const graphRowFor = (input: {
     idempotencyKey: `idempotency-${input.suffix}`,
     requestDigest: sha(`request-${input.suffix}`),
     artifactRef: input.artifactRef,
-    authorizationScopeDigest: registrationScopeDigest,
+    authorizationScopeDigest: input.emptySources ? sha("empty-sources") : registrationScopeDigest,
     actorRef: ACTOR_ID,
-    authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+    authorizationContextRef: refOf(
+      "authorization-context",
+      input.emptySources ? "authorization-c33-empty" : "authorization-c33",
+    ),
     validAt: input.validAt,
     recordedAt: input.validAt,
     persistedAt: input.validAt,
@@ -591,6 +696,64 @@ const registerCandidateSets = async (
   });
 };
 
+const candidateBody = (
+  workItemRef: ReturnType<typeof refOf>,
+  inputSnapshotRef: ReturnType<typeof refOf>,
+) => {
+  const common = {
+    projectId: PROJECT_ID,
+    workItemRef,
+    inputSnapshotRef,
+    nodeId: "node-1",
+    modelContextArtifactSetRef: refOf("model-context-artifact-set", "context-c33"),
+    modelDeploymentRef: plainRef("model-deployment"),
+    promptTemplateRef: plainRef("prompt-template"),
+    outputSchemaRef: plainRef("output-schema"),
+    budgetPolicyRef: plainRef("budget-policy"),
+  };
+  const rawResponseRef = refOf("diagnostic-artifact", "raw-c33", `sha256:${sha("raw-c33")}`);
+  return RiskCandidateSetV1Schema.parse({
+    schemaVersion: "1",
+    ...common,
+    retrievalArtifactSetRef: refOf("retrieval-artifact-set", "retrieval-c33"),
+    modelContextPayloadDigest: sha("context-c33"),
+    policySetRef: refOf("identification-policy-set", "identification-policy-set-c33"),
+    generationPolicyRef: plainRef("generation-policy"),
+    candidateSetVersion: 1,
+    candidates: [
+      {
+        ...common,
+        candidateId: "candidate-c33",
+        candidateVersion: 1,
+        output: {
+          riskSource: "source",
+          riskFactor: "factor",
+          riskEvent: "event",
+          riskElementRelations: [{ sourceElement: "a", relation: "induces", targetElement: "b" }],
+          evidenceLocator: { sourceSegmentId: "segment-c33" },
+          modelConfidence: 0.8,
+        },
+        rawResponseRef,
+        invocationId: "model-c33",
+        generatedAt: TIMESTAMP,
+      },
+    ],
+    rawResponseRefs: [rawResponseRef],
+    usage: {
+      modelInvocations: 1,
+      inputTokens: 1,
+      outputTokens: 1,
+      totalTokens: 2,
+      outputBytes: 1,
+      elapsedMs: 1,
+      repairRounds: 0,
+    },
+    authorizationScopeDigest: registrationScopeDigest,
+    authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+    generatedAt: TIMESTAMP,
+  });
+};
+
 const READ_BRANCH_FOR: Record<RiskIdentificationReadQueryV1["kind"], ModuleBranchV1> = {
   "run-list": "risk-identification.run-list",
   "run-read": "risk-identification.run-read",
@@ -659,12 +822,14 @@ const seedBareRun = async (
     readonly stage: "I3" | "I5" | "I9";
     readonly status: "running" | "waiting" | "completed";
     readonly extra?: Record<string, unknown>;
+    readonly emptySources?: boolean;
   },
 ): Promise<WorkflowRunRefV1> => {
   const runId = `workflow-run:${PROJECT_ID}:${input.suffix}`;
   const runVersionId = sha(`run-version-${input.suffix}`);
   const artifactRef = await putGraphBody(fixture, {
     artifactId: `c33-body-run-state-${input.suffix}`,
+    emptySources: input.emptySources,
     body: runStateBody({
       runId,
       runVersionId,
@@ -680,6 +845,7 @@ const seedBareRun = async (
       graphRowFor({
         kind: "run-state",
         suffix: `run-state-${input.suffix}`,
+        emptySources: input.emptySources,
         runId,
         runVersionId,
         artifactRef,
@@ -716,6 +882,7 @@ const seedCompletedRun = async (
     readonly suffix: string;
     readonly validAt: string;
     readonly candidateSetVersions?: readonly string[];
+    readonly emptyFinalSources?: boolean;
   },
 ): Promise<SeededRunV1> => {
   const { suffix } = input;
@@ -851,7 +1018,7 @@ const seedCompletedRun = async (
         kind: "stage-result",
         suffix: `${suffix}-stage-${stage.stage}`,
         runId,
-        runVersionId,
+        runVersionId: sha(`stage-state-${suffix}-${stage.stage}`),
         artifactRef,
         validAt: input.validAt,
         resultId: stageResultRef.reference.entityId,
@@ -1141,7 +1308,7 @@ const seedCompletedRun = async (
     const candidateArtifactRef = await putFinalizationBody(fixture, {
       artifactId: `c33-body-candidate-set-${suffix}`,
       purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.candidateSet,
-      body: { fixture: "合成样本、待甲方复核" },
+      body: candidateBody(workItemRef, inputSnapshotRef),
     });
     await registerCandidateSets(fixture, {
       candidateSetRefs,
@@ -1155,6 +1322,7 @@ const seedCompletedRun = async (
 
   const runStateArtifactRef = await putGraphBody(fixture, {
     artifactId: `c33-body-run-state-${suffix}`,
+    emptySources: input.emptyFinalSources,
     body: runStateBody({
       runId,
       runVersionId,
@@ -1194,6 +1362,7 @@ const seedCompletedRun = async (
       graphRowFor({
         kind: "run-state",
         suffix: `${suffix}-run-state`,
+        emptySources: input.emptyFinalSources,
         runId,
         runVersionId,
         artifactRef: runStateArtifactRef,
@@ -1291,7 +1460,7 @@ describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
     expect(page2.result.items[0]!.status).toBe("completed");
     expect(page2.result.nextCursor).toBeUndefined();
 
-    // 状态筛选：分页基于过滤后序列；重复读取同一游标得到同一内容。
+    // 状态筛选限当前扫描页，空页仍须可继续。
     const filtered1 = await f.reader.read(
       readQuery(f, "run-list", { pageSize: 1, status: "completed" }),
     );
@@ -1302,8 +1471,16 @@ describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
       readQuery(f, "run-list", { pageSize: 1, status: "completed", cursor: "offset-1" }),
     );
     if (filtered2.kind !== "succeeded") throw new TypeError("run-list filtered replay failed");
-    expect(filtered2.result.items.map((item) => item.runRef)).toEqual([first]);
-    expect(filtered2.result.nextCursor).toBeUndefined();
+    expect(filtered2.result.items).toEqual([]);
+    expect(filtered2.result.nextCursor).toBe("offset-2");
+    const filtered3 = await f.reader.read(
+      readQuery(f, "run-list", {
+        pageSize: 1,
+        status: "completed",
+        cursor: "offset-2",
+      }),
+    );
+    expect(filtered3).toMatchObject({ kind: "succeeded", result: { items: [{ runRef: first }] } });
   });
 
   it("run-read 返回阶段进度、覆盖、合并组与关联引用，并支持精确版本重放", async () => {
@@ -1895,5 +2072,363 @@ describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
     if (result.kind !== "failed") throw new TypeError("overflow run-read should fail closed");
     expect(result.error.code).toBe("BUSINESS_BLOCKED");
     expect(result.error.blockerKind).toBe("run-read-reference-overflow");
+  });
+
+  it("D178 跨阶段来源变化与更宽当前授权下四读面仍保留完整事实", async () => {
+    const f = requireFixture();
+    const seeded = await seedCompletedRun(f, {
+      suffix: "d178-cross-scope",
+      validAt: "2030-01-02T00:00:00.000Z",
+      emptyFinalSources: true,
+    });
+    const readAll = () =>
+      Promise.all([
+        f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef })),
+        f.reader.read(readQuery(f, "run-list", { pageSize: 1 })),
+        f.reader.read(readQuery(f, "record-read", { riskRecordRef: seeded.recordRef })),
+        f.reader.read(readQuery(f, "record-catalog", { identificationRunRef: seeded.runRef })),
+      ]);
+    const original = await readAll();
+    expect(original.every((result) => result.kind === "succeeded")).toBe(true);
+    expect(original[0]).toMatchObject({
+      kind: "succeeded",
+      result: {
+        stageEntries: expect.arrayContaining([{ stage: "I1", status: "completed" }]),
+        resultCounts: { plannedWorkItemCount: 1 },
+        workItemCoverage: [{ workItemRef: seeded.workItemRef }],
+      },
+    });
+    expect(original[1]).toMatchObject({ result: { items: [{ runRef: seeded.runRef }] } });
+    expect(original[3]).toMatchObject({ result: { items: [{ riskRecordRef: seeded.recordRef }] } });
+    f.access.widenScope();
+    try {
+      expect(await readAll()).toEqual(original);
+    } finally {
+      f.access.restore();
+    }
+    // 终态本身无来源不能绕过工作计划所需资料的当前权限。
+    f.access.denySource("source-version-c33");
+    try {
+      expect(
+        await f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef })),
+      ).toMatchObject({ kind: "failed", error: DENIED_SHAPE });
+      expect(await f.reader.read(readQuery(f, "run-list", { pageSize: 1 }))).toMatchObject({
+        kind: "succeeded",
+        result: { items: [] },
+      });
+    } finally {
+      f.access.restore();
+    }
+  });
+
+  it("D178 不可见页不扫描后续运行或记录，游标按实际扫描位置继续", async () => {
+    const f = requireFixture();
+    const visible = await seedBareRun(f, {
+      suffix: "d178-visible-page",
+      validAt: "2030-02-01T00:00:01Z",
+      stage: "I9",
+      status: "completed",
+      emptySources: true,
+    });
+    await seedBareRun(f, {
+      suffix: "d178-hidden-page",
+      validAt: "2030-02-01T00:00:02Z",
+      stage: "I9",
+      status: "completed",
+    });
+    f.access.denySource("source-version-c33");
+    try {
+      expect(await f.reader.read(readQuery(f, "run-list", { pageSize: 1 }))).toMatchObject({
+        kind: "succeeded",
+        result: { items: [], nextCursor: "offset-1" },
+      });
+      expect(
+        await f.reader.read(readQuery(f, "run-list", { pageSize: 1, cursor: "offset-1" })),
+      ).toMatchObject({ kind: "succeeded", result: { items: [{ runRef: visible }] } });
+    } finally {
+      f.access.restore();
+    }
+    const record = await seedCompletedRun(f, {
+      suffix: "d178-hidden-record",
+      validAt: "2030-02-01T00:00:03Z",
+    });
+    f.access.denySource("source-version-d178-hidden-record");
+    try {
+      expect(await f.reader.read(readQuery(f, "record-catalog", { pageSize: 1 }))).toMatchObject({
+        kind: "succeeded",
+        result: { items: [], nextCursor: "offset-1" },
+      });
+      const next = await f.reader.read(
+        readQuery(f, "record-catalog", { pageSize: 1, cursor: "offset-1" }),
+      );
+      expect(next).toMatchObject({
+        kind: "succeeded",
+        result: { items: [{ riskRecordRef: expect.any(Object) }] },
+      });
+      expect(
+        await f.reader.read(readQuery(f, "record-read", { riskRecordRef: record.recordRef })),
+      ).toMatchObject({ kind: "failed", error: DENIED_SHAPE });
+    } finally {
+      f.access.restore();
+    }
+  });
+
+  it("D178 历史状态不混入之后登记的候选，候选正文必须经C04完整读取", async () => {
+    const f = requireFixture();
+    const seeded = await seedCompletedRun(f, {
+      suffix: "d178-candidate-bound",
+      validAt: TIMESTAMP,
+      candidateSetVersions: [sha("d178-original")],
+    });
+    const original = await f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef }));
+    expect(original).toMatchObject({
+      kind: "succeeded",
+      result: { revisedCandidateRefs: seeded.candidateSetRefs },
+    });
+    const inputRef = refOf(
+      "identification-input-snapshot",
+      `identification-input-snapshot:${seeded.runRef.reference.entityId}`,
+      sha("input-snapshot-request-d178-candidate-bound"),
+    );
+    const futureRefs = Array.from({ length: 257 }, (_, i) =>
+      candidateSetRefFor({
+        projectId: PROJECT_ID,
+        workItemEntityId: seeded.workItemRef.reference.entityId,
+        requestDigest: sha(`d178-future-${i}`),
+      }),
+    );
+    await registerCandidateSets(f, {
+      candidateSetRefs: futureRefs,
+      workItemRef: seeded.workItemRef,
+      inputSnapshotRef: inputRef,
+      artifactRef: await putFinalizationBody(f, {
+        artifactId: "d178-future-candidates",
+        purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.candidateSet,
+        body: candidateBody(seeded.workItemRef, inputRef),
+      }),
+      occurredAt: TIMESTAMP,
+      commandSuffix: "d178-future",
+    });
+    expect(await f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef }))).toEqual(
+      original,
+    );
+    const reader = new PostgresRiskIdentificationReadAdapter({
+      db: f.runtime.db,
+      authorization: f.access.port,
+      artifactStore: {
+        ...f.artifactStore,
+        open: async (request) => {
+          if (request.purposeCode === RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.candidateSet)
+            throw new Error("candidate unavailable");
+          return f.artifactStore.open(request);
+        },
+      },
+      now: () => new Date(TIMESTAMP),
+    });
+    expect(await reader.read(readQuery(f, "run-read", { runRef: seeded.runRef }))).toMatchObject({
+      kind: "failed",
+      error: DENIED_SHAPE,
+    });
+  });
+
+  it("D178 缺登记资源和缺记录来源元数据同形拒绝", async () => {
+    const f = requireFixture();
+    const seeded = await seedCompletedRun(f, { suffix: "d178-missing", validAt: TIMESTAMP });
+    f.access.hideResource("authorization-c33");
+    try {
+      expect(
+        await f.reader.read(readQuery(f, "run-read", { runRef: seeded.runRef })),
+      ).toMatchObject({ kind: "failed", error: DENIED_SHAPE });
+    } finally {
+      f.access.restore();
+    }
+    await f.postgres.adminPool.query(
+      "UPDATE business.standardized_risk_records SET source_version_refs = NULL WHERE risk_record_id = $1",
+      [seeded.recordRef.reference.entityId],
+    );
+    expect(
+      await f.reader.read(readQuery(f, "record-read", { riskRecordRef: seeded.recordRef })),
+    ).toMatchObject({ kind: "failed", error: DENIED_SHAPE });
+    expect(
+      await f.reader.read(readQuery(f, "record-catalog", { identificationRunRef: seeded.runRef })),
+    ).toMatchObject({ kind: "succeeded", result: { items: [] } });
+  });
+
+  it("D178 真实C06空来源深链检查记录及证据来源，撤权/异空间/错版本均拒绝", async () => {
+    const f = requireFixture();
+    const seeded = await seedCompletedRun(f, { suffix: "d178-real-access", validAt: TIMESTAMP });
+    await bootstrapInitialSystemAdministrator({
+      connection: f.postgres.migrator,
+      loginName: "d178admin",
+      displayName: "合成管理员",
+      password: "d178-admin-initial",
+      accountId: "d178-admin",
+      now: () => new Date(TIMESTAMP),
+    });
+    const access = createPostgresLocalIdentityAccess({
+      ...f.postgres.app,
+      hmacKey: new Uint8Array(32).fill(7),
+      keyVersion: "v1",
+      now: () => new Date(TIMESTAMP),
+    });
+    try {
+      const initial = await access.login({
+        kind: "login",
+        loginAttemptId: "d178-admin-login",
+        loginName: "d178admin",
+        password: "d178-admin-initial",
+      });
+      const admin = await access.changePassword({
+        kind: "change-password",
+        sessionToken: initial.sessionToken,
+        newPassword: "d178-admin-changed",
+      });
+      const manager = await access.administerIdentity({
+        kind: "create-account",
+        commandId: "d178-create-manager",
+        idempotencyKey: "d178-create-manager",
+        expectedVersion: "none",
+        authorizationContextRef: admin.systemAdministrationContextRef!,
+        loginName: "d178manager",
+        displayName: "合成验收用户",
+        password: "d178-manager-initial",
+      });
+      await access.administerProject({
+        kind: "open-project",
+        projectId: PROJECT_ID,
+        commandId: "d178-open-project",
+        idempotencyKey: "d178-open-project",
+        expectedVersion: "none",
+        authorizationContextRef: admin.systemAdministrationContextRef!,
+        initialRiskManagerAccountId: manager.resultRef.entityId,
+        includeAdministrator: true,
+      });
+      const login = await access.login({
+        kind: "login",
+        loginAttemptId: "d178-manager-login",
+        loginName: "d178manager",
+        password: "d178-manager-initial",
+      });
+      const current = await access.changePassword({
+        kind: "change-password",
+        sessionToken: login.sessionToken,
+        newPassword: "d178-manager-changed",
+      });
+      const registration = await access.authorize({
+        invocation: { kind: "human-session", sessionToken: current.sessionToken },
+        invocationId: "d178-register-source",
+        projectId: PROJECT_ID,
+        branch: "engineering-data.register-source-delivery",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      });
+      const sources = [
+        refOf("source-version", "d178-engineering-source"),
+        refOf("source-version", "d178-evidence-source"),
+      ];
+      const scopes = registration.context.spatialScopeRefs;
+      const policies = [];
+      for (const [i, source] of sources.entries()) {
+        policies.push(
+          await access.administerProject({
+            kind: "revise-source-access",
+            projectId: PROJECT_ID,
+            commandId: `d178-source-${i}`,
+            idempotencyKey: `d178-source-${i}`,
+            expectedVersion: "none",
+            authorizationContextRef: registration.contextRef,
+            sourceVersionRef: source,
+            visibility: "restricted",
+            allowedAccountIds: [manager.resultRef.entityId],
+            spatialScopeRefs: scopes,
+            registeredByAccountId: manager.resultRef.entityId,
+          }),
+        );
+      }
+      const setMetadata = (spatial: readonly SpatialScopeRefV1[], source = sources[0]!) =>
+        f.postgres.adminPool.query(
+          "UPDATE business.standardized_risk_records SET spatial_scope_refs=$2::jsonb, source_version_refs=$3::jsonb, evidence_references=$4::jsonb WHERE risk_record_id=$1",
+          [
+            seeded.recordRef.reference.entityId,
+            JSON.stringify(spatial),
+            JSON.stringify([source]),
+            JSON.stringify([
+              {
+                sourceVersion: sources[1]!.reference,
+                locator: { sourceSegmentId: "d178-evidence" },
+              },
+            ]),
+          ],
+        );
+      await setMetadata(scopes);
+      const reader = new PostgresRiskIdentificationReadAdapter({
+        db: f.runtime.db,
+        artifactStore: f.artifactStore,
+        authorization: access,
+        now: () => new Date(TIMESTAMP),
+      });
+      const read = async (kind: "record-read" | "record-catalog") => {
+        const queryId = `d178-real-query-${++queryCount}`;
+        const decision = await access.authorize({
+          invocation: { kind: "human-session", sessionToken: current.sessionToken },
+          invocationId: queryId,
+          projectId: PROJECT_ID,
+          branch: READ_BRANCH_FOR[kind],
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+        });
+        expect(decision.context.sourceAccessGrantRefs).toEqual([]);
+        return reader.read(
+          RiskIdentificationReadQueryV1Schema.parse({
+            queryId,
+            projectId: PROJECT_ID,
+            actorId: manager.resultRef.entityId,
+            requestedAt: TIMESTAMP,
+            authorization: decision.context,
+            kind,
+            payload:
+              kind === "record-read"
+                ? { riskRecordRef: seeded.recordRef }
+                : { identificationRunRef: seeded.runRef },
+          }),
+        );
+      };
+      expect(await read("record-read")).toMatchObject({
+        kind: "succeeded",
+        result: { riskRecordRef: seeded.recordRef },
+      });
+      expect(await read("record-catalog")).toMatchObject({
+        kind: "succeeded",
+        result: { items: [{ riskRecordRef: seeded.recordRef }] },
+      });
+      await setMetadata([refOf("spatial-scope", "d178-foreign-space")]);
+      expect(await read("record-read")).toMatchObject({ kind: "failed", error: DENIED_SHAPE });
+      await setMetadata(
+        scopes,
+        refOf("source-version", sources[0]!.reference.entityId, "wrong-version"),
+      );
+      expect(await read("record-read")).toMatchObject({ kind: "failed", error: DENIED_SHAPE });
+      await setMetadata(scopes);
+      await access.administerProject({
+        kind: "revise-source-access",
+        projectId: PROJECT_ID,
+        commandId: "d178-revoke-evidence",
+        idempotencyKey: "d178-revoke-evidence",
+        expectedVersion: policies[1]!.resultRef,
+        authorizationContextRef: registration.contextRef,
+        sourceVersionRef: sources[1]!,
+        visibility: "restricted",
+        allowedAccountIds: [],
+        spatialScopeRefs: scopes,
+        registeredByAccountId: "d178-admin",
+      });
+      expect(await read("record-read")).toMatchObject({ kind: "failed", error: DENIED_SHAPE });
+      expect(await read("record-catalog")).toMatchObject({
+        kind: "succeeded",
+        result: { items: [] },
+      });
+    } finally {
+      await access.close();
+    }
   });
 });

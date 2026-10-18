@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,6 +98,17 @@ describe("正式查询目标终态定位", () => {
     expect(
       requiredReferencesOfV1(result, [["resultRefs", 0]], operation, { workflowRunRef }),
     ).toBeNull();
+    const path = [["resultRefs", { kind: "risk-flow-run-result" }]];
+    for (const resultRefs of [result.resultRefs, [...result.resultRefs].reverse()]) {
+      expect(
+        requiredReferencesOfV1({ ...result, resultRefs }, path, operation, { workflowRunRef }),
+      ).toEqual({ "resultRefs.[kind=risk-flow-run-result]": result.resultRefs[1] });
+    }
+    for (const resultRefs of [[], [...result.resultRefs, ref("risk-flow-run-result", "other")]]) {
+      expect(
+        requiredReferencesOfV1({ ...result, resultRefs }, path, operation, { workflowRunRef }),
+      ).toBeNull();
+    }
     expect(
       requiredReferencesOfV1(
         result,
@@ -229,7 +240,7 @@ describe("正式查询目标终态定位", () => {
   });
 
   it("risk-identification.run-read 只接受与 start 回执相同的 runRef", () => {
-    const payload = { kind: "run-read", runRef: workflowRunRef };
+    const payload = { runRef: workflowRunRef };
     expect(
       terminalStatusOfV1(
         runReadQuery,
@@ -347,6 +358,37 @@ describe("正式查询目标终态定位", () => {
     };
     expect(
       requiredReferencesOfV1(result, [["resultRef", "formalResultRef"]], detailQuery),
+    ).toBeNull();
+  });
+
+  it("Agent和识别主产出混入辅助路径时整组拒绝", () => {
+    const task = agentTaskRef("data-cleaning");
+    const result = {
+      kind: "detail",
+      resultRef: agentTaskCompletedResult("data-cleaning", {
+        incrementRef: ref("content-artifact", "cleaning-1"),
+      }),
+    };
+    expect(
+      requiredReferencesOfV1(
+        result,
+        [
+          ["resultRef", "incrementRef"],
+          ["resultRef", "agentTaskRef"],
+        ],
+        detailQuery,
+        { agentTaskRef: task },
+      ),
+    ).toBeNull();
+    const run = {
+      kind: "run-read",
+      runRef: workflowRunRef,
+      acceptedRiskRecordRefs: [ref("standardized-risk-record", "risk-1")],
+    };
+    expect(
+      requiredReferencesOfV1(run, [["acceptedRiskRecordRefs", 0], ["runRef"]], runReadQuery, {
+        workflowRunRef,
+      }),
     ).toBeNull();
   });
 
@@ -643,6 +685,75 @@ const integrationInputs = (
 };
 
 describe("功能验收真实 runner 行为", () => {
+  it.each([
+    ["completed", false, false, "PASS"],
+    ["waiting", false, false, "awaiting-human"],
+    ["completed", true, false, "BLOCKED"],
+    ["completed", false, true, "BLOCKED"],
+  ])("只读既有引用观察 %s，缺引用=%s，拒权=%s", async (status, missing, forbidden, expected) => {
+    const root = tempDir();
+    const { configPath } = integrationInputs(root, { maxQueries: 1 });
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.mode = "existing-formal-references";
+    config.targets = [
+      {
+        stepId: "start-run",
+        resultRef: { workflowRunRef },
+        requestedSpatialScopeRefs: [ref("spatial-scope", "scope-1")],
+        requestedSourceVersionRefs: [ref("source-version", "source-1")],
+      },
+    ];
+    config.observations[0].payload = { queryResultRef: ref("query-result", "query-1") };
+    writeFileSync(configPath, JSON.stringify(config));
+    const fixture = httpFixture({
+      runStatuses: [status],
+      missingFormalRef: missing,
+      forbidRead: forbidden,
+    });
+    const outputDir = join(root, "read-only");
+    const result = await runFunctionalAcceptance({
+      packDir: PACK_DIR,
+      configPath,
+      outputDir,
+      fetchImpl: fixture.fetchImpl,
+    });
+    expect(result.status).toBe(expected);
+    expect(result.state.evidenceSource).toBe("existing-formal-references");
+    expect(fixture.requests.map((request) => request.path)).toEqual([
+      "/api/v1/session/login",
+      "/api/v1/projects/project-1/queries/projection.result-read",
+    ]);
+    expect(existsSync(join(outputDir, "synthetic", "run.json"))).toBe(false);
+  });
+
+  it("既有引用模式要求目标与观察一一对应，提交模式不接受外加目标", () => {
+    const config = validConfig();
+    expect(
+      FunctionalAcceptanceConfigV1Schema.safeParse({
+        ...config,
+        mode: "existing-formal-references",
+      }).success,
+    ).toBe(false);
+    const targets = [
+      {
+        stepId: "other",
+        resultRef: { workflowRunRef },
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      },
+    ];
+    expect(FunctionalAcceptanceConfigV1Schema.safeParse({ ...config, targets }).success).toBe(
+      false,
+    );
+    expect(
+      FunctionalAcceptanceConfigV1Schema.safeParse({
+        ...config,
+        mode: "existing-formal-references",
+        targets,
+      }).success,
+    ).toBe(false);
+  });
+
   it("异步提交后只在同一 run 终态完成且有正式结果引用时通过，并继承原授权范围", async () => {
     const root = tempDir();
     const outputDir = join(root, "output");

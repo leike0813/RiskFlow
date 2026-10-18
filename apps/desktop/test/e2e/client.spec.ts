@@ -133,6 +133,7 @@ const launchClientV1 = async (desktopConfigPath: string): Promise<DesktopSession
     },
   });
   const window = await app.firstWindow();
+  await window.waitForURL((url) => url.href !== "about:blank", { waitUntil: "domcontentloaded" });
   return { app, window };
 };
 
@@ -148,11 +149,19 @@ const loginV1 = async (
 ): Promise<boolean> => {
   await window.goto(url);
   const gate = window.locator(LOGIN_GATE_V1);
-  const needsLogin = await gate.waitFor({ state: "visible", timeout: 30_000 }).then(
-    () => true,
-    () => false,
-  );
-  if (!needsLogin) return false;
+  const signedIn = window.getByRole("button", { name: "登出", exact: true });
+  const restoreRetry = window.locator('[data-session-retry="restore"]');
+  await expect(gate.or(signedIn).or(restoreRetry).first()).toBeVisible();
+  if (await restoreRetry.isVisible()) {
+    await expect.poll(async () => (await fetch(new URL("/api/v1/session", url))).status).toBe(401);
+    await restoreRetry.click();
+    await expect(gate.or(signedIn).first()).toBeVisible();
+  }
+  const needsLogin = await gate.isVisible();
+  if (!needsLogin) {
+    await expect(signedIn).toBeVisible();
+    return false;
+  }
   await gate.fill(loginName);
   await window.getByLabel("密码").fill(password);
   await window.getByRole("button", { name: "登录", exact: true }).click();
@@ -659,6 +668,24 @@ test("预检边界：缺项、错工程/发布、越界链接与非法秘密都�
     DESKTOP_ACCEPTANCE_PROBLEM_V1.invalidAcceptanceInput,
   );
 
+  const invalidSseRun = await preflightFixtureV1(() => ({
+    sseIdentificationRun: { workflowRunRef: { kind: "workflow-run" }, sourceVersionRefs: [] },
+  }));
+  expect(invalidSseRun.problems).toContain(DESKTOP_ACCEPTANCE_PROBLEM_V1.invalidAcceptanceInput);
+
+  const foreignSseSnapshot = await preflightFixtureV1(() => ({
+    sseIdentificationRun: {
+      workflowRunRef: { kind: "workflow-run", reference: { entityId: "run-a", versionId: "1" } },
+      readSnapshotRef: { kind: "workflow-run", reference: { entityId: "run-b", versionId: "2" } },
+      sourceVersionRefs: [
+        { kind: "source-version", reference: { entityId: "source", versionId: "1" } },
+      ],
+    },
+  }));
+  expect(foreignSseSnapshot.problems).toContain(
+    DESKTOP_ACCEPTANCE_PROBLEM_V1.invalidAcceptanceInput,
+  );
+
   const looseSecret = await preflightFixtureV1((fixture) => {
     chmodSync(fixture.operatorSecretPath, 0o644);
     return undefined;
@@ -760,7 +787,7 @@ test("关闭窗口后已受理任务继续：重开客户端读到同次运行�
         agentTaskRef,
       });
       expect(task.status).toBe(200);
-      expect(["queued", "running"], "关窗前任务必须仍在服务端执行").toContain(
+      expect(["pending", "running"], "关窗前任务必须仍在服务端执行").toContain(
         task.body?.result?.summary?.status,
       );
     } else {
@@ -1247,7 +1274,9 @@ test("SSE：按正式游标重连且不重发写命令", async () => {
   requireReady();
   const projectId = acceptanceTarget.acceptance.projectId;
   const operator = acceptanceTarget.credentials.operator;
-  const workflowRunRef = acceptanceTarget.bindings.workflowRunRef;
+  const sseIdentificationRun = acceptanceTarget.acceptance.sseIdentificationRun;
+  const workflowRunRef =
+    sseIdentificationRun?.workflowRunRef ?? acceptanceTarget.bindings.workflowRunRef;
   const { app, window } = await launchClientV1(envPathV1(DESKTOP_ACCEPTANCE_ENV_V1.buildConfig));
   try {
     const commandWrites: string[] = [];
@@ -1273,6 +1302,19 @@ test("SSE：按正式游标重连且不重发写命令", async () => {
       operator.loginName,
       operator.password,
     );
+    if (sseIdentificationRun !== undefined) {
+      const current = await queryV1(
+        window,
+        projectId,
+        "risk-identification.run-read",
+        { runRef: sseIdentificationRun.readSnapshotRef },
+        sseIdentificationRun.sourceVersionRefs,
+      );
+      expect(current.status, "SSE样例须由当前会话读取正式运行").toBe(200);
+      expect(current.body?.kind).toBe("succeeded");
+      expect(current.body?.result?.runRef).toEqual(sseIdentificationRun.readSnapshotRef);
+      expect(current.body?.result?.status).toBe("completed");
+    }
     const eventsUrl =
       acceptanceTarget.publicOrigin +
       "/api/v1/projects/" +

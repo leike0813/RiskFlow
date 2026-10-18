@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import type { StartWorkflowRunCommandV1 } from "@riskflow/contracts/ports";
+import {
+  StartWorkflowRunCommandV1Schema,
+  type StartWorkflowRunCommandV1,
+} from "@riskflow/contracts/ports";
 
 import {
   WorkflowGraphResultRowV1Schema,
@@ -89,6 +92,112 @@ const reassess = (overrides: Record<string, unknown> = {}): Payload =>
   }) as unknown as Payload;
 
 describe("C30 entry gate", () => {
+  it("pins each site's space while preserving context order independence and identities without sites", () => {
+    const siteA = {
+      kind: "content-artifact" as const,
+      reference: { entityId: "site-a", versionId: "v1" },
+    };
+    const siteB = {
+      kind: "content-artifact" as const,
+      reference: { entityId: "site-b", versionId: "v1" },
+    };
+    const contexts = [
+      {
+        spatialScopeRef: spatialA,
+        applicabilityMetadataSnapshotRef: applicabilityA,
+        siteContextArtifactRef: siteA,
+      },
+      {
+        spatialScopeRef: spatialB,
+        applicabilityMetadataSnapshotRef: applicabilityB,
+        siteContextArtifactRef: siteB,
+      },
+    ];
+    const payloadSchema = StartWorkflowRunCommandV1Schema.options[0].shape.payload;
+    const forContexts = (assessmentContexts: unknown[]) => {
+      const gate = evaluateWorkflowEntryGate(
+        payloadSchema.parse(
+          identifyAndAssess({ spatialScopeRefs: [spatialA, spatialB], assessmentContexts }),
+        ),
+      );
+      if (gate.kind !== "ready") throw new Error("entry must be ready");
+      const input = {
+        entryMode: "identify-and-assess" as const,
+        projectId: "project",
+        frozenRefs: gate.frozenRefs,
+      };
+      return {
+        identity: workflowEntryIdentityFor({
+          ...input,
+          assessmentContexts: gate.assessmentContexts,
+        }),
+        legacy: workflowEntryIdentityFor(input),
+      };
+    };
+    expect(forContexts([...contexts].reverse()).identity).toEqual(forContexts(contexts).identity);
+    expect(
+      forContexts([
+        { ...contexts[0], siteContextArtifactRef: siteB },
+        { ...contexts[1], siteContextArtifactRef: siteA },
+      ]).identity,
+    ).not.toEqual(forContexts(contexts).identity);
+    const legacy = forContexts(
+      contexts.map(({ spatialScopeRef, applicabilityMetadataSnapshotRef }) => ({
+        spatialScopeRef,
+        applicabilityMetadataSnapshotRef,
+      })),
+    );
+    expect(legacy.identity).toEqual(legacy.legacy);
+  });
+  it.each(["assess", "reassess", "historical-backfill"] as const)(
+    "freezes the public %s site artifact into the entry identity",
+    (entryMode) => {
+      const site = {
+        kind: "content-artifact" as const,
+        reference: { entityId: "site", versionId: "v1" },
+      };
+      const base = {
+        ...assess(),
+        entryMode,
+        riskInput: version("external-risk-event", "event"),
+        ...(entryMode === "reassess"
+          ? {
+              previousAssessmentRecordRef: version("risk-assessment-record", "record"),
+              reason: "monitoring-snapshot",
+              changedInputRefs: [monitoringA],
+            }
+          : {}),
+        ...(entryMode === "historical-backfill"
+          ? {
+              effectiveAt: "2030-01-01T00:00:00.000Z",
+              assessmentBasisReleaseSetRef: basisReleaseSet,
+            }
+          : {}),
+      };
+      const payloadSchema = StartWorkflowRunCommandV1Schema.options[0].shape.payload;
+      const payload = payloadSchema.parse({ ...base, siteContextArtifactRef: site });
+      const gate = evaluateWorkflowEntryGate(payload);
+      const changed = evaluateWorkflowEntryGate(
+        payloadSchema.parse({
+          ...base,
+          siteContextArtifactRef: { ...site, reference: { ...site.reference, versionId: "v2" } },
+        }),
+      );
+      expect(gate.kind).toBe("ready");
+      expect(changed.kind).toBe("ready");
+      if (gate.kind !== "ready" || changed.kind !== "ready") return;
+      expect(gate.frozenRefs).toContainEqual(site);
+      const identity = (frozenRefs: typeof gate.frozenRefs) =>
+        workflowEntryIdentityFor({ entryMode, projectId: "project", frozenRefs });
+      expect(identity(gate.frozenRefs)).not.toEqual(identity(changed.frozenRefs));
+      expect(
+        payloadSchema.safeParse({
+          ...base,
+          siteContextArtifactRef: version("source-version", "site"),
+        }).success,
+      ).toBe(false);
+    },
+  );
   it("pins an explicit assessment preparation into the entry identity", () => {
     const preparation = version("assessment-preparation-snapshot", "preparation");
     const original = evaluateWorkflowEntryGate(assess());
@@ -104,6 +213,10 @@ describe("C30 entry gate", () => {
     expect(identity(supplied.frozenRefs)).not.toEqual(identity(original.frozenRefs));
   });
   it("accepts paired multi-space contexts and freezes each space exactly once", () => {
+    const site = {
+      kind: "content-artifact" as const,
+      reference: { entityId: "site-a", versionId: "v1" },
+    };
     const gate = evaluateWorkflowEntryGate(
       identifyAndAssess({
         spatialScopeRefs: [spatialA, spatialB],
@@ -112,12 +225,14 @@ describe("C30 entry gate", () => {
             spatialScopeRef: spatialA,
             applicabilityMetadataSnapshotRef: applicabilityA,
             monitoringSnapshotRefs: [monitoringA],
+            siteContextArtifactRef: site,
           },
           { spatialScopeRef: spatialB, applicabilityMetadataSnapshotRef: applicabilityB },
         ],
       }),
     );
     expect(gate.kind).toBe("ready");
+    if (gate.kind === "ready") expect(gate.frozenRefs).toContainEqual(site);
     if (gate.kind !== "ready") return;
     expect(gate.assessmentContexts).toHaveLength(2);
     expect(gate.monitoringSnapshotRefs).toEqual([monitoringA]);

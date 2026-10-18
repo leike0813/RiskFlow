@@ -1740,6 +1740,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     const first = await fixture.scoringRules.assemble(command);
     if (first.kind !== "succeeded") throw new Error(JSON.stringify(first));
     expect(first).toMatchObject({ kind: "succeeded" });
+    const laterAt = "2030-01-01T00:00:06.000Z";
     const nextPreparation = {
       ...request.preparationSnapshotRef,
       reference: {
@@ -1772,8 +1773,53 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       payload: { preparationSnapshotRef: nextPreparation, requiredAt: request.requiredAt },
     };
     const nextBasis = await fixture.scoringRules.resolve(resolveNext);
-    expect(nextBasis).toMatchObject({ kind: "succeeded" });
+    if (nextBasis.kind !== "succeeded" || nextBasis.result.kind !== "assessment-basis")
+      throw new Error(JSON.stringify(nextBasis));
     expect(await fixture.scoringRules.resolve(resolveNext)).toEqual(nextBasis);
+    const before = await countRows(
+      "SELECT count(*)::text AS count FROM business.knowledge_revisions WHERE project_id = $1 AND definition_type = 'applicable-rule-set'",
+      [request.projectId],
+    );
+    const releasesBefore = await countRows(
+      "SELECT count(*)::text AS count FROM business.knowledge_releases WHERE project_id = $1 AND definition_type = 'applicable-rule-set'",
+      [request.projectId],
+    );
+    const nextAssemblyId = "c19-next-preparation-assembly";
+    const nextAssembly = await fixture.scoringRules.assemble({
+      ...command,
+      commandId: nextAssemblyId,
+      idempotencyKey: nextAssemblyId,
+      issuedAt: laterAt,
+      authorization: fixture.authorize({
+        projectId: request.projectId,
+        actorId: request.actorId,
+        branch: "knowledge-modeling.assemble-applicable-rule-set",
+        entityId: nextAssemblyId,
+        requestedAt: laterAt,
+      }),
+      payload: { ...command.payload, preparationSnapshotRef: nextPreparation },
+    });
+    if (nextAssembly.kind !== "succeeded") throw new Error(JSON.stringify(nextAssembly));
+    const nextBasisRead = await fixture.scoringRules.readAssessmentBasisReleaseSet(
+      basisReadInput({
+        requestId: "c19-next-preparation-basis-read",
+        authorization: basisAuthorization(request.projectId, "c19-next-preparation-basis-read"),
+        assessmentBasisReleaseSetRef: nextBasis.result.assessmentBasisReleaseSetRef,
+      }),
+    );
+    if (nextBasisRead.kind !== "succeeded") throw new Error(JSON.stringify(nextBasisRead));
+    expect(nextAssembly.result).toMatchObject({
+      applicableRuleSetRevisionRef: nextBasisRead.applicableRuleSetMember.revisionRef,
+      applicableRuleSetReleaseRef: nextBasisRead.applicableRuleSetMember.releaseRef,
+      applicableRuleSetArtifactRef: nextBasisRead.applicableRuleSetMember.artifactRef,
+    });
+    for (const field of [
+      "applicableRuleSetRevisionRef",
+      "applicableRuleSetReleaseRef",
+      "applicableRuleSetArtifactRef",
+    ] as const) {
+      expect(nextAssembly.result[field]).not.toEqual(first.result[field]);
+    }
     fixture.setPreparationProjection({
       schemaVersion: "1",
       projectId: request.projectId,
@@ -1782,11 +1828,35 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
       applicabilitySnapshotRef: request.applicabilitySnapshotRef,
       applicability: request.applicability,
     });
-    const before = await countRows(
-      "SELECT count(*)::text AS count FROM business.knowledge_revisions WHERE project_id = $1 AND definition_type = 'applicable-rule-set'",
-      [request.projectId],
-    );
     expect(await fixture.scoringRules.assemble(command)).toEqual(first);
+    const laterCommandId = "c19-public-assembly-later";
+    expect(
+      await fixture.scoringRules.assemble({
+        ...command,
+        commandId: laterCommandId,
+        idempotencyKey: laterCommandId,
+        issuedAt: laterAt,
+        authorization: fixture.authorize({
+          projectId: request.projectId,
+          actorId: request.actorId,
+          branch: "knowledge-modeling.assemble-applicable-rule-set",
+          entityId: laterCommandId,
+          requestedAt: laterAt,
+        }),
+      }),
+    ).toEqual(first);
+    expect(
+      await countRows(
+        "SELECT count(*)::text AS count FROM business.knowledge_revisions WHERE project_id = $1 AND definition_type = 'applicable-rule-set'",
+        [request.projectId],
+      ),
+    ).toBe(before);
+    expect(
+      await countRows(
+        "SELECT count(*)::text AS count FROM business.knowledge_releases WHERE project_id = $1 AND definition_type = 'applicable-rule-set'",
+        [request.projectId],
+      ),
+    ).toBe(releasesBefore);
     const changed = await fixture.scoringRules.assemble({
       ...command,
       payload: { ...command.payload, requiredAt: "2030-01-01T00:00:04.000Z" },
@@ -1858,10 +1928,28 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
 
   it("事务失败回滚：注入组装事务故障后不产生部分规则集修订", async () => {
     expect(chain).toBeDefined();
+    const chainRequest = chain!.prepareRequest;
+    // 新准备确保故障注入实际触达发布事务。
+    const rollbackPreparation = {
+      ...chainRequest.preparationSnapshotRef,
+      reference: {
+        ...chainRequest.preparationSnapshotRef.reference,
+        entityId: `${chainRequest.preparationSnapshotRef.reference.entityId}:rollback`,
+      },
+    };
+    requireFixture().setPreparationProjection({
+      schemaVersion: "1",
+      projectId: chainRequest.projectId,
+      preparationSnapshotRef: rollbackPreparation,
+      projectRevisionRef: chainRequest.projectRevisionRef,
+      applicabilitySnapshotRef: chainRequest.applicabilitySnapshotRef,
+      applicability: chainRequest.applicability,
+    });
     const request = {
-      ...(chain!.prepareRequest as Record<string, unknown>),
+      ...chainRequest,
       requestId: "c19-real-standard-assembly-rollback",
       idempotencyKey: "c19-real-standard-assembly-rollback",
+      preparationSnapshotRef: rollbackPreparation,
     };
     const before = await countRows(
       `SELECT count(*)::text AS count FROM business.knowledge_revisions
@@ -1870,9 +1958,7 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
     );
     requireFixture().injectTransactionFailure("c19-real-standard-assembly-rollback");
     try {
-      const failed = await requireFixture().scoringRules.assembleApplicableRuleSetRevision(
-        request as never,
-      );
+      const failed = await requireFixture().scoringRules.assembleApplicableRuleSetRevision(request);
       expect(failed.kind).toBe("failed");
       if (failed.kind === "failed") {
         expect(["TRANSIENT_FAILURE", "TERMINAL_FAILURE"]).toContain(failed.error.code);
@@ -1888,6 +1974,14 @@ describe.sequential("C19 PostgreSQL 结构化评分规则与适用规则集", ()
         [chain!.projectId],
       ),
     ).toBe(before);
+    requireFixture().setPreparationProjection({
+      schemaVersion: "1",
+      projectId: chainRequest.projectId,
+      preparationSnapshotRef: chainRequest.preparationSnapshotRef,
+      projectRevisionRef: chainRequest.projectRevisionRef,
+      applicabilitySnapshotRef: chainRequest.applicabilitySnapshotRef,
+      applicability: chainRequest.applicability,
+    });
   }, 300_000);
 
   it("basis 无正文：成功结果只含顶层借用字段与精确引用", async () => {

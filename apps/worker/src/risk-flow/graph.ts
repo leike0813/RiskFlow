@@ -615,6 +615,9 @@ export const pairingFrozenRefsV1 = (input: {
     // 显式钉住的评估依据集合（`historical-backfill`）必须原样进入子运行冻结输入，
     // 使子运行按该精确版本评估而不是重新解析（design D-01/D-03）。
     ...refsOfKind(input.frozenRefs, "assessment-basis-release-set"),
+    ...(input.pairing.siteContextArtifactRef === undefined
+      ? []
+      : [input.pairing.siteContextArtifactRef]),
     ...(input.pairing.monitoringSnapshotRefs ?? []),
   ]);
 
@@ -635,10 +638,12 @@ export const pairingsFromRowsV1 = (
     if (seen.has(key)) continue;
     seen.add(key);
     const monitoring = refsOfKind(row.frozenRefs, "monitoring-snapshot");
+    const siteArtifacts = refsOfKind(row.frozenRefs, "content-artifact");
     pairings.push({
       spatialScopeRef: space,
       applicabilityMetadataSnapshotRef: applicability,
       ...(monitoring.length === 0 ? {} : { monitoringSnapshotRefs: monitoring }),
+      ...(siteArtifacts.length === 1 ? { siteContextArtifactRef: siteArtifacts[0]! } : {}),
     });
   }
   return pairings;

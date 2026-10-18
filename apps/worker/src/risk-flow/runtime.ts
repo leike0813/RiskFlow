@@ -662,6 +662,9 @@ const pairingsOfPayload = (input: {
       spatialScopeRef,
       applicabilityMetadataSnapshotRef,
       ...(monitoring.length === 0 ? {} : { monitoringSnapshotRefs: monitoring }),
+      ...(input.payload.siteContextArtifactRef === undefined
+        ? {}
+        : { siteContextArtifactRef: input.payload.siteContextArtifactRef }),
     },
   ];
 };
@@ -1652,6 +1655,7 @@ export const createRiskFlowGraphRuntime = (
       projectId: parsed.projectId,
       frozenRefs: gate.frozenRefs,
       reassessmentEntry,
+      assessmentContexts: gate.assessmentContexts,
       ...(parsed.payload.entryMode === "identify-and-assess" &&
       parsed.payload.executionBatchId !== undefined
         ? { executionBatchId: parsed.payload.executionBatchId }

@@ -1485,20 +1485,30 @@ describe("C27/C29 生产 Agent provider", () => {
   it("C27 现场 ref 必须同时出现在本次 frozenRefs 和同工程绑定中且唯一", async () => {
     const first = reference("site-a");
     const second = reference("site-b");
-    const frozenRefs = [{ kind: "site-context", reference: first }];
+    const frozenRefs = [{ kind: "content-artifact", reference: reference("artifact-a") }];
     const run = runForAgentTask(frozenRefs);
+    const currentAuthorization = {
+      ...run.authorization,
+      decidedAt: "2026-10-11T01:00:00.000Z",
+      grantedCapabilities: ["warning-response.recommend"],
+    };
+    const authorize = vi.fn(async () => currentAuthorization);
     const siteContextReader = {
-      read: async ({ siteContextRef }) => ({
-        projectId: "project-a",
-        siteContextRef,
-        spatialScopeRef: run.spatialScopeRef,
-        observedAt: "2026-10-10T23:00:00.000Z",
-      }),
+      read: async ({ siteContextRef, authorization, requestedAt }) => {
+        expect(authorization).toBe(currentAuthorization);
+        expect(requestedAt).toBe(currentAuthorization.decidedAt);
+        return {
+          projectId: "project-a",
+          siteContextRef,
+          spatialScopeRef: run.spatialScopeRef,
+          observedAt: "2026-10-10T23:00:00.000Z",
+        };
+      },
     };
     const provider = createDeploymentRecommendationAgentV1({
       tasks: { startTask: vi.fn(), getTask: vi.fn() },
       resolveProject: (projectId) => projects.get(projectId),
-      authorizeDownstream: vi.fn(),
+      authorizeDownstream: authorize,
       siteBindings: [
         { projectId: "project-a", siteContextRef: first, artifactRef: reference("artifact-a") },
         { projectId: "project-a", siteContextRef: second, artifactRef: reference("artifact-b") },
@@ -1509,7 +1519,22 @@ describe("C27/C29 生产 Agent provider", () => {
     await expect(provider.resolveSiteContextRef({ run, requiredAt: run.validAt })).resolves.toEqual(
       first,
     );
-    run.frozenRefs = [...frozenRefs, { kind: "site-context", reference: second }];
+    expect(authorize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: run.projectId,
+        actorId: run.actorId,
+        branch: "warning-response.validate-and-record",
+        requestedSpatialScopeRefs: [run.spatialScopeRef],
+      }),
+    );
+    run.frozenRefs = [{ kind: "content-artifact", reference: reference("unknown-artifact") }];
+    await expect(provider.resolveSiteContextRef({ run, requiredAt: run.validAt })).resolves.toBe(
+      undefined,
+    );
+    run.frozenRefs = [
+      ...frozenRefs,
+      { kind: "content-artifact", reference: reference("artifact-b") },
+    ];
     await expect(provider.resolveSiteContextRef({ run, requiredAt: run.validAt })).resolves.toBe(
       undefined,
     );

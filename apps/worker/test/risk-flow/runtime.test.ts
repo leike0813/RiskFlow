@@ -98,7 +98,7 @@ import {
   type RiskFlowGraphRuntimeOptionsV1,
 } from "../../src/risk-flow/index.js";
 import { IdentificationGraphRunErrorV1 } from "../../src/identification/graph/index.js";
-import { toRiskFlowGraphError } from "../../src/risk-flow/graph.js";
+import { pairingFrozenRefsV1, toRiskFlowGraphError } from "../../src/risk-flow/graph.js";
 
 const PROJECT_ID = "project-c30-runtime";
 const ACTOR_ID = "actor-c30-runtime";
@@ -854,6 +854,25 @@ const IDENTIFY_FROZEN_REFS: readonly ContractReferenceV1[] = [
   MONITORING_B,
 ];
 
+it.each([true, false])("逐空间评估子运行只保留显式配对的现场工件：%s", (supplied) => {
+  const site = {
+    kind: "content-artifact" as const,
+    reference: { entityId: "site", versionId: "v1" },
+  };
+  const frozen = pairingFrozenRefsV1({
+    frozenRefs: [
+      ...IDENTIFY_FROZEN_REFS,
+      site,
+      { ...site, reference: { ...site.reference, entityId: "other-site" } },
+    ],
+    pairing: {
+      ...pairingOf({ space: SPACE_A, applicability: APPLICABILITY_A, monitoring: MONITORING_A }),
+      ...(supplied ? { siteContextArtifactRef: site } : {}),
+    },
+  });
+  expect(frozen.filter((ref) => ref.kind === "content-artifact")).toEqual(supplied ? [site] : []);
+});
+
 /** 评估子运行等待引用（替身用它表示子运行停在人工确认等待）。 */
 const USER_CONFIRMATION_WAITING: WaitingRefV1 = {
   kind: "user-confirmation",
@@ -1079,6 +1098,14 @@ describe("C30 父运行图运行时（真实 PostgreSQL + 真实 LangGraph + 真
   );
 
   it("R1/S4 每条风险只使用本风险空间的配对上下文", async () => {
+    const siteA = {
+      kind: "content-artifact" as const,
+      reference: { entityId: "site-a", versionId: "v1" },
+    };
+    const siteB = {
+      kind: "content-artifact" as const,
+      reference: { entityId: "site-b", versionId: "v1" },
+    };
     const riskA = riskRecordRef("a");
     const riskB = riskRecordRef("b");
     harness.pairingSpaces.set(refKey(riskA), SPACE_A);
@@ -1089,10 +1116,24 @@ describe("C30 父运行图运行时（真实 PostgreSQL + 真实 LangGraph + 真
 
     const run = startCommandFor({
       runKey: "pairing-per-space",
-      frozenRefs: IDENTIFY_FROZEN_REFS,
+      frozenRefs: [...IDENTIFY_FROZEN_REFS, siteA, siteB],
       pairing: [
-        pairingOf({ space: SPACE_A, applicability: APPLICABILITY_A, monitoring: MONITORING_A }),
-        pairingOf({ space: SPACE_B, applicability: APPLICABILITY_B, monitoring: MONITORING_B }),
+        {
+          ...pairingOf({
+            space: SPACE_A,
+            applicability: APPLICABILITY_A,
+            monitoring: MONITORING_A,
+          }),
+          siteContextArtifactRef: siteA,
+        },
+        {
+          ...pairingOf({
+            space: SPACE_B,
+            applicability: APPLICABILITY_B,
+            monitoring: MONITORING_B,
+          }),
+          siteContextArtifactRef: siteB,
+        },
       ],
     });
     const outcome = await startAndApplyPreparation(run);
@@ -1121,6 +1162,10 @@ describe("C30 父运行图运行时（真实 PostgreSQL + 真实 LangGraph + 真
     expect(commandForB?.frozenRefs).not.toContainEqual(SPACE_A);
     expect(commandForB?.frozenRefs).not.toContainEqual(APPLICABILITY_A);
     expect(commandForB?.frozenRefs).not.toContainEqual(MONITORING_A);
+    expect(commandForA?.frozenRefs).toContainEqual(siteA);
+    expect(commandForA?.frozenRefs).not.toContainEqual(siteB);
+    expect(commandForB?.frozenRefs).toContainEqual(siteB);
+    expect(commandForB?.frozenRefs).not.toContainEqual(siteA);
 
     // 登记面：两条子运行路由行、两条父子链边、父运行状态收录两个子运行。
     const rows = await rowsOf(run.runRef);

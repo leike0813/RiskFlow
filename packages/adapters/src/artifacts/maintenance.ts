@@ -52,7 +52,7 @@ const compareRefs = (
   left: ArtifactManifestV1["artifactRef"],
   right: ArtifactManifestV1["artifactRef"],
 ): number => {
-  const compare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+  const compare = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
   return (
     compare(left.kind, right.kind) ||
     compare(left.reference.entityId, right.reference.entityId) ||
@@ -1062,7 +1062,7 @@ export class ArtifactMaintenance implements ArtifactMaintenanceV1 {
   async #sweepLocked(command: ArtifactSweepCommandV1): Promise<ArtifactSweepMetricsV1> {
     const runStartedAt = this.#nowIso();
     const cutoff = this.#cutoff(runStartedAt);
-    await this.#recoverQuarantine(command, runStartedAt, cutoff);
+    if (!command.dryRun) await this.#recoverQuarantine(command, runStartedAt, cutoff);
     let stagingObserved = 0;
     let stagingRemoved = 0;
     let staging;

@@ -4,9 +4,81 @@
 
 ## 减负接续
 
-`simplify-trusted-business-flows` 已完成已有查询/报告范围解析、工件集合规范化、日常重复验真与游标门槛减负；工程结果见其 verification。相关483项测试、报告浏览器2项通过，包含未携来源声明的新报告生成。改动尚未提交、归档或部署，旧证据不改写。范围判权、工件去重及内部读取以该 change 的 design 为准；本验收 change 继续负责实际业务、Electron及现场功能取证，tasks 仍按真实证据推进。台账中 DD-04、DD-06 与原 C31 500 不因新 change 存在而视为解决。
+`simplify-trusted-business-flows` 已完成已有查询/报告范围解析、工件集合规范化、日常重复验真与游标门槛减负，现已归档于 `archive/2026-10-17-simplify-trusted-business-flows` 并进入当前 HEAD `e2dfe43`；工程结果见其 verification。相关483项测试、报告浏览器2项通过，包含未携来源声明的新报告生成。本轮以当前代码构建并部署 v163，旧证据不改写。范围判权、工件去重及内部读取以该 change 的 design 为准；本验收 change 继续负责实际业务、Electron及现场功能取证，tasks 仍按真实证据推进。台账中 DD-04、DD-06 与原 C31 500 不因新 change 存在而视为解决。
 
-## 当前接续：v162已运行，浏览器90项曾全绿，真实Electron及报告/SSE修复继续
+## 当前接续：17/19，功能场景闭合，待Git检查点及最终verification
+
+本轮统一部署v173，实际API4002019、Worker4002641、Caddy3849343，原HTTPS19443/000059。制品6,066,039字节，SHA256 `ac1a7343b9763f7631522f3e275e4d85ce8d4ac37cb13c5fedb872e5bd7ecd7a`；配置/清单`deployment-d189-v173.json`、`release-d189-v173.json`。D184–D189及唯一审计修复均已部署；D190其后只改测试输入和文档，生产运行物不变。HEAD仍e2dfe43，不包含未提交增量。
+
+2.2、5.1、6.1已勾。真实完整Electron13/14、原活动任务关窗后完成及原父completed；剩余SSE因原评估仅1事件，D190显式绑定同工程已有识别运行的事件身份/状态快照并由当前C33读取核对，同运行2+2/游标不重放/零写及预检2/2通过。保留完整批次和第一次状态版本误作事件版本的失败，不冒称单次14项exit0，不重开模型。可见Chrome正式确认200、跨页评估链接及无会话401、同次functional resume PASS/queryCount2，均已实跑。
+
+统一回归24套件572项通过，逐场景疑点补证9套件236项通过，旧完整browser90/90且Web未改；工程build/typecheck/lint/format/deps/policy及全仓strict44/44通过。原完整verify为2735通过/1旧断言失败/3既有外部smoke skip；过时断言删除后定向回归及后半门禁闭合，没有重跑或声称monolithic verify exit0。唯一限定审计已完成并关闭，不再派第二次审计。
+
+接续入口：[本轮批量收口](evidence/batch-closeout-d189-d190-2026-10-17.md)、[112 Requirement/213 Scenario索引](evidence/scenario-index-2026-10-17.md)，受限实例`d190-closeout/report.json`及20份原日志。6.2尚缺按用户授权形成固定Git实现检查点；6.3在检查点后核对证据并创建verification。当前未提交、未创建verification、未归档。当前API/Worker保持运行，备份、双根及失败全部保留；不重跑恢复、索引或模型。以下带版本的段落均为历史时点。
+
+## 历史：14/19，v172业务终态PASS，完整桌面仍待闭合
+
+当前正式源为`functional-workspace-20261017-d187-v172`，API3889973、Worker3889974、Caddy3849343；配置/清单`deployment-d187-v172.json`、`release-d187-v172.json`。制品5,811,860字节、SHA256 `072e068af5d78304ea2007b2d5a581c40a7aa379f808640fe2065f26e9d28ea2`，source/tests diff `74cfd89e59e561260fffe3cf532593d250dfab58016065f6d1c2a9185c8e9f1e`，000059。下文旧版本和PID均为历史。
+
+5.3已勾：精确维护/4259项恢复、原代际15成员七门7/7、按真实备份C与运维修订2确认切v169恢复副本，四业务读/401拒权/原命令重放200、返回v171；v5真实启动因000058/000059不兼容拒绝，未切换、不冒称匹配副本恢复。`d185-final-rollback/task53-report.json`为完整安全汇总，保留双根、备份和失败。
+
+D-184统一23套件531项通过，依赖/策略检查及全仓strict44/44通过；D-185公开现场工件冻结入口及父子传递的4套件170项、8GB构建通过；D-187所属动作现场授权3套件88项通过，独立真实C04只读复现从缺能力的Zod拒绝转为成功。source输入为独立合成外部风险事件和精确新类别绑定，原措施/模型/预算保持，离线三项验证全通过。
+
+`d187-desktop-active/observation/functional.json`已沿原运行resume为PASS/queryCount2。真实关窗后的同发布重启、原Agent completed及正式完成通知200、原父completed均有证据；通知由临时验收驱动显式调用已有契约，不冒称Worker自动通知。v171旧父在A8授权缺口处terminal-failure，保持旧终态和消耗。
+
+完整Electron：v171首轮12通过/2失败，修公共pending状态后两项复验仍失败；v172完整轮10通过/4失败，集中在关窗重开后的null读、两项登录后仍显示登录表单、SSE重连error。所有原trace分别保存在`d185-desktop-active/full-first-results`、`two-second-results`和`d187-desktop-active/full-v172-results`。当前只读批量诊断为`d188-client-start-batch`，不新增模型或重开运行。不得将functional PASS当成2.2或完整功能PASS。
+
+可见Chrome真实人工确认及HTTP丢回执后原信封重放已通过，`d187-visible-response-loss/report.json`与`effect-counts.json`证明确认事实/Outbox事件各一条；旧取消后零写证据继续复用。5.1/5.2仍按全部剩余场景和依赖判断，不提前勾。唯一限定审计为当前活动Kuhn，负责本轮授权/持久化/集成及性能边界；不另派第二次审计。无提交/归档/verification，Git提交仍无授权。
+
+源已统一升级为`functional-workspace-20261017-d183-v170`，API3374689、Worker3492579，Caddy3036505保持；配置`deployment-d183-v170.json`、清单`release-d183-v170.json`。制品5,810,939字节、SHA256 `781bedb3fa3639d09a604a22178e16d9a09b2c1c323803658b94710d4d98c76a`，源码/测试diff `111f3de87ee473900930e5f325c194b1b75345218c185c1cb721c55cca48989c`。D-184源码尚未部署。下文v166/PID为历史记录。
+
+本批完整browser90/90通过，无flaky或重试通过；日志`/tmp/riskflow-batch-browser-final-d183.log`。全仓verify已完成build/typecheck/lint/format，测试2735通过、1失败、3既有外部smoke skip；唯一失败是与归档减负D-04冲突的C11清单篡改断言，已按D-184删除。保留失败日志`/tmp/riskflow-batch-verify-d183.log`；本批统一验证受影响套件及verify后半门禁，未变化的90项不重复。
+
+集中修复包括restore活动操作归属/cleanup、functional按kind唯一选择主结果和独立观察ID、旧C11断言删除、OPERATIONS正式启停/确认/切换/回退。桌面C/E启动均未产生Agent，分别因混合依据和类别绑定不满足而终止，失败保留；不修改业务门。独立外部合成输入在所有字段、来源、措施、策略和预算离线核对后才允许启动。剩余任务仍是2.2/5.1/5.2/5.3/6.1/6.2/6.3。
+
+五类Agent当前正式查询已一次性补齐，均200/succeeded、原精确任务completed；`d184-formal-reference-index-b/query-reference-index.json`共15个查询条目，RI/RA中所有条目名均可定位。索引记录原v166观察报告SHA256、当前v170配置/清单SHA256及每项实际发布身份；无新模型/业务命令。首次临时索引脚本误将条目状态`passed`按总报告`PASS`比较，失败保留在`d184-formal-reference-index/`，改正脚本后产生独立b目录，未改产品或旧证据。
+
+D-182已在clean恢复副本用独立Qdrant19634实跑原代际：15成员、七门7/7，运维completed与3条审计；源/目标全部消费回执及激活记录逐项一致。恢复执行制品为d182-v169（未替换源v166），SHA256 `ba2116d677cad46693f78db3b6b21c43f3805c01125519a002bb7cf155d58d9a`、5,809,587字节；输入/结果及`generation-preservation-v169.json`均在clean根。v167/v168草案及失败保留。人工兼容/不兼容回退未实跑，5.3不勾选。
+
+D-183显式只读已有正式引用，七目标7/7 PASS，10次当前查询/99精确引用与父子关联通过；69项synthetic/functional回归、lint/format及change strict通过。实例`d183-formal-observation/observation-b/functional.json`和`query-reference-index.json`，无新模型/业务命令，不生成synthetic启动回执，不把旧失败父改判。4.1/4.2已勾，剩2.2/5.1/5.2/5.3/6.1/6.2/6.3；完整browser新轮正在运行`/tmp/riskflow-batch-browser-final-d183.log`。原成功clean恢复不要再跑旧清理/冻结清单核验。
+
+最新授权执行：用户明确批准新恢复副本内精确3个孤儿对象的清理。已在`batch-restored-v166-20261017-clean/`、库`riskflow_acceptance_restore_20261017_v166_clean`通过正式维护端口完成，删除3个/65,449字节，非过期孤儿保留；实际维护批次1条、对应维护及核验审计3条均读回。原实例和两个失败根中三个对象的原字节逐一复验保持，副本C保留，源API/Worker/Caddy仍为原PID，未重启。原冻结清单4259项完整消费，missing/contentMismatch/manifestConflict/orphan/staging/quarantine各类异常均0，正式恢复核验passed；恢复后C33读回completed、10阶段/5工作项/6接受/2拒绝/0待定。证据为该根`deletion-authorization.json`、`authorized-sweep-result.json`、`restore-report.json`、`post-clean-preservation-and-audit.json`。5.3的维护/副本/新根恢复已有实机通过证据，剩余双索引重建和人工兼容/不兼容回退仍未完成，tasks仍10/19。不得在该成功根重新运行清理或原恢复脚本。
+
+正式实例为`functional-workspace-20261017-d179-v166`，配置`deployment-d179-v166.json`、清单`release-d179-v166.json`，API PID3036503、Worker PID3036504、Caddy PID3036505。制品6,052,930字节、SHA256 `b0b18cfcb30db76d58db99b02679f5a9b820c4b650b4ea1d37ff93abd6dda470`，migration000059、原HTTPS19443/CA及Chrome CDP19222保持。身份`d179-v166-identity.json`的源码/测试diff为冻结时值；之后D-180只修改浏览器测试，不能把旧diff当成当前全量身份。v164/v165均已正常停机；下文旧PID仅供历史定位。
+
+后续批量预检新增D-181：dry-run原先无条件恢复隔离区，可能还原或删除旧隔离对象。扩原四处真实SIGKILL用例先红，现仅非dry-run执行恢复；C04/backup/restore47项、adapters无输出类型检查、lint/格式通过。首次类型检查参数误禁用composite所需incremental，修正为独立/tmp tsBuildInfo后通过，产品无类型错误。D-181尚未构建部署，v166仍运行原代码；源码与当前发布已有这项明确差异，不逐修复重建重启。
+
+最终身份`batch-discovery-v164/after-d181/archive-and-source-identity.json`保存84份补充日志/脚本和当前diff。全包tar比较仅发现`packages/adapters/dist/tsconfig.tsbuildinfo`的时间/长度差异；排除此编译元数据后全部运行产物一致。保留该差异，不还原生成文件或把全包比较写成通过；D-181仍仅源码待统一部署。
+
+D-178已修复C33四读面的历史完整授权摘要门槛，保留当前C06资源权限、C04完整读取、阶段归属及精确状态时间边界。13项定向回归通过；v165空/25/35来源12探针均200，三个范围均读到I0–I9、5工作项、6接受/2拒绝/0待定。错版本/异空间404、精确快照重放及三范围结果一致，见`batch-recheck-v165/summary.json`、`negative-and-replay-report.json`。v166可见Chrome从原运行打开正式review-decision风险记录成功，见该目录`visible-manual-record-v166.json`及截图；没有新业务写入。完整functional配置、启动身份与状态快照的精确关联、RI/RA双向索引仍未完成，4.1/4.2保持未勾选。
+
+D-179修复C04清单迭代器的数据库locale排序与恢复器排序不一致，原17处冲突在新副本消失。C04/backup/restore共47项通过，含万条清单、非BMP及两迭代器分页。部署413项、关联151项、8GiB完整build/typecheck、依赖检查通过。完整browser原轮86 passed/3 failed/1 flaky保留；三项失败为测试要求operator读取受限B记录，D-180仅纠正Web/demo断言，定向6/6通过，无重试/跳过；未重跑完整90项或pnpm verify。
+
+实际维护副本B/C与新库/根均保留。副本C为`batch-maintenance-v165-20261017-c/`，4259项，dump25,123,280字节、archive119,722,917字节。`batch-restored-v166-20261017/`及库`riskflow_acceptance_restore_20261017_v166`首轮正式核验因3个过期孤儿对象失败；失败核验会登记诊断，再对同根使用旧冻结清单会增加manifest-conflict，禁止重复复验同根来累加诊断。源与原失败根均有4孤儿，3个过期、合计65,449字节、全库登记引用0。正式dry-run在原失败恢复副本执行，删除/隔离/暂存清理均0，源仅只读；精确候选见`batch-discovery-v164/orphan-maintenance-dryrun-v166.json`。授权后仅在另建clean副本完成精确三对象清理及恢复核验，未更改原清单或清掉失败证据。双索引重建、兼容/不兼容人工回退仍缺实证，5.3未整体通过。
+
+真实Electron复用原识别运行22事件，首读2条、游标重连再读2条，无重放、HTTPS200/event-stream、零写，见`batch-discovery-v164/electron-sse-v164.json`。全14项及在途关窗继续仍未闭合；TLS负例19444当前停机，连接失败不能充作证书拒绝。当前没有整体功能PASS，不创建verification、不提交、不归档。各批日志/脚本保存于受限证据目录，安全索引见[逐任务证据与缺项](evidence/task-closeout-2026-10-17.md)。
+
+当前补证：`electron-sse-v166.json`在v166再次独立通过；`batch-readiness-v166.json`记录当时queued/running Agent为0，没有当前发布同次在途桌面输入。新恢复库/根`riskflow_acceptance_restore_20261017_v166_clean`、`batch-restored-v166-20261017-clean/`由原副本C建立且tar compare通过，`prepared-maintenance-plan.json`为授权前的固定计划，授权执行结果见顶部四份实际回执，原计划不改写。`restored-compatibility-v166.json`在该真实恢复库执行原启动迁移门：真实旧v164/000059相容，旧v5/000058按COMPATIBILITY_FAILED拒绝；仅兼容门证据，未实际切换或回退。首次临时探针用业务连接读consumer_receipts被42501拒绝，保留失败；只读运维查询确认12 completed/3 pending，没有修改权限或回执。
+
+恢复运维还有真实接线缺口：restore.mjs的索引重建/激活/回退函数在仓库内只有测试调用方。正常索引handler按完成消费回执复用，不会因重启自动重建；Qdrant未纳入当前副本，必须为恢复目标接正式事实重建与原质量门，不能共用旧collection冒充新根。不得为此删消费回执、伪造事件或重复审核；当前孤儿删除确认问题也不包含这些动作。临时descriptor层与部署Schema层的差异未单独定性为产品缺陷。
+
+v166新增独立取消批次`physical-batch-cancel-v166-20261017`：公开202/knowledge-preparation等待后按当前精确状态取消200，正式读回cancelled；原启动两次重放422/BUSINESS_BLOCKED、原取消重放200/already-cancelled，图事实/风险/Agent数量和预算摘要、取消状态版本均不变。`batch-cancellation-v166/report.json`仅该边界PASS，不覆盖模型在途取消、丢回执和重启续接，5.2仍未勾选。首次探针误期待领域CANCELLED而不是公开HTTP映射BUSINESS_BLOCKED，失败保留，纠正探针后仅复用原取消运行。未绑定准备/新增模型任务，不重开任何旧终态。原业务父经C34当前精确读仍terminal-failure，`identification-parent-owner-read-v166.json`保留，不能把已完成识别子图写成父图成功。
+
+## 历史：v164 C19原命令复验通过，完整观察待修
+
+本轮关闭1.2、3.1、3.2和8.1，依据见[逐任务证据与缺项](evidence/task-closeout-2026-10-17.md)。指定来源回归94项通过，v163正式来源/错版/异空间/撤权八项PASS；六份原件登记/转换正式预置报告与配置摘要匹配，当前检索代际仍active且原七门通过。正式业务引用链、五类任务终态与预算、C05会话流及原网络smoke证据已核齐。其余9项保持未完成。
+
+D-177修复已有相同派生结果再次写入固定键的冲突，31项先红后绿、部署组合63项及8GiB构建通过。v164物理Chrome原失败命令及重放均200，四引用保持；冲突409、错配置422、错准备404、无会话401，修订/发布各12及目标工件1版本前后不变。当前`functional-workspace-20261017-d177-v164`、API PID2666728/Worker PID2666729，制品5803006字节、SHA256 `eebc14f2d37bc20b53c62565c9e5a0443a8d042c6a9b915339640176ec20c83c`，migration000059及原模型/策略/CA/现场保持；旧v163正常停机count0。
+
+当前阻点：C33识别详情25来源404、空来源200/completed却缺计划及历史阶段，已证明reader按历史完整范围摘要筛阶段；该读面缺陷继续阻止4.1/4.2，不能当完整functional通过。第1版预警任务探针422已核为错版本拒绝，当前第5版200。安全结果及原回执位置见同一收口索引。无活动辅助Agent、提交、归档或verification。以下6/19描述保留为各轮历史时点。
+
+## 历史：v163已运行，Electron 12项通过，关窗与SSE输入仍待闭合
+
+本轮完整记录见 [v163验收接续](evidence/resume-v163-2026-10-17.md)。正式 `functional-workspace-20261017-resume-v163` 对应 HEAD `e2dfe433a54d042d09d2ea2e31dc6c3e5c0adc43`，制品5,802,894字节、SHA-256 `47219ceea38d08e0999db1d2b295759ef5911db420b6c4618ff8353f3af782c5`。原实例、CA、migration000059、模型/策略/图/现场保持；API PID2494232、Worker PID2494402、HTTPS PID2494490已启动。构建、76项工具/桌面安全回归、413项部署回归及change strict通过。
+
+真实functional两份报告均PASS/queryCount1：一份为原4d31ceff…运行重放，一份以新正式C11准备启动2f420cfe…并completed，后者仅有A0–A6/A9及1条assessment-recorded事件，没有Agent等待。最终真实Electron选定13项为12 passed/1 failed（1.7m，无重试），失败是游标后无新事件的SSE；关窗继续未执行。共享登录首次失败后，独立双会话诊断、单项复跑及最后一批通过，原因仍未定位；本轮TLS通过，旧进程关闭失败不改写。下一步须有真实活动任务及后续事件，不能用completed运行替代。tasks仍6/19，无产品代码修改、提交/归档或verification。受限证据在 `d172-functional-desktop/checks-resume-v163/` 及关联报告/trace。
+
+## 历史：v162已运行，浏览器90项曾全绿，真实Electron及报告/SSE修复继续
 
 当前正式`functional-workspace-20261017-d175-v162`，API session38765/Worker21315，均已返回running；配置/清单`deployment-d175-v162.json`、`release-d175-v162.json`，制品5804277字节，SHA-256 `264ee77b201b39170ef9ab565d43f98436fce1b976d118e51acc4c45f10f811b`，tracked源码/测试diff `99c8a0953d1799c2be87e2fc7ec203a01b356cd7e08e85502dcadbc01bcffad7`。tar比较/预检通过，模型/策略/图/迁移/站点不变，v161均正常stopped/count0。随后D176只改桌面测试helper，运行时代码未改，最终测试身份需重核。
 

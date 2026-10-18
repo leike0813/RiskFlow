@@ -3,11 +3,13 @@ import { randomUUID } from "node:crypto";
 
 import { sql, type Kysely, type SqlBool } from "kysely";
 
-import { ACCESS_POLICY_REF_V1, type LocalIdentityAccessV1 } from "@riskflow/core/access";
+import { ACCESS_POLICY_REF_V1 } from "@riskflow/core/access";
 import { ArtifactReadRequestV1Schema, type ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import {
   AcceptanceRouteSetV1Schema,
   RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1,
+  RiskCandidateSetV1Schema,
+  riskRecordSourceVersionsFor,
 } from "@riskflow/core/identification/candidate-finalization";
 import {
   IdentificationGraphArtifactBodyV1Schema,
@@ -16,11 +18,11 @@ import {
   type IdentificationGraphResultRowV1,
   type IdentificationGraphRunStateV1,
 } from "@riskflow/core/identification/graph";
-import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import type { JsonValue } from "@riskflow/core/persistence";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
   IdentificationCandidateSetRefV1Schema,
+  IdentificationWorkItemRefV1Schema,
   ModuleErrorV1Schema,
   ReviewDecisionRefV1Schema,
   RiskIdentificationReadQueryV1Schema,
@@ -31,6 +33,7 @@ import {
   WorkflowRunRefV1Schema,
   type AgentTaskRefV1,
   type AuthorizationContextV1,
+  type AuthorizationContextRefV1,
   type IdentificationCandidateSetRefV1,
   type IdentificationRunStageV1,
   type ModuleBranchV1,
@@ -56,6 +59,8 @@ import { StandardizedRiskRecordEnvelopeSchema } from "@riskflow/contracts/record
 import { IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1 } from "../graph/index.js";
 import { mapPostgresError } from "../../postgres/pool.js";
 import type { PostgresDatabase } from "../../postgres/types.js";
+import { createRegisteredResourceAuthorizerV1 } from "../../auth/deployment-authorization.js";
+import type { PostgresLocalIdentityAccess } from "../../auth/postgres-local-identity-access.js";
 
 const GRAPH_TABLE = "business.identification_graph_results";
 const FINALIZATION_TABLE = "business.identification_finalization_results";
@@ -131,6 +136,8 @@ interface FinalizationResultDbRow {
   result_version_id: string;
   artifact_ref: JsonValue;
   authorization_scope_digest: string;
+  authorization_context_ref: JsonValue;
+  input_snapshot_ref: JsonValue;
   work_item_ref: JsonValue | null;
   candidate_set_ref: JsonValue | null;
   persisted_at: TimestampColumn;
@@ -162,10 +169,10 @@ type RiskIdentificationReadDatabaseV1 = PostgresDatabase & {
   "business.standardized_risk_records": StandardizedRiskRecordDbRow;
 };
 
+type ResourceAuthorization = (ref: AuthorizationContextRefV1) => Promise<AuthorizationContextV1>;
+
 const asIso = (value: TimestampColumn): string =>
   value instanceof Date ? value.toISOString() : new Date(value).toISOString();
-
-const asTime = (value: TimestampColumn): number => new Date(value).getTime();
 
 const refKey = (reference: { readonly entityId: string; readonly versionId: string }): string =>
   `${reference.entityId}@${reference.versionId}`;
@@ -314,7 +321,10 @@ export interface PostgresRiskIdentificationReadAdapterOptionsV1 {
   /** C04 工件存储：run-state/work-plan/acceptance-route-set 正文只经 C04 有界读取。 */
   readonly artifactStore: ArtifactStoreV1;
   /** C05 当前授权复验端口：每条受保护读取在披露任何事实前按当前 actor/工程复验。 */
-  readonly authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly authorization: Pick<
+    PostgresLocalIdentityAccess,
+    "verify" | "readDeploymentAuthorizationSource" | "authorizeBusinessAction"
+  >;
   readonly now?: () => Date;
 }
 
@@ -322,7 +332,7 @@ export interface PostgresRiskIdentificationReadAdapterOptionsV1 {
  * C33 识别运行与风险记录只读适配器（design D3/D4，IP-03）：在 identification 所有权域内组合
  * `business.identification_graph_results` 运行登记行（+C04 正文）与
  * `business.standardized_risk_records` 既有登记行，不读其它模块私表、不新建表、不反写事实。
- * 每条查询先经 C05 `verify` 复验当前授权，再按记录冻结的范围摘要逐条对账；无权、跨工程、
+ * 每条查询先经 C06 `verify` 复验当前授权，再按登记资源的真实范围检查当前权限；无权、跨工程、
  * 不存在、版本不符与事实不一致统一收口为逐字相同的 AUTHORIZATION_DENIED（不提供存在性
  * oracle），输出引用集合超界收口为 BUSINESS_BLOCKED 与稳定 blockerKind，不静默截断。
  *
@@ -332,7 +342,7 @@ export interface PostgresRiskIdentificationReadAdapterOptionsV1 {
 export class PostgresRiskIdentificationReadAdapter implements RiskIdentificationReadPortV1 {
   readonly #db: Kysely<RiskIdentificationReadDatabaseV1>;
   readonly #artifactStore: ArtifactStoreV1;
-  readonly #authorization: Pick<LocalIdentityAccessV1, "verify">;
+  readonly #authorization: PostgresRiskIdentificationReadAdapterOptionsV1["authorization"];
   readonly #now: () => Date;
 
   constructor(options: PostgresRiskIdentificationReadAdapterOptionsV1) {
@@ -402,10 +412,76 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       requestedSourceVersionRefs: [],
       requestedAt: query.authorization.decidedAt,
     });
-    if (decision.context.actorId !== query.actorId) {
+    if (
+      decision.redacted ||
+      decision.context.actorId !== query.actorId ||
+      decision.context.projectId !== query.projectId ||
+      !decision.context.grantedCapabilities.includes(MODULE_BRANCH_CAPABILITY_V1[branch])
+    ) {
       throw new Error("risk-identification read authorization denied");
     }
     return decision.context;
+  }
+
+  #resourceAuthorization(
+    query: RiskIdentificationReadQueryV1,
+    verified: AuthorizationContextV1,
+  ): ResourceAuthorization {
+    const authorize = createRegisteredResourceAuthorizerV1(this.#authorization);
+    const decisions = new Map<string, Promise<AuthorizationContextV1>>();
+    return (ref) => {
+      const key = refKey(ref.reference);
+      let decision = decisions.get(key);
+      if (decision === undefined) {
+        decision = authorize({
+          authorization: verified,
+          resourceAuthorizationContextRef: ref,
+          branch: READ_BRANCH_V1[query.kind],
+          invocationId: query.queryId,
+        }).then((context) => {
+          if (context === undefined) throw new Error("registered resource unavailable");
+          return context;
+        });
+        decisions.set(key, decision);
+      }
+      return decision;
+    };
+  }
+
+  #recordVisibility(query: RiskIdentificationReadQueryV1, verified: AuthorizationContextV1) {
+    const decisions = new Map<string, Promise<boolean>>();
+    return (item: RiskRecordCatalogItemV1): Promise<boolean> => {
+      const sources = SourceVersionRefV1Schema.array()
+        .min(1)
+        .max(64)
+        .safeParse(riskRecordSourceVersionsFor(item.sourceVersionRefs, item.evidenceReferences));
+      if (!sources.success) return Promise.resolve(false);
+      const key = JSON.stringify([item.spatialScopeRefs, sources.data]);
+      let decision = decisions.get(key);
+      if (decision === undefined) {
+        decision = this.#authorization
+          .authorizeBusinessAction({
+            projectId: query.projectId,
+            actorId: query.actorId,
+            capability: CAPABILITY_V1,
+            branch: READ_BRANCH_V1[query.kind],
+            invocationId: query.queryId,
+            authorizationContextRef: verified.authorizationContextRef,
+            requestedSpatialScopeRefs: item.spatialScopeRefs,
+            requestedSourceVersionRefs: sources.data,
+          })
+          .then(
+            (result) =>
+              !result.redacted &&
+              result.context.actorId === query.actorId &&
+              result.context.projectId === query.projectId &&
+              result.context.grantedCapabilities.includes(CAPABILITY_V1),
+          )
+          .catch(() => false);
+        decisions.set(key, decision);
+      }
+      return decision;
+    };
   }
 
   #denied(causalRunId: string, branch: ModuleBranchV1): ModuleErrorV1 {
@@ -455,8 +531,10 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         authorization: input.authorization,
       }),
     );
-    const bytes = await boundedContent(handle.content, MAX_BODY_BYTES_V1);
-    await handle.completed;
+    const [bytes] = await Promise.all([
+      boundedContent(handle.content, MAX_BODY_BYTES_V1),
+      handle.completed,
+    ]);
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   }
 
@@ -578,9 +656,9 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
     if (cursor === "invalid")
       return failed(this.#denied(query.queryId, READ_BRANCH_V1["run-list"]));
     const pageSize = query.payload.pageSize ?? 50;
-    const scopeDigest = authorizationScopeDigest(verified);
+    const resourceAuthorization = this.#resourceAuthorization(query, verified);
 
-    // 同一运行的全部登记行共享 actorRef/validAt 与范围摘要；按工程 + 范围摘要聚合出可见运行。
+    // SQL 只扫描当前页；当前资格与状态筛选均在这份有界页上求值。
     const groups = await this.#db
       .selectFrom(GRAPH_TABLE)
       .select((eb) => [
@@ -590,10 +668,11 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       ])
       .where("project_id", "=", query.projectId)
       .where("result_kind", "=", "run-state")
-      .where("authorization_scope_digest", "=", scopeDigest)
       .groupBy("run_id")
       .orderBy("started_at", "desc")
       .orderBy("run_id", "asc")
+      .offset(cursor)
+      .limit(pageSize + 1)
       .execute();
 
     const itemFor = async (group: {
@@ -602,9 +681,26 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       started_at: TimestampColumn;
     }): Promise<RiskIdentificationRunListItemV1 | undefined> => {
       const row = await this.#latestRunStateRow(query.projectId, group.run_id);
-      if (row === undefined || row.authorizationScopeDigest !== scopeDigest) return undefined;
-      const runState = await this.#runStateOf(row, query, verified);
+      if (row === undefined) return undefined;
+      const runState = await this.#runStateOf(
+        row,
+        query,
+        await resourceAuthorization(row.authorizationContextRef),
+      );
       if (runState === undefined) return undefined;
+      const plan = await this.#db
+        .selectFrom(GRAPH_TABLE)
+        .selectAll()
+        .where("project_id", "=", query.projectId)
+        .where("run_id", "=", group.run_id)
+        .where("result_kind", "=", "work-plan")
+        .where("persisted_at", "<=", this.#stateBound(row))
+        .orderBy("persisted_at", "desc")
+        .orderBy("result_id", "desc")
+        .limit(1)
+        .executeTakeFirst();
+      if (plan !== undefined)
+        await this.#workPlanOf(this.#graphRow(plan), query, resourceAuthorization);
       return {
         runRef: {
           kind: "workflow-run",
@@ -620,26 +716,62 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       };
     };
 
-    // 无状态筛选时只读本页正文；有筛选时必须按全部运行的事实过滤后再分页（游标基于过滤后序列）。
-    const pageGroups =
-      query.payload.status === undefined ? groups.slice(cursor, cursor + pageSize) : groups;
     const items: RiskIdentificationRunListItemV1[] = [];
-    for (const group of pageGroups) {
-      const item = await itemFor(group);
-      if (item === undefined) continue;
-      if (query.payload.status !== undefined && item.status !== query.payload.status) continue;
-      items.push(item);
+    for (const group of groups.slice(0, pageSize)) {
+      try {
+        const item = await itemFor(group);
+        if (item === undefined) continue;
+        if (query.payload.status !== undefined && item.status !== query.payload.status) continue;
+        items.push(item);
+      } catch {
+        /* 不披露本页不可读的运行，游标仍推进。 */
+      }
     }
-    const visible =
-      query.payload.status === undefined ? items : items.slice(cursor, cursor + pageSize);
-    const total = query.payload.status === undefined ? groups.length : items.length;
-    const consumed = cursor + pageSize;
-    const next = consumed < total ? encodeCursor(consumed) : undefined;
+    const next = groups.length > pageSize ? encodeCursor(cursor + pageSize) : undefined;
     return succeeded({
       kind: "run-list",
-      items: visible,
+      items,
       ...(next === undefined ? {} : { nextCursor: next }),
     });
+  }
+
+  #stateBound(row: IdentificationGraphResultRowV1) {
+    // 在数据库内保留微秒精度，避免 Date 的毫秒截断排除同次提交的阶段。
+    return this.#db
+      .selectFrom(GRAPH_TABLE)
+      .select("persisted_at")
+      .where("result_kind", "=", "run-state")
+      .where("project_id", "=", row.projectId)
+      .where("result_id", "=", row.resultId)
+      .where("result_version_id", "=", row.resultVersionId);
+  }
+
+  async #workPlanOf(
+    row: IdentificationGraphResultRowV1,
+    query: RiskIdentificationReadQueryV1,
+    resourceAuthorization: ResourceAuthorization,
+  ) {
+    const decoded = await this.#readBody({
+      artifactRef: row.artifactRef,
+      purposeCode: IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1["work-plan"],
+      projectId: query.projectId,
+      actorId: query.actorId,
+      requestedAt: query.requestedAt,
+      authorization: await resourceAuthorization(row.authorizationContextRef),
+    });
+    const body = IdentificationGraphArtifactBodyV1Schema.parse(decoded);
+    if (
+      row.resultKind !== "work-plan" ||
+      body.bodyKind !== "work-plan" ||
+      body.workPlan.projectId !== query.projectId ||
+      refKey(body.workPlan.workPlanRef.reference) !== refKey(row.workPlanRef.reference) ||
+      refKey(body.workPlan.inputSnapshotRef.reference) !== refKey(row.inputSnapshotRef.reference) ||
+      (body.workPlan.inputSnapshot.identificationRunRef !== undefined &&
+        body.workPlan.inputSnapshot.identificationRunRef.reference.entityId !== row.runId)
+    ) {
+      throw new Error("work plan binding mismatch");
+    }
+    return body.workPlan;
   }
 
   async #runRead(
@@ -648,7 +780,7 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
   ): Promise<RiskIdentificationReadResultV1> {
     const branch = READ_BRANCH_V1["run-read"];
     const denied = () => failed(this.#denied(query.queryId, branch));
-    const scopeDigest = authorizationScopeDigest(verified);
+    const resourceAuthorization = this.#resourceAuthorization(query, verified);
     const runId = query.payload.runRef.reference.entityId;
     const runVersionId = query.payload.runRef.reference.versionId;
 
@@ -663,24 +795,24 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       .executeTakeFirst();
     if (stateRowRaw === undefined) return denied();
     const stateRow = this.#graphRow(stateRowRaw);
-    if (stateRow.authorizationScopeDigest !== scopeDigest) return denied();
-    const runState = await this.#runStateOf(stateRow, query, verified);
+    const bound = this.#stateBound(stateRow);
+    const runState = await this.#runStateOf(
+      stateRow,
+      query,
+      await resourceAuthorization(stateRow.authorizationContextRef),
+    );
     if (runState === undefined) return denied();
 
     // 精确版本快照：只组合不晚于该 run-state 版本落库的登记事实，保证同一 runRef 重放同形。
-    const bound = asTime(stateRowRaw.persisted_at);
-    const withinBound = (row: { readonly persisted_at: TimestampColumn }): boolean =>
-      asTime(row.persisted_at) <= bound;
-    const runRows = (
-      await this.#db
-        .selectFrom(GRAPH_TABLE)
-        .selectAll()
-        .where("project_id", "=", query.projectId)
-        .where("run_id", "=", runId)
-        .orderBy("persisted_at", "asc")
-        .orderBy("result_id", "asc")
-        .execute()
-    ).filter((row) => row.authorization_scope_digest === scopeDigest && withinBound(row));
+    const runRows = await this.#db
+      .selectFrom(GRAPH_TABLE)
+      .selectAll()
+      .where("project_id", "=", query.projectId)
+      .where("run_id", "=", runId)
+      .where("persisted_at", "<=", bound)
+      .orderBy("persisted_at", "asc")
+      .orderBy("result_id", "asc")
+      .execute();
 
     // 阶段进度：已登记 stage-result 的阶段为完成（I1 的 waiting 判别不算完成）；
     // 当前阶段未完成时以 run-state 状态如实呈现，失败阶段携带错误码与可重试标记。
@@ -696,7 +828,7 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         projectId: query.projectId,
         actorId: query.actorId,
         requestedAt: query.requestedAt,
-        authorization: verified,
+        authorization: await resourceAuthorization(row.authorizationContextRef),
       });
       const body = IdentificationGraphArtifactBodyV1Schema.safeParse(decoded);
       if (!body.success || body.data.bodyKind !== "stage-result") return denied();
@@ -746,24 +878,15 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
 
     // 工序工作项覆盖：最新工作计划（不晚于本状态版本）× run-state 三个工作项游标。
     const workPlanRowRaw = [...runRows].reverse().find((row) => row.result_kind === "work-plan");
+    const workPlan =
+      workPlanRowRaw === undefined
+        ? undefined
+        : await this.#workPlanOf(this.#graphRow(workPlanRowRaw), query, resourceAuthorization);
     let workItems: readonly {
       readonly workItemRef: RiskIdentificationWorkItemCoverageV1["workItemRef"];
       readonly nodeId: string;
     }[] = [];
-    if (workPlanRowRaw !== undefined) {
-      const workPlanRow = this.#graphRow(workPlanRowRaw);
-      const decoded = await this.#readBody({
-        artifactRef: workPlanRow.artifactRef,
-        purposeCode: IDENTIFICATION_GRAPH_BODY_PURPOSE_CODE_V1["work-plan"],
-        projectId: query.projectId,
-        actorId: query.actorId,
-        requestedAt: query.requestedAt,
-        authorization: verified,
-      });
-      const body = IdentificationGraphArtifactBodyV1Schema.safeParse(decoded);
-      if (!body.success || body.data.bodyKind !== "work-plan") return denied();
-      workItems = body.data.workPlan.workItems;
-    }
+    if (workPlan !== undefined) workItems = workPlan.workItems;
     const workItemStatus = new Map<string, WorkflowRunStatusV1>();
     for (const ref of runState.pendingWorkItemRefs)
       workItemStatus.set(refKey(ref.reference), "pending");
@@ -790,8 +913,9 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         .where("result_kind", "=", "acceptance-route-set")
         .where("result_id", "=", runState.acceptedRouteSetRef.reference.entityId)
         .where("result_version_id", "=", runState.acceptedRouteSetRef.reference.versionId)
+        .where("persisted_at", "<=", bound)
         .executeTakeFirst();
-      if (routeSetRow === undefined || routeSetRow.authorization_scope_digest !== scopeDigest) {
+      if (routeSetRow === undefined) {
         return denied();
       }
       const decoded = await this.#readBody({
@@ -800,11 +924,21 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         projectId: query.projectId,
         actorId: query.actorId,
         requestedAt: query.requestedAt,
-        authorization: verified,
+        authorization: await resourceAuthorization(
+          routeSetRow.authorization_context_ref as AuthorizationContextRefV1,
+        ),
       });
       const routeSet = AcceptanceRouteSetV1Schema.safeParse(decoded);
       if (!routeSet.success) return denied();
-      if (routeSet.data.identificationRunRef.reference.entityId !== runId) return denied();
+      if (
+        routeSet.data.projectId !== query.projectId ||
+        routeSet.data.identificationRunRef.reference.entityId !== runId ||
+        workPlan === undefined ||
+        refKey(routeSet.data.workPlanRef.reference) !== refKey(workPlan.workPlanRef.reference) ||
+        refKey(routeSet.data.inputSnapshotRef.reference) !==
+          refKey(workPlan.inputSnapshotRef.reference)
+      )
+        return denied();
       const groupStatus = new Map<string, RiskIdentificationMergeGroupSummaryV1["status"]>();
       for (const ref of runState.pendingGroupRefs) {
         groupStatus.set(refKey(ref.reference), "pending-review");
@@ -842,16 +976,10 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
     if (workItems.length > 0) {
       const candidateRows = await this.#db
         .selectFrom(FINALIZATION_TABLE)
-        .select([
-          "result_id",
-          "result_version_id",
-          "candidate_set_ref",
-          "authorization_scope_digest",
-          "persisted_at",
-        ])
+        .selectAll()
         .where("project_id", "=", query.projectId)
         .where("result_kind", "=", "candidate-set")
-        .where("authorization_scope_digest", "=", scopeDigest)
+        .where("persisted_at", "<=", bound)
         .where(
           "work_item_ref",
           "in",
@@ -862,10 +990,33 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         .limit(RUN_READ_BOUNDS_V1.revisedCandidateRefs + 1)
         .execute();
       for (const row of candidateRows) {
-        if (!withinBound(row)) continue;
         const stored = IdentificationCandidateSetRefV1Schema.safeParse(row.candidate_set_ref);
         // 登记行自称候选集引用却解析不出合法形状时不披露任何引用，交给调用方按不可信来源收口。
         if (!stored.success) return denied();
+        const decoded = await this.#readBody({
+          artifactRef: row.artifact_ref as IdentificationGraphResultRowV1["artifactRef"],
+          purposeCode: RISK_CANDIDATE_FINALIZATION_PURPOSE_CODES_V1.candidateSet,
+          projectId: query.projectId,
+          actorId: query.actorId,
+          requestedAt: query.requestedAt,
+          authorization: await resourceAuthorization(
+            row.authorization_context_ref as AuthorizationContextRefV1,
+          ),
+        });
+        const body = RiskCandidateSetV1Schema.safeParse(decoded);
+        const workItem = IdentificationWorkItemRefV1Schema.safeParse(row.work_item_ref);
+        if (
+          !body.success ||
+          body.data.projectId !== query.projectId ||
+          workPlan === undefined ||
+          refKey(body.data.inputSnapshotRef.reference) !==
+            refKey(workPlan.inputSnapshotRef.reference) ||
+          !workItem.success ||
+          refKey(body.data.workItemRef.reference) !== refKey(workItem.data.reference) ||
+          row.result_id !== stored.data.reference.entityId ||
+          row.result_version_id !== stored.data.reference.versionId
+        )
+          return denied();
         revisedCandidateRefs.set(refKey(stored.data.reference), stored.data);
       }
     }
@@ -982,10 +1133,10 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
     const cursor = decodeCursor(query.payload.cursor);
     if (cursor === "invalid") return failed(this.#denied(query.queryId, branch));
     const pageSize = query.payload.pageSize ?? 50;
-    const scopeDigest = authorizationScopeDigest(verified);
+    const visible = this.#recordVisibility(query, verified);
     const runFilter = query.payload.identificationRunRef;
 
-    // 目录过滤全部下推为数据库谓词，读取行数只随当前页增长（IP-03）：作用域摘要、验收路线、
+    // 业务过滤下推为数据库谓词，当前资源权限在有界页逐项判断：验收路线、
     // 运行引用与工序节点都在 SQL 侧求值，不再「读全量可见行再在内存截断」。工序节点与
     // 标识在登记正文的 `record` 对象内，用 jsonb 路径取值即可，无需新增列或索引。
     let rows: StandardizedRiskRecordDbRow[];
@@ -994,7 +1145,6 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         .selectFrom(RECORDS_TABLE)
         .selectAll()
         .where("project_id", "=", query.projectId)
-        .where("authorization_scope_digest", "=", scopeDigest)
         .where(sql<SqlBool>`jsonb_typeof(payload) = 'object'`)
         // 只纳入带齐评估启动事实的记录：范围/来源/证据缺任一项即无法投影，不进目录。
         .where(
@@ -1028,17 +1178,19 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       rows = await withRun
         .orderBy("created_at", "desc")
         .orderBy("risk_record_id", "asc")
-        .limit(cursor + pageSize + 1)
+        .offset(cursor)
+        .limit(pageSize + 1)
         .execute();
     } catch (error) {
       throw mapPostgresError(error, `${STAGE_CODE_V1}.record-catalog`);
     }
 
-    const items = rows
-      .slice(cursor, cursor + pageSize)
-      .map((row) => this.#catalogItem(row))
-      .flatMap((item) => (item === undefined ? [] : [item]));
-    const next = rows.length > cursor + pageSize ? encodeCursor(cursor + pageSize) : undefined;
+    const items: RiskRecordCatalogItemV1[] = [];
+    for (const row of rows.slice(0, pageSize)) {
+      const item = this.#catalogItem(row);
+      if (item !== undefined && (await visible(item))) items.push(item);
+    }
+    const next = rows.length > pageSize ? encodeCursor(cursor + pageSize) : undefined;
     return succeeded({
       kind: "record-catalog",
       items,
@@ -1052,7 +1204,6 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
   ): Promise<RiskIdentificationReadResultV1> {
     const branch = READ_BRANCH_V1["record-read"];
     const denied = () => failed(this.#denied(query.queryId, branch));
-    const scopeDigest = authorizationScopeDigest(verified);
     const recordRef = query.payload.riskRecordRef;
 
     let row: StandardizedRiskRecordDbRow | undefined;
@@ -1067,13 +1218,12 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       throw mapPostgresError(error, `${STAGE_CODE_V1}.record-read`);
     }
     // 不存在、跨工程（SQL 已按工程过滤）、版本不符与当前授权看不到范围：逐字同形，不提供 oracle。
-    if (
-      row === undefined ||
-      row.version_id !== recordRef.reference.versionId ||
-      row.authorization_scope_digest !== scopeDigest
-    ) {
+    if (row === undefined || row.version_id !== recordRef.reference.versionId) {
       return denied();
     }
+    const item = this.#catalogItem(row);
+    if (item === undefined || !(await this.#recordVisibility(query, verified)(item)))
+      return denied();
     const envelope = StandardizedRiskRecordEnvelopeSchema.safeParse(row.payload);
     if (!envelope.success || envelope.data.riskRecordId !== row.risk_record_id) return denied();
     const riskRecordRef = StandardizedRiskRecordRefV1Schema.safeParse(row.risk_record_ref);

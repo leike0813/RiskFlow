@@ -3,6 +3,16 @@
   "runConfigFile": "/absolute/path/to/accepted-synthetic-run-config.json",
   "observations": [
     {
+      "stepId": "start-assessment",
+      "operationId": "riskflow_query_risk-assessment_read",
+      "payload": {
+        "operation": "run-read",
+        "workflowRunRef": { "$result": "start-assessment", "path": ["workflowRunRef"] }
+      },
+      "expectedTerminalStatus": "completed",
+      "requiredReferences": [["resultRefs", { "kind": "assessment-run-result" }]]
+    },
+    {
       "stepId": "start-identify-assess",
       "operationId": "riskflow_query_projection_result-read",
       "payload": {

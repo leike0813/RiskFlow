@@ -4,6 +4,8 @@
 
 桌面验收 MUST 从同份functional配置观察的唯一正式workflow.start-run回执绑定运行，从共享URL精确绑定同次risk-overview查询，并核验下载export请求的sourceRef与该查询一致。run-view观察和risk-overview导出分别遵循既有DTO，不得要求risk-overview携带workflowRunRef或用其它查询导出回执替代。
 
+当活动评估运行的正式事件不足时，SSE场景 MAY 显式绑定同工程已有识别运行的事件流身份与读取快照身份、来源版本。两个身份 MUST 属于同一运行实体；当前会话 MUST 经所属读取核对精确快照及completed，随后两次订阅 MUST 保持同一精确事件流身份、2+2事件、游标不重放及零写断言。该样例不得替代同次活动任务的关窗证明；失败及分别取证的边界 MUST 保留。
+
 #### Scenario: 正式观察和报告导出均绑定同次运行材料
 
 - **WHEN** 同次回执包含被functional配置观察的唯一启动、run-view观察及risk-overview导出来源，且下载来自该导出来源
@@ -14,13 +16,18 @@
 - **WHEN** 共享URL对应非risk-overview查询，或下载回执的请求来源不等于该精确查询
 - **THEN** 预检拒绝，不生成真实Electron通过记录
 
+#### Scenario: 活动运行事件不足时显式绑定SSE样例
+
+- **WHEN** 同次活动任务已完成关窗续接，活动运行只有一条正式事件，另有同工程可读的精确识别运行事件流及状态快照
+- **THEN** 当前会话核对该精确快照completed后，以同一事件流身份完成2+2游标续读且零写，关窗证据仍引用原活动任务；错实体、错快照或当前拒权不计通过
+
 ### Requirement: 桌面关窗继续使用同次活动任务证明
 
-关窗前运行处于waiting时，桌面验收 MUST 以同次正式启动回执中的精确agentTaskRef，经当前会话读取所属任务并证明queued/running；人审、已完成、失败及其它任务不得替代。关窗重开后 MUST 继续读取原运行并达到completed，submitted或等待不能计通过。
+关窗前运行处于waiting时，桌面验收 MUST 以同次正式启动回执中的精确agentTaskRef，经当前会话读取所属任务并证明公共契约的pending/running；人审、已完成、失败及其它任务不得替代。关窗重开后 MUST 继续读取原运行并达到completed，submitted或等待不能计通过。
 
 #### Scenario: LangGraph等待正在执行的内嵌Agent
 
-- **WHEN** 同次运行waiting且其正式任务queued/running，客户端关闭后重开
+- **WHEN** 同次运行waiting且其正式任务pending/running，客户端关闭后重开
 - **THEN** 原服务端任务继续，最终核验同一运行completed；没有活动任务证明或终态失败必须失败
 
 ### Requirement: 桌面验收沿当前正式清单核验兼容

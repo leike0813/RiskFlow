@@ -1,5 +1,6 @@
 import type { DomainEventV1 } from "@riskflow/contracts/events";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
+import { isDeepStrictEqual } from "node:util";
 import type { VersionReference } from "@riskflow/contracts/common";
 import type {
   AuthorizationContextV1,
@@ -248,6 +249,53 @@ export class VersionedHybridRetrievalProjectionHandler {
     return { kind: "projected", consumer };
   }
 
+  async rebuildGeneration(input: {
+    readonly event: DomainEventV1;
+    readonly generationRef: RetrievalGenerationRefV1;
+    readonly authorization: AuthorizationContextV1;
+    readonly operationId: string;
+  }): Promise<
+    | {
+        readonly kind: "rebuilt";
+        readonly generationRef: RetrievalGenerationRefV1;
+        readonly memberCount: number;
+      }
+    | { readonly kind: "rejected"; readonly failure: HybridRetrievalFailureV1 }
+  > {
+    const event = DomainEventV1Schema.parse(input.event);
+    const generation = await this.#options.generationStore.readGeneration(input.generationRef);
+    const status = await this.#options.generationStore.readGenerationStatus(input.generationRef);
+    if (
+      event.eventType !== HYBRID_RETRIEVAL_PROJECTION_EVENT_TYPE_V1 ||
+      generation === undefined ||
+      status !== "active" ||
+      generation.identity.projectId !== event.projectId ||
+      generation.identity.sourceEventId !== event.eventId ||
+      input.authorization.projectId !== event.projectId ||
+      !input.authorization.grantedCapabilities.includes("knowledge-modeling.retrieve")
+    ) {
+      return {
+        kind: "rejected",
+        failure: this.#failure(
+          { projectId: event.projectId, eventId: event.eventId },
+          {
+            stage: "reconciliation",
+            code: "SOURCE_FACT_DRIFT",
+            detailCode: "restore-generation-binding",
+          },
+        ),
+      };
+    }
+    const outcome = await this.#project(event, undefined, { ...input, generation });
+    if (outcome.kind === "rejected") return outcome;
+    if (outcome.kind !== "projected") throw new TypeError("restore projection outcome missing");
+    return {
+      kind: "rebuilt",
+      generationRef: generation.generationRef,
+      memberCount: generation.expectedMemberCount,
+    };
+  }
+
   #failure(
     context: { readonly projectId?: string; readonly eventId?: string } | undefined,
     input: {
@@ -321,7 +369,12 @@ export class VersionedHybridRetrievalProjectionHandler {
 
   async #project(
     event: ProjectionEvent,
-    context: TransactionContextV1,
+    context?: TransactionContextV1,
+    restore?: {
+      readonly generation: RetrievalGenerationV1;
+      readonly authorization: AuthorizationContextV1;
+      readonly operationId: string;
+    },
   ): Promise<HybridRetrievalProjectionOutcomeV1> {
     const { sourceFacts, modelGateway, generationStore, projection, policyProvider, qualityGate } =
       this.#options;
@@ -357,7 +410,8 @@ export class VersionedHybridRetrievalProjectionHandler {
       });
     }
 
-    const authorization = await this.#options.authorize({ projectId, eventId, requiredAt });
+    const authorization =
+      restore?.authorization ?? (await this.#options.authorize({ projectId, eventId, requiredAt }));
     if (!authorization.grantedCapabilities.includes("knowledge-modeling.retrieve")) {
       return reject({
         stage: "authorization",
@@ -412,7 +466,7 @@ export class VersionedHybridRetrievalProjectionHandler {
       projectId,
       evidenceBaseReleaseRef: event.payload.retrievalEvidenceBaseReleaseRef,
       lock: false,
-      context,
+      ...(context === undefined ? {} : { context }),
     });
 
     const reads: {
@@ -498,6 +552,22 @@ export class VersionedHybridRetrievalProjectionHandler {
     }
     const { manifest, points } = normalized;
 
+    if (
+      restore !== undefined &&
+      (!isDeepStrictEqual(generationRef, restore.generation.generationRef) ||
+        manifest.membersSha256 !== restore.generation.manifestSha256 ||
+        manifest.members.length !== restore.generation.expectedMemberCount ||
+        collectionName !== restore.generation.collectionName ||
+        scopeDigest !== restore.generation.authorizationScopeDigest)
+    ) {
+      return reject({
+        stage: "reconciliation",
+        code: "SOURCE_FACT_DRIFT",
+        detailCode: "restore-manifest-drift",
+        generationRef,
+      });
+    }
+
     const denseVectors: { pointId: string; vector: readonly number[] }[] = [];
     for (let offset = 0; offset < points.length; offset += policy.memberBatchLimit) {
       const batch = points.slice(offset, offset + policy.memberBatchLimit);
@@ -507,8 +577,8 @@ export class VersionedHybridRetrievalProjectionHandler {
         embedding = await modelGateway.embed(
           EmbeddingRequestV1Schema.parse({
             schemaVersion: "1",
-            invocationId: `hybrid-retrieval-projection-embed-${eventId}-${offset}`,
-            idempotencyKey: `hybrid-retrieval-projection-embed:${eventId}:${offset}`,
+            invocationId: `hybrid-retrieval-projection-embed-${restore?.operationId ?? eventId}-${offset}`,
+            idempotencyKey: `hybrid-retrieval-projection-embed:${restore?.operationId ?? eventId}:${offset}`,
             issuedAt: issuedAt.toISOString(),
             projectId,
             actorId: authorization.actorId,
@@ -585,20 +655,23 @@ export class VersionedHybridRetrievalProjectionHandler {
       createdBy: authorization.actorId,
       authorizationContextRef: authorization.authorizationContextRef,
     };
-    const ensured = await generationStore.ensureBuildingGeneration({
-      generation,
-      transitionRef: {
-        kind: "retrieval-generation-transition",
-        reference: {
-          entityId: `${generationRef.reference.entityId}:${PROJECTION_TRANSITION_ORDINAL_V1.building}`,
-          versionId: manifest.membersSha256,
-        },
-      },
-      actorRef: authorization.actorId,
-      authorizationContextRef: authorization.authorizationContextRef,
-      occurredAt: generation.createdAt,
-      context,
-    });
+    const ensured =
+      restore === undefined
+        ? await generationStore.ensureBuildingGeneration({
+            generation,
+            transitionRef: {
+              kind: "retrieval-generation-transition",
+              reference: {
+                entityId: `${generationRef.reference.entityId}:${PROJECTION_TRANSITION_ORDINAL_V1.building}`,
+                versionId: manifest.membersSha256,
+              },
+            },
+            actorRef: authorization.actorId,
+            authorizationContextRef: authorization.authorizationContextRef,
+            occurredAt: generation.createdAt,
+            ...(context === undefined ? {} : { context }),
+          })
+        : { generation: restore.generation, status: "active" };
     if (
       ensured.generation.manifestSha256 !== generation.manifestSha256 ||
       ensured.generation.collectionName !== generation.collectionName ||
@@ -685,6 +758,13 @@ export class VersionedHybridRetrievalProjectionHandler {
       });
     }
 
+    if (restore !== undefined) {
+      return {
+        kind: "projected",
+        consumer: { resultRef: event.payload.retrievalEvidenceBaseReleaseRef, replayed: false },
+      };
+    }
+
     await generationStore.appendTransition({
       transition: {
         schemaVersion: "1",
@@ -705,13 +785,13 @@ export class VersionedHybridRetrievalProjectionHandler {
       actorRef: authorization.actorId,
       authorizationContextRef: authorization.authorizationContextRef,
       contextRefs: [event.payload.retrievalEvidenceBaseReleaseRef],
-      context,
+      ...(context === undefined ? {} : { context }),
     });
 
     const currentActivation = await generationStore.readCurrentActivation({
       projectId,
       evidenceBaseReleaseRef: event.payload.retrievalEvidenceBaseReleaseRef,
-      context,
+      ...(context === undefined ? {} : { context }),
     });
     if (
       currentActivation?.activationOrdinal !== baselineActivation?.activationOrdinal ||
@@ -743,7 +823,7 @@ export class VersionedHybridRetrievalProjectionHandler {
         authorizationContextRef: authorization.authorizationContextRef,
       },
       contextRefs: [event.payload.retrievalEvidenceBaseReleaseRef],
-      context,
+      ...(context === undefined ? {} : { context }),
     });
     if (activation.kind === "activation-conflict") {
       return reject({

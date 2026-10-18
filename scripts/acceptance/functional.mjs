@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -12,6 +12,10 @@ import {
   AgentTaskResultRefV1Schema,
   ContractReferenceV1Schema,
   ProjectionReportFactRefV1Schema,
+  WorkflowRunRefV1Schema,
+  AgentTaskRefV1Schema,
+  SpatialScopeRefV1Schema,
+  SourceVersionRefV1Schema,
 } from "../../packages/contracts/dist/ports/index.js";
 import {
   checkPack,
@@ -28,7 +32,11 @@ const MAX_TIMEOUT_MS_V1 = 3_600_000;
 const MAX_QUERY_COUNT_V1 = 10_000;
 const SUCCESS_TERMINAL_STATUSES_V1 = ["completed"];
 const PositiveInt = (max) => z.number().int().positive().max(max);
-const PathPart = z.union([z.string().min(1), z.number().int().nonnegative()]);
+const PathPart = z.union([
+  z.string().min(1),
+  z.number().int().nonnegative(),
+  z.strictObject({ kind: z.string().min(1).max(128) }),
+]);
 const ObservationV1Schema = z.strictObject({
   stepId: z.string().min(1).max(128),
   operationId: z
@@ -44,12 +52,40 @@ export const FunctionalAcceptanceConfigV1Schema = z
   .strictObject({
     schemaVersion: z.literal("1"),
     runConfigFile: z.string().min(1),
+    mode: z.literal("existing-formal-references").optional(),
+    targets: z
+      .array(
+        z.strictObject({
+          stepId: z.string().min(1).max(128),
+          resultRef: z.union([
+            z.strictObject({ workflowRunRef: WorkflowRunRefV1Schema }),
+            z.strictObject({ agentTaskRef: AgentTaskRefV1Schema }),
+          ]),
+          requestedSpatialScopeRefs: z.array(SpatialScopeRefV1Schema),
+          requestedSourceVersionRefs: z.array(SourceVersionRefV1Schema),
+        }),
+      )
+      .min(1)
+      .max(128)
+      .optional(),
     observations: z.array(ObservationV1Schema).min(1).max(128),
     pollIntervalMs: PositiveInt(MAX_POLL_INTERVAL_MS_V1),
     timeoutMs: PositiveInt(MAX_TIMEOUT_MS_V1),
     maxQueries: PositiveInt(MAX_QUERY_COUNT_V1),
   })
   .superRefine((config, context) => {
+    if (
+      (config.mode === undefined && config.targets !== undefined) ||
+      (config.mode !== undefined &&
+        (config.targets === undefined ||
+          config.targets.length !== config.observations.length ||
+          new Set(config.targets.map((target) => target.stepId)).size !== config.targets.length ||
+          config.targets.some(
+            (target) => !config.observations.some((item) => item.stepId === target.stepId),
+          )))
+    ) {
+      context.addIssue({ code: "custom", path: ["targets"] });
+    }
     const ids = new Set();
     for (const [index, observation] of config.observations.entries()) {
       if (ids.has(observation.stepId)) {
@@ -83,6 +119,13 @@ const readJson = (path) => {
 const valueAtPath = (value, path) => {
   let current = value;
   for (const part of path) {
+    if (typeof part === "object") {
+      if (!Array.isArray(current)) return undefined;
+      const matches = current.filter((item) => item?.kind === part.kind);
+      if (matches.length !== 1) return undefined;
+      current = matches[0];
+      continue;
+    }
     if (current === null || typeof current !== "object" || !(part in current)) return undefined;
     current = current[part];
   }
@@ -101,7 +144,7 @@ const HUMAN_WAIT_STATUSES = new Set([
 const hasTerminalStatusPathV1 = (operationId, payload) =>
   (operationId === operationIdFor("query", "agent-task.read") && payload?.kind === "detail") ||
   (operationId === operationIdFor("query", "risk-identification.run-read") &&
-    payload?.kind === "run-read") ||
+    payload?.runRef !== undefined) ||
   (operationId === operationIdFor("query", "risk-assessment.read") &&
     payload?.operation === "run-read") ||
   (operationId === operationIdFor("query", "projection.result-read") &&
@@ -179,8 +222,8 @@ const formalResultSchemaV1 = (result, path, operationId, targetResultRef) => {
       sameReferenceV1(result.runRef, targetResultRef.workflowRunRef) &&
       path.length === 2 &&
       path[0] === "resultRefs" &&
-      Number.isInteger(path[1]) &&
-      ["assessment-run-result", "risk-flow-run-result"].includes(result.resultRefs?.[path[1]]?.kind)
+      (Number.isInteger(path[1]) || typeof path[1] === "object") &&
+      ["assessment-run-result", "risk-flow-run-result"].includes(valueAtPath(result, path)?.kind)
       ? ContractReferenceV1Schema
       : null;
   }
@@ -208,17 +251,12 @@ export const requiredReferencesOfV1 = (result, paths, operationId, targetResultR
   if (!schemas.some((schema) => schema !== null)) return null;
   const references = {};
   for (const [index, path] of paths.entries()) {
-    // projection 只承认本次 run 的正式结果路径：其它 run、非归属行与 report-absence 一律拒绝。
-    if (
-      (operationId === operationIdFor("query", "projection.result-read") ||
-        operationId === operationIdFor("query", "risk-assessment.read")) &&
-      schemas[index] === null
-    ) {
-      return null;
-    }
+    if (schemas[index] === null) return null;
     const value = valueAtPath(result, path);
     if (!(schemas[index] ?? ContractReferenceV1Schema).safeParse(value).success) return null;
-    references[path.join(".")] = value;
+    references[
+      path.map((part) => (typeof part === "object" ? `[kind=${part.kind}]` : part)).join(".")
+    ] = value;
   }
   return references;
 };
@@ -243,7 +281,7 @@ export const terminalStatusOfV1 = (operationId, payload, result, targetResultRef
   }
   if (
     operationId === operationIdFor("query", "risk-identification.run-read") &&
-    payload?.kind === "run-read" &&
+    payload?.runRef !== undefined &&
     result?.kind === "run-read" &&
     sameReferenceV1(result.runRef, targetResultRef.workflowRunRef)
   ) {
@@ -274,6 +312,8 @@ const runConfigDigestOfV1 = (config) =>
 export const readFunctionalAcceptanceReportV1 = (configPath, reportPath) => {
   const configFile = resolve(configPath);
   const config = FunctionalAcceptanceConfigV1Schema.parse(readJson(configFile));
+  if (config.mode !== undefined)
+    throw new SyntheticAcceptanceError("FUNCTIONAL_REPORT_RUN_MISMATCH");
   const runConfig = readJson(resolve(dirname(configFile), config.runConfigFile));
   const report = readJson(resolve(reportPath));
   const synthetic = readJson(join(dirname(resolve(reportPath)), "synthetic", "run.json"));
@@ -301,6 +341,7 @@ const renderReport = (state) =>
     `- status: ${state.status}`,
     `- runId: ${state.runId ?? "unavailable"}`,
     `- queryCount: ${state.queryCount}`,
+    `- evidenceSource: ${state.evidenceSource ?? "submitted-run"}`,
     ...state.observations.flatMap((observation) => [
       "",
       `## ${observation.stepId}`,
@@ -385,6 +426,7 @@ export const runFunctionalAcceptance = async ({
     runConfigDigest,
     startedAt,
     runId: null,
+    evidenceSource: acceptance.mode ?? "submitted-run",
     status: "RUNNING",
     queryCount: 0,
     observations: acceptance.observations.map((item) => ({
@@ -402,20 +444,37 @@ export const runFunctionalAcceptance = async ({
   const deadlineTimer = setTimeout(() => deadlineController.abort(), Math.max(0, deadline - now()));
   deadlineTimer.unref?.();
 
-  let synthetic;
-  try {
-    synthetic = await runPack({
-      packDir: pack,
-      configPath: runConfigPath,
-      outputDir: join(output, "synthetic"),
-      resume: existsSync(join(output, "synthetic", "run.json")),
-      fetchImpl,
-      signal: deadlineController.signal,
-    });
-  } catch {
-    synthetic = null;
+  let runState;
+  let runStatus;
+  if (acceptance.mode === "existing-formal-references") {
+    runState = {
+      runId: prior?.runId ?? `formal-observation-${randomUUID()}`,
+      steps: acceptance.targets,
+      bindings: {},
+    };
+    runStatus = "READ_ONLY";
+    initialState.targets = acceptance.targets.map(({ stepId, resultRef }) => ({
+      stepId,
+      resultRef,
+    }));
+  } else {
+    let synthetic;
+    try {
+      synthetic = await runPack({
+        packDir: pack,
+        configPath: runConfigPath,
+        outputDir: join(output, "synthetic"),
+        resume: existsSync(join(output, "synthetic", "run.json")),
+        fetchImpl,
+        signal: deadlineController.signal,
+      });
+    } catch {
+      synthetic = null;
+    }
+    runState = synthetic?.state;
+    runStatus = synthetic?.status;
   }
-  if (!check.ok || synthetic?.state?.runId == null || deadlineController.signal.aborted) {
+  if (!check.ok || runState?.runId == null || deadlineController.signal.aborted) {
     initialState.status = "BLOCKED";
     initialState.reason = !check.ok
       ? "PACK_CHECK_FAILED"
@@ -423,15 +482,18 @@ export const runFunctionalAcceptance = async ({
         ? "FUNCTIONAL_TIMEOUT"
         : "SYNTHETIC_RUN_UNAVAILABLE";
     initialState.checkProblemCount = check.problems.length;
-    initialState.syntheticStatus = synthetic?.status ?? "unavailable";
+    initialState.syntheticStatus = runStatus ?? "unavailable";
     safePersist(initialState, output);
     return { ok: false, status: initialState.status, exitCode: 1, state: initialState };
   }
-  initialState.runId = synthetic.state.runId;
-  initialState.syntheticStatus = synthetic.status;
+  initialState.runId = runState.runId;
+  initialState.syntheticStatus = runStatus;
 
-  const submitted = synthetic.state.steps.filter((step) => step.status === "submitted");
-  const waiting = synthetic.state.steps.some((step) => step.status === "waiting");
+  const submitted =
+    acceptance.mode === "existing-formal-references"
+      ? runState.steps
+      : runState.steps.filter((step) => step.status === "submitted");
+  const waiting = runState.steps.some((step) => step.status === "waiting");
   if (waiting) {
     initialState.status = "awaiting-human";
     initialState.observations = initialState.observations.map((item) =>
@@ -463,19 +525,19 @@ export const runFunctionalAcceptance = async ({
     return { ok: false, status: initialState.status, exitCode: 1, state: initialState };
   }
 
-  if (!["COMPLETED", "SUBMITTED"].includes(synthetic.status)) {
+  if (!["COMPLETED", "SUBMITTED", "READ_ONLY"].includes(runStatus)) {
     initialState.status = "BLOCKED";
     initialState.reason = "SYNTHETIC_RUN_NOT_READY";
     safePersist(initialState, output);
     return { ok: false, status: initialState.status, exitCode: 1, state: initialState };
   }
 
-  const steps = new Map(synthetic.state.steps.map((step) => [step.stepId, step]));
+  const steps = new Map(runState.steps.map((step) => [step.stepId, step]));
   let querySession;
   try {
     querySession = await createReadOnlyQuerySession({
       config: runConfig,
-      runId: synthetic.state.runId,
+      runId: runState.runId,
       fetchImpl,
       signal: deadlineController.signal,
     });
@@ -520,14 +582,11 @@ export const runFunctionalAcceptance = async ({
         const body = await querySession.query({
           packDir: pack,
           steps,
-          bindings: synthetic.state.bindings ?? {},
+          bindings: runState.bindings ?? {},
           stepId: observation.stepId,
           operationId: observation.operationId,
           payload: observation.payload,
-          queryId: `${synthetic.state.runId}-${observation.stepId}-${result.queryCount}`.slice(
-            0,
-            200,
-          ),
+          queryId: `${runState.runId}-${observation.stepId}-${result.queryCount}`.slice(0, 200),
           requestedSpatialScopeRefs: targetStep?.requestedSpatialScopeRefs ?? [],
           requestedSourceVersionRefs: targetStep?.requestedSourceVersionRefs ?? [],
         });

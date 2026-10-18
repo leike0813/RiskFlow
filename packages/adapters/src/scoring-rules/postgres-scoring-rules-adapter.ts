@@ -1820,7 +1820,7 @@ export class PostgresScoringRulesAdapter
     }
   }
 
-  /** 三维筛选 + 冲突门禁 → applicable-rule-set 候选修订（仍需 C16 人工批准）。 */
+  /** 三维筛选 + 冲突门禁 → 按准备范围复用或生成正式派生发布。 */
   async assembleApplicableRuleSetRevision(
     request: AssembleApplicableRuleSetV1,
   ): Promise<AssembleApplicableRuleSetResultV1> {
@@ -2074,13 +2074,56 @@ export class PostgresScoringRulesAdapter
         configurationMembers: configuration.configurationSet.members,
         assemblyPolicyRef: request.assemblyPolicyRef,
       });
+      const artifactId = `applicable-rule-set-${derivationScopeKey}`;
+      const existing = await this.#governedReleases.resolveGovernedReleases({
+        projectId: request.projectId,
+        requiredDefinitionTypes: ["applicable-rule-set"],
+        contextRef,
+        requiredAt: request.requiredAt,
+        asOfRecordedAt: request.asOfRecordedAt,
+        authorization,
+      });
+      if (existing.kind === "failed") {
+        if (
+          existing.error.code !== "BUSINESS_BLOCKED" ||
+          existing.error.blockerKind !== "required-release-unavailable"
+        ) {
+          return { kind: "failed", error: existing.error };
+        }
+      } else {
+        const member = existing.result.members.find(
+          (candidate) =>
+            candidate.definitionType === "applicable-rule-set" &&
+            sameVersion(candidate.candidateArtifactRef.reference, {
+              entityId: artifactId,
+              versionId: `sha256:${contentDigest}`,
+            }),
+        );
+        if (member !== undefined) {
+          const metadata = await this.#findRevisionMetadata(request.projectId, member.revisionRef);
+          if (
+            metadata === undefined ||
+            metadata.definitionType !== "applicable-rule-set" ||
+            metadata.contentDigest !== contentDigest ||
+            !sameVersion(metadata.artifactRef.reference, member.candidateArtifactRef.reference)
+          ) {
+            failScoringRule("scoring-rule-revision-unverified", member.revisionRef);
+          }
+          return AssembleApplicableRuleSetResultV1Schema.parse({
+            kind: "succeeded",
+            applicableRuleSetRevisionRef: member.revisionRef,
+            applicableRuleSetReleaseRef: member.releaseRef,
+            applicableRuleSetArtifactRef: metadata.artifactRef,
+          });
+        }
+      }
       const candidateArtifactRef = ContentArtifactRefV1Schema.parse(
         await this.#put({
           projectId: request.projectId,
           actorId: request.actorId,
           issuedAt: request.asOfRecordedAt,
           authorization,
-          artifactId: `applicable-rule-set-${derivationScopeKey}`,
+          artifactId,
           purposeCode: APPLICABLE_RULE_SET_ARTIFACT_PURPOSE_CODE_V1,
           mediaType: APPLICABLE_RULE_SET_MEDIA_TYPE_V1,
           value: document,

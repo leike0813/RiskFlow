@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 
 import type { ModuleCapabilityV1 } from "@riskflow/contracts/ports";
 
+import type { PageRegionDescriptorV1 } from "../shared/page-shells/index.js";
+
 export type WebNavigationIdV1 =
   "overview" | "projects" | "identification" | "assessment" | "warnings" | "knowledge" | "reviews";
 
@@ -29,31 +31,6 @@ export type WebPathTemplateV1 =
   | "/review-audit"
   | (string & {});
 
-/**
- * CH-2 D-03：区域描述符只表达呈现结构，没有 URL、端口、数据选择器或动作配置。
- * 路由 contribution 按单区域特例登记，页面自己组合多区域。
- */
-export type WebRegionKindV1 =
-  | "list"
-  | "detail"
-  | "form"
-  | "chart"
-  | "timeline"
-  | "matrix-grid"
-  | "tabs"
-  | "run"
-  | "governance"
-  | "review"
-  | "agent"
-  | "action";
-
-export type WebRegionDescriptorV1 =
-  | Readonly<{ readonly kind: Exclude<WebRegionKindV1, "chart"> }>
-  | Readonly<{
-      readonly kind: "chart";
-      readonly variant: "donut" | "hbars" | "trend" | "graph" | "matrix";
-    }>;
-
 export type WebContextRequirementV1 = "none" | "project" | "spatial" | "process";
 
 export type WebRouteRenderInputV1 = Readonly<{
@@ -69,7 +46,7 @@ export type WebRouteContributionV1 = Readonly<{
   path: WebPathTemplateV1;
   title: string;
   section: WebNavigationIdV1 | null;
-  regions: readonly WebRegionDescriptorV1[];
+  regions: readonly PageRegionDescriptorV1[];
   contextRequirement: WebContextRequirementV1;
   requiredViewCapability: ModuleCapabilityV1 | null;
   render: WebRouteRendererV1 | null;
@@ -95,7 +72,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/login",
     title: "登录",
     section: null,
-    regions: [{ kind: "form" }],
+    regions: [{ key: "main", kind: "form" }],
     contextRequirement: "none",
     requiredViewCapability: null,
     render: null,
@@ -105,7 +82,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/change-password",
     title: "修改密码",
     section: null,
-    regions: [{ kind: "form" }],
+    regions: [{ key: "main", kind: "form" }],
     contextRequirement: "none",
     requiredViewCapability: null,
     render: null,
@@ -115,7 +92,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/overview",
     title: "风险态势",
     section: "overview",
-    regions: [{ kind: "detail" }],
+    regions: [{ key: "main", kind: "detail" }],
     contextRequirement: "project",
     requiredViewCapability: "projection.query",
     render: null,
@@ -125,7 +102,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/projects",
     title: "工程项目",
     section: "projects",
-    regions: [{ kind: "list" }],
+    regions: [{ key: "main", kind: "list" }],
     contextRequirement: "project",
     requiredViewCapability: "engineering-data.read",
     render: null,
@@ -135,7 +112,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/identification",
     title: "风险识别",
     section: "identification",
-    regions: [{ kind: "run" }],
+    regions: [{ key: "main", kind: "run" }],
     contextRequirement: "project",
     requiredViewCapability: "risk-identification.read",
     render: null,
@@ -145,7 +122,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/assessment",
     title: "风险评估",
     section: "assessment",
-    regions: [{ kind: "list" }],
+    regions: [{ key: "main", kind: "list" }],
     contextRequirement: "project",
     requiredViewCapability: "risk-assessment.read",
     render: null,
@@ -155,7 +132,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/warnings",
     title: "预警处置",
     section: "warnings",
-    regions: [{ kind: "list" }],
+    regions: [{ key: "main", kind: "list" }],
     contextRequirement: "project",
     requiredViewCapability: "warning-response.read",
     render: null,
@@ -165,7 +142,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/knowledge",
     title: "知识与规则",
     section: "knowledge",
-    regions: [{ kind: "governance" }],
+    regions: [{ key: "main", kind: "governance" }],
     contextRequirement: "project",
     requiredViewCapability: "knowledge-modeling.read",
     render: null,
@@ -175,7 +152,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/review-audit",
     title: "复核与审计",
     section: "reviews",
-    regions: [{ kind: "review" }],
+    regions: [{ key: "main", kind: "review" }],
     contextRequirement: "project",
     requiredViewCapability: "review-audit.read",
     render: null,
@@ -434,12 +411,13 @@ export const resolveWebRoute = (
   const raw = pathnameFor(value);
   if (raw === undefined) return { kind: "not-found", pathname: "[invalid]" };
   // 旧前缀先做别名重定向，保留 params 与 search；未命中别名再走正常匹配。
-  const search = typeof value === "string" ? (value.split("?")[1] ?? "") : "";
-  const aliased = applyWebPathAliasV1(raw, search === "" ? "" : `?${search}`, registry);
+  const search =
+    typeof value === "string" && value.includes("?") ? value.slice(value.indexOf("?")) : "";
+  const aliased = applyWebPathAliasV1(raw, search, registry);
   if (aliased !== undefined) {
     return Object.freeze({ kind: "redirect", from: raw, to: aliased });
   }
-  if (raw === "/") return { kind: "redirect", from: "/", to: "/overview" };
+  if (raw === "/") return { kind: "redirect", from: "/", to: `/overview${search}` };
   const matched = pickCandidate(registry.candidates, raw.split("/").slice(1));
   if (matched !== undefined) {
     return Object.freeze({

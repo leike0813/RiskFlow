@@ -13,7 +13,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { chromium } from "@playwright/test";
+import { chromium, expect } from "@playwright/test";
 
 import { startBusinessBrowserServer } from "./business-server.mjs";
 
@@ -40,8 +40,10 @@ const ZOOMS = [
 const xdotool = (...args) => execFileSync("xdotool", args, { encoding: "utf8" }).trim();
 
 const chromiumWindowId = () => {
-  const found = xdotool("search", "--onlyvisible", "--class", "chrome").split("\n").filter(Boolean);
-  if (found.length === 0) throw new Error("NATIVE_ZOOM_WINDOW_NOT_FOUND");
+  const found = xdotool("search", "--onlyvisible", "--class", "riskflow-native-zoom")
+    .split("\n")
+    .filter(Boolean);
+  expect(found).toHaveLength(1);
   return found[0];
 };
 
@@ -71,24 +73,26 @@ const applyNativeZoom = async (xWindowId, steps) => {
 const measureOverflow = async (page) =>
   page.evaluate(() => {
     const scroller =
-      globalThis.globalThis.document.querySelector(".app-main") ??
-      globalThis.document.scrollingElement;
-    const overflow =
-      globalThis.document.documentElement.scrollWidth >
-      globalThis.document.documentElement.clientWidth;
+      globalThis.document.querySelector(".data-table-host") ??
+      globalThis.document.querySelector(".app-main");
+    const overflow = scroller.scrollWidth > scroller.clientWidth;
     const before = scroller.scrollLeft;
-    scroller.scrollLeft = before + 240;
+    scroller.scrollLeft = before > 0 ? 0 : 240;
     const after = scroller.scrollLeft;
-    const vertical = scroller.scrollHeight > scroller.clientHeight;
-    const verticalBefore = scroller.scrollTop;
-    scroller.scrollTop = verticalBefore + 240;
-    const scrolledVertical = scroller.scrollTop > verticalBefore;
+    const main = globalThis.document.querySelector(".app-main");
+    const vertical = main.scrollHeight > main.clientHeight;
+    const verticalBefore = main.scrollTop;
+    main.scrollTop = verticalBefore > 0 ? 0 : 240;
+    const scrolledVertical = main.scrollTop !== verticalBefore;
     scroller.scrollLeft = before;
-    scroller.scrollTop = verticalBefore;
+    main.scrollTop = verticalBefore;
     return {
       overflow,
-      scrolled: after > before,
+      scrolled: after !== before,
       localVerticalScroll: vertical && scrolledVertical,
+      pageOverflow:
+        globalThis.document.documentElement.scrollWidth >
+        globalThis.document.documentElement.clientWidth,
     };
   });
 
@@ -101,121 +105,131 @@ const focusIsVisible = async (page) =>
     return style.outlineStyle !== "none" && parseFloat(style.outlineWidth || "0") > 0;
   });
 
-const errorIsVisible = async (page) =>
-  page.evaluate(() => {
-    const error = globalThis.document.querySelector('[data-confirmation-state="error"]');
-    if (error === null) return { visible: false, color: null };
-    const style = globalThis.getComputedStyle(error);
-    return {
-      visible: style.display !== "none" && style.visibility !== "hidden",
-      color: style.color,
-    };
-  });
-
 const login = async (page, server) => {
   await page.goto(`${server.origin}/login?project=${server.projectId}`);
   await page.locator('input[name="loginName"]').fill(server.operatorLogin);
   await page.getByLabel("密码").fill(server.accountPassword);
   await page.getByRole("button", { name: "登录", exact: true }).click();
-  await page.locator(".app-shell").waitFor({ state: "visible", timeout: 60_000 });
+  await expect(page.locator('input[name="loginName"]')).toHaveCount(0, { timeout: 60_000 });
 };
 
-const runCombination = async ({ page, server, windowSize, zoom }) => {
+const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
   await page.goto(`${server.origin}/review-audit?project=${server.projectId}`);
-  await page.locator(".app-shell").waitFor({ state: "visible", timeout: 60_000 });
-
-  // 左栏折叠：只改布局与文字呈现，导航条目不卸载、焦点不丢。
-  const collapse = page.getByRole("button", { name: "收起导航" });
-  const navCollapsible = (await collapse.count()) > 0;
-  if (navCollapsible) {
-    await collapse.click();
-    await page.getByRole("button", { name: "展开导航" }).waitFor({ state: "visible" });
-    await page.getByRole("button", { name: "展开导航" }).click();
-    await collapse.waitFor({ state: "visible" });
-  }
-  const navigationSurvivesCollapse = (await page.locator("[data-navigation]").count()) > 0;
-
-  // 右栏停靠：显式折叠不丢失已获准贡献。
-  await page.getByRole("button", { name: "打开停靠区" }).click();
-  const dockPanel = page.locator(".right-dock .dock-panel");
-  await dockPanel.waitFor({ state: "visible", timeout: 30_000 });
-  const dockOpened = (await dockPanel.count()) > 0;
-  if (dockOpened) await page.getByRole("button", { name: "关闭停靠区" }).click();
-
-  const navigationFocus = await focusIsVisible(page);
-  const slug = `ch2-${windowSize.width}x${windowSize.height}-${zoom.percent}`;
-  await mkdirSync(SHOT_DIR, { recursive: true });
-  await page.screenshot({ path: resolve(SHOT_DIR, `${slug}-layout.png`) });
-
-  // 已有确认：焦点落在取消，提交被传输层拦下后错误可见，Escape 关闭并归还焦点。
-  // 已取代目标的行按钮是 disabled 的陈旧占位；只取真正可执行的确认入口。
   const trigger = page.locator("button:not([disabled])", { hasText: /^通过$/ }).first();
-  const hasConfirm = (await trigger.count()) > 0;
-  let confirmFocusAtCancel = false;
-  let cancelled = false;
-  let focusRestored = false;
-  let failedRequests = 0;
-  if (hasConfirm) {
-    await trigger.click();
-    const dialog = page.getByRole("dialog");
-    await dialog.waitFor({ state: "visible", timeout: 30_000 });
-    confirmFocusAtCancel = await page
-      .getByRole("button", { name: "取消", exact: true })
-      .evaluate((element) => element === globalThis.document.activeElement);
-    await dialog.getByRole("button", { name: "确认提交" }).click();
-    const { visible, color } = await errorIsVisible(page);
-    failedRequests = visible ? 1 : 0;
-    const errorColor = color;
-    await page.screenshot({ path: resolve(SHOT_DIR, `${slug}-error.png`) });
-    await page.keyboard.press("Escape");
-    await dialog.waitFor({ state: "hidden", timeout: 30_000 });
-    cancelled = (await page.getByRole("dialog").count()) === 0;
-    focusRestored = await trigger.evaluate(
-      (element) => element === globalThis.document.activeElement,
-    );
-    var errorColorObserved = errorColor;
-  }
-
+  await expect(trigger).toBeEnabled({ timeout: 60_000 });
   const metrics = await page.evaluate(() => ({
-    outerWidth: globalThis.outerWidth,
-    outerHeight: globalThis.outerHeight,
-    innerWidth: globalThis.innerWidth,
-    innerHeight: globalThis.innerHeight,
+    outer: [globalThis.outerWidth, globalThis.outerHeight],
+    inner: [globalThis.innerWidth, globalThis.innerHeight],
     dpr: globalThis.devicePixelRatio,
   }));
-  const overflowResult = await measureOverflow(page);
+  expect(metrics.outer).toEqual([windowSize.width, windowSize.height]);
+  expect(metrics.dpr).toBeCloseTo(zoom.percent / 100, 2);
+  expect(metrics.inner[0]).toBeCloseTo(windowSize.width / (zoom.percent / 100), 0);
 
+  const navigation = page.locator("[data-navigation]");
+  const originalLinks = await navigation.evaluateAll((elements) =>
+    elements.map((element) => element.getAttribute("data-navigation")),
+  );
+  const collapse = page.getByRole("button", { name: "收起导航" });
+  await expect(page.locator(".app-nav")).toHaveCSS("width", "152px");
+  await collapse.focus();
+  await page.keyboard.press("Enter");
+  const expand = page.getByRole("button", { name: "展开导航" });
+  await expect(expand).toBeFocused();
+  await expect(page.locator(".app-nav")).toHaveCSS("width", "48px");
+  expect(
+    await navigation.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute("data-navigation")),
+    ),
+  ).toEqual(originalLinks);
+  await page.keyboard.press("Enter");
+  await expect(collapse).toBeFocused();
+  await page.keyboard.press("Tab");
+  const navigationFocus = await focusIsVisible(page);
+  expect(navigationFocus).toBe(true);
+
+  const openDock = page.getByRole("button", { name: "打开停靠区" });
+  await openDock.click();
+  await expect(page.locator(".right-dock")).toHaveCSS("width", "352px");
+  const contextTab = page.getByRole("tab", { name: "上下文", exact: true });
+  await contextTab.focus();
+  await page.keyboard.press("End");
+  await expect(page.getByRole("tab", { name: "Agent", exact: true })).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(contextTab).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(openDock).toBeFocused();
+  await expect(page.getByRole("tabpanel")).toHaveCount(0);
+
+  const slug = `ch2-${windowSize.width}x${windowSize.height}-${zoom.percent}`;
+  mkdirSync(SHOT_DIR, { recursive: true });
+  const capture = async (suffix) => {
+    // 原生缩放会改变 DPR；不传 CSS clip，避免自动截图按旧 DPR 裁掉右半屏。
+    const { data } = await cdp.send("Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: false,
+    });
+    writeFileSync(resolve(SHOT_DIR, `${slug}-${suffix}.png`), Buffer.from(data, "base64"));
+  };
+  await capture("layout");
+  let failedRequests = 0;
+  const countCommand = (request) => {
+    if (request.url().includes("/commands/")) failedRequests += 1;
+  };
+  page.on("request", countCommand);
+  await trigger.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "取消", exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  expect(failedRequests).toBe(0);
+  await trigger.click();
+  await dialog.getByRole("button", { name: "确认提交" }).click();
+  const error = dialog.locator('[data-confirmation-state="error"]');
+  await expect(error).toBeVisible();
+  await error.scrollIntoViewIfNeeded();
+  await expect(error).toBeInViewport();
+  expect(failedRequests).toBe(1);
+  const errorColor = await error.evaluate((element) => globalThis.getComputedStyle(element).color);
+  await capture("error");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  const overflowResult = await measureOverflow(page);
+  expect(overflowResult.pageOverflow).toBe(false);
+  if (overflowResult.overflow) expect(overflowResult.scrolled).toBe(true);
+  page.off("request", countCommand);
   return {
     width: windowSize.width,
     height: windowSize.height,
     zoom: zoom.percent,
-    outer: [metrics.outerWidth, metrics.outerHeight],
-    inner: [metrics.innerWidth, metrics.innerHeight],
-    dpr: metrics.dpr,
+    ...metrics,
     ...overflowResult,
-    navCollapsible,
-    navigationSurvivesCollapse,
-    dockOpened,
+    navCollapsible: true,
+    navigationSurvivesCollapse: true,
+    dockOpened: true,
     navigationFocus,
-    confirmFocusAtCancel,
-    cancelled,
-    focusRestored,
-    errorVisible: failedRequests > 0,
-    errorColor: hasConfirm ? errorColorObserved : null,
+    confirmFocusAtCancel: true,
+    cancelled: true,
+    focusRestored: true,
+    errorVisible: true,
+    errorColor,
     failedRequests,
-    screenshots: [
-      `native-zoom/ch2-${windowSize.width}x${windowSize.height}-${zoom.percent}-layout.png`,
-      `native-zoom/ch2-${windowSize.width}x${windowSize.height}-${zoom.percent}-error.png`,
-    ],
+    screenshots: [`native-zoom/${slug}-layout.png`, `native-zoom/${slug}-error.png`],
   };
 };
 
 export const runNativeZoomEvidence = async () => {
   const server = await startBusinessBrowserServer();
-  // 非 headless + viewport:null：Chromium 自带窗口，CDP 改的是真实外窗口。
-  const browser = await chromium.launch({ headless: false, args: ["--start-maximized=false"] });
+  let browser;
   const results = [];
   try {
+    // viewport:null 保留原生外窗口；专用 class 防止键盘误送至同显示器上的其它 Chromium。
+    browser = await chromium.launch({
+      headless: false,
+      args: ["--class=riskflow-native-zoom"],
+    });
     const context = await browser.newContext({ viewport: null });
     const page = await context.newPage();
     const cdp = await context.newCDPSession(page);
@@ -227,13 +241,16 @@ export const runNativeZoomEvidence = async () => {
         await setOuterWindow(cdp, windowSize.width, windowSize.height);
         const xWindowId = chromiumWindowId();
         await applyNativeZoom(xWindowId, zoom.steps);
-        results.push(await runCombination({ page, server, windowSize, zoom }));
+        results.push(await runCombination({ page, cdp, server, windowSize, zoom }));
       }
     }
     await context.close();
   } finally {
-    await browser.close();
-    await server.close?.();
+    try {
+      await browser?.close();
+    } finally {
+      await server.close();
+    }
   }
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   const record = {
@@ -243,6 +260,7 @@ export const runNativeZoomEvidence = async () => {
     method: {
       window: "CDP Browser.setWindowBounds 设置真实浏览器外窗口；未设置模拟 viewport",
       zoom: "xdotool 向 Chromium 原生窗口发送 Ctrl+0 与五次 Ctrl+plus；未使用 CSS zoom 或 deviceScaleFactor 模拟",
+      screenshot: "CDP Page.captureScreenshot 不传 CSS clip，保存真实原生缩放下的完整可视区域",
       checks: "实际折叠左栏与右栏、打开已有确认、取消与焦点恢复；有二维溢出时实际改变 scrollLeft",
       requestBoundary: "每组合拦截一次写请求作为传输失败，不向服务端提交业务命令",
     },
@@ -257,7 +275,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   runNativeZoomEvidence().then(
     (record) => process.stdout.write(`${JSON.stringify(record.results, null, 2)}\n`),
     (error) => {
-      process.stderr.write(`NATIVE_ZOOM_FAILED:${String(error)}\n`);
+      process.stderr.write(`NATIVE_ZOOM_FAILED:${error.stack ?? String(error)}\n`);
       process.exitCode = 1;
     },
   );

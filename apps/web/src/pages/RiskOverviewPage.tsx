@@ -19,7 +19,7 @@ import {
   type WarningResponseOverviewView,
 } from "../api/operations";
 import { NextPageButton, VersionRefText, stateTone } from "./assessmentResponseShared";
-import { PageRegions, type PageRegionV1 } from "../shared/page-shells/PageFrame.js";
+import { PageRegions, type PageRegionV1 } from "../shared/page-shells/index.js";
 import "./RiskOverviewPage.css";
 import "./assessment-response.css";
 

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
+import { BrowserRouter, useLocation } from "react-router-dom";
 
 import type { ModuleCapabilityV1, ProjectRevisionRefV1 } from "@riskflow/contracts/ports";
 
@@ -130,6 +130,7 @@ type ProjectCapabilitiesV1 =
 const NO_PROJECT_CAPABILITIES_V1: ProjectCapabilitiesV1 = Object.freeze({ kind: "unavailable" });
 
 const AppRoot = (): ReactNode => {
+  const { pathname, search } = useLocation();
   // 入口初态是 checking：恢复完成前既不跳登录页，也不发任何业务查询。
   const [session, setSession] = useState<SessionStateV1>({ kind: "checking" });
   const [authGuard] = useState(createRequestRevisionGuard);
@@ -234,32 +235,69 @@ const AppRoot = (): ReactNode => {
    * 失败保留可重试故障而不是伪空集合——能力未知与确实没有入口权必须可区分；只有
    * `ready` 才把集合交给 `App`，壳层据此判断页面门禁与停靠贡献。
    */
-  const [capabilities, setCapabilities] = useState<ProjectCapabilitiesV1>(
-    NO_PROJECT_CAPABILITIES_V1,
-  );
-  // 失败保留可重试：手动重试重新推进 tick，重新发起同一次读取而不是复用旧结果。
-  const [capabilityRetry, requestCapabilityRetry] = useState(0);
-  const canReadCapabilities = session.kind === "authenticated" && webContext.projectId !== null;
+  const capabilityScope =
+    session.kind === "authenticated" && webContext.projectId !== null
+      ? JSON.stringify([
+          session.metadata.sessionRef,
+          session.metadata.accountRef,
+          webContext.projectId,
+          webContext.revision,
+        ])
+      : null;
+  const [capabilitySnapshot, setCapabilitySnapshot] = useState<{
+    scope: string | null;
+    value: ProjectCapabilitiesV1;
+  }>({ scope: null, value: NO_PROJECT_CAPABILITIES_V1 });
+  const capabilities =
+    capabilitySnapshot.scope === capabilityScope
+      ? capabilitySnapshot.value
+      : NO_PROJECT_CAPABILITIES_V1;
+  const refreshCapabilities = useRef<() => void>(() => undefined);
   const capabilityProjectId = webContext.projectId;
   useEffect(() => {
-    if (!canReadCapabilities || capabilityProjectId === null) {
-      setCapabilities(NO_PROJECT_CAPABILITIES_V1);
+    if (capabilityScope === null || capabilityProjectId === null) {
+      refreshCapabilities.current = () => undefined;
+      setCapabilitySnapshot({ scope: null, value: NO_PROJECT_CAPABILITIES_V1 });
       return;
     }
-    const controller = new AbortController();
-    setCapabilities({ kind: "checking" });
-    void client.readProjectAccessPresentation(capabilityProjectId, controller.signal).then(
-      (presentation) => {
-        if (!controller.signal.aborted)
-          setCapabilities({ kind: "ready", capabilities: presentation.capabilities });
-      },
-      (error: unknown) => {
-        if (controller.signal.aborted) return;
-        setCapabilities({ kind: "failed", error: safeHttpErrorOf(error) });
-      },
+    setCapabilitySnapshot((current) =>
+      current.scope === capabilityScope
+        ? current
+        : { scope: capabilityScope, value: { kind: "checking" } },
     );
-    return () => controller.abort();
-  }, [canReadCapabilities, capabilityProjectId, webContext.revision, capabilityRetry]);
+    const controller = new AbortController();
+    let inFlight = false;
+    const refresh = (): void => {
+      if (inFlight || controller.signal.aborted) return;
+      inFlight = true;
+      void client.readProjectAccessPresentation(capabilityProjectId, controller.signal).then(
+        (presentation) => {
+          inFlight = false;
+          if (!controller.signal.aborted)
+            setCapabilitySnapshot({
+              scope: capabilityScope,
+              value: { kind: "ready", capabilities: presentation.capabilities },
+            });
+        },
+        (error: unknown) => {
+          inFlight = false;
+          if (!controller.signal.aborted)
+            setCapabilitySnapshot({
+              scope: capabilityScope,
+              value: { kind: "failed", error: safeHttpErrorOf(error) },
+            });
+        },
+      );
+    };
+    refreshCapabilities.current = refresh;
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => {
+      controller.abort();
+      window.removeEventListener("focus", refresh);
+    };
+  }, [capabilityScope, capabilityProjectId]);
+  useEffect(() => refreshCapabilities.current(), [pathname, search]);
   /**
    * 这里不再下发 pathname：`App` 自带 popstate 监听与会话跳转（匿名 → 带 `next` 的
    * 登录页、受限 → 带 `next` 的改密页），把 pathname 钉死会让这些跳转永不生效，
@@ -297,51 +335,45 @@ const AppRoot = (): ReactNode => {
 
   return (
     <SessionProvider value={sessionContextValue}>
-      {/*
-        Router 必须包住整棵业务树：证据抽屉（`EvidenceProvider` 的兄弟层）里的资料详情
-        深链是真实 `<Link>`，放在 Router 外会解构到 null 的路由上下文并整页崩掉。
-      */}
-      <BrowserRouter>
-        <EngineeringGate
+      <EngineeringGate
+        context={webContext}
+        canReadBusiness={session.kind === "authenticated"}
+        canUseAgentTask={
+          capabilities.kind === "ready" && capabilities.capabilities.includes("agent-task.read")
+        }
+      >
+        <App
+          session={session}
           context={webContext}
-          canReadBusiness={session.kind === "authenticated"}
-          canUseAgentTask={
-            capabilities.kind === "ready" && capabilities.capabilities.includes("agent-task.read")
+          registry={registry}
+          // 能力未知（未注入、检查中或技术故障）都不下发集合：壳层据此呈现
+          // 接缝不可用，而不是把未知当成无权或管理员。
+          {...(capabilities.kind === "ready" ? { capabilities: capabilities.capabilities } : {})}
+          // 技术故障带安全原因与重试；停靠页签据此保留已获准位置而非解释为零事项。
+          capabilityFailure={
+            capabilities.kind === "failed"
+              ? {
+                  error: capabilities.error,
+                  retry: () => refreshCapabilities.current(),
+                }
+              : undefined
           }
-        >
-          <App
-            session={session}
-            context={webContext}
-            registry={registry}
-            // 能力未知（未注入、检查中或技术故障）都不下发集合：壳层据此呈现
-            // 接缝不可用，而不是把未知当成无权或管理员。
-            {...(capabilities.kind === "ready" ? { capabilities: capabilities.capabilities } : {})}
-            // 技术故障带安全原因与重试；停靠页签据此保留已获准位置而非解释为零事项。
-            capabilityFailure={
-              capabilities.kind === "failed"
-                ? {
-                    error: capabilities.error,
-                    retry: () => requestCapabilityRetry((current) => current + 1),
-                  }
-                : undefined
-            }
-            projectOptions={selection.projectIds.map((projectId) => ({
-              projectId,
-              label: projectId,
-            }))}
-            onLogin={onLogin}
-            onChangePassword={onChangePassword}
-            onRetrySessionRestore={restoreSession}
-            onContextChange={setWebContext}
-            onLogout={async () => {
-              // 注销失败必须抛出：外壳据此保留会话并提供重试。
-              await client.logout(new AbortController().signal);
-              restoreSession();
-            }}
-            routeContent={routeContent}
-          />
-        </EngineeringGate>
-      </BrowserRouter>
+          projectOptions={selection.projectIds.map((projectId) => ({
+            projectId,
+            label: projectId,
+          }))}
+          onLogin={onLogin}
+          onChangePassword={onChangePassword}
+          onRetrySessionRestore={restoreSession}
+          onContextChange={setWebContext}
+          onLogout={async () => {
+            // 注销失败必须抛出：外壳据此保留会话并提供重试。
+            await client.logout(new AbortController().signal);
+            restoreSession();
+          }}
+          routeContent={routeContent}
+        />
+      </EngineeringGate>
     </SessionProvider>
   );
 };
@@ -450,6 +482,8 @@ if (root === null) {
 
 createRoot(root).render(
   <DesignSystemProvider>
-    <AppRoot />
+    <BrowserRouter>
+      <AppRoot />
+    </BrowserRouter>
   </DesignSystemProvider>,
 );

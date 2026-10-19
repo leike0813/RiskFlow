@@ -2923,6 +2923,67 @@ describe.sequential("local identity and project authorization", () => {
     // 历史 v1 快照仍可解析出登记来源，正文读取随后单独按当前权限执行。
     expect(legacySource).toBeDefined();
     expect(legacySource!.invocationId).toBe("ch2-legacy-v1-source");
+    const currentRequest = {
+      actorId: legacyContext.context.actorId,
+      projectId: "project-a",
+      branch: "projection.query" as const,
+      capability: "projection.query" as const,
+      invocationId: "ch2-current-from-v1",
+      authorizationContextRef: legacyContext.contextRef,
+      requestedSpatialScopeRefs: [rootScopeRef!],
+      requestedSourceVersionRefs: [],
+    };
+    await expect(access!.authorizeBusinessAction(currentRequest)).resolves.toMatchObject({
+      context: { authorizationPolicyRef: { entityId: "access-policy", versionId: "v2" } },
+    });
+    const adminLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "ch2-history-admin",
+      loginName: "admin001",
+      password: ADMIN_CHANGED_PASSWORD,
+    });
+    const member = await fixture!.adminPool.query<{
+      membership_id: string;
+      revision_no: number;
+    }>(
+      "SELECT m.membership_id, r.revision_no FROM business.project_memberships m JOIN business.project_membership_revisions r ON r.revision_id = m.current_revision_id WHERE m.project_id = $1 AND r.account_id = $2",
+      ["project-a", legacyContext.context.actorId],
+    );
+    const membership = member.rows[0]!;
+    await access!.administerProject({
+      kind: "revise-membership",
+      projectId: "project-a",
+      commandId: "ch2-history-remove-viewer",
+      idempotencyKey: "ch2-history-remove-viewer",
+      expectedVersion: {
+        entityId: membership.membership_id,
+        versionId: String(membership.revision_no),
+      },
+      authorizationContextRef: adminLogin.systemAdministrationContextRef!,
+      membershipId: membership.membership_id,
+      accountId: legacyContext.context.actorId,
+      roles: ["business-viewer"],
+      spatialScopeRefs: [rootScopeRef!],
+      status: "removed",
+    });
+    await expect(access!.authorizeBusinessAction(currentRequest)).rejects.toMatchObject({
+      details: { code: "AUTHORIZATION_DENIED" },
+    });
+    // 撤权只影响当前决定，不删除旧范围或刷新历史快照。
+    await expect(
+      access!.readDeploymentAuthorizationSource({
+        authorizationContextRef: legacyContext.contextRef,
+        projectId: "project-a",
+        actorId: legacyContext.context.actorId,
+      }),
+    ).resolves.toBeDefined();
+    const unchanged = await fixture!.adminPool.query<{
+      context_json: { authorizationPolicyRef: { versionId: string } };
+    }>(
+      "SELECT context_json FROM business.authorization_contexts WHERE context_id = $1 AND version_id = $2",
+      [legacyContext.contextRef.reference.entityId, legacyContext.contextRef.reference.versionId],
+    );
+    expect(unchanged.rows[0]!.context_json.authorizationPolicyRef.versionId).toBe("v1");
 
     // 未登记策略身份一律拒绝。
     await fixture!.adminPool.query(

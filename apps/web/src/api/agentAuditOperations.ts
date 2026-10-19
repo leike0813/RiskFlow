@@ -1100,6 +1100,7 @@ export type PreparedAdministrationCommandV1 = Readonly<{
   readonly action: string;
   readonly commandId: string;
   readonly idempotencyKey: string;
+  readonly issuedAt: string;
   readonly payload: Readonly<Record<string, unknown>>;
 }>;
 
@@ -1113,6 +1114,7 @@ export const prepareAdministrationCommand = (
     action,
     commandId: id,
     idempotencyKey: id,
+    issuedAt: new Date().toISOString(),
     payload: Object.freeze({ ...payload }),
   });
 };
@@ -1128,7 +1130,7 @@ export const sendAdministrationCommand = async (
         schemaVersion: "1",
         commandId: prepared.commandId,
         idempotencyKey: prepared.idempotencyKey,
-        issuedAt: new Date().toISOString(),
+        issuedAt: prepared.issuedAt,
         payload: prepared.payload,
       },
       ...(signal === undefined ? {} : { signal }),

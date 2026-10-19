@@ -35,7 +35,7 @@
 
 ### Requirement: 空、加载、异常、权限四类骨架行为必须逐页一致
 
-各页面 MUST 遵循对应骨架（列表 A / 详情 B / 治理 D）的状态约定：加载时骨架占位不闪烁切换空态；空态说明当前筛选下无数据并给出最可能的下一步入口；异常显示结构化错误摘要与重试，不显示技术堆栈；权限不足显示权限骨架并提示所需能力，不披露目标存在性。`NOT_FOUND` 与 `AUTHENTICATION_REQUIRED` MUST 映射为权限/会话语义而非普通错误。（RI-S61～RI-S65）
+各页面 MUST 引用 `platform/web-shell-interaction-primitives` 的区域组合与七态契约，列表 A、详情 B、治理 D 作为单区域特例，不再限制为单值骨架。加载时占位不得闪烁为空态；空态只给已登记真实下一步；异常显示结构化安全摘要与可用重试；无权限不得泄露对象数量或名称。`NOT_FOUND` 与 `AUTHENTICATION_REQUIRED` MUST 保留原目标可见性及会话语义，不映射为普通错误。（RI-S61～RI-S65）
 
 #### Scenario: 无权访问知识页面
 
@@ -161,7 +161,7 @@
 
 ### Requirement: 浏览器验收必须使用真实浏览器与正式接缝
 
-系统 MUST 提供可运行的真实 Chromium 验收命令，在 `apps/web` 生产构建与真实 HTTP/授权/投影接缝（真实 PostgreSQL、真实迁移、真实会话登录）上验证：登录、七项业务导航中本 change 页面的可达性、工程切换、权限降级、证据脱敏两态与跨页深链。验收记录 MUST 包含浏览器版本、命令与失败 trace；浏览器或必需服务不可用时 MUST 明确失败，不以 Mock 浏览器、Mock 后端或跳过关键断言代替通过结论。（RI-S61～RI-S65）
+系统 MUST 在 `apps/web` 生产构建与真实 HTTP、授权、投影、PostgreSQL 迁移和会话上提供真实 Chromium 验收。导航及骨架引用 `platform/web-shell-interaction-primitives` 当前发布阶段，不重复固定导航数量；仍须验证本能力页面可达、工程切换、权限降级、证据脱敏两态与跨页深链。记录 MUST 包含浏览器版本、命令和失败 trace，关键环境不可用不得以 Mock 或 skip 计作通过。（RI-S61～RI-S65）
 
 #### Scenario: 真实浏览器完成只读链路
 

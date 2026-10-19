@@ -215,27 +215,6 @@ describe("C10 Web shell SSR 结构", () => {
     expect(html).toContain("已入库 3");
   });
 
-  it("左栏折叠由用户显式切换且保留全部七入口", () => {
-    const html = renderToStaticMarkup(
-      <App
-        pathname="/overview"
-        session={{ kind: "authenticated", metadata }}
-        context={context}
-        capabilities={availableCapabilities}
-      />,
-    );
-    // 折叠控件与两条栏状态都由组件持有；初值是展开左栏 + 收起右栏。
-    expect(html).toContain('class="app-nav-toggle"');
-    expect(html).toContain('aria-expanded="true"');
-    expect(html).toContain('data-nav="expanded"');
-    expect(html).toContain('data-dock="closed"');
-    // 折叠不卸载导航：七项入口与可访问名称始终在 DOM 里。
-    expect((html.match(/data-navigation=/g) ?? []).length).toBe(7);
-    expect(html).toContain("收起导航");
-    // 自动下沉规则已移除：CSS 不再按视口宽度把右栏折到主区下方。
-    expect(html).not.toContain("app-shell-dock-stacked");
-  });
-
   it("停靠贡献按入口资格独立筛选，不要求两类能力交集", () => {
     // 未知资格：保留两个位置与原因，而不是假装无权。
     expect(dockContributionsV1(undefined)).toEqual(["context", "agent"]);

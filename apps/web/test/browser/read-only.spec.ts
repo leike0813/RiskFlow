@@ -738,3 +738,40 @@ test("缩小视口时二维表格在自身区域滚动，操作控件不被裁�
   await expect(page).toHaveURL(/\/projects\/documents\/[^/]+/);
   await expect(page.getByText(sourceId, { exact: false }).first()).toBeVisible();
 });
+
+test("工程入口能力随路由与前台更新，同代在途合并且故障可重试", async ({ page }) => {
+  await login(page, server.operatorLogin, `/projects?project=${server.projectId}`);
+  await expect(page.locator('[data-navigation="projects"]')).toHaveAttribute("href", "/projects");
+  let reads = 0;
+  let release: (() => void) | undefined;
+  let failNext = false;
+  await page.route("**/api/v1/projects/*/access", async (route) => {
+    reads += 1;
+    if (failNext) {
+      failNext = false;
+      await route.abort("failed");
+      return;
+    }
+    if (reads === 1) await new Promise<void>((resolve) => (release = resolve));
+    await route.continue();
+  });
+  await page.locator('[data-navigation="knowledge"]').click();
+  await expect.poll(() => reads).toBe(1);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("focus"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  expect(reads).toBe(1);
+  const completed = page.waitForResponse("**/api/v1/projects/*/access");
+  release!();
+  await completed;
+  failNext = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.getByRole("button", { name: "打开停靠区" }).click();
+  const failure = page.locator('[data-dock-state="capability-failed"]');
+  await expect(failure).toBeVisible();
+  await failure.getByRole("button", { name: "重试", exact: true }).click();
+  await expect(failure).toHaveCount(0);
+  expect(reads).toBe(3);
+  await expect(page.locator('[data-navigation="projects"]')).toHaveAttribute("href", "/projects");
+});

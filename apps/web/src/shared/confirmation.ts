@@ -193,7 +193,19 @@ export const finishConfirmation = <TRequest>(
         readonly error: SafeHttpErrorV1;
       },
 ): ConfirmationStateV1<TRequest> => {
-  if (result.kind === "succeeded") return Object.freeze(result);
+  if (result.kind === "succeeded") {
+    if (result.result.kind === "batch-result") {
+      const failures = result.result.items.flatMap((item) =>
+        item.outcome.kind === "failed" ? [item.outcome.error] : [],
+      );
+      const error =
+        failures.find(isConfirmationInvalidationError) ??
+        failures.find((failure) => failure.retryable) ??
+        failures[0];
+      if (error !== undefined) return finishConfirmation(state, { kind: "failed", error });
+    }
+    return Object.freeze(result);
+  }
   if (isConfirmationInvalidationError(result.error))
     return Object.freeze({ kind: "terminal-failure", error: result.error });
   if (state.kind !== "submitting" && state.kind !== "retryable-failure") return state;
@@ -224,12 +236,15 @@ export const invalidateConfirmation = <TRequest>(
   if (scope.kind === "project" && currentScope.kind === "project") {
     return scope.projectId === currentScope.projectId &&
       scope.contextRevision === currentScope.contextRevision &&
+      scope.sessionRef.entityId === currentScope.sessionRef.entityId &&
       scope.sessionRef.versionId === currentScope.sessionRef.versionId
       ? state
       : { kind: "closed" };
   }
   if (scope.kind === "system" && currentScope.kind === "system") {
     return scope.accountRef.entityId === currentScope.accountRef.entityId &&
+      scope.accountRef.versionId === currentScope.accountRef.versionId &&
+      scope.sessionRef.entityId === currentScope.sessionRef.entityId &&
       scope.sessionRef.versionId === currentScope.sessionRef.versionId
       ? state
       : { kind: "closed" };

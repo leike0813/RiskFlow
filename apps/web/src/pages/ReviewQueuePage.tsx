@@ -1,7 +1,10 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { clientError, type PreparedCommandV1 } from "../api/client";
-import type { CommandConfirmationPlanV1 } from "../shared/confirmation";
+import type {
+  CommandConfirmationPlanV1,
+  CommandConfirmationResultV1,
+} from "../shared/confirmation";
 import { Link } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
@@ -68,6 +71,12 @@ export default function ReviewQueuePage() {
   const [statusFilter, setStatusFilter] = useState<string>("全部");
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [outcomes, setOutcomes] = useState<DecisionOutcome[]>([]);
+  const batchResults = useRef(
+    new Map<
+      string,
+      Extract<CommandConfirmationResultV1, { kind: "batch-result" }>["items"][number]
+    >(),
+  );
 
   const { state, retry } = usePageQuery<ReviewQueuePageView>(
     (projectId, signal) =>
@@ -456,14 +465,6 @@ export default function ReviewQueuePage() {
               selectedItems.every(
                 (item) => approveOptionOf(item.reviewTaskRef.reviewType) !== undefined,
               );
-            // CH-2 D-10：批量只冻结所选完整命令数组，逐项按原幂等与事务执行；
-            // 部分失败保留逐项结果，重试只重发失败项的原信封。
-            const batchRequests = batchApprovable
-              ? selectedItems.flatMap((item) => {
-                  const option = approveOptionOf(item.reviewTaskRef.reviewType);
-                  return option === undefined ? [] : [decisionRequest(item, option)];
-                })
-              : [];
             return (
               <Card
                 title="复核任务"
@@ -539,9 +540,14 @@ export default function ReviewQueuePage() {
                       availability={{ kind: "allowed" }}
                       requiredPermission={{ kind: "business", capability: "review-audit.decide" }}
                       scope={scope}
-                      intentRevision={batchRequests.map((r) => r.envelope.commandId).join(",")}
+                      intentRevision={selectedItems.map((item) => taskEntityId(item)).join(",")}
                       createPlan={() => {
                         if (scope === undefined) throw clientError("CONTRACT_INVALID");
+                        batchResults.current.clear();
+                        const batchRequests = selectedItems.flatMap((item) => {
+                          const option = approveOptionOf(item.reviewTaskRef.reviewType);
+                          return option === undefined ? [] : [decisionRequest(item, option)];
+                        });
                         const first = batchRequests[0];
                         if (first === undefined) throw clientError("CONTRACT_INVALID");
                         return {
@@ -569,23 +575,37 @@ export default function ReviewQueuePage() {
                       submit={async (plan) => {
                         const items = [];
                         for (const [index, request] of plan.request.entries()) {
+                          const previous = batchResults.current.get(request.envelope.commandId);
+                          if (
+                            previous !== undefined &&
+                            (previous.outcome.kind === "succeeded" ||
+                              !previous.outcome.error.retryable)
+                          ) {
+                            items.push(previous);
+                            continue;
+                          }
                           const item = selectedItems[index];
                           if (item === undefined) continue;
                           const option = approveOptionOf(item.reviewTaskRef.reviewType);
                           if (option === undefined) continue;
                           try {
-                            await sendReviewTaskDecision(request);
+                            const submitted = await sendReviewTaskDecision(request);
                             items.push({
                               commandId: request.envelope.commandId,
                               outcome: {
                                 kind: "succeeded" as const,
                                 result: {
                                   kind: "reference" as const,
-                                  resultRef: asContractReference(item.reviewTaskRef.targetRef),
+                                  resultRef: asContractReference(submitted.reviewDecisionRef),
                                 },
                               },
                             });
-                            recordOutcome(item, option, true, taskEntityId(item));
+                            recordOutcome(
+                              item,
+                              option,
+                              true,
+                              submitted.reviewDecisionRef.reference.entityId,
+                            );
                           } catch (error) {
                             items.push({
                               commandId: request.envelope.commandId,
@@ -594,17 +614,16 @@ export default function ReviewQueuePage() {
                                 error: safeHttpErrorOf(error),
                               },
                             });
-                            recordOutcome(
-                              item,
-                              option,
-                              false,
-                              error instanceof Error ? error.message : "TERMINAL_FAILURE",
-                            );
+                            recordOutcome(item, option, false, safeHttpErrorOf(error).code);
                           }
                         }
+                        for (const item of items) batchResults.current.set(item.commandId, item);
+                        return { kind: "batch-result", items };
+                      }}
+                      onSucceeded={() => {
+                        batchResults.current.clear();
                         setSelected(new Set());
                         retry();
-                        return { kind: "batch-result", items };
                       }}
                     />
                   ) : (

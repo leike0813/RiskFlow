@@ -515,3 +515,17 @@ HTTP MUST 提供engineering-data.complete-identification-preparation命令，str
 
 - **WHEN** 读取开始前撤权、I/O失败、超限或客户端断连
 - **THEN** 不提供伪成功正文，清理该请求暂存，保留正确错误与原预算
+
+### Requirement: HT-R1 工程入口能力呈现必须与会话及业务授权分离
+
+系统 MUST 通过同源、安全 Cookie 保护的独立只读入口提供 `platform/local-identity-project-authorization` 定义的当前工程能力呈现。请求只能指定工程，不接受 actor、角色、能力、授权上下文或来源集合；响应只含版本、工程、能力枚举与策略引用，不签发授权凭据。原会话自省形状、领域查询、SSE 与管理身份接口保持不变；目标能力呈现未注入时不得以空能力成功或静态角色镜像代替。浏览器只能把结果用于入口呈现，正式请求沿原分支当前授权。（RI-S14；RA-S1～RA-S7）
+
+#### Scenario: HT-S01 Cookie 工程能力请求
+
+- **WHEN** 当前有效工程成员通过合法工程路径读取自身入口能力
+- **THEN** 响应按共享严格 Schema 校验，不含 token、授权上下文或来源权限，原会话自省仍为原形状
+
+#### Scenario: HT-S02 伪造输入及不可用接缝
+
+- **WHEN** 请求试图提供 actor／角色／能力字段、跨工程身份，或能力接缝不可用
+- **THEN** 分别按原边界返回契约错误、授权拒绝或技术不可用，不执行领域查询、不返回假空集合

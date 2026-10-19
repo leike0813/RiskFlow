@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { ContractReferenceV1 } from "@riskflow/contracts/ports";
 
@@ -18,6 +18,10 @@ import {
   intersectOperationAvailability,
   normalizeOpenApiPath,
 } from "../src/api/openapi.js";
+import {
+  prepareCreateSystemAccount,
+  sendAdministrationCommand,
+} from "../src/api/agentAuditOperations.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const resultRef: ContractReferenceV1 = {
@@ -53,6 +57,34 @@ const sessionMetadata = {
 };
 
 describe("C10 C09 HTTP 与 OpenAPI 边界", () => {
+  it("管理命令重试发送完全相同的冻结信封，包括 issuedAt", async () => {
+    const bodies: unknown[] = [];
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      bodies.push(init?.body);
+      return new Response(
+        JSON.stringify({
+          kind: "succeeded",
+          result: { resultRef: { entityId: "account-new", versionId: "1" } },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    try {
+      const request = prepareCreateSystemAccount({
+        loginName: "new-account",
+        displayName: "新账号",
+        password: "Riskflow-Test-2030!",
+      });
+      await sendAdministrationCommand(request);
+      await sendAdministrationCommand(request);
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1]).toBe(bodies[0]);
+      expect(JSON.parse(String(bodies[0])).issuedAt).toBe(request.issuedAt);
+    } finally {
+      fetcher.mockRestore();
+    }
+  });
+
   it("derives only safe method/path availability and intersects registered operations", () => {
     const availability = deriveOpenApiAvailability({
       openapi: "3.1.0",

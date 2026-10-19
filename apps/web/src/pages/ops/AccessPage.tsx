@@ -174,7 +174,8 @@ export default function AccessPage() {
   // --- 命令确认与结果 ---
   // CH-2 D-10：不再有第二套 Intent/acknowledged/submitting/retryIntent 状态机。
   // 唯一确认原语持有计划与提交状态；本组件只保留输入草稿与结果列表。
-  const scope = useSystemConfirmationScope();
+  const sessionScope = useSystemConfirmationScope();
+  const scope = authorized ? sessionScope : undefined;
   // 待确认的管理意图：只带目标与版本，口令不在其中（口令只在冻结请求快照里）。
   const [pendingIntent, setPendingIntent] = useState<Intent | null>(null);
   const [outcomes, setOutcomes] = useState<
@@ -342,7 +343,11 @@ export default function AccessPage() {
                                 <input
                                   id="access-login-name"
                                   value={loginName}
-                                  onChange={(event) => setLoginName(event.target.value)}
+                                  onChange={(event) => {
+                                    setLoginName(event.target.value);
+                                    setPendingIntent(null);
+                                    releaseSecrets();
+                                  }}
                                 />
                               </div>
                               <div className="op-form-field">
@@ -350,7 +355,11 @@ export default function AccessPage() {
                                 <input
                                   id="access-display-name"
                                   value={displayName}
-                                  onChange={(event) => setDisplayName(event.target.value)}
+                                  onChange={(event) => {
+                                    setDisplayName(event.target.value);
+                                    setPendingIntent(null);
+                                    releaseSecrets();
+                                  }}
                                 />
                               </div>
                               <div className="op-form-field">
@@ -360,7 +369,10 @@ export default function AccessPage() {
                                   type="password"
                                   autoComplete="new-password"
                                   value={password}
-                                  onChange={(event) => setPassword(event.target.value)}
+                                  onChange={(event) => {
+                                    setPassword(event.target.value);
+                                    setPendingIntent(null);
+                                  }}
                                 />
                               </div>
                               <button
@@ -441,9 +453,10 @@ export default function AccessPage() {
                                                 type="password"
                                                 autoComplete="new-password"
                                                 value={password}
-                                                onChange={(event) =>
-                                                  setPassword(event.target.value)
-                                                }
+                                                onChange={(event) => {
+                                                  setPassword(event.target.value);
+                                                  setPendingIntent(null);
+                                                }}
                                               />
                                             </div>
                                             <button
@@ -998,7 +1011,19 @@ export default function AccessPage() {
                   }}
                   requiredPermission={{ kind: "system", action: pendingIntent.action }}
                   scope={scope}
-                  intentRevision={`${pendingIntent.action}|${pendingIntent.target}`}
+                  intentRevision={JSON.stringify([
+                    pendingIntent.commandId,
+                    loginName,
+                    displayName,
+                    newProjectId,
+                    initialRiskManagerAccountId,
+                    selectedProjectId,
+                    selectedMembershipKey,
+                    draftRoles,
+                    draftScopes,
+                    draftStatus,
+                    resetAccountId,
+                  ])}
                   createPlan={() => administrationPlan(pendingIntent)}
                   submit={async (plan) => {
                     const result = await sendAdministrationCommand(plan.request);
@@ -1014,6 +1039,10 @@ export default function AccessPage() {
                     };
                   }}
                   onSucceeded={administrationSucceeded(pendingIntent)}
+                  onClosed={() => {
+                    releaseSecrets();
+                    setPendingIntent(null);
+                  }}
                 />
               )}
             </>

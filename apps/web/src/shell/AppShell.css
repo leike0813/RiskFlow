@@ -51,7 +51,8 @@ button[disabled] {
   display: grid;
   /* CH-2 D-02：直接消费生产尺寸令牌；右栏关闭时由组件移除该列占位。 */
   grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--dock-width);
-  min-height: 100vh;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100dvh;
 }
 
 .app-shell[data-nav="compact"] {
@@ -68,6 +69,7 @@ button[disabled] {
 
 .app-header {
   grid-column: 1 / -1;
+  grid-row: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -76,6 +78,19 @@ button[disabled] {
   padding: 0.75rem 1rem;
   color: #fff;
   background: var(--topbar-bg);
+}
+
+.app-shell[data-dock="closed"] .app-header-meta {
+  margin-right: 8rem;
+}
+
+.app-header button,
+.right-dock[data-panel="closed"] > button {
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.5rem;
 }
 
 .app-header-title {
@@ -90,6 +105,10 @@ button[disabled] {
 }
 
 .app-nav {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
   padding: 1rem 0.75rem;
   overflow-y: auto;
   border-right: 1px solid var(--border);
@@ -143,6 +162,9 @@ button[disabled] {
 }
 
 .app-main {
+  grid-column: 2;
+  grid-row: 2;
+  min-height: 0;
   min-width: 0;
   padding: 1.25rem;
   overflow-y: auto;
@@ -188,10 +210,25 @@ button[disabled] {
 }
 
 .right-dock {
+  grid-column: 3;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
   padding: 1rem;
   overflow-y: auto;
   border-left: 1px solid var(--border);
   background: var(--card);
+}
+
+.right-dock[data-panel="closed"] {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  justify-self: end;
+  padding: 0.5rem;
+  margin-right: 0.5rem;
+  border: 0;
+  background: transparent;
 }
 
 /* CH-2 D-03：有序区域块只是呈现结构，宽度可收缩并允许内部折行。 */

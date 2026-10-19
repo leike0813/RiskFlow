@@ -376,6 +376,38 @@ test("确认对话框：焦点移入取消、Tab 环绕、Escape 归还焦点，
   expect(decideCalls).toEqual([]);
 });
 
+test("reviewer 无 Agent 权时仍能打开精确复核和原决定确认", async ({ page }) => {
+  await server.setViewerMembershipStatus("active", ["reviewer"]);
+  let agentReads = 0;
+  page.on("request", (request) => {
+    if (request.url().includes("/queries/agent-task.read")) agentReads += 1;
+  });
+  try {
+    const accessRead = page.waitForResponse("**/api/v1/projects/*/access");
+    await loginViewer(page, withProject("/review"));
+    const presentation = await (await accessRead).json();
+    expect(presentation.capabilities).toContain("review-audit.decide");
+    expect(presentation.capabilities).not.toContain("agent-task.read");
+    const row = page.locator("tr", { hasText: audit().reviewTask.entityId });
+    await row.getByRole("button", { name: "通过", exact: true }).click();
+    await expect(page.getByRole("dialog").getByRole("button", { name: "确认提交" })).toBeEnabled();
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "打开停靠区" }).click();
+    await expect(page.getByRole("tab", { name: "Agent", exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "关闭停靠区" }).click();
+    await row.getByRole("link", { name: "详情", exact: true }).click();
+    await expect(page).toHaveURL(
+      (url) =>
+        url.pathname === `/review-audit/tasks/${encodeURIComponent(audit().reviewTask.entityId)}` &&
+        url.searchParams.get("version") === audit().reviewTask.versionId,
+    );
+    await expect(page.locator("main").getByText(audit().reviewTask.entityId).first()).toBeVisible();
+    expect(agentReads).toBe(0);
+  } finally {
+    await server.setViewerMembershipStatus("active");
+  }
+});
+
 test("识别分组复核：按类型呈现分支、不自造候选，决定经队列落库后可见", async ({ page }) => {
   await loginOperator(
     page,
@@ -713,6 +745,27 @@ test("运维读取面按真实事实呈现：健康给出组件状态与缺席�
     expect(item.baseUrl).toBeUndefined();
     expect(item.modelAlias).toBeUndefined();
   }
+});
+
+test("系统管理确认取消释放口令且不产生写请求", async ({ page }) => {
+  await loginAdministrator(page, "/ops/access");
+  const commands: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/v1/administration/commands"))
+      commands.push(request.postData() ?? "");
+  });
+  await page.getByLabel("登录名", { exact: true }).fill("cancelled-confirmation");
+  await page.getByLabel("姓名", { exact: true }).fill("取消确认");
+  await page.getByLabel("初始口令", { exact: true }).fill("Riskflow-Cancel-2030!");
+  await page.getByRole("button", { name: "创建账号", exact: true }).click();
+  await page.getByRole("button", { name: "确认创建账号", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).not.toContainText("Riskflow-Cancel-2030!");
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByLabel("初始口令", { exact: true })).toHaveValue("");
+  expect(commands).toEqual([]);
 });
 
 test("六项系统管理动作在系统管理员会话里逐项真实执行并回到目录核对", async ({ page }) => {

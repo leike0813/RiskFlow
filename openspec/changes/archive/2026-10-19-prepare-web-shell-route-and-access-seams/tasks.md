@@ -34,7 +34,8 @@
 ## 7. 合流验证与最终验收
 
 - [x] 7.1 [IP-07] 完成后统一运行施工图 C-01～C-04 相关回归、`pnpm build`、`pnpm typecheck && pnpm lint && pnpm format:check && pnpm deps:check && pnpm deps:policy` 及 `openspec validate prepare-web-shell-route-and-access-seams --strict --no-interactive`；删除脆弱文案／枚举计数测试，记录真实失败及修复，不降低门禁。
-- [ ] 7.2 [IP-07]（原生缩放取证 BLOCKED，其余已通过）运行施工图 C-06 五份正式 Playwright 规格，使用真实 HTTP／PostgreSQL／Cookie／生产构建覆盖当前权限、原件来源、旧策略、深链、取消／重试／部分失败；按施工图原生三窗口×两缩放完成左右折叠与确认焦点取证；环境缺失明确失败，不以关键 skip／原型或旧截图通过。
-  - C-06 五份规格已用真实 HTTP／PostgreSQL／Cookie／生产构建全绿：read-only 22、identification-review 14、assessment-warning-response 40、agent-audit-operations 13、quality 8。
-  - 原生三窗口×两缩放取证未完成并按 BLOCKED 记录：本机 Xvfb 无窗口管理器，xdotool 的 XTEST 键盘与 CDP `Input.dispatchKeyEvent` 都无法送达 Chromium（探针实测输入框收不到按键、窗口 innerWidth 恒为 1050），因此无法产生真实 Ctrl+plus 的 200%。已交付 `apps/web/test/browser/native-zoom.mjs`：它用 CDP `Browser.setWindowBounds` 设真实外窗口、用原生缩放键、并逐项断言折叠、焦点、取消与实际滚动，缺少可用显示环境时以 `NATIVE_ZOOM_FAILED` 非零退出，不退化为 viewport 近似，也不写入伪造证据。
-- [ ] 7.3 [IP-07] Finalizer 对最终实现检查点闭合全部 Requirement／Scenario／IP 证据，完成本轮唯一 AUTHZ／POLICY-HISTORY／CONFIRMATION-STATE 限定审计及范围内修复回归，再按 `openspec instructions verification --change prepare-web-shell-route-and-access-seams --json` 创建 verification；完成检查：最终报告对应真实检查点、每项证据可复核、无未解决必需场景。Planning 不执行或预填该任务。
+- [x] 7.2 [IP-07] 运行施工图 C-06 五份正式 Playwright 规格，使用真实 HTTP／PostgreSQL／Cookie／生产构建覆盖当前权限、原件来源、旧策略、深链、取消／重试／部分失败；按施工图原生三窗口×两缩放完成左右折叠与确认焦点取证；环境缺失明确失败，不以关键 skip／原型或旧截图通过。
+  - 最终 C-06：100/100 通过，无跳过；read-only 23、identification-review 14、assessment-warning-response 40、agent-audit-operations 15、quality 8。包含真实 reviewer 无 Agent 读取仍可打开精确复核与决定确认、批量只重试失败项原信封、管理取消清口令及入口能力路由／前台刷新。
+  - 原生六组合全部通过，Chromium 153.0.8010.12；独立 Xvfb、唯一窗口 class、真实外窗口与原生 Ctrl+0／Ctrl+plus，200% 实测 DPR=2。所有组合均完成折叠、键盘页签、取消零写、传输失败错误及焦点恢复；只在实际溢出时记录横向滚动。证据见 `evidence/native-zoom.json` 和同名目录；CDP 无 CSS clip 的截图保留完整可视区域。
+  - 验收期间的三项注销回归失败已修复并通过最终整组回归；失败 trace／截图保存在 `evidence/browser-failures/`，原因及修复见 verification。
+- [x] 7.3 [IP-07] Finalizer 对最终实现检查点闭合全部 Requirement／Scenario／IP 证据，完成本轮唯一 AUTHZ／POLICY-HISTORY／CONFIRMATION-STATE 限定审计及范围内修复回归，再按 `openspec instructions verification --change prepare-web-shell-route-and-access-seams --json` 创建 verification；完成检查：最终报告对应真实检查点、每项证据可复核、无未解决必需场景。Planning 不执行或预填该任务。

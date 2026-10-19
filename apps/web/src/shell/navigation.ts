@@ -74,5 +74,3 @@ export const navigationPermission = (
   if (capabilities === undefined) return "unknown";
   return capabilities.includes(item.requiredCapability) ? "allowed" : "denied";
 };
-
-export const hasExactlySevenBusinessNavigation = (): boolean => WEB_NAVIGATION_V1.length === 7;

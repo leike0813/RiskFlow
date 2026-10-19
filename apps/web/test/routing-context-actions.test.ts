@@ -22,11 +22,7 @@ import {
   invokeWebAction,
   type WebActionV1,
 } from "../src/shared/actions.js";
-import {
-  hasExactlySevenBusinessNavigation,
-  navigationPermission,
-  WEB_NAVIGATION_V1,
-} from "../src/shell/navigation.js";
+import { navigationPermission, WEB_NAVIGATION_V1 } from "../src/shell/navigation.js";
 
 const scope: SpatialScopeRefV1 = {
   kind: "spatial-scope",
@@ -34,23 +30,17 @@ const scope: SpatialScopeRefV1 = {
 };
 
 describe("C10 路由、上下文与动作原语", () => {
-  it("keeps seven fixed navigation entries and rejects unsafe paths", () => {
-    expect(hasExactlySevenBusinessNavigation()).toBe(true);
-    expect(WEB_NAVIGATION_V1.map((item) => item.id)).toEqual([
-      "overview",
-      "projects",
-      "identification",
-      "assessment",
-      "warnings",
-      "knowledge",
-      "reviews",
-    ]);
+  it("keeps navigation roots reachable and rejects unsafe paths", () => {
     expect(WEB_NAVIGATION_V1.map((item) => item.path)).toEqual(
       BASE_WEB_ROUTE_CONTRIBUTIONS_V1.filter((item) => item.section !== null).map(
         (item) => item.path,
       ),
     );
     expect(resolveWebRoute("/")).toEqual({ kind: "redirect", from: "/", to: "/overview" });
+    expect(resolveWebRoute("/?project=p1&revision=p1%40r1")).toMatchObject({
+      kind: "redirect",
+      to: "/overview?project=p1&revision=p1%40r1",
+    });
     expect(resolveWebRoute("/overview?source=history").kind).toBe("matched");
     expect(resolveWebRoute("/unknown").kind).toBe("not-found");
     expect(resolveWebRoute("/overview/%2F").kind).toBe("not-found");
@@ -63,7 +53,7 @@ describe("C10 路由、上下文与动作原语", () => {
       path: "/projects/:projectId",
       title: "项目详情",
       section: "projects",
-      regions: [{ kind: "detail" }],
+      regions: [{ key: "detail", kind: "detail" }],
       contextRequirement: "project",
       requiredViewCapability: "engineering-data.read",
       render: () => null,
@@ -274,7 +264,7 @@ describe("C37 旧前缀别名与质量子路径", () => {
         path: "/projects/documents/:docId",
         title: "资料",
         section: "projects",
-        regions: [{ kind: "detail" }],
+        regions: [{ key: "detail", kind: "detail" }],
         contextRequirement: "project",
         requiredViewCapability: null,
         render: null,
@@ -303,14 +293,14 @@ describe("C37 旧前缀别名与质量子路径", () => {
     expect(resolveWebRoute("/projects").kind).toBe("matched");
   });
 
-  it("质量入口在 /assessment/quality，七项导航数量不变", () => {
+  it("质量入口在 /assessment/quality，评估根路由仍可达", () => {
     const registry = createWebRouteRegistry([
       {
         routeId: "assessment.quality",
         path: "/assessment/quality",
         title: "质量评估",
         section: "assessment",
-        regions: [{ kind: "list" }],
+        regions: [{ key: "list", kind: "list" }],
         contextRequirement: "project",
         requiredViewCapability: null,
         render: null,
@@ -321,9 +311,13 @@ describe("C37 旧前缀别名与质量子路径", () => {
     if (resolution.kind === "matched") {
       expect(resolution.route.routeId).toBe("assessment.quality");
     }
+    expect(
+      resolveWebRoute("/assessment/quality-evaluation?project=p1&version=r1", registry),
+    ).toMatchObject({
+      kind: "redirect",
+      to: "/assessment/quality?project=p1&version=r1",
+    });
     // /assessment 仍是 section 根，质量页不占用它。
     expect(resolveWebRoute("/assessment", registry).kind).toBe("matched");
-    expect(WEB_NAVIGATION_V1).toHaveLength(7);
-    expect(hasExactlySevenBusinessNavigation(WEB_NAVIGATION_V1)).toBe(true);
   });
 });

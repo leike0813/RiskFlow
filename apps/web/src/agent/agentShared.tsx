@@ -408,6 +408,7 @@ export function AgentLaunchPanel({
   readonly launchContext?: AgentLaunchContextView;
   readonly onStarted: () => void;
 }) {
+  const scope = useProjectConfirmationScope();
   if (launchContext === undefined) return <AgentEmpty>正在读取启动上下文…</AgentEmpty>;
   if (!launchContext.supported) {
     return (
@@ -420,7 +421,6 @@ export function AgentLaunchPanel({
     );
   }
   const payload = launchContext.payload ?? {};
-  const scope = useProjectConfirmationScope();
   return (
     <div className="ag-launch">
       <ConfirmButton

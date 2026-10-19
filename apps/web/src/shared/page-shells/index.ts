@@ -1,7 +1,7 @@
 export { DetailPageShell } from "./DetailPageShell.js";
 export { GovernancePageShell } from "./GovernancePageShell.js";
 export { ListPageShell } from "./ListPageShell.js";
-export { PageFrame, safeErrorFields } from "./PageFrame.js";
+export { PageFrame, PageRegions, safeErrorFields } from "./PageFrame.js";
 export { ReviewWorkbenchShell } from "./ReviewWorkbenchShell.js";
 export { RunPageShell } from "./RunPageShell.js";
 export type { DetailPageShellPropsV1 } from "./DetailPageShell.js";

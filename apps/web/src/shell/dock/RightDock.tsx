@@ -175,6 +175,12 @@ export const RightDock = ({
     previousPanel.current = allowedPanel;
   }, [allowedPanel]);
   useEffect(() => {
+    if (panel !== allowedPanel) {
+      setPanel(allowedPanel);
+      onPanelChange?.(allowedPanel);
+    }
+  }, [panel, allowedPanel, onPanelChange]);
+  useEffect(() => {
     if (staleEvidence && allowedPanel === "context") {
       setPanel("closed");
       onPanelChange?.("closed");

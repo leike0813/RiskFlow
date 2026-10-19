@@ -124,15 +124,15 @@ C-02／06 需已有容器运行环境、真实 PostgreSQL／Chromium；环境缺
 | IP-03 | 修改 | `apps/web/src/shared/page-shells/{PageFrame,ListPageShell,DetailPageShell,RunPageShell,GovernancePageShell,ReviewWorkbenchShell}.tsx`；`apps/web/src/shared/page-shells/index.ts`；`apps/web/src/index.ts` | descriptor/content 组合、五单区便利组件与 exports 一次 cutover |
 | IP-03／04 | 修改 | `apps/web/src/theme/global.css`；`apps/web/src/shell/{navigation.ts,AppShell.tsx,AppShell.css}`；`apps/web/src/shell/dock/RightDock.tsx`；`apps/web/src/agent/{AgentTaskProvider,AgentDock}.tsx` | 区域／折叠样式、贡献列表与资格；仅修改实际需要段落，不重写全样式 |
 | IP-03／04／07 | 修改 | `apps/web/test/{business-routes.test.ts,ssr-shells.test.tsx,quality.test.tsx,focus.test.ts}` | 精确路由、区域七态、实际焦点与独立贡献授权 |
-| IP-05 | 修改 | `apps/web/src/shared/{actions.ts,confirmation.ts,CommandConfirmationDialog.tsx}`；`apps/web/src/components/{ConfirmButton.tsx,ConfirmButton.css}`；`apps/web/src/index.ts` | 统一权限／控制器、触发组合；删除本地重复状态和 overlay 样式 |
+| IP-05 | 修改 | `apps/web/src/shared/{actions.ts,confirmation.ts,CommandConfirmationDialog.tsx}`；`apps/web/src/components/{ConfirmButton.tsx,ConfirmButton.css}`；`apps/web/src/index.ts` | 统一权限／控制器、触发组合与释放口令所需的可选 onClosed 通知；删除本地重复状态和 overlay 样式 |
 | IP-05 | 新增 | `apps/web/src/shared/CommandConfirmationDialog.css` | 唯一 Dialog 令牌、错误与缩放样式；不加独立 UI 库 |
 | IP-05／07 | 修改 | `apps/web/test/{confirmation.test.ts,design-system.test.tsx,routing-context-actions.test.ts,ssr-shells.test.tsx}` | 嵌套快照／迟到／失效／高影响／system／hidden 的稳定行为 |
 | IP-06 | 修改 | `apps/web/src/api/{client,operations,agentAuditOperations}.ts`；`apps/web/src/agent/agentShared.tsx` | prepare/send 协议、原结果 decoder 和 Agent 真实启动迁移，旧全局 frozenCommands／无消费者导出删除 |
 | IP-06 | 修改 | `apps/web/src/pages/{AssessmentRunPage,CalibrationDetailPage,ExecutionRegisterPage,RecommendationDetailPage,ReviewDetailPage,ReviewQueuePage,StartAssessmentPage,WarningDetailPage}.tsx` | 原写入口全部消费冻结计划，不更换领域语义或正文布局 |
 | IP-06 | 修改 | `apps/web/src/pages/ops/{AccessPage.tsx,ops.css}` | 六项真实管理确认迁移，删 Intent／retryIntent／内联确认与其孤立样式；普通输入／目录保持 |
-| IP-07 | 修改 | `apps/web/test/browser/{read-only,identification-review,assessment-warning-response,agent-audit-operations,quality}.spec.ts` | 正式浏览器行为回归；删除旧文字／CSS／骨架精确数量测试，不改为新文案快照 |
+| IP-07 | 修改 | `apps/web/test/browser/{read-only,identification-review,assessment-warning-response,agent-audit-operations,quality}.spec.ts`；既有 `apps/web/test/browser/native-zoom.mjs` | 正式浏览器行为回归与原生缩放取证；删除旧文字／CSS／骨架精确数量测试，不改为新文案快照 |
 | IP-07 | 修改 | 本 change 的 `proposal.md`、`design.md`、`implementation-plan.md`、`tasks.md` 与 `specs/**/*.md` | 仅按已批准语义修正事实／完成状态；新增语义先升级 |
-| IP-07 | 实现后新增 | 本 change `verification.md`、`evidence/native-zoom.json`、`evidence/native-zoom/*` | Finalizer 最终证据、一次限定审计及原生交互取证；Planning 不预建 |
+| IP-07 | 实现后新增 | 本 change `verification.md`、`evidence/native-zoom.json`、`evidence/native-zoom/*`、`evidence/browser-failures/*` | Finalizer 最终证据、一次限定审计、原生交互取证及验收失败 trace／截图；Planning 不预建 |
 
 **受保护且不改：** `apps/web/src/components/AppShell.tsx`、`apps/web/src/components/EvidenceDrawer.tsx`、`apps/web/src/pages/ReportExportPage.tsx`、`apps/web/src/theme/tokens.css`、AgentProposalPanel 的只读语义、所有 `demo/**`、已归档 CH-1 工件／证据、领域评分／预算／状态机、迁移目录、依赖与锁文件、`apps/desktop/**`、研究资料和编排执行图。原组件里的可见标题／注释不为本次机械重排。
 

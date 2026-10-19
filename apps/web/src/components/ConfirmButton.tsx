@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { UNSAFE_LocationContext } from "react-router-dom";
 
 import { useEngineering } from "../api/engineering.js";
 import { useSession } from "../api/session.js";
@@ -25,11 +26,12 @@ export type ConfirmButtonPropsV1<TRequest> = Readonly<{
   createPlan: () => CommandConfirmationPlanV1<TRequest>;
   /** 提交只消费冻结计划，不再读取页面输入或重新生成命令身份。 */
   submit: (plan: CommandConfirmationPlanV1<TRequest>) => Promise<CommandConfirmationResultV1>;
-  /** 当前作用域；pathname 与 intentRevision 变化由调用方更新。 */
+  /** 当前作用域；路由和输入变化分别使旧计划失效。 */
   scope: CommandConfirmationScopeV1 | undefined;
   /** 调用方在输入变化时更新，使旧计划失效并要求重新确认。 */
   intentRevision: string;
   onSucceeded?: (result: CommandConfirmationResultV1) => void;
+  onClosed?: () => void;
 }>;
 
 /**
@@ -49,17 +51,32 @@ export function ConfirmButton<TRequest>({
   scope,
   intentRevision,
   onSucceeded,
+  onClosed,
 }: ConfirmButtonPropsV1<TRequest>) {
   const [controller] = useState(() => createConfirmationController<TRequest>());
   const [state, setState] = useState<ConfirmationStateV1<TRequest>>(() => controller.getState());
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const sync = useCallback(() => setState(controller.getState()), [controller]);
+  const location = useContext(UNSAFE_LocationContext);
+  const pathname = location?.location.pathname;
+  const onClosedRef = useRef(onClosed);
+  onClosedRef.current = onClosed;
+  const previousKind = useRef(state.kind);
+  const sync = useCallback(() => {
+    const next = controller.getState();
+    if (next.kind === "closed" && previousKind.current !== "closed") onClosedRef.current?.();
+    previousKind.current = next.kind;
+    setState(next);
+  }, [controller]);
 
   // 作用域或调用方输入变化即失效：旧计划不能再提交，也不能再重试。
   useEffect(() => {
-    controller.invalidate(scope);
+    controller.invalidate(availability.kind === "allowed" ? scope : undefined);
     sync();
-  }, [controller, scope, intentRevision, sync]);
+  }, [controller, scope, availability.kind, sync]);
+  useEffect(() => {
+    controller.invalidate(undefined);
+    sync();
+  }, [controller, intentRevision, pathname, sync]);
   useEffect(() => () => controller.invalidate(undefined), [controller]);
 
   if (availability.kind === "hidden") return null;

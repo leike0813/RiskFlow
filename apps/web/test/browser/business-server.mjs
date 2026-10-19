@@ -5009,7 +5009,7 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
      * 成员修订号由 C06 自己递增，这里不猜版本。
      */
     let viewerMembershipVersion = "1";
-    const setViewerMembershipStatus = async (status) => {
+    const setViewerMembershipStatus = async (status, roles = ["business-viewer"]) => {
       const result = await access.administerProject({
         kind: "revise-membership",
         projectId: PROJECT_ID,
@@ -5022,7 +5022,7 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
         authorizationContextRef: administratorContextRef,
         membershipId: VIEWER_MEMBERSHIP_ID,
         accountId: viewer.resultRef.entityId,
-        roles: ["business-viewer"],
+        roles,
         spatialScopeRefs: [spatialScopeRef],
         status,
       });

@@ -486,8 +486,21 @@ test("复核决定：通过、拒绝、批量通过与重复提交幂等", async
   await expect(batchDialog.getByRole("button", { name: "确认提交" })).toBeDisabled();
   await batchAcknowledge.check();
   await expect(batchDialog.getByRole("button", { name: "确认提交" })).toBeEnabled();
+  const batchAttempts: string[] = [];
+  const branchPath = "**/commands/review-audit.decide-review";
+  await page.route(branchPath, async (route) => {
+    batchAttempts.push(route.request().postData() ?? "");
+    if (batchAttempts.length === 2) await route.abort();
+    else await route.continue();
+  });
   await batchDialog.getByRole("button", { name: "确认提交" }).click();
+  await expect(batchDialog.getByRole("button", { name: "重试", exact: true })).toBeVisible();
+  expect(batchAttempts).toHaveLength(2);
+  await batchDialog.getByRole("button", { name: "重试", exact: true }).click();
   await closeConfirmationDialog(page);
+  expect(batchAttempts).toHaveLength(3);
+  expect(batchAttempts[2]).toBe(batchAttempts[1]);
+  await page.unroute(branchPath);
   for (const task of ids().batchTasks) {
     await expect(
       page

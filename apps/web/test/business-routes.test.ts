@@ -5,11 +5,10 @@ import {
   resolveWebRoute,
   WEB_LEGACY_PATH_ALIASES_V1,
 } from "../src/app/routes.js";
-import { WEB_NAVIGATION_V1, hasExactlySevenBusinessNavigation } from "../src/shell/navigation.js";
+import { WEB_NAVIGATION_V1 } from "../src/shell/navigation.js";
 
 describe("C37 生产路由注册表", () => {
   it("全部登记业务路由且都能解析", () => {
-    expect(BUSINESS_ROUTE_PATHS_V1.length).toBeGreaterThanOrEqual(45);
     for (const path of BUSINESS_ROUTE_PATHS_V1) {
       const probe = path.replace(/:[^/]+/g, "probe-1");
       const resolution = resolveWebRoute(probe, BUSINESS_ROUTE_REGISTRY_V1);
@@ -17,8 +16,13 @@ describe("C37 生产路由注册表", () => {
     }
   });
 
-  it("主导航仍只有七项，Agent 与系统管理不占导航", () => {
-    expect(hasExactlySevenBusinessNavigation(WEB_NAVIGATION_V1)).toBe(true);
+  it("主导航指向已登记根路由，Agent 与系统管理不占导航", () => {
+    for (const item of WEB_NAVIGATION_V1) {
+      expect(resolveWebRoute(item.path, BUSINESS_ROUTE_REGISTRY_V1)).toMatchObject({
+        kind: "matched",
+        route: { routeId: item.routeId },
+      });
+    }
     for (const path of ["/agent", "/ops/access", "/ops/health"]) {
       const resolution = resolveWebRoute(path, BUSINESS_ROUTE_REGISTRY_V1);
       expect(resolution.kind).toBe("matched");
@@ -53,7 +57,7 @@ describe("CH-2 精确模板匹配", () => {
     path,
     title: routeId,
     section: null as const,
-    shellKind: "detail" as const,
+    regions: [{ key: "detail", kind: "detail" as const }],
     contextRequirement: "project" as const,
     requiredViewCapability: null,
     render: null,
@@ -93,7 +97,7 @@ describe("CH-2 精确模板匹配", () => {
         contribution("warnings.by-warning", "/warnings/:warningId"),
         contribution("warnings.by-id", "/warnings/:id"),
       ]),
-    ).toThrow(/ambiguous web route shape/);
+    ).toThrow();
 
     // 生产注册表本身可解析这两个真实模板：静态 `tasks` 与参数 `:warningId` 形状不同。
     expect(

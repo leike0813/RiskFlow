@@ -104,7 +104,7 @@ RightDock 复用原状态与渲染，改为有序且按入口资格筛选的贡�
 
 采用已存在 `createConfirmationController` 和 `CommandConfirmationDialog`，不在每个调用处复制控制器，也不新增全局命令中心。`ConfirmButton` 保留为真实“触发按钮＋现有控制器＋唯一 Dialog”组合组件，删除其本地确认／提交／错误／焦点状态及重复四值 availability 类型。**接口一次切换**，不保留 summary/resetKey/onConfirm 旧协议：
 
-- props：`label`、可选 `tone`、`availability: WebActionAvailabilityV1`、`createPlan(): CommandConfirmationPlanV1<TRequest>`、`submit(plan): Promise<CommandConfirmationResultV1>`、`scope`（当前 project 或 system）、`intentRevision`（调用方在输入变更时更新）、可选 `onSucceeded(result)`。
+- props：`label`、可选 `tone`、`availability: WebActionAvailabilityV1`、`createPlan(): CommandConfirmationPlanV1<TRequest>`、`submit(plan): Promise<CommandConfirmationResultV1>`、`scope`（当前 project 或 system）、`intentRevision`（调用方在输入变更时更新）、可选 `onSucceeded(result)` 与 `onClosed()`；后者仅通知所属页面释放关闭／失效计划关联的口令输入，不拥有命令状态。
 - 点击仅在 allowed 时构造计划一次；计划保存原完整传输信封。scope、当前 pathname 和 intentRevision 变化使计划失效。组件仅桥接 React 刷新，控制器仍是唯一状态机。
 - `CommandConfirmationPlanV1` 删除独立必填 projectId（与 scope 重复且会让系统管理伪造工程）；scope 为 `{kind:'project',projectId,contextRevision,sessionRef}` 或 `{kind:'system',accountRef,sessionRef}`，引用均使用原 VersionReference。project/contextRevision 从既有 useEngineering.context 取，session/account 从 useSession.metadata 取，checking／匿名／受限时 scope 无效；system 还要求原 readSystemIdentity.isSystemAdministrator。未选择工程不影响 system scope，不伪造服务端管理授权引用。
 - `invalidateConfirmation` 和 controller.invalidate 一次改为只接受 `currentScope: CommandConfirmationScopeV1 | undefined` 并比较相应判别字段；pathname／intentRevision 变化由触发组件取消未提交计划或明确失效在途计划，不再重复传 context 与 project 摘要。不新增会话／工程 Provider，也不生成第二套认证代次。

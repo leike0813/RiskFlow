@@ -184,6 +184,82 @@ describe("C37 project/system 确认作用域", () => {
     expect(invalidateConfirmation(opened, systemScope()).kind).toBe("closed");
   });
 
+  it("会话标识和账号安全修订变化使确认失效，即使其它修订相同", () => {
+    const project = plan();
+    const opened = openConfirmation(project, { kind: "allowed" });
+    expect(
+      invalidateConfirmation(opened, {
+        ...project.scope,
+        sessionRef: { entityId: "session-2", versionId: "1" },
+      }).kind,
+    ).toBe("closed");
+    const system = systemPlan();
+    const systemOpened = openConfirmation(system, { kind: "allowed" });
+    expect(
+      invalidateConfirmation(systemOpened, {
+        ...system.scope,
+        sessionRef: { entityId: "session-2", versionId: "4" },
+      }).kind,
+    ).toBe("closed");
+    expect(
+      invalidateConfirmation(systemOpened, {
+        ...system.scope,
+        accountRef: { entityId: "account-admin", versionId: "4" },
+      }).kind,
+    ).toBe("closed");
+  });
+
+  it("批量部分失败保留原计划，重试完成前不宣称整批成功", async () => {
+    const current = plan();
+    const controller = createConfirmationController();
+    controller.open(current, { kind: "allowed" });
+    const error = makeSafeHttpError({ code: "TRANSIENT_FAILURE", retryable: true });
+    expect(
+      await controller.confirm(async () => ({
+        kind: "batch-result",
+        items: [
+          { commandId: "done", outcome: { kind: "succeeded", result: success() } },
+          { commandId: "retry", outcome: { kind: "failed", error } },
+        ],
+      })),
+    ).toBe(false);
+    expect(controller.getState().kind).toBe("retryable-failure");
+    expect(
+      await controller.retry(async (retried) => {
+        expect(retried.commandId).toBe(current.commandId);
+        return {
+          kind: "batch-result",
+          items: [
+            { commandId: "done", outcome: { kind: "succeeded", result: success() } },
+            { commandId: "retry", outcome: { kind: "succeeded", result: success("second") } },
+          ],
+        };
+      }),
+    ).toBe(true);
+  });
+
+  it.each(["STALE_VERSION", "IDEMPOTENCY_CONFLICT"] as const)(
+    "批量中的 %s 优先于暂时失败并终止原计划",
+    async (code) => {
+      const controller = createConfirmationController();
+      controller.open(plan(), { kind: "allowed" });
+      await controller.confirm(async () => ({
+        kind: "batch-result",
+        items: [
+          {
+            commandId: "transient",
+            outcome: {
+              kind: "failed",
+              error: makeSafeHttpError({ code: "TRANSIENT_FAILURE", retryable: true }),
+            },
+          },
+          { commandId: "stale", outcome: { kind: "failed", error: makeSafeHttpError({ code }) } },
+        ],
+      }));
+      expect(controller.getState()).toMatchObject({ kind: "terminal-failure", error: { code } });
+    },
+  );
+
   it("retryable-failure 同样参加失效，旧计划不得在上下文已变后重试", () => {
     const planValue = plan();
     const controller = createConfirmationController<typeof planValue>();

@@ -167,6 +167,7 @@ import {
   WorkflowGraphArtifactBodyV1Schema,
   WorkflowGraphResultRowV1Schema,
 } from "../../../../packages/core/dist/workflow/index.js";
+import { createRiskDashboardReadService } from "../../../../packages/core/dist/risk-dashboard/index.js";
 import { StandardizedRiskRecordEnvelopeSchema } from "../../../../packages/contracts/dist/records/index.js";
 import { IdentificationInputSnapshotV1Schema } from "../../../../packages/contracts/dist/workflows/index.js";
 
@@ -4898,6 +4899,64 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
       },
     };
 
+    const engineeringDataCatalog = createPostgresEngineeringDataCatalogAdapter({
+      db: appRuntime.db,
+      access,
+      artifactStore,
+      resolvers: {
+        resolveReadQuery: (query, options) => registry.resolveReadQuery(query, options),
+        resolveSnapshotQuery: (query, options) =>
+          monitoringStore.resolveSnapshotQuery(query, options),
+      },
+    });
+
+    /**
+     * CH-3 来源故障注入：只让指定来源的窄读失败，其余来源仍走真实 Adapter。
+     * 故障在组合层之外注入，因此浏览器观察到的是正式 dashboard HTTP 的真实失败闭合，
+     * 而不是页面侧的假数据或被拦截的 HTTP 响应。
+     */
+    const dashboardSourceFailure = { source: null };
+    const failingSource = (source) => ({
+      ...source,
+      readDashboard: async () => ({
+        kind: "failed",
+        error: {
+          code: "BUSINESS_BLOCKED",
+          category: "business-blocked",
+          retryable: false,
+          blockerKind: "dashboard-source-limit",
+          blockerRef: {
+            kind: "query-result",
+            reference: { entityId: `dashboard-${source}`, versionId: "1" },
+          },
+          stageCode: "risk-dashboard.source",
+          occurredAt: new Date().toISOString(),
+          causalRunId: `dashboard-${source}`,
+        },
+      }),
+    });
+    const dashboardSources = {
+      riskRecords: identificationRead,
+      assessments: assessmentEngine,
+      warnings: warningLifecycle,
+      reviews: createPostgresReviewQueueReadAdapter({
+        db: appRuntime.db,
+        authorization: access,
+      }),
+      documents: engineeringDataCatalog,
+      monitoring: engineeringDataCatalog,
+    };
+    const dashboardSourceFor = (key) => {
+      const source = dashboardSources[key];
+      if (dashboardSourceFailure.source !== key) return source;
+      // 工程目录适配器同时承载资料与监测两个来源，按窄读方法名区分。
+      if (key === "documents" || key === "monitoring") {
+        const method = key === "documents" ? "readSourceDashboard" : "readMonitoringDashboard";
+        return { ...source, [method]: () => failingSource(source).readDashboard() };
+      }
+      return failingSource(source);
+    };
+
     const api = buildApi({
       access,
       ports: {
@@ -4916,6 +4975,31 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
         }),
         riskAssessmentRead: assessmentEngine,
         warningResponseRead: warningLifecycle,
+        // CH-3 仪表盘公共读面：只组合六来源的所属窄读，不在夹具里另写聚合规则。
+        riskDashboardRead: createRiskDashboardReadService({
+          // 来源按当前注入开关动态取：故障注入只影响指定来源，其余来源仍走真实 Adapter。
+          sources: {
+            get riskRecords() {
+              return dashboardSourceFor("riskRecords");
+            },
+            get assessments() {
+              return dashboardSourceFor("assessments");
+            },
+            get warnings() {
+              return dashboardSourceFor("warnings");
+            },
+            get reviews() {
+              return dashboardSourceFor("reviews");
+            },
+            get documents() {
+              return dashboardSourceFor("documents");
+            },
+            get monitoring() {
+              return dashboardSourceFor("monitoring");
+            },
+          },
+          authorizeBusinessAction: (input) => access.authorizeBusinessAction(input),
+        }),
         /**
          * C34 写命令接缝：HTTP 端口按公开命令联合分派到各领域适配器的真实方法。
          * 缺这一组注入，`warning-response.acknowledge` 等分支在 C30 直接 NOT_FOUND——
@@ -4941,16 +5025,7 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
         calibrationGovernance: calibration,
         workflow: riskFlowComposition.runtime.workflowPort,
         engineeringData: registry,
-        engineeringDataCatalog: createPostgresEngineeringDataCatalogAdapter({
-          db: appRuntime.db,
-          access,
-          artifactStore,
-          resolvers: {
-            resolveReadQuery: (query, options) => registry.resolveReadQuery(query, options),
-            resolveSnapshotQuery: (query, options) =>
-              monitoringStore.resolveSnapshotQuery(query, options),
-          },
-        }),
+        engineeringDataCatalog,
         knowledgeGovernanceRead: createPostgresKnowledgeGovernanceReadAdapter({
           db: appRuntime.db,
           access,
@@ -5149,6 +5224,13 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
       },
       /** 撤权接缝：真实 C06 成员状态改写，供浏览器观察授权撤销后的失败闭合。 */
       setViewerMembershipStatus,
+      /**
+       * CH-3 来源故障注入：把指定来源的窄读换成失败分支，其余来源仍真实读。
+       * 传 `null` 恢复全部真实读。故障在组合层之外注入，观察走的是正式 dashboard HTTP。
+       */
+      setDashboardSourceFailure(source) {
+        dashboardSourceFailure.source = source;
+      },
       /**
        * 启动真实 `assess` 评估运行所需的冻结输入：全部是本装配登记的真实事实，
        * 不是为通过场景而拼的假引用。空间范围与适用性快照同源，评估子运行面据此推进。

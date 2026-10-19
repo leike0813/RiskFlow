@@ -1602,6 +1602,154 @@ describe("C09 HTTP shell", () => {
   });
 });
 
+describe("CH-3 仪表盘读面路由", () => {
+  const queryBody = (payload: Record<string, unknown>) => ({
+    schemaVersion: "1",
+    queryId: "dashboard-query-1",
+    requestedAt: NOW,
+    requestedSpatialScopeRefs: [scope],
+    requestedSourceVersionRefs: [],
+    payload,
+  });
+  const postDashboard = (app: ReturnType<typeof buildApi>, payload: Record<string, unknown> = {}) =>
+    app.inject({
+      method: "POST",
+      url: "/api/v1/projects/project/queries/projection.dashboard-read",
+      headers: { ...jsonHeaders, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+      payload: queryBody(payload),
+    });
+
+  const dashboardResult = () => ({
+    kind: "succeeded" as const,
+    result: {
+      kind: "risk-dashboard" as const,
+      schemaVersion: "1" as const,
+      projectId: "project",
+      summaries: {
+        riskRecords: {
+          kind: "ready" as const,
+          asOf: "2026-01-01T00:00:00.000Z",
+          scope: { kind: "authorized-spaces" as const },
+          data: { recordedVersionCount: 0, processCounts: [] },
+        },
+        assessments: {
+          kind: "ready" as const,
+          asOf: "2026-01-01T00:00:00.000Z",
+          scope: { kind: "authorized-spaces" as const },
+          data: { recordedAssessmentCount: 0, matrixLevelCounts: [] },
+        },
+        warnings: {
+          kind: "ready" as const,
+          asOf: "2026-01-01T00:00:00.000Z",
+          scope: { kind: "authorized-spaces" as const },
+          data: {
+            openTaskCount: 0,
+            openTaskWarningCount: 0,
+            warningLevelCounts: [],
+            unacknowledgedWarningCount: 0,
+            unacknowledgedLevelCounts: [],
+          },
+        },
+        reviews: {
+          kind: "ready" as const,
+          asOf: "2026-01-01T00:00:00.000Z",
+          scope: { kind: "project" as const },
+          data: { pendingCount: 0, reviewTypeCounts: [] },
+        },
+        documents: {
+          kind: "ready" as const,
+          asOf: "2026-01-01T00:00:00.000Z",
+          scope: { kind: "authorized-spaces" as const },
+          data: { sourceVersionCount: 0, parseStatusCounts: [], cleaningStatusCounts: [] },
+        },
+        monitoring: {
+          kind: "ready" as const,
+          asOf: "2026-01-01T00:00:00.000Z",
+          scope: { kind: "authorized-spaces" as const },
+          data: { seriesCount: 0, seriesWithBatchCount: 0, seriesWithSnapshotCount: 0 },
+        },
+      },
+      timeline: {
+        asOf: "2026-01-01T00:00:00.000000Z",
+        items: [],
+        sources: {
+          riskRecords: { kind: "ready" as const },
+          assessments: { kind: "ready" as const },
+          warnings: { kind: "ready" as const },
+        },
+      },
+    },
+  });
+
+  it("仪表盘读面走独立分支并把精确请求交给注入端口", async () => {
+    const authorizedBranches: string[] = [];
+    const seen: Record<string, unknown>[] = [];
+    const app = buildApi({
+      access: accessStub((branch) => authorizedBranches.push(branch)),
+      ports: {
+        riskDashboardRead: {
+          read: async (query) => {
+            seen.push(query);
+            return dashboardResult();
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+    const response = await postDashboard(app, { timelinePageSize: 10 });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      kind: "succeeded",
+      result: { kind: "risk-dashboard" },
+    });
+    expect(authorizedBranches).toEqual(["projection.dashboard-read"]);
+    expect(seen[0]).toMatchObject({
+      projectId: "project",
+      actorId: "actor",
+      queryId: "dashboard-query-1",
+      payload: { timelinePageSize: 10 },
+    });
+    await app.close();
+  });
+
+  it("未注入仪表盘端口时不注册该路由，不用假空统计代替真实读面", async () => {
+    const app = buildApi({
+      access: accessStub(),
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const response = await postDashboard(app);
+    expect(response.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("仪表盘下游返回非法结果时收口为安全终态错误，不透传半成品", async () => {
+    const app = buildApi({
+      access: accessStub(),
+      ports: {
+        riskDashboardRead: {
+          read: async () =>
+            ({
+              kind: "succeeded",
+              result: { kind: "risk-dashboard", schemaVersion: "1", projectId: "project" },
+            }) as never,
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+    const response = await postDashboard(app);
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toMatchObject({ code: "TERMINAL_FAILURE", retryable: false });
+    await app.close();
+  });
+});
+
 describe("C32 read surface routes", () => {
   const queryBody = (payload: Record<string, unknown>) => ({
     schemaVersion: "1",

@@ -24,7 +24,7 @@ export const reviewTabs = [
   { to: "/review", label: "复核队列" },
   { to: "/review/audit", label: "审计日志" },
   { to: "/review/trace", label: "证据追溯" },
-  { to: "/review/runs", label: "运行记录" },
+  { to: "/overview?tab=runs", label: "运行记录" },
 ];
 
 /** 复核类型中文呈现（契约 ReviewTypeV1 五值，UI 不扩张取值）。 */

@@ -658,6 +658,9 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "projection.report-read": "projection.export",
   // CH-2（design D-05）：同名入口分支，只承载聚合入口资格，不映射到任何查询端口。
   "review-todo.read": "review-todo.read",
+  // CH-3（design D-02）：仪表盘入口分支，复用投影读能力，不新增 capability 位。
+  // 来源级读权由各来源分支单独签发，入口资格不隐含任何来源能力。
+  "projection.dashboard-read": "projection.query",
 } as const;
 export type ModuleBranchV1 = keyof typeof MODULE_BRANCH_CAPABILITY_V1;
 
@@ -5651,3 +5654,584 @@ export const ProjectAccessPresentationV1Schema = z.strictObject({
   authorizationPolicyRef: VersionReferenceSchema,
 });
 export type ProjectAccessPresentationV1 = z.infer<typeof ProjectAccessPresentationV1Schema>;
+
+/* ========================================================================
+ * CH-3：风险总览仪表盘（design D-02、D-05、D-06）
+ *
+ * 唯一公共读面：一个闭合、单工程、只读的仪表盘用例。六个来源各自授权、各自统计、
+ * 各自失败；变化页只组合已登记的风险／评估／预警记录版本。组合层不读跨域私表、
+ * 不累计目录页、不产生新业务事实。
+ * ======================================================================== */
+
+/** 六个摘要来源的固定 key；键集合封闭，不接受自由来源字段。 */
+export const RISK_DASHBOARD_SUMMARY_SOURCE_KEYS_V1 = [
+  "riskRecords",
+  "assessments",
+  "warnings",
+  "reviews",
+  "documents",
+  "monitoring",
+] as const;
+export type RiskDashboardSummarySourceKeyV1 =
+  (typeof RISK_DASHBOARD_SUMMARY_SOURCE_KEYS_V1)[number];
+
+/**
+ * 变化时间线的三个来源。跨来源同刻事件按本顺序升序排列，因此
+ * `(recordedAt DESC, source ASC, entityId ASC, versionId ASC)` 构成稳定全序。
+ * 本顺序与来源标识的字典序一致。
+ */
+export const RISK_DASHBOARD_TIMELINE_SOURCE_KEYS_V1 = [
+  "assessments",
+  "riskRecords",
+  "warnings",
+] as const;
+export type RiskDashboardTimelineSourceKeyV1 =
+  (typeof RISK_DASHBOARD_TIMELINE_SOURCE_KEYS_V1)[number];
+
+/**
+ * 时间线续页位置在单一来源内的投影：全局位置与来源自身顺序的唯一差别是
+ * 来源名在同刻事件中的先后，因此位置可折算成三种续页形态。
+ * - `before`：只取登记时刻更早的记录（本来源在同刻排在位置之前）。
+ * - `at-or-before`：取登记时刻更早或同刻的全部记录（本来源在同刻排在位置之后）。
+ * - `keyset`：取登记时刻更早，或同刻且主体标识更大的记录（本来源即位置来源）。
+ */
+export type RiskDashboardTimelineResumeV1 =
+  | { readonly kind: "before"; readonly recordedAt: string }
+  | { readonly kind: "at-or-before"; readonly recordedAt: string }
+  | {
+      readonly kind: "keyset";
+      readonly recordedAt: string;
+      readonly entityId: string;
+      readonly versionId: string;
+    };
+
+/**
+ * 把全局续页位置折算为指定来源的续页形态。来源顺序取
+ * `RISK_DASHBOARD_TIMELINE_SOURCE_KEYS_V1`（与字典序一致），因此折算是确定的。
+ */
+export const riskDashboardTimelineResumeV1 = (
+  source: RiskDashboardTimelineSourceKeyV1,
+  after: RiskDashboardTimelineAfterV1,
+): RiskDashboardTimelineResumeV1 => {
+  const order = RISK_DASHBOARD_TIMELINE_SOURCE_KEYS_V1;
+  const sourceOrder = order.indexOf(source);
+  const afterOrder = order.indexOf(after.source);
+  if (sourceOrder > afterOrder) return { kind: "at-or-before", recordedAt: after.recordedAt };
+  if (sourceOrder < afterOrder) return { kind: "before", recordedAt: after.recordedAt };
+  return {
+    kind: "keyset",
+    recordedAt: after.recordedAt,
+    entityId: after.entityId,
+    versionId: after.versionId,
+  };
+};
+
+/**
+ * 仪表盘时间文本：UTC、六位小数 ISO。宽度固定使字符串序与时间序一致，
+ * 游标比较与返回项因此可以用同一形态（design D-06）。
+ */
+export const RiskDashboardTimestampV1Schema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/u);
+export type RiskDashboardTimestampV1 = z.infer<typeof RiskDashboardTimestampV1Schema>;
+
+/** 统计量：非负安全整数。超出安全范围的计数由所属来源整体失败，不溢出也不夹取。 */
+const riskDashboardCountV1 = z.number().int().nonnegative().safe();
+
+/** 统计分组上限；用上限+1 检出溢出，溢出时整来源失败而不是截断后宣称完整。 */
+export const RISK_DASHBOARD_GROUP_LIMIT_V1 = 256;
+export const RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1 = 32;
+
+/** 范围说明：只表达本来源的统计范围，不返回来源 grant 或角色镜像。 */
+export const RiskDashboardScopeV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("project") }),
+  z.strictObject({
+    kind: z.literal("authorized-spaces"),
+    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+  }),
+]);
+export type RiskDashboardScopeV1 = z.infer<typeof RiskDashboardScopeV1Schema>;
+
+// ---- 六个来源的统计体（design D-05） ----
+
+export const RiskDashboardProcessCountV1Schema = z.strictObject({
+  processNodeId: IdentifierSchema,
+  count: riskDashboardCountV1,
+});
+export type RiskDashboardProcessCountV1 = z.infer<typeof RiskDashboardProcessCountV1Schema>;
+
+export const RiskDashboardMatrixLevelCountV1Schema = z.strictObject({
+  riskMatrixRef: VersionReferenceSchema,
+  riskLevelId: IdentifierSchema,
+  count: riskDashboardCountV1,
+});
+export type RiskDashboardMatrixLevelCountV1 = z.infer<typeof RiskDashboardMatrixLevelCountV1Schema>;
+
+export const RiskDashboardWarningLevelCountV1Schema = z.strictObject({
+  warningLevel: IdentifierSchema,
+  count: riskDashboardCountV1,
+});
+export type RiskDashboardWarningLevelCountV1 = z.infer<
+  typeof RiskDashboardWarningLevelCountV1Schema
+>;
+
+export const RiskDashboardReviewTypeCountV1Schema = z.strictObject({
+  reviewType: ReviewTypeV1Schema,
+  count: riskDashboardCountV1,
+});
+export type RiskDashboardReviewTypeCountV1 = z.infer<typeof RiskDashboardReviewTypeCountV1Schema>;
+
+export const RiskDashboardParseStatusCountV1Schema = z.strictObject({
+  parseStatus: SourceCatalogParseStatusV1Schema,
+  count: riskDashboardCountV1,
+});
+export type RiskDashboardParseStatusCountV1 = z.infer<typeof RiskDashboardParseStatusCountV1Schema>;
+
+/**
+ * 清洗状态：复用原契约的可用性枚举，并单独表达「未登记清洗结果」的缺席语义——
+ * 缺席不折算成 `unavailable`（design D-05）。
+ */
+export const RiskDashboardCleaningStatusV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("availability"), availability: CleaningAvailabilityV1Schema }),
+  z.strictObject({ kind: z.literal("not-registered") }),
+]);
+export type RiskDashboardCleaningStatusV1 = z.infer<typeof RiskDashboardCleaningStatusV1Schema>;
+
+export const RiskDashboardCleaningStatusCountV1Schema = z.strictObject({
+  status: RiskDashboardCleaningStatusV1Schema,
+  count: riskDashboardCountV1,
+});
+export type RiskDashboardCleaningStatusCountV1 = z.infer<
+  typeof RiskDashboardCleaningStatusCountV1Schema
+>;
+
+export const RiskDashboardRiskRecordsDataV1Schema = z.strictObject({
+  /** 已入库的风险记录版本数；与所属目录同口径，不折算为风险事件数。 */
+  recordedVersionCount: riskDashboardCountV1,
+  processCounts: z.array(RiskDashboardProcessCountV1Schema).max(RISK_DASHBOARD_GROUP_LIMIT_V1),
+});
+export type RiskDashboardRiskRecordsDataV1 = z.infer<typeof RiskDashboardRiskRecordsDataV1Schema>;
+
+export const RiskDashboardAssessmentsDataV1Schema = z.strictObject({
+  /** 已入库的评估记录版本数；初评与重评是两个版本，不合并为同一风险事件。 */
+  recordedAssessmentCount: riskDashboardCountV1,
+  /** 按冻结矩阵精确版本与等级分组；不同矩阵的同名等级不混算。 */
+  matrixLevelCounts: z
+    .array(RiskDashboardMatrixLevelCountV1Schema)
+    .max(RISK_DASHBOARD_GROUP_LIMIT_V1)
+    .refine(
+      (counts) => {
+        const perMatrix = new Map<string, number>();
+        for (const entry of counts) {
+          const key = `${entry.riskMatrixRef.entityId}@${entry.riskMatrixRef.versionId}`;
+          const next = (perMatrix.get(key) ?? 0) + 1;
+          if (next > RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1) return false;
+          perMatrix.set(key, next);
+        }
+        return true;
+      },
+      { message: "one matrix exceeds the level grouping limit" },
+    ),
+});
+export type RiskDashboardAssessmentsDataV1 = z.infer<typeof RiskDashboardAssessmentsDataV1Schema>;
+
+export const RiskDashboardWarningsDataV1Schema = z.strictObject({
+  /** 开放处置任务数。 */
+  openTaskCount: riskDashboardCountV1,
+  /** 开放任务关联的去重预警数（原 overview.warningCount 的明确命名）。 */
+  openTaskWarningCount: riskDashboardCountV1,
+  /** 全部预警目录等级计数。 */
+  warningLevelCounts: z
+    .array(RiskDashboardWarningLevelCountV1Schema)
+    .max(RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1),
+  /** 尚未确认的正式预警数。 */
+  unacknowledgedWarningCount: riskDashboardCountV1,
+  /** 尚未确认预警的等级分组；这是唯一可作为「按等级待决」分母的分组。 */
+  unacknowledgedLevelCounts: z
+    .array(RiskDashboardWarningLevelCountV1Schema)
+    .max(RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1),
+});
+export type RiskDashboardWarningsDataV1 = z.infer<typeof RiskDashboardWarningsDataV1Schema>;
+
+export const RiskDashboardReviewsDataV1Schema = z.strictObject({
+  /** 工程级待决定复核任务数（含 stale pending）；stale 不等于已决定。 */
+  pendingCount: riskDashboardCountV1,
+  reviewTypeCounts: z
+    .array(RiskDashboardReviewTypeCountV1Schema)
+    .max(RISK_DASHBOARD_GROUP_LIMIT_V1),
+});
+export type RiskDashboardReviewsDataV1 = z.infer<typeof RiskDashboardReviewsDataV1Schema>;
+
+export const RiskDashboardDocumentsDataV1Schema = z.strictObject({
+  /** 目录可见的资料版本数。 */
+  sourceVersionCount: riskDashboardCountV1,
+  parseStatusCounts: z
+    .array(RiskDashboardParseStatusCountV1Schema)
+    .max(RISK_DASHBOARD_GROUP_LIMIT_V1),
+  cleaningStatusCounts: z
+    .array(RiskDashboardCleaningStatusCountV1Schema)
+    .max(RISK_DASHBOARD_GROUP_LIMIT_V1),
+});
+export type RiskDashboardDocumentsDataV1 = z.infer<typeof RiskDashboardDocumentsDataV1Schema>;
+
+export const RiskDashboardMonitoringDataV1Schema = z.strictObject({
+  /** 可见监测序列数。 */
+  seriesCount: riskDashboardCountV1,
+  /** 至少存在一个真实批次的可见序列数。 */
+  seriesWithBatchCount: riskDashboardCountV1,
+  /** 至少存在一个冻结快照的可见序列数。 */
+  seriesWithSnapshotCount: riskDashboardCountV1,
+});
+export type RiskDashboardMonitoringDataV1 = z.infer<typeof RiskDashboardMonitoringDataV1Schema>;
+
+// ---- 变化时间线（design D-02、D-06） ----
+
+/**
+ * 变化事件：只表达已登记记录的入库变化，不表达风险升降、解除或监测越限。
+ * 三分支按来源判别，来源与主体引用一一对应。
+ */
+export const RiskDashboardTimelineEventV1Schema = z.discriminatedUnion("source", [
+  z.strictObject({
+    source: z.literal("riskRecords"),
+    changeType: z.literal("risk-record-recorded"),
+    recordedAt: RiskDashboardTimestampV1Schema,
+    subjectRef: StandardizedRiskRecordRefV1Schema,
+  }),
+  z.strictObject({
+    source: z.literal("assessments"),
+    changeType: z.literal("assessment-recorded"),
+    recordedAt: RiskDashboardTimestampV1Schema,
+    subjectRef: RiskAssessmentRecordRefV1Schema,
+    occurredAt: RiskDashboardTimestampV1Schema.optional(),
+  }),
+  z.strictObject({
+    source: z.literal("warnings"),
+    changeType: z.literal("warning-recorded"),
+    recordedAt: RiskDashboardTimestampV1Schema,
+    subjectRef: WarningRecordRefV1Schema,
+    occurredAt: RiskDashboardTimestampV1Schema.optional(),
+  }),
+]);
+export type RiskDashboardTimelineEventV1 = z.infer<typeof RiskDashboardTimelineEventV1Schema>;
+
+/** 续页位置：完整排序元组，绑定工程、空间与本次读取上界。 */
+export const RiskDashboardTimelineAfterV1Schema = z.strictObject({
+  recordedAt: RiskDashboardTimestampV1Schema,
+  source: z.enum(RISK_DASHBOARD_TIMELINE_SOURCE_KEYS_V1),
+  entityId: IdentifierSchema,
+  versionId: IdentifierSchema,
+});
+export type RiskDashboardTimelineAfterV1 = z.infer<typeof RiskDashboardTimelineAfterV1Schema>;
+
+/** 时间线来源状态：成功（含零事件）或失败。拒权来源不参与合并，其状态不泄露事件存在性。 */
+export const RiskDashboardTimelineSourceStatusV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("ready") }),
+  z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
+]);
+export type RiskDashboardTimelineSourceStatusV1 = z.infer<
+  typeof RiskDashboardTimelineSourceStatusV1Schema
+>;
+
+export const RiskDashboardTimelineV1Schema = z.strictObject({
+  /** 本次读取的时间上界；续页沿用同一上界。 */
+  asOf: RiskDashboardTimestampV1Schema,
+  items: z.array(RiskDashboardTimelineEventV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1),
+  sources: z.strictObject({
+    riskRecords: RiskDashboardTimelineSourceStatusV1Schema,
+    assessments: RiskDashboardTimelineSourceStatusV1Schema,
+    warnings: RiskDashboardTimelineSourceStatusV1Schema,
+  }),
+  /** 完整后续页游标；仅在全部参与来源成功时给出。 */
+  nextCursor: z.string().min(1).optional(),
+  /** 原位重试游标；仅在不完整时给出，指向本页起点而非下一页。 */
+  retryCursor: z.string().min(1).optional(),
+});
+export type RiskDashboardTimelineV1 = z.infer<typeof RiskDashboardTimelineV1Schema>;
+
+// ---- 六个来源的摘要条目 ----
+
+const riskDashboardSummaryV1 = <T extends ZodType>(data: T) =>
+  z.discriminatedUnion("kind", [
+    z.strictObject({
+      kind: z.literal("ready"),
+      asOf: IsoDateTimeSchema,
+      scope: RiskDashboardScopeV1Schema,
+      data,
+    }),
+    z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
+  ]);
+
+export const RiskDashboardRiskRecordsSummaryV1Schema = riskDashboardSummaryV1(
+  RiskDashboardRiskRecordsDataV1Schema,
+);
+export const RiskDashboardAssessmentsSummaryV1Schema = riskDashboardSummaryV1(
+  RiskDashboardAssessmentsDataV1Schema,
+);
+export const RiskDashboardWarningsSummaryV1Schema = riskDashboardSummaryV1(
+  RiskDashboardWarningsDataV1Schema,
+);
+export const RiskDashboardReviewsSummaryV1Schema = riskDashboardSummaryV1(
+  RiskDashboardReviewsDataV1Schema,
+);
+export const RiskDashboardDocumentsSummaryV1Schema = riskDashboardSummaryV1(
+  RiskDashboardDocumentsDataV1Schema,
+);
+export const RiskDashboardMonitoringSummaryV1Schema = riskDashboardSummaryV1(
+  RiskDashboardMonitoringDataV1Schema,
+);
+
+export type RiskDashboardRiskRecordsSummaryV1 = z.infer<
+  typeof RiskDashboardRiskRecordsSummaryV1Schema
+>;
+export type RiskDashboardAssessmentsSummaryV1 = z.infer<
+  typeof RiskDashboardAssessmentsSummaryV1Schema
+>;
+export type RiskDashboardWarningsSummaryV1 = z.infer<typeof RiskDashboardWarningsSummaryV1Schema>;
+export type RiskDashboardReviewsSummaryV1 = z.infer<typeof RiskDashboardReviewsSummaryV1Schema>;
+export type RiskDashboardDocumentsSummaryV1 = z.infer<typeof RiskDashboardDocumentsSummaryV1Schema>;
+export type RiskDashboardMonitoringSummaryV1 = z.infer<
+  typeof RiskDashboardMonitoringSummaryV1Schema
+>;
+
+// ---- 公共用例（design D-02） ----
+
+/**
+ * 仪表盘读请求：单工程、可选精确空间、变化页大小与有界游标。
+ * 不接受工程修订、客户端 actor／能力／授权、任意时间区间、来源字段袋或自由 URL。
+ */
+export const RiskDashboardReadQueryV1Schema = querySchema(
+  "read",
+  z.strictObject({
+    spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+    timelinePageSize: z.number().int().min(1).max(C32_READ_PAGE_SIZE_MAX_V1).optional(),
+    timelineCursor: z.string().min(1).optional(),
+  }),
+  branchCapability("projection.dashboard-read"),
+);
+export type RiskDashboardReadQueryV1 = z.infer<typeof RiskDashboardReadQueryV1Schema>;
+
+export const RiskDashboardReadSuccessV1Schema = z.strictObject({
+  kind: z.literal("risk-dashboard"),
+  schemaVersion: z.literal("1"),
+  projectId: IdentifierSchema,
+  /** 本次请求的空间范围；未选择空间时缺席。 */
+  spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+  summaries: z.strictObject({
+    riskRecords: RiskDashboardRiskRecordsSummaryV1Schema,
+    assessments: RiskDashboardAssessmentsSummaryV1Schema,
+    warnings: RiskDashboardWarningsSummaryV1Schema,
+    reviews: RiskDashboardReviewsSummaryV1Schema,
+    documents: RiskDashboardDocumentsSummaryV1Schema,
+    monitoring: RiskDashboardMonitoringSummaryV1Schema,
+  }),
+  timeline: RiskDashboardTimelineV1Schema,
+});
+export type RiskDashboardReadSuccessV1 = z.infer<typeof RiskDashboardReadSuccessV1Schema>;
+
+export type RiskDashboardReadResultV1 =
+  | { kind: "succeeded"; result: RiskDashboardReadSuccessV1 }
+  | { kind: "failed"; error: ModuleErrorV1 };
+/**
+ * 显式标注类型：六来源摘要联合的展开类型超出声明序列化的可写长度。
+ * 语义仍由上面两个 Schema 决定，本处只补上与 `moduleResultSchema` 相同的两种结果形状。
+ */
+export const RiskDashboardReadResultV1Schema: z.ZodType<RiskDashboardReadResultV1, unknown> =
+  z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("succeeded"), result: RiskDashboardReadSuccessV1Schema }),
+    z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
+  ]);
+
+/** 仪表盘公共读端口：一次返回完整有限摘要与一页变化。 */
+export interface RiskDashboardReadPortV1 {
+  read(query: RiskDashboardReadQueryV1): Promise<RiskDashboardReadResultV1>;
+}
+
+/* ========================================================================
+ * CH-3：六个来源的窄读契约（design D-04）
+ *
+ * 每个来源一个独立方法与独立 DTO：来源只消费本来源的授权决定，
+ * 不公开 `source:string` 字段袋、任意 filter 或通用执行器。
+ * ======================================================================== */
+
+/** 六个来源共享的请求基座：当前来源授权由聚合层按来源分支单独签发。 */
+const riskDashboardSourceRequestBaseV1 = {
+  queryId: IdentifierSchema,
+  projectId: IdentifierSchema,
+  actorId: IdentifierSchema,
+  requestedAt: IsoDateTimeSchema,
+  /** 本来源的当前授权决定；来源不得据此推断其它来源的权限。 */
+  authorization: AuthorizationContextV1Schema,
+  /** 本次选择的精确空间；缺席表示当前授权的全部空间。 */
+  spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+};
+
+/** 变化页请求：固定上界、有界页大小与可选续页位置。 */
+export const RiskDashboardTimelineRequestV1Schema = z.strictObject({
+  asOf: RiskDashboardTimestampV1Schema,
+  pageSize: z.number().int().min(1).max(C32_READ_PAGE_SIZE_MAX_V1),
+  after: RiskDashboardTimelineAfterV1Schema.optional(),
+});
+export type RiskDashboardTimelineRequestV1 = z.infer<typeof RiskDashboardTimelineRequestV1Schema>;
+
+export const RiskDashboardReviewsSourceRequestV1Schema = z.strictObject(
+  riskDashboardSourceRequestBaseV1,
+);
+export type RiskDashboardReviewsSourceRequestV1 = z.infer<
+  typeof RiskDashboardReviewsSourceRequestV1Schema
+>;
+
+export const RiskDashboardDocumentsSourceRequestV1Schema = z.strictObject(
+  riskDashboardSourceRequestBaseV1,
+);
+export type RiskDashboardDocumentsSourceRequestV1 = z.infer<
+  typeof RiskDashboardDocumentsSourceRequestV1Schema
+>;
+
+export const RiskDashboardMonitoringSourceRequestV1Schema = z.strictObject(
+  riskDashboardSourceRequestBaseV1,
+);
+export type RiskDashboardMonitoringSourceRequestV1 = z.infer<
+  typeof RiskDashboardMonitoringSourceRequestV1Schema
+>;
+
+/** 变化来源的请求基座：额外携带本来源的变化页参数。 */
+const riskDashboardTimelineSourceRequestBaseV1 = {
+  ...riskDashboardSourceRequestBaseV1,
+  timeline: RiskDashboardTimelineRequestV1Schema,
+};
+
+export const RiskDashboardRiskRecordsSourceRequestV1Schema = z.strictObject(
+  riskDashboardTimelineSourceRequestBaseV1,
+);
+export const RiskDashboardAssessmentsSourceRequestV1Schema = z.strictObject(
+  riskDashboardTimelineSourceRequestBaseV1,
+);
+export const RiskDashboardWarningsSourceRequestV1Schema = z.strictObject(
+  riskDashboardTimelineSourceRequestBaseV1,
+);
+
+export type RiskDashboardRiskRecordsSourceRequestV1 = z.infer<
+  typeof RiskDashboardRiskRecordsSourceRequestV1Schema
+>;
+export type RiskDashboardAssessmentsSourceRequestV1 = z.infer<
+  typeof RiskDashboardAssessmentsSourceRequestV1Schema
+>;
+export type RiskDashboardWarningsSourceRequestV1 = z.infer<
+  typeof RiskDashboardWarningsSourceRequestV1Schema
+>;
+
+/**
+ * 来源成功体：统计体；失败体只表达安全错误。
+ * 带变化事件的来源用 `riskDashboardTimelineSourceResultV1`，两类不共用一个泛型：
+ * 同一泛型里的可选 spread 会让 Zod 失去事件元素的类型推断。
+ */
+const riskDashboardSourceResultV1 = <T extends ZodType>(data: T) =>
+  z.discriminatedUnion("kind", [
+    z.strictObject({
+      kind: z.literal("ready"),
+      asOf: IsoDateTimeSchema,
+      data,
+    }),
+    z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
+  ]);
+
+/** 带变化页的来源成功体：统计体加一页登记变化事件。 */
+const riskDashboardTimelineSourceResultV1 = <T extends ZodType, E extends ZodType>(
+  data: T,
+  events: z.ZodArray<E>,
+) =>
+  z.discriminatedUnion("kind", [
+    z.strictObject({
+      kind: z.literal("ready"),
+      asOf: IsoDateTimeSchema,
+      data,
+      events,
+    }),
+    z.strictObject({ kind: z.literal("failed"), error: ModuleErrorV1Schema }),
+  ]);
+
+export const RiskDashboardRiskRecordsSourceResultV1Schema = riskDashboardTimelineSourceResultV1(
+  RiskDashboardRiskRecordsDataV1Schema,
+  z.array(RiskDashboardTimelineEventV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1 + 1),
+);
+export const RiskDashboardAssessmentsSourceResultV1Schema = riskDashboardTimelineSourceResultV1(
+  RiskDashboardAssessmentsDataV1Schema,
+  z.array(RiskDashboardTimelineEventV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1 + 1),
+);
+export const RiskDashboardWarningsSourceResultV1Schema = riskDashboardTimelineSourceResultV1(
+  RiskDashboardWarningsDataV1Schema,
+  z.array(RiskDashboardTimelineEventV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1 + 1),
+);
+export const RiskDashboardReviewsSourceResultV1Schema = riskDashboardSourceResultV1(
+  RiskDashboardReviewsDataV1Schema,
+);
+export const RiskDashboardDocumentsSourceResultV1Schema = riskDashboardSourceResultV1(
+  RiskDashboardDocumentsDataV1Schema,
+);
+export const RiskDashboardMonitoringSourceResultV1Schema = riskDashboardSourceResultV1(
+  RiskDashboardMonitoringDataV1Schema,
+);
+
+export type RiskDashboardRiskRecordsSourceResultV1 = z.infer<
+  typeof RiskDashboardRiskRecordsSourceResultV1Schema
+>;
+export type RiskDashboardAssessmentsSourceResultV1 = z.infer<
+  typeof RiskDashboardAssessmentsSourceResultV1Schema
+>;
+export type RiskDashboardWarningsSourceResultV1 = z.infer<
+  typeof RiskDashboardWarningsSourceResultV1Schema
+>;
+export type RiskDashboardReviewsSourceResultV1 = z.infer<
+  typeof RiskDashboardReviewsSourceResultV1Schema
+>;
+export type RiskDashboardDocumentsSourceResultV1 = z.infer<
+  typeof RiskDashboardDocumentsSourceResultV1Schema
+>;
+export type RiskDashboardMonitoringSourceResultV1 = z.infer<
+  typeof RiskDashboardMonitoringSourceResultV1Schema
+>;
+
+/**
+ * 六个来源的窄读接口：每个来源一个方法，方法之间不共享请求形状。
+ * 方法名与所属 Adapter 的窄读方法同名，组合根直接注入既有 Adapter，无需额外包装。
+ */
+export interface RiskDashboardRiskRecordsSourceV1 {
+  readDashboard(
+    request: RiskDashboardRiskRecordsSourceRequestV1,
+  ): Promise<RiskDashboardRiskRecordsSourceResultV1>;
+}
+export interface RiskDashboardAssessmentsSourceV1 {
+  readDashboard(
+    request: RiskDashboardAssessmentsSourceRequestV1,
+  ): Promise<RiskDashboardAssessmentsSourceResultV1>;
+}
+export interface RiskDashboardWarningsSourceV1 {
+  readDashboard(
+    request: RiskDashboardWarningsSourceRequestV1,
+  ): Promise<RiskDashboardWarningsSourceResultV1>;
+}
+export interface RiskDashboardReviewsSourceV1 {
+  readDashboard(
+    request: RiskDashboardReviewsSourceRequestV1,
+  ): Promise<RiskDashboardReviewsSourceResultV1>;
+}
+export interface RiskDashboardDocumentsSourceV1 {
+  readSourceDashboard(
+    request: RiskDashboardDocumentsSourceRequestV1,
+  ): Promise<RiskDashboardDocumentsSourceResultV1>;
+}
+export interface RiskDashboardMonitoringSourceV1 {
+  readMonitoringDashboard(
+    request: RiskDashboardMonitoringSourceRequestV1,
+  ): Promise<RiskDashboardMonitoringSourceResultV1>;
+}
+
+/** 聚合层消费的六个来源集合；键集合封闭。 */
+export interface RiskDashboardSourcesV1 {
+  readonly riskRecords: RiskDashboardRiskRecordsSourceV1;
+  readonly assessments: RiskDashboardAssessmentsSourceV1;
+  readonly warnings: RiskDashboardWarningsSourceV1;
+  readonly reviews: RiskDashboardReviewsSourceV1;
+  readonly documents: RiskDashboardDocumentsSourceV1;
+  readonly monitoring: RiskDashboardMonitoringSourceV1;
+}

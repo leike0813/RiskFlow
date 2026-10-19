@@ -293,6 +293,26 @@ describe("C37 旧前缀别名与质量子路径", () => {
     expect(resolveWebRoute("/projects").kind).toBe("matched");
   });
 
+  it("旧运行地址永久解析到总览运行位置并保留工程与历史修订上下文", () => {
+    for (const legacy of ["/review-audit/runs", "/review/runs"]) {
+      expect(applyWebPathAliasV1(legacy)).toBe("/overview?tab=runs");
+    }
+    // 工程、历史修订与既有查询参数原样保留，只覆盖目标页签。
+    expect(
+      applyWebPathAliasV1(
+        "/review-audit/runs",
+        "?project=project-1&revision=project-1%40v7&assessmentSources=%7B%7D",
+      ),
+    ).toBe("/overview?project=project-1&revision=project-1%40v7&assessmentSources=%7B%7D&tab=runs");
+    expect(applyWebPathAliasV1("/review/runs", "?project=project-1")).toBe(
+      "/overview?project=project-1&tab=runs",
+    );
+    // 旧未知后缀不重定向：别名不得把未知对象变成另一个合法页面。
+    expect(applyWebPathAliasV1("/review-audit/runs/extra")).toBeUndefined();
+    expect(applyWebPathAliasV1("/review/runs/extra")).toBeUndefined();
+    expect(resolveWebRoute("/review-audit/runs/extra").kind).toBe("not-found");
+  });
+
   it("质量入口在 /assessment/quality，评估根路由仍可达", () => {
     const registry = createWebRouteRegistry([
       {

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "kysely";
 
 import {
+  ACCESS_POLICY_REF_V1,
   AccessServiceError,
   type AuthorizationVerificationRequestV1,
   type LocalIdentityAccessV1,
@@ -1508,7 +1509,8 @@ describe("postgres agent runtime adapter", () => {
         category: "authorization",
         retryable: false,
         requiredCapability: "agent-task.read",
-        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+        // 引用当前授权策略版本；随策略升版变化，不在此钉死具体版本号。
+        authorizationPolicyRef: ACCESS_POLICY_REF_V1,
       },
     };
     // 非完成状态用例必须命中真实存在的行：否则拒绝可能只来自“查不到”，钉不住状态门。

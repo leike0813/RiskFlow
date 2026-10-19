@@ -301,33 +301,36 @@ const readPageStates = (page) =>
     .locator("[data-page-state]")
     .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-page-state")));
 
-for (const failedBranch of ["risk-assessment.read", "warning-response.read", "projection.query"]) {
-  test(`态势来源 ${failedBranch} 失败时其它来源保留独立范围与时点`, async ({ page }) => {
-    await page.route(`**/queries/${failedBranch}`, async (route) => {
-      const operation = route.request().postDataJSON().payload.operation;
-      if (failedBranch === "projection.query" || operation === "overview")
-        return route.abort("failed");
-      await route.continue();
-    });
-    await login(page, server.operatorLogin, withProject("/overview"));
-    await expect(page.locator('[data-page-state="error"]').first()).toBeVisible();
-    const goodLabels =
-      failedBranch === "risk-assessment.read"
-        ? ["开放处置任务"]
-        : failedBranch === "warning-response.read"
-          ? ["已入库评估记录"]
-          : ["已入库评估记录", "开放处置任务"];
-    for (const label of goodLabels)
-      await expect(page.getByText(label, { exact: true })).toBeVisible();
-    await expect(page.getByText(/asOf/).first()).toBeVisible();
-    if (failedBranch !== "projection.query")
+/**
+ * CH-3 仪表盘单来源故障：故障在真实 Adapter 之外注入，其余来源仍走真实读。
+ * 观察走正式 dashboard HTTP，页面必须只让故障来源进入失败闭合，
+ * 其它来源保留自己的统计、范围与时点，且不把缺权／失败折算成零值。
+ */
+for (const failedSource of ["assessments", "warnings", "documents"]) {
+  test(`仪表盘来源 ${failedSource} 失败时其它来源保留独立统计与时点`, async ({ page }) => {
+    server.setDashboardSourceFailure(failedSource);
+    try {
+      await login(page, server.operatorLogin, withProject("/overview"));
+      // 失败来源显示安全失败与重试入口，不显示零值。
+      // 同一来源可能承载多张卡片（预警同时供待复核与开放任务区），因此只断言失败态存在。
+      const failed = page.locator('[data-source-state="failed"]');
+      await expect(failed.first()).toBeVisible();
+      await expect(failed.first().getByRole("button", { name: "重试" })).toBeEnabled();
+      // 其它来源仍呈现真实统计：风险记录来源与本用例的故障来源无关。
+      await expect(page.getByRole("heading", { name: "工序风险记录分布" })).toBeVisible();
+      await expect(page.getByText(/asOf/).first()).toBeVisible();
+      // 历史运行区不被仪表盘单来源失败遮住。
       await expect(page.getByText(server.overviewRuns[0].entryVersionId)).toBeVisible();
-    await page.getByLabel("工程标识").fill("demo-switched-project");
-    await page.getByRole("button", { name: "确定" }).click();
-    await expectSelectedProject(page, "demo-switched-project");
-    await expect(page.getByText(server.overviewRuns[0].entryVersionId)).toHaveCount(0);
-    for (const label of goodLabels)
-      await expect(page.getByText(label, { exact: true })).toHaveCount(0);
+
+      // 切工程后旧上下文的统计与事件都不再呈现。
+      await page.getByLabel("工程标识").fill("demo-switched-project");
+      await page.getByRole("button", { name: "确定" }).click();
+      await expectSelectedProject(page, "demo-switched-project");
+      await expect(page.getByText(server.overviewRuns[0].entryVersionId)).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: "工序风险记录分布" })).toHaveCount(0);
+    } finally {
+      server.setDashboardSourceFailure(null);
+    }
   });
 }
 
@@ -393,15 +396,23 @@ test("父子运行在摘要里按真实父运行引用呈现，不用同一父�
   await expect(page.getByText(server.overviewRuns[0].entryVersionId)).toBeVisible();
 
   // 父运行列必须落回识别阶段的真实父运行引用，而不是留空或写死文案。
-  const parentCell = page.locator("table.data-table tbody tr td:last-child").first();
+  // 总览现在同时承载识别运行与链运行两张表，断言只落在链运行那张。
+  const chainRunsTable = page
+    .locator(".data-table-host table")
+    .filter({ hasText: server.overviewRuns[0].entryVersionId });
+  const parentCell = chainRunsTable.locator("tbody tr td:last-child").first();
   await expect(parentCell).toHaveText(server.identification.completedRunId);
 
   // 续到第二页后父运行不变：兄弟运行共享父级，但入口身份必须区分开。
   await page.getByRole("button", { name: "续页" }).click();
   await expect(page.getByText(server.overviewRuns[1].entryVersionId)).toBeVisible();
-  await expect(page.locator("table.data-table tbody tr td:last-child").first()).toHaveText(
-    server.identification.completedRunId,
-  );
+  await expect(
+    page
+      .locator(".data-table-host table")
+      .filter({ hasText: server.overviewRuns[1].entryVersionId })
+      .locator("tbody tr td:last-child")
+      .first(),
+  ).toHaveText(server.identification.completedRunId);
 });
 
 /**

@@ -82,6 +82,13 @@ import {
   type ResponseWorkflowBindingProofPortV1,
   type ActualAssessmentProofPortV1,
   RiskAssessmentRecordRefV1Schema,
+  RiskDashboardAssessmentsSourceResultV1Schema,
+  RiskDashboardDocumentsSourceResultV1Schema,
+  RiskDashboardMonitoringSourceResultV1Schema,
+  RiskDashboardReadQueryV1Schema,
+  RiskDashboardReadResultV1Schema,
+  RiskDashboardReviewsSourceResultV1Schema,
+  RiskDashboardRiskRecordsSourceResultV1Schema,
   RiskInputFactFieldV1Schema,
   RiskInputVersionRefV1Schema,
   RuleConflictRefV1Schema,
@@ -3924,6 +3931,278 @@ describe("CH-2 入口能力与当前工程能力呈现", () => {
     ).toBe(false);
     expect(
       ProjectAccessPresentationV1Schema.safeParse({ ...presentation, schemaVersion: "2" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("CH-3 风险总览仪表盘契约", () => {
+  const dashboardAuthorization = {
+    schemaVersion: "1" as const,
+    authorizationContextRef: {
+      kind: "authorization-context" as const,
+      reference: { entityId: "auth-1", versionId: "1" },
+    },
+    actorId: "actor-1",
+    projectId: "project-1",
+    grantedCapabilities: ["projection.query" as const],
+    spatialScopeRefs: [],
+    sourceAccessGrantRefs: [],
+    authorizationPolicyRef: { entityId: "access-policy", versionId: "v3" },
+    decidedAt: "2026-10-19T00:00:00.000Z",
+    invocation: { kind: "human" as const },
+  };
+
+  const dashboardQuery = (payload: object = {}) =>
+    RiskDashboardReadQueryV1Schema.safeParse({
+      queryId: "dashboard-query-1",
+      projectId: "project-1",
+      actorId: "actor-1",
+      requestedAt: "2026-10-19T00:00:00.000Z",
+      kind: "read",
+      payload,
+      authorization: dashboardAuthorization,
+    });
+
+  it("请求只接受单工程、可选精确空间与有界变化页参数", () => {
+    expect(dashboardQuery().success).toBe(true);
+    expect(
+      dashboardQuery({
+        spatialScopeRef: { kind: "spatial-scope", reference: { entityId: "s-1", versionId: "1" } },
+        timelinePageSize: 50,
+        timelineCursor: "cursor-1",
+      }).success,
+    ).toBe(true);
+    // 页大小越界拒绝。
+    expect(dashboardQuery({ timelinePageSize: 0 }).success).toBe(false);
+    expect(dashboardQuery({ timelinePageSize: 51 }).success).toBe(false);
+    // 空游标不是合法位置。
+    expect(dashboardQuery({ timelineCursor: "" }).success).toBe(false);
+    // 请求不接受自由过滤、来源字段袋或任意区间。
+    for (const forbidden of ["filter", "sources", "from", "to", "actorId", "role"]) {
+      expect(dashboardQuery({ [forbidden]: "x" }).success).toBe(false);
+    }
+  });
+
+  it("入口分支复用既有投影读能力，不新增能力位", () => {
+    expect(MODULE_BRANCH_CAPABILITY_V1["projection.dashboard-read"]).toBe("projection.query");
+    // 请求的授权必须确实持有该能力。
+    expect(
+      RiskDashboardReadQueryV1Schema.safeParse({
+        queryId: "dashboard-query-2",
+        projectId: "project-1",
+        actorId: "actor-1",
+        requestedAt: "2026-10-19T00:00:00.000Z",
+        kind: "read",
+        payload: {},
+        authorization: { ...dashboardAuthorization, grantedCapabilities: ["review-audit.read"] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("带变化事件的来源成功体必须有事件数组，无事件来源不得带该字段", () => {
+    const timelineEvent = {
+      source: "riskRecords" as const,
+      changeType: "risk-record-recorded" as const,
+      recordedAt: "2026-10-19T00:00:00.000000Z",
+      subjectRef: {
+        kind: "standardized-risk-record" as const,
+        reference: { entityId: "record-1", versionId: "1" },
+      },
+    };
+    const ready = {
+      kind: "ready" as const,
+      asOf: "2026-10-19T00:00:00.000Z",
+      data: { recordedVersionCount: 1, processCounts: [] },
+      events: [timelineEvent],
+    };
+    expect(RiskDashboardRiskRecordsSourceResultV1Schema.safeParse(ready).success).toBe(true);
+    // 缺事件数组即不是合法的变化页来源结果。
+    expect(
+      RiskDashboardRiskRecordsSourceResultV1Schema.safeParse({
+        kind: "ready",
+        asOf: ready.asOf,
+        data: ready.data,
+      }).success,
+    ).toBe(false);
+    // 无事件来源带 events 字段被拒绝，避免出现第二套事件语义。
+    expect(
+      RiskDashboardReviewsSourceResultV1Schema.safeParse({
+        kind: "ready",
+        asOf: ready.asOf,
+        data: { pendingCount: 0, reviewTypeCounts: [] },
+        events: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("来源失败体只表达安全错误，不带统计或范围", () => {
+    const failed = {
+      kind: "failed" as const,
+      error: {
+        code: "AUTHORIZATION_DENIED" as const,
+        category: "authorization" as const,
+        retryable: false,
+        requiredCapability: "risk-assessment.read" as const,
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v3" },
+        stageCode: "risk-dashboard.source-authorization",
+        occurredAt: "2026-10-19T00:00:00.000Z",
+        causalRunId: "dashboard-query-1",
+      },
+    };
+    expect(RiskDashboardAssessmentsSourceResultV1Schema.safeParse(failed).success).toBe(true);
+    expect(
+      RiskDashboardAssessmentsSourceResultV1Schema.safeParse({
+        ...failed,
+        data: { recordedAssessmentCount: 0, matrixLevelCounts: [] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("不安全计数与越界分组不得作为成功统计出现", () => {
+    const base = {
+      kind: "ready" as const,
+      asOf: "2026-10-19T00:00:00.000Z",
+      events: [],
+    };
+    // 负数与小数不是可呈现计数。
+    expect(
+      RiskDashboardRiskRecordsSourceResultV1Schema.safeParse({
+        ...base,
+        data: { recordedVersionCount: -1, processCounts: [] },
+      }).success,
+    ).toBe(false);
+    expect(
+      RiskDashboardRiskRecordsSourceResultV1Schema.safeParse({
+        ...base,
+        data: { recordedVersionCount: 1.5, processCounts: [] },
+      }).success,
+    ).toBe(false);
+    // 工序分组超出受控边界即整体拒绝，不截断为完整统计。
+    expect(
+      RiskDashboardRiskRecordsSourceResultV1Schema.safeParse({
+        ...base,
+        data: {
+          recordedVersionCount: 1,
+          processCounts: Array.from({ length: 257 }, (_, index) => ({
+            processNodeId: `node-${index}`,
+            count: 1,
+          })),
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("公共读结果严格拒绝额外字段与不安全统计", () => {
+    // 六个来源的统计体各自定型：不能互相借用字段。
+    const asOf = "2026-10-19T00:00:00.000Z";
+    const scope = { kind: "authorized-spaces" as const };
+    const summaries = {
+      riskRecords: {
+        kind: "ready" as const,
+        asOf,
+        scope,
+        data: { recordedVersionCount: 1, processCounts: [] },
+      },
+      assessments: {
+        kind: "ready" as const,
+        asOf,
+        scope,
+        data: { recordedAssessmentCount: 1, matrixLevelCounts: [] },
+      },
+      warnings: {
+        kind: "ready" as const,
+        asOf,
+        scope,
+        data: {
+          openTaskCount: 0,
+          openTaskWarningCount: 0,
+          warningLevelCounts: [],
+          unacknowledgedWarningCount: 0,
+          unacknowledgedLevelCounts: [],
+        },
+      },
+      reviews: {
+        kind: "ready" as const,
+        asOf,
+        scope: { kind: "project" as const },
+        data: { pendingCount: 0, reviewTypeCounts: [] },
+      },
+      documents: {
+        kind: "ready" as const,
+        asOf,
+        scope,
+        data: { sourceVersionCount: 0, parseStatusCounts: [], cleaningStatusCounts: [] },
+      },
+      monitoring: {
+        kind: "ready" as const,
+        asOf,
+        scope,
+        data: { seriesCount: 0, seriesWithBatchCount: 0, seriesWithSnapshotCount: 0 },
+      },
+    };
+    const result = {
+      kind: "succeeded" as const,
+      result: {
+        kind: "risk-dashboard" as const,
+        schemaVersion: "1" as const,
+        projectId: "project-1",
+        summaries,
+        timeline: {
+          // 变化页上界是六位小数微秒文本，与事件登记时刻同一形态。
+          asOf: "2026-10-19T00:00:00.000000Z",
+          items: [],
+          sources: {
+            riskRecords: { kind: "ready" as const },
+            assessments: { kind: "ready" as const },
+            warnings: { kind: "ready" as const },
+          },
+        },
+      },
+    };
+    expect(RiskDashboardReadResultV1Schema.safeParse(result).success).toBe(true);
+    expect(
+      RiskDashboardReadResultV1Schema.safeParse({
+        ...result,
+        result: { ...result.result, extra: "x" },
+      }).success,
+    ).toBe(false);
+    // 六来源缺一即不是完整总览。
+    const partialSummaries = { ...result.result.summaries };
+    delete partialSummaries.monitoring;
+    expect(
+      RiskDashboardReadResultV1Schema.safeParse({
+        ...result,
+        result: { ...result.result, summaries: partialSummaries },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("六来源结果各自独立定型：资料与监测的统计单位不混用", () => {
+    expect(
+      RiskDashboardDocumentsSourceResultV1Schema.safeParse({
+        kind: "ready",
+        asOf: "2026-10-19T00:00:00.000Z",
+        data: {
+          sourceVersionCount: 2,
+          parseStatusCounts: [{ parseStatus: "parsed", count: 2 }],
+          cleaningStatusCounts: [{ status: { kind: "not-registered" }, count: 2 }],
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      RiskDashboardMonitoringSourceResultV1Schema.safeParse({
+        kind: "ready",
+        asOf: "2026-10-19T00:00:00.000Z",
+        data: { seriesCount: 1, seriesWithBatchCount: 1, seriesWithSnapshotCount: 0 },
+      }).success,
+    ).toBe(true);
+    // 监测不得借用资料字段，资料不得借用监测字段。
+    expect(
+      RiskDashboardMonitoringSourceResultV1Schema.safeParse({
+        kind: "ready",
+        asOf: "2026-10-19T00:00:00.000Z",
+        data: { sourceVersionCount: 1, parseStatusCounts: [], cleaningStatusCounts: [] },
+      }).success,
     ).toBe(false);
   });
 });

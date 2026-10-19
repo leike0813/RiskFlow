@@ -2,9 +2,11 @@ import { writeFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { sha256CanonicalJson } from "@riskflow/core/persistence";
+import { AccessServiceError } from "@riskflow/core/access";
 import { DomainEventV1Schema } from "@riskflow/contracts/events";
 import {
   ActualAssessmentProofResultV1Schema,
+  RiskDashboardAssessmentsSourceResultV1Schema,
   type ActualAssessmentProofResultV1,
   type AssessmentInputSnapshotRefV1,
   type AssessmentPreparationSnapshotRefV1,
@@ -12,6 +14,10 @@ import {
   type RiskAssessmentReadQueryV1,
   type RiskAssessmentReadResultV1,
   type RiskAssessmentRecordRefV1,
+  type RiskDashboardAssessmentsSourceRequestV1,
+  type RiskDashboardAssessmentsSourceResultV1,
+  type RiskDashboardTimelineAfterV1,
+  type RiskDashboardTimelineEventV1,
   type SpatialScopeRefV1,
   type SourceVersionRefV1,
 } from "@riskflow/contracts/ports";
@@ -3082,4 +3088,322 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       expect(absent).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
     }, 300_000);
   });
+
+  // ---------------------------------------------------------------- CH-3 仪表盘评估来源
+
+  const DASHBOARD_AS_OF = "2099-12-31T23:59:59.999999Z";
+
+  /** 仪表盘来源请求：身份即 queryId，授权沿 `risk-assessment.read` 真实签发。 */
+  const dashboardRequest = async (input: {
+    readonly queryId: string;
+    readonly projectId?: string;
+    readonly spatialScopeRef?: SpatialScopeRefV1;
+    readonly asOf?: string;
+    readonly pageSize?: number;
+    readonly after?: RiskDashboardTimelineAfterV1;
+  }): Promise<RiskDashboardAssessmentsSourceRequestV1> => ({
+    queryId: input.queryId,
+    projectId: input.projectId ?? fixture.projectId,
+    actorId: fixture.managerId,
+    requestedAt: ENTRY_READ_AT,
+    authorization: await fixture.entryReadAuthorization(input.queryId, {
+      spatialScopeRefs: [fixture.accessRootScopeRef],
+      sourceVersionRefs: [fixture.sourceVersionRef],
+    }),
+    ...(input.spatialScopeRef === undefined ? {} : { spatialScopeRef: input.spatialScopeRef }),
+    timeline: {
+      asOf: input.asOf ?? DASHBOARD_AS_OF,
+      pageSize: input.pageSize ?? 50,
+      ...(input.after === undefined ? {} : { after: input.after }),
+    },
+  });
+
+  const expectDashboardDenied = (result: RiskDashboardAssessmentsSourceResultV1) => {
+    expect(result.kind).toBe("failed");
+    if (result.kind !== "failed") throw new Error("expected a closed dashboard failure");
+    expect(result.error).toMatchObject({
+      code: "AUTHORIZATION_DENIED",
+      category: "authorization",
+      retryable: false,
+    });
+  };
+
+  it("仪表盘评估来源按冻结矩阵×等级分组，缺矩阵不参与且变化页有界有序", async () => {
+    const pool = fixture.postgres.postgres.adminPool;
+    const records = [
+      await evaluateThrough({ suffix: "dashboard-matrix-a" }),
+      await evaluateThrough({ suffix: "dashboard-matrix-b" }),
+      await evaluateThrough({ suffix: "dashboard-matrix-c" }),
+    ];
+    const setMatrix = async (
+      input: AssessmentInputSnapshotRefV1,
+      matrix: { readonly entityId: string; readonly versionId: string } | undefined,
+    ) => {
+      if (matrix === undefined) {
+        await pool.query(
+          `UPDATE business.assessment_input_snapshots
+              SET snapshot_payload = snapshot_payload #- '{riskMatrixRef}'
+            WHERE project_id = $1 AND input_snapshot_id = $2 AND version_id = $3`,
+          [fixture.projectId, input.reference.entityId, input.reference.versionId],
+        );
+        return;
+      }
+      await pool.query(
+        `UPDATE business.assessment_input_snapshots
+            SET snapshot_payload = jsonb_set(snapshot_payload, '{riskMatrixRef}', $4::jsonb)
+          WHERE project_id = $1 AND input_snapshot_id = $2 AND version_id = $3`,
+        [
+          fixture.projectId,
+          input.reference.entityId,
+          input.reference.versionId,
+          JSON.stringify(matrix),
+        ],
+      );
+    };
+    await setMatrix(records[0]!.inputSnapshotRef, {
+      entityId: "dashboard-matrix-one",
+      versionId: "1",
+    });
+    await setMatrix(records[1]!.inputSnapshotRef, {
+      entityId: "dashboard-matrix-two",
+      versionId: "1",
+    });
+    // 缺冻结矩阵引用的记录保留在版本计数里，但不伪造任何矩阵分组。
+    await setMatrix(records[2]!.inputSnapshotRef, undefined);
+    await pool.query(
+      `UPDATE business.risk_assessment_records
+          SET risk_level_id = 'dashboard-shared-level'
+        WHERE project_id = $1 AND record_id = ANY($2)`,
+      [
+        fixture.projectId,
+        records.slice(0, 2).map((record) => record.assessmentRecordRef.reference.entityId),
+      ],
+    );
+
+    const result = await fixture.engine.readDashboard(
+      await dashboardRequest({ queryId: "c25-dashboard-matrix", pageSize: 1 }),
+    );
+    expect(result.kind).toBe("ready");
+    if (result.kind !== "ready") return;
+    expect(RiskDashboardAssessmentsSourceResultV1Schema.parse(result)).toEqual(result);
+    const storedRecords = await countRows(
+      fixture,
+      "business.risk_assessment_records",
+      fixture.projectId,
+    );
+    expect(result.data.recordedAssessmentCount).toBe(storedRecords);
+    // 同一等级在两个冻结矩阵下各成一组：矩阵精确版本参与分组键，不按等级名合并。
+    expect(
+      result.data.matrixLevelCounts.filter((entry) =>
+        entry.riskMatrixRef.entityId.startsWith("dashboard-matrix-"),
+      ),
+    ).toEqual([
+      {
+        riskMatrixRef: { entityId: "dashboard-matrix-one", versionId: "1" },
+        riskLevelId: "dashboard-shared-level",
+        count: 1,
+      },
+      {
+        riskMatrixRef: { entityId: "dashboard-matrix-two", versionId: "1" },
+        riskLevelId: "dashboard-shared-level",
+        count: 1,
+      },
+    ]);
+    expect(result.data.matrixLevelCounts.reduce((total, entry) => total + entry.count, 0)).toBe(
+      storedRecords - 1,
+    );
+    // 来源只取 pageSize+1 条候选，多出的一条用于全局合并判定。
+    expect(result.events).toHaveLength(2);
+    expect(result.events.every((event) => event.source === "assessments")).toBe(true);
+    expect(result.events.every((event) => event.changeType === "assessment-recorded")).toBe(true);
+    expect(result.events.every((event) => event.subjectRef.kind === "risk-assessment-record")).toBe(
+      true,
+    );
+    expect(result.events[0]!.recordedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/);
+
+    // 续页沿用同一个上界：逐页收集与库中的完整全序逐项相等，不重不漏。
+    const collected: RiskDashboardTimelineEventV1[] = [];
+    let after: RiskDashboardTimelineAfterV1 | undefined;
+    for (let page = 0; page < 100; page += 1) {
+      const current = await fixture.engine.readDashboard(
+        await dashboardRequest({
+          queryId: `c25-dashboard-page-${page}`,
+          pageSize: 2,
+          ...(after === undefined ? {} : { after }),
+        }),
+      );
+      if (current.kind !== "ready") throw new Error("expected a ready dashboard page");
+      collected.push(...current.events.slice(0, 2));
+      if (current.events.length <= 2) break;
+      const cursor = current.events[1]!;
+      after = {
+        recordedAt: cursor.recordedAt,
+        source: "assessments",
+        entityId: cursor.subjectRef.reference.entityId,
+        versionId: cursor.subjectRef.reference.versionId,
+      };
+    }
+    const ordered = await pool.query<{
+      entity_id: string;
+      version_id: string;
+      recorded_at: string;
+    }>(
+      `SELECT record_id AS entity_id,
+              version_id,
+              to_char(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS recorded_at
+         FROM business.risk_assessment_records
+        WHERE project_id = $1
+        ORDER BY recorded_at DESC, record_id ASC, version_id ASC`,
+      [fixture.projectId],
+    );
+    expect(
+      collected.map((event) => ({
+        entityId: event.subjectRef.reference.entityId,
+        versionId: event.subjectRef.reference.versionId,
+        recordedAt: event.recordedAt,
+      })),
+    ).toEqual(
+      ordered.rows.map((row) => ({
+        entityId: row.entity_id,
+        versionId: row.version_id,
+        recordedAt: row.recorded_at,
+      })),
+    );
+
+    // 上界只收窄变化页，不改变当前统计快照。
+    const bounded = await fixture.engine.readDashboard(
+      await dashboardRequest({
+        queryId: "c25-dashboard-asof",
+        asOf: "2000-01-01T00:00:00.000000Z",
+      }),
+    );
+    expect(bounded.kind).toBe("ready");
+    if (bounded.kind !== "ready") return;
+    expect(bounded.events).toEqual([]);
+    expect(bounded.data.recordedAssessmentCount).toBe(storedRecords);
+  }, 300_000);
+
+  it("仪表盘评估来源在能力缺失、资料撤权与越界空间上整体失败", async () => {
+    const verify = fixture.postgres.access.verify.bind(fixture.postgres.access);
+    const capability = vi
+      .spyOn(fixture.postgres.access, "verify")
+      .mockImplementation(async (request) => {
+        const decision = await verify(request);
+        return { ...decision, context: { ...decision.context, grantedCapabilities: [] } };
+      });
+    try {
+      expectDashboardDenied(
+        await fixture.engine.readDashboard(
+          await dashboardRequest({ queryId: "c25-dashboard-no-capability" }),
+        ),
+      );
+    } finally {
+      capability.mockRestore();
+    }
+
+    // 当前授权复验拒绝（撤权后）→ 同形授权失败，不折叠成零数据。
+    const filter = fixture.postgres.access.filterVisibleSources!;
+    fixture.postgres.access.filterVisibleSources = async () => {
+      throw new AccessServiceError({
+        code: "AUTHORIZATION_DENIED",
+        stage: "authorize.visible-sources",
+        occurredAt: ENTRY_READ_AT,
+        diagnosticRef: {
+          kind: "diagnostic-artifact",
+          reference: { entityId: "c25-dashboard-denied", versionId: "1" },
+        },
+        contextRefs: [],
+        retryable: false,
+        requiredCapability: "risk-assessment.read",
+        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      });
+    };
+    try {
+      expectDashboardDenied(
+        await fixture.engine.readDashboard(
+          await dashboardRequest({ queryId: "c25-dashboard-no-source" }),
+        ),
+      );
+    } finally {
+      fixture.postgres.access.filterVisibleSources = filter;
+    }
+
+    expectDashboardDenied(
+      await fixture.engine.readDashboard(
+        await dashboardRequest({
+          queryId: "c25-dashboard-foreign-scope",
+          spatialScopeRef: {
+            kind: "spatial-scope",
+            reference: { entityId: "dashboard-scope-not-granted", versionId: "1" },
+          },
+        }),
+      ),
+    );
+    expectDashboardDenied(
+      await fixture.engine.readDashboard(
+        await dashboardRequest({
+          queryId: "c25-dashboard-foreign-project",
+          projectId: "dashboard-foreign-project",
+        }),
+      ),
+    );
+  }, 300_000);
+
+  it("仪表盘评估来源分组超界整来源失败而非截断", async () => {
+    const pool = fixture.postgres.postgres.adminPool;
+    const seed = await evaluateThrough({ suffix: "dashboard-overflow-seed" });
+    const overflowInputs = await cloneSeedSql({
+      table: "assessment_input_snapshots",
+      alias: "i",
+      where: "WHERE i.input_snapshot_id = $1 AND i.version_id = $2",
+      overrides: {
+        input_snapshot_id: "'dashboard-overflow-input-' || n::text",
+        reference_digest: "lpad(to_hex(n + 3000000), 64, '0')",
+        snapshot_payload: `jsonb_set(i.snapshot_payload, '{riskMatrixRef}',
+          jsonb_build_object('entityId', 'dashboard-overflow-matrix-' || n::text,
+                             'versionId', '1'))`,
+      },
+    });
+    const overflowRecords = await cloneSeedSql({
+      table: "risk_assessment_records",
+      alias: "r",
+      where: "WHERE r.record_id = $1 AND r.version_id = $2",
+      overrides: {
+        record_id: "'dashboard-overflow-record-' || n::text",
+        input_snapshot_id: "'dashboard-overflow-input-' || n::text",
+        identity_digest: "lpad(to_hex(n + 3000000), 64, '0')",
+      },
+    });
+    try {
+      await pool.query(overflowInputs, [
+        seed.inputSnapshotRef.reference.entityId,
+        seed.inputSnapshotRef.reference.versionId,
+      ]);
+      await pool.query(overflowRecords, [
+        seed.assessmentRecordRef.reference.entityId,
+        seed.assessmentRecordRef.reference.versionId,
+      ]);
+      const result = await fixture.engine.readDashboard(
+        await dashboardRequest({ queryId: "c25-dashboard-overflow" }),
+      );
+      expect(result).toMatchObject({
+        kind: "failed",
+        error: {
+          code: "BUSINESS_BLOCKED",
+          blockerKind: "dashboard-group-limit",
+          retryable: false,
+        },
+      });
+      expect(RiskDashboardAssessmentsSourceResultV1Schema.parse(result)).toEqual(result);
+    } finally {
+      await pool.query(
+        "DELETE FROM business.risk_assessment_records WHERE project_id = $1 AND record_id LIKE 'dashboard-overflow-record-%'",
+        [fixture.projectId],
+      );
+      await pool.query(
+        "DELETE FROM business.assessment_input_snapshots WHERE project_id = $1 AND input_snapshot_id LIKE 'dashboard-overflow-input-%'",
+        [fixture.projectId],
+      );
+    }
+  }, 300_000);
 });

@@ -9,6 +9,12 @@ import {
   EngineeringReadMonitoringSnapshotSuccessV1Schema,
   EngineeringReadSegmentSetSuccessV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
+  ModuleErrorV1Schema,
+  RiskDashboardDocumentsSourceRequestV1Schema,
+  RiskDashboardDocumentsSourceResultV1Schema,
+  RiskDashboardMonitoringSourceRequestV1Schema,
+  RiskDashboardMonitoringSourceResultV1Schema,
+  type AuthorizationContextV1,
   type CleaningAvailabilityV1,
   type EngineeringDataCatalogPortV1,
   type EngineeringDataCatalogQueryV1,
@@ -19,7 +25,14 @@ import {
   type ModuleErrorV1,
   type MonitoringSnapshotCatalogItemV1,
   type MonitoringSeriesCatalogItemV1,
+  type RiskDashboardDocumentsSourceRequestV1,
+  type RiskDashboardDocumentsSourceResultV1,
+  type RiskDashboardDocumentsSourceV1,
+  type RiskDashboardMonitoringSourceRequestV1,
+  type RiskDashboardMonitoringSourceResultV1,
+  type RiskDashboardMonitoringSourceV1,
   type SourceCatalogItemV1,
+  type SourceCatalogParseStatusV1,
   type SourceVersionRefV1,
   SourceVersionRefV1Schema,
   SourceAccessGrantRefV1Schema,
@@ -30,6 +43,7 @@ import { EvidenceReferenceSchema } from "@riskflow/contracts/common";
 import type { ApplicabilityMetadataDimension } from "@riskflow/contracts/vocabulary";
 import {
   ACCESS_POLICY_REF_V1,
+  AccessServiceError,
   type AuthorizationDecisionV1,
   type LocalIdentityAccessV1,
 } from "@riskflow/core/access";
@@ -337,6 +351,8 @@ export interface PostgresEngineeringDataCatalogAdapterOptionsV1 {
   readonly access: LocalIdentityAccessV1;
   readonly artifactStore: ArtifactStoreV1;
   readonly resolvers: EngineeringDataReadResolversV1;
+  /** 仪表盘概况的统计时点；缺省取系统时钟。 */
+  readonly now?: () => Date;
 }
 
 /**
@@ -378,17 +394,90 @@ const catalogRequestDenied = (value: unknown): boolean => {
   );
 };
 
+/** 仪表盘分组超界：整来源失败，不截断后宣称完整。 */
+const dashboardBlocked = (queryId: string, blockerKind: string): ModuleErrorV1 =>
+  ModuleErrorV1Schema.parse({
+    code: "BUSINESS_BLOCKED",
+    category: "business-blocked",
+    retryable: false,
+    blockerKind,
+    blockerRef: { kind: "query-result", reference: { entityId: queryId, versionId: "1" } },
+    stageCode: "engineering-data.dashboard-read",
+    occurredAt: new Date().toISOString(),
+    causalRunId: queryId,
+  });
+
+/** 仪表盘来源无权：与目录读同形的稳定失败，不区分「无权」与「不存在」。 */
+const dashboardDenied = (queryId: string): ModuleErrorV1 =>
+  ModuleErrorV1Schema.parse({
+    code: "AUTHORIZATION_DENIED",
+    category: "authorization",
+    retryable: false,
+    requiredCapability: "engineering-data.read",
+    authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+    stageCode: "engineering-data.dashboard-read",
+    occurredAt: new Date().toISOString(),
+    causalRunId: queryId,
+  });
+
+/** 仪表盘资料分组上限：资料版本数超界即整来源失败。 */
+const DASHBOARD_SOURCE_GROUP_LIMIT_V1 = 256;
+
+/** 授权不符：C06 的授权失败形状，让调用方能区分拒权与技术故障。 */
+const dashboardDeniedError = (): AccessServiceError =>
+  new AccessServiceError({
+    code: "AUTHORIZATION_DENIED",
+    stage: "verify",
+    occurredAt: new Date().toISOString(),
+    diagnosticRef: {
+      kind: "diagnostic-artifact",
+      reference: { entityId: "engineering-data-dashboard-denied", versionId: "1" },
+    },
+    contextRefs: [],
+    retryable: false,
+    requiredCapability: "engineering-data.read",
+    authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+  });
+
+/** 仪表盘来源的技术故障：按 transient 收口，不折算成权限拒绝（design D-07）。 */
+const dashboardFailed = (queryId: string): ModuleErrorV1 =>
+  ModuleErrorV1Schema.parse({
+    code: "TRANSIENT_FAILURE",
+    category: "technical",
+    retryable: true,
+    attempt: 1,
+    retryPolicyRef: { entityId: "read-retry-policy", versionId: "v1" },
+    diagnosticRef: {
+      kind: "diagnostic-artifact",
+      reference: { entityId: "engineering-data-dashboard-failure", versionId: "1" },
+    },
+    stageCode: "engineering-data.dashboard-read",
+    occurredAt: new Date().toISOString(),
+    causalRunId: queryId,
+  });
+
+/** 清洗摘要读取所需的最小请求事实：目录读与仪表盘概况共用。 */
+interface DashboardCleaningQueryV1 {
+  readonly queryId: string;
+  readonly projectId: string;
+  readonly actorId: string;
+  readonly requestedAt: string;
+  readonly authorization: AuthorizationContextV1;
+}
+
 export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCatalogPortV1 {
   readonly #db: Kysely<CatalogDatabase>;
   readonly #access: LocalIdentityAccessV1;
   readonly #artifactStore: ArtifactStoreV1;
   readonly #resolvers: EngineeringDataReadResolversV1;
+  readonly #now: () => Date;
 
   constructor(options: PostgresEngineeringDataCatalogAdapterOptionsV1) {
     this.#db = options.db as unknown as Kysely<CatalogDatabase>;
     this.#access = options.access;
     this.#artifactStore = options.artifactStore;
     this.#resolvers = options.resolvers;
+    this.#now = options.now ?? (() => new Date());
   }
 
   async read(query: EngineeringDataCatalogQueryV1): Promise<EngineeringDataCatalogResultV1> {
@@ -454,6 +543,248 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
     });
     if (decision.context.actorId !== query.actorId) {
       throw new Error("catalog authorization denied");
+    }
+    return decision;
+  }
+
+  /**
+   * CH-3 仪表盘资料概况（design D-04、D-05）。
+   *
+   * 资料概况与资料目录共用同一可见候选关系：目录可见的资料版本集合就是概况的统计单位，
+   * 不在此处重新定义可见性，也不把目录分页结果累计成统计。
+   * 解析状态与清洗状态都取自登记事实：未登记清洗结果的资料版本不折算为任何可用性。
+   */
+  async readSourceDashboard(
+    request: RiskDashboardDocumentsSourceRequestV1,
+  ): Promise<RiskDashboardDocumentsSourceResultV1> {
+    const parsed = RiskDashboardDocumentsSourceRequestV1Schema.safeParse(request);
+    if (!parsed.success) {
+      return { kind: "failed", error: dashboardDenied(request.queryId) };
+    }
+    const valid = parsed.data;
+    try {
+      const decision = await this.#verifyDashboard(valid, "engineering-data.source-catalog");
+      const rows = await this.#db
+        .selectFrom("business.source_versions")
+        .select([
+          "source_version_id",
+          "version_id",
+          "source_access_grant_ref",
+          "source_version_ref",
+        ])
+        .where("project_id", "=", valid.projectId)
+        .where("access_status", "=", "ready")
+        .execute();
+      const grantedSources = new Set(
+        decision.context.sourceAccessGrantRefs.map((grant) => grant.reference.entityId),
+      );
+      const seenGrants = new Set<string>();
+      const visible = rows.filter((row) => {
+        if (grantedSources.size === 0) return true;
+        const grant = SourceAccessGrantRefV1Schema.safeParse(row.source_access_grant_ref);
+        if (!grant.success || !grantedSources.has(grant.data.reference.entityId)) return false;
+        const source = SourceVersionRefV1Schema.safeParse(row.source_version_ref);
+        if (
+          !source.success ||
+          source.data.reference.entityId !== row.source_version_id ||
+          source.data.reference.versionId !== row.version_id ||
+          seenGrants.has(grant.data.reference.entityId)
+        ) {
+          throw new Error("catalog source grant identity mismatch");
+        }
+        seenGrants.add(grant.data.reference.entityId);
+        return true;
+      });
+      if (visible.length > DASHBOARD_SOURCE_GROUP_LIMIT_V1) {
+        return { kind: "failed", error: dashboardBlocked(valid.queryId, "dashboard-group-limit") };
+      }
+      const sourceRefs = visible.map((row) => ({
+        kind: "source-version" as const,
+        reference: { entityId: row.source_version_id, versionId: row.version_id },
+      }));
+      const cleaning = await this.#cleaningSummaries(
+        {
+          queryId: valid.queryId,
+          projectId: valid.projectId,
+          actorId: valid.actorId,
+          requestedAt: valid.requestedAt,
+          authorization: decision.context,
+        },
+        decision,
+        sourceRefs,
+      );
+      const parseStatusCounts = new Map<SourceCatalogParseStatusV1, number>();
+      const cleaningStatusCounts = new Map<string, number>();
+      // 解析状态与资料目录同一判定：转换结果优先，其次段集，最后登记。
+      // 转换与段集各读一次工程登记行，不按资料版本逐条查询。
+      const conversions = await this.#db
+        .selectFrom("business.structured_document_conversions")
+        .select(["source_version_ref", "status", "completed_at"])
+        .where("project_id", "=", valid.projectId)
+        .execute();
+      const conversionBySource = new Map<string, { status: string; completedAt: string }>();
+      for (const row of conversions) {
+        const sourceRef = asVersionedRef(row.source_version_ref);
+        if (sourceRef === undefined) continue;
+        const key = refKey(sourceRef);
+        const existing = conversionBySource.get(key);
+        const completedAt = asIso(row.completed_at);
+        if (existing === undefined || existing.completedAt < completedAt) {
+          conversionBySource.set(key, { status: row.status, completedAt });
+        }
+      }
+      const segmentSetRows = await this.#db
+        .selectFrom("business.source_segment_sets")
+        .select(["source_version_id"])
+        .where("project_id", "=", valid.projectId)
+        .execute();
+      const sourceVersionIdsWithSegments = new Set(
+        segmentSetRows.map((row) => row.source_version_id),
+      );
+      for (const sourceRef of sourceRefs) {
+        const conversion = conversionBySource.get(refKey(sourceRef));
+        const parseStatus: SourceCatalogParseStatusV1 =
+          conversion === undefined
+            ? sourceVersionIdsWithSegments.has(sourceRef.reference.entityId)
+              ? "parsed"
+              : "registered"
+            : conversion.status === "succeeded"
+              ? "parsed"
+              : "failed";
+        parseStatusCounts.set(parseStatus, (parseStatusCounts.get(parseStatus) ?? 0) + 1);
+        const summary = cleaning.get(refKey(sourceRef));
+        const key =
+          summary === undefined ? "not-registered" : `availability:${summary.availability}`;
+        cleaningStatusCounts.set(key, (cleaningStatusCounts.get(key) ?? 0) + 1);
+      }
+      return RiskDashboardDocumentsSourceResultV1Schema.parse({
+        kind: "ready",
+        asOf: this.#now().toISOString(),
+        data: {
+          sourceVersionCount: sourceRefs.length,
+          parseStatusCounts: [...parseStatusCounts.entries()].map(([parseStatus, count]) => ({
+            parseStatus,
+            count,
+          })),
+          cleaningStatusCounts: [...cleaningStatusCounts.entries()].map(([key, count]) => ({
+            status:
+              key === "not-registered"
+                ? { kind: "not-registered" as const }
+                : {
+                    kind: "availability" as const,
+                    availability: key.slice("availability:".length) as CleaningAvailabilityV1,
+                  },
+            count,
+          })),
+        },
+      });
+    } catch (error) {
+      // 授权不符按拒权；未知 DB／I/O 异常按 transient 收口，不折算成权限拒绝（design D-07）。
+      if (error instanceof AccessServiceError) {
+        return { kind: "failed", error: dashboardDenied(valid.queryId) };
+      }
+      return { kind: "failed", error: dashboardFailed(valid.queryId) };
+    }
+  }
+
+  /**
+   * CH-3 仪表盘监测概况（design D-04、D-05）。
+   *
+   * 可见序列关系与监测目录一致：授权空间的后代闭包内的当前序列。
+   * 批次与快照只统计真实存在的登记行，不外推测点数量、时效或健康状态。
+   */
+  async readMonitoringDashboard(
+    request: RiskDashboardMonitoringSourceRequestV1,
+  ): Promise<RiskDashboardMonitoringSourceResultV1> {
+    const parsed = RiskDashboardMonitoringSourceRequestV1Schema.safeParse(request);
+    if (!parsed.success) {
+      return { kind: "failed", error: dashboardDenied(request.queryId) };
+    }
+    const valid = parsed.data;
+    try {
+      const decision = await this.#verifyDashboard(valid, "engineering-data.monitoring-catalog");
+      const covered = await this.#coveredScopeEntityIds(valid.projectId, decision);
+      const seriesRows = await this.#db
+        .selectFrom("business.monitoring_series")
+        .select(["series_id", "current_revision_id"])
+        .where("project_id", "=", valid.projectId)
+        .execute();
+      const revisionRows = await this.#db
+        .selectFrom("business.monitoring_series_revisions")
+        .select(["revision_id", "series_id", "spatial_scope_ref"])
+        .where("project_id", "=", valid.projectId)
+        .execute();
+      const revisionById = new Map(revisionRows.map((row) => [row.revision_id, row] as const));
+      const batchRows = await this.#db
+        .selectFrom("business.monitoring_batches")
+        .select(["series_id"])
+        .where("project_id", "=", valid.projectId)
+        .execute();
+      const snapshotRows = await this.#db
+        .selectFrom("business.monitoring_snapshots")
+        .select(["series_id"])
+        .where("project_id", "=", valid.projectId)
+        .execute();
+      const seriesWithBatch = new Set(batchRows.map((row) => row.series_id));
+      const seriesWithSnapshot = new Set(snapshotRows.map((row) => row.series_id));
+      const visibleSeries: string[] = [];
+      for (const series of seriesRows) {
+        if (series.current_revision_id === null) continue;
+        const revision = revisionById.get(series.current_revision_id);
+        if (revision === undefined) continue;
+        const scopeRef = asVersionedRef(revision.spatial_scope_ref);
+        if (
+          scopeRef !== undefined &&
+          covered !== null &&
+          !covered.has(scopeRef.reference.entityId)
+        ) {
+          continue;
+        }
+        visibleSeries.push(series.series_id);
+      }
+      if (visibleSeries.length > DASHBOARD_SOURCE_GROUP_LIMIT_V1) {
+        return { kind: "failed", error: dashboardBlocked(valid.queryId, "dashboard-group-limit") };
+      }
+      return RiskDashboardMonitoringSourceResultV1Schema.parse({
+        kind: "ready",
+        asOf: this.#now().toISOString(),
+        data: {
+          seriesCount: visibleSeries.length,
+          seriesWithBatchCount: visibleSeries.filter((id) => seriesWithBatch.has(id)).length,
+          seriesWithSnapshotCount: visibleSeries.filter((id) => seriesWithSnapshot.has(id)).length,
+        },
+      });
+    } catch (error) {
+      if (error instanceof AccessServiceError) {
+        return { kind: "failed", error: dashboardDenied(valid.queryId) };
+      }
+      return { kind: "failed", error: dashboardFailed(valid.queryId) };
+    }
+  }
+
+  /** 仪表盘来源授权复验：按来源分支重新判定当前权限。 */
+  async #verifyDashboard(
+    request: RiskDashboardDocumentsSourceRequestV1 | RiskDashboardMonitoringSourceRequestV1,
+    branch: ModuleBranchV1,
+  ): Promise<AuthorizationDecisionV1> {
+    if (
+      request.projectId !== request.authorization.projectId ||
+      request.actorId !== request.authorization.actorId ||
+      !request.authorization.grantedCapabilities.includes(MODULE_BRANCH_CAPABILITY_V1[branch])
+    ) {
+      throw dashboardDeniedError();
+    }
+    const decision = await this.#access.verify({
+      authorizationContextRef: request.authorization.authorizationContextRef,
+      invocationId: request.queryId,
+      projectId: request.projectId,
+      branch,
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+      requestedAt: request.requestedAt,
+    });
+    if (decision.context.actorId !== request.actorId) {
+      throw dashboardDeniedError();
     }
     return decision;
   }
@@ -746,7 +1077,7 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
   }
 
   async #cleaningSummaries(
-    query: Extract<EngineeringDataCatalogQueryV1, { kind: "source-catalog" }>,
+    query: DashboardCleaningQueryV1,
     decision: AuthorizationDecisionV1,
     sourceRefs: readonly VersionedRefValue[],
   ): Promise<
@@ -812,7 +1143,7 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
   }
 
   async #readCleaningArtifact(
-    query: Extract<EngineeringDataCatalogQueryV1, { kind: "source-catalog" }>,
+    query: DashboardCleaningQueryV1,
     decision: AuthorizationDecisionV1,
     artifactRefValue: unknown,
   ): Promise<DataCleaningResultV1 | undefined> {
@@ -1153,6 +1484,16 @@ const decodeCursor = (cursor: string | undefined): number | "invalid" => {
 
 const encodeCursor = (offset: number): string => `offset-${offset}`;
 
+/**
+ * 工程目录适配器的完整公开面：原目录 port 加上 CH-3 的两条仪表盘窄读。
+ * 组合根据此注入仪表盘来源，不需要额外包装层。
+ */
+export interface EngineeringDataCatalogAdapterV1
+  extends
+    EngineeringDataCatalogPortV1,
+    RiskDashboardDocumentsSourceV1,
+    RiskDashboardMonitoringSourceV1 {}
+
 export const createPostgresEngineeringDataCatalogAdapter = (
   options: PostgresEngineeringDataCatalogAdapterOptionsV1,
-): EngineeringDataCatalogPortV1 => new PostgresEngineeringDataCatalogAdapter(options);
+): EngineeringDataCatalogAdapterV1 => new PostgresEngineeringDataCatalogAdapter(options);

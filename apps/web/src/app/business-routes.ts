@@ -452,16 +452,6 @@ const BUSINESS_ROUTE_SEEDS_V1 = Object.freeze<BusinessRouteSeedV1[]>([
     load: () => import("../pages/EvidenceTracePage.js"),
   },
   {
-    routeId: "business.review.audit.runs",
-    path: "/review-audit/runs",
-    title: "运行记录",
-    section: "reviews",
-    regions: [{ key: "main", kind: "list" }],
-    contextRequirement: "project",
-    requiredViewCapability: null,
-    load: () => import("../pages/RunRecordsPage.js"),
-  },
-  {
     routeId: "business.report.export",
     path: "/report/export",
     title: "报告导出",

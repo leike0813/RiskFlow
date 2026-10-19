@@ -4,6 +4,7 @@ import {
   DataCleaningResultV1Schema,
   DataCleaningPolicyV2Schema,
 } from "@riskflow/core/engineering-data/cleaning";
+import { ACCESS_POLICY_REF_V1 } from "@riskflow/core/access";
 import { StructuredDocumentJsonLdV1Schema } from "@riskflow/core/engineering-data/document-conversion";
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import { PostgresDataCleaningStore } from "../../../src/engineering-data/cleaning/postgres-data-cleaning-store.js";
@@ -594,7 +595,7 @@ describe("C15 PostgreSQL data cleaning store", () => {
         category: "authorization",
         retryable: false,
         requiredCapability: "engineering-data.freeze",
-        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+        authorizationPolicyRef: ACCESS_POLICY_REF_V1,
       },
     });
     if (denied.kind !== "failed") return;

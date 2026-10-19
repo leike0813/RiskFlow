@@ -169,10 +169,15 @@ export const engineeringContextValueFrom = (
   // 工程有两条来源：URL 自带 `?project=`，以及用户在上下文栏按标识直接进入。
   // 上下文状态优先——否则「按标识进入」后 URL 仍为空，页面会一直停在引导态。
   const fromSearch = search === undefined ? undefined : selectorFromSearch(search);
+  // 同一工程保留 URL 的精确修订；切到别的工程时旧修订必须清除，不能拿来读新工程。
+  const sameProject = context.projectId !== null && fromSearch?.projectId === context.projectId;
   const selector =
     context.projectId === null
       ? { projectId: fromSearch?.projectId ?? null, revisionId: fromSearch?.revisionId ?? null }
-      : { projectId: context.projectId, revisionId: null };
+      : {
+          projectId: context.projectId,
+          revisionId: sameProject ? (fromSearch?.revisionId ?? null) : null,
+        };
   // 资料来源由用户在 URL 上声明。工程内跳转靠 `projectPathWithSelector` 带上它，
   // 少了这一份来源，深链读会被按「未声明来源」拒绝——这正是运行详情页读不回来的原因。
   // 上下文工程与 URL 工程不一致（用户在上下文栏切了工程）时来源属于旧工程，不继承。

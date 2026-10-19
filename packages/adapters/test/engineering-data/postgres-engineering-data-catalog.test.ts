@@ -9,10 +9,13 @@ import type {
   MonitoringSnapshotRefV1,
   ProjectRevisionRefV1,
   QueryResultRefV1,
+  RiskDashboardDocumentsSourceResultV1,
+  RiskDashboardMonitoringSourceResultV1,
   SourceSegmentSetRefV1,
   SourceVersionRefV1,
   SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
+import type { MonitoringIndicator } from "@riskflow/contracts/vocabulary";
 import type {
   RegisterMonitoringAvailabilityPolicyCommandV1,
   ReviseMonitoringSeriesCommandV1,
@@ -196,6 +199,124 @@ describe("C32 正式清洗目录读取", () => {
         payload: { pageSize: 50 },
       }),
     ).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+  });
+
+  it("仪表盘资料概况只计目录可见集合，未登记清洗结果的资料单独成组", async () => {
+    const dashboardWorld = await fixture.createWorld({
+      suffix: "c32-cleaning-dashboard",
+      documentKinds: ["docx", "csv"],
+      unconverted: ["csv"],
+      monitoring: false,
+    });
+    const converted = dashboardWorld.documents[0];
+    if (converted === undefined) throw new TypeError("C32 dashboard conversion missing");
+    const command = await dashboardWorld.freezeCommand("c32-cleaning-dashboard-freeze", {
+      actor: "uploader",
+      sourceVersionRefs: [converted.sourceVersionRef],
+    });
+    expect(
+      await dashboardWorld.pipeline.store.freezeIdentificationPreparation(command),
+    ).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    await completeCleaningTask(dashboardWorld.pipeline, fixture, {
+      workerId: "c32-cleaning-dashboard-worker",
+      projectId: dashboardWorld.projectId,
+    });
+    expect(
+      await dashboardWorld.pipeline.store.freezeIdentificationPreparation(command),
+    ).toMatchObject({ kind: "succeeded" });
+
+    const adapter = new PostgresEngineeringDataCatalogAdapter({
+      db: fixture.runtime.db,
+      access: fixture.access,
+      artifactStore: fixture.artifactStore,
+      resolvers: {
+        resolveReadQuery: (query, options) => fixture.registry.resolveReadQuery(query, options),
+        resolveSnapshotQuery: (query, options) =>
+          fixture.monitoringStore.resolveSnapshotQuery(query, options),
+      },
+    });
+    const authorization = await dashboardWorld.authorizeBranch(
+      "c32-cleaning-dashboard-source",
+      "engineering-data.source-catalog",
+    );
+    const dashboard = await adapter.readSourceDashboard({
+      queryId: "c32-cleaning-dashboard-source",
+      projectId: dashboardWorld.projectId,
+      actorId: authorization.actorId,
+      requestedAt: now,
+      authorization,
+      spatialScopeRef: dashboardWorld.spatialScopeRef,
+    });
+    expect(dashboard.kind).toBe("ready");
+    if (dashboard.kind !== "ready") return;
+    const catalog = await adapter.read({
+      kind: "source-catalog",
+      queryId: "c32-cleaning-dashboard-source-catalog",
+      projectId: dashboardWorld.projectId,
+      actorId: authorization.actorId,
+      requestedAt: now,
+      authorization,
+      payload: { pageSize: 50 },
+    });
+    if (catalog.kind !== "succeeded" || catalog.result.kind !== "source-catalog") {
+      throw new TypeError("C32 dashboard source catalog failed");
+    }
+    // 概况的统计单位与目录可见集合一致，不是分页累计。
+    expect(dashboard.data.sourceVersionCount).toBe(catalog.result.totalCount);
+    expect(dashboard.data.sourceVersionCount).toBe(2);
+    expect(dashboard.data.parseStatusCounts).toHaveLength(2);
+    expect(dashboard.data.parseStatusCounts).toEqual(
+      expect.arrayContaining([
+        { parseStatus: "parsed", count: 1 },
+        { parseStatus: "registered", count: 1 },
+      ]),
+    );
+    expect(dashboard.data.cleaningStatusCounts).toHaveLength(2);
+    expect(dashboard.data.cleaningStatusCounts).toEqual(
+      expect.arrayContaining([
+        { status: { kind: "availability", availability: "available" }, count: 1 },
+        { status: { kind: "not-registered" }, count: 1 },
+      ]),
+    );
+
+    // 当前授权只覆盖一份资料版本时，概况与目录给出同一可见集合。
+    const partialAuthorization = await dashboardWorld.authorizeBranch(
+      "c32-cleaning-dashboard-partial",
+      "engineering-data.source-catalog",
+      [converted.sourceVersionRef],
+    );
+    const partialDashboard = await adapter.readSourceDashboard({
+      queryId: "c32-cleaning-dashboard-partial-source",
+      projectId: dashboardWorld.projectId,
+      actorId: partialAuthorization.actorId,
+      requestedAt: now,
+      authorization: partialAuthorization,
+      spatialScopeRef: dashboardWorld.spatialScopeRef,
+    });
+    if (partialDashboard.kind !== "ready") {
+      throw new TypeError("C32 partial dashboard read failed");
+    }
+    const partialCatalog = await adapter.read({
+      kind: "source-catalog",
+      queryId: "c32-cleaning-dashboard-partial-catalog",
+      projectId: dashboardWorld.projectId,
+      actorId: partialAuthorization.actorId,
+      requestedAt: now,
+      authorization: partialAuthorization,
+      payload: { pageSize: 50 },
+    });
+    if (partialCatalog.kind !== "succeeded" || partialCatalog.result.kind !== "source-catalog") {
+      throw new TypeError("C32 partial source catalog failed");
+    }
+    expect(partialCatalog.result.items.map((item) => item.sourceVersionRef)).toEqual([
+      converted.sourceVersionRef,
+    ]);
+    expect(partialDashboard.data.sourceVersionCount).toBe(partialCatalog.result.totalCount);
+    expect(partialDashboard.data.sourceVersionCount).toBe(1);
+    expect(partialDashboard.data.parseStatusCounts).toEqual([{ parseStatus: "parsed", count: 1 }]);
+    expect(partialDashboard.data.cleaningStatusCounts).toEqual([
+      { status: { kind: "availability", availability: "available" }, count: 1 },
+    ]);
   });
 });
 
@@ -970,5 +1091,198 @@ describe("C32 PostgreSQL engineering data catalog adapter", () => {
     // 摘要条目只承载引用，不泄露 descriptor 里的查询/游标指纹。
     expect(JSON.stringify(snapshot)).not.toContain("monitoring-query-fingerprint");
     expect(JSON.stringify(snapshot)).not.toContain("monitoring-cursor-fingerprint");
+  });
+
+  it("仪表盘监测概况只数真实存在批次与冻结快照的可见序列", async () => {
+    const reviseSeries = async (entityId: string, indicator: MonitoringIndicator) => {
+      const seriesRef = {
+        kind: "monitoring-series" as const,
+        reference: { entityId, versionId: "1" },
+      };
+      const revised = await fixture.monitoringStore.reviseSeries({
+        commandId: `c32-dashboard-${entityId}`,
+        idempotencyKey: `c32-dashboard-${entityId}`,
+        projectId,
+        actorId: managerId,
+        issuedAt: now,
+        authorization: await authorization(
+          `c32-dashboard-${entityId}`,
+          "engineering-data.register-monitoring-batch",
+          [sourceVersionRef],
+        ),
+        monitoringSeriesRef: seriesRef,
+        expectedVersion: "none",
+        projectRevisionRef,
+        spatialScopeRef,
+        monitoringObject: "settlement sensor",
+        monitoringIndicator: indicator,
+        parameterCode: "settlement",
+        canonicalUnit: "mm",
+        unitConversions: [{ fromUnit: "cm", scale: 10, offset: 0 }],
+        effectivePeriod: { validFrom: now },
+      });
+      if (revised.kind !== "succeeded") throw new TypeError("C32 dashboard series failed");
+      return seriesRef;
+    };
+    const batchSeriesRef = await reviseSeries("c32-dashboard-batch-series", "地下水位");
+    await reviseSeries("c32-dashboard-empty-series", "泥水压力");
+
+    const evidence = {
+      locator: { sourceSegmentId: `${sourceVersionRef.reference.entityId}-chapter_1-segment_1` },
+      sourceVersion: sourceVersionRef.reference,
+    };
+    const lines = [
+      JSON.stringify({
+        schemaVersion: "1",
+        mediaType: "application/x-ndjson",
+        monitoringSeriesRef: batchSeriesRef,
+        projectRevisionRef,
+        spatialScopeRef,
+        sourceVersionRef,
+        sourceSegmentSetRef,
+        productionStrategyRef: { entityId: "monitoring-production", versionId: "1" },
+        sampleCount: 5,
+      }),
+      ...[6, 7, 8, 9, 10].map((second) =>
+        JSON.stringify({
+          sourceSampleKey: `dashboard-s-${second}`,
+          sampledAt: `2030-01-01T00:00:${String(second).padStart(2, "0")}.000Z`,
+          value: second * 2,
+          unit: "mm",
+          evidenceReferences: [evidence],
+        }),
+      ),
+    ].join("\n");
+    const sampleArtifact = await fixture.artifactStore.put(
+      ArtifactPutCommandV1Schema.parse({
+        schemaVersion: "1",
+        commandId: "c32-dashboard-batch-artifact",
+        idempotencyKey: "c32-dashboard-batch-artifact",
+        projectId,
+        actorId: managerId,
+        issuedAt: now,
+        authorization: await authorization(
+          "c32-dashboard-batch-artifact",
+          "engineering-data.register-monitoring-batch",
+          [sourceVersionRef],
+        ),
+        requiredCapability: "engineering-data.write",
+        artifactKind: "content",
+        artifactId: "c32-dashboard-batch-artifact",
+        purposeCode: "engineering-data.register-monitoring-batch",
+        mediaType: "application/x-ndjson",
+        parentArtifactRefs: [],
+        evidenceReferences: [evidence],
+        additionalSpatialScopeRefs: [],
+        additionalSourceAccessGrantRefs: [],
+      }),
+      (async function* () {
+        yield new TextEncoder().encode(lines);
+      })(),
+    );
+    const batch = await fixture.registry.apply({
+      commandId: "c32-dashboard-batch",
+      idempotencyKey: "c32-dashboard-batch",
+      projectId,
+      actorId: managerId,
+      issuedAt: now,
+      authorization: await authorization(
+        "c32-dashboard-batch",
+        "engineering-data.register-monitoring-batch",
+        [sourceVersionRef],
+      ),
+      kind: "register-monitoring-batch",
+      payload: {
+        monitoringSeriesRef: batchSeriesRef,
+        deliveryKey: "c32-dashboard-batch",
+        sampleArtifactRef: sampleArtifact.artifactRef,
+        window: { from: "2030-01-01T00:00:05.000Z", to: "2030-01-01T00:00:11.000Z" },
+        relation: { kind: "original" },
+      },
+    });
+    if (batch.kind !== "succeeded") throw new TypeError("C32 dashboard batch failed");
+
+    const dashboard = await catalog.readMonitoringDashboard({
+      queryId: "c32-dashboard-monitoring",
+      projectId,
+      actorId: managerId,
+      requestedAt: now,
+      authorization: await authorization(
+        "c32-dashboard-monitoring",
+        "engineering-data.monitoring-catalog",
+      ),
+      spatialScopeRef,
+    });
+    expect(dashboard.kind).toBe("ready");
+    if (dashboard.kind !== "ready") return;
+    // 既有序列同时有批次与冻结快照；批次序列与空序列都不得被折算成监测点或测值。
+    expect(dashboard.data).toEqual({
+      seriesCount: 3,
+      seriesWithBatchCount: 2,
+      seriesWithSnapshotCount: 1,
+    });
+  });
+
+  it("仪表盘资料与监测概况无权同形失败且不返回计数", async () => {
+    const sourceAuthorization = await authorization(
+      "c32-dashboard-documents-denied",
+      "engineering-data.source-catalog",
+    );
+    const monitoringAuthorization = await authorization(
+      "c32-dashboard-monitoring-denied",
+      "engineering-data.monitoring-catalog",
+    );
+    const expectDenied = (
+      result: RiskDashboardDocumentsSourceResultV1 | RiskDashboardMonitoringSourceResultV1,
+    ): void => {
+      expect(result.kind).toBe("failed");
+      if (result.kind !== "failed") return;
+      expect(result.error.code).toBe("AUTHORIZATION_DENIED");
+      expect("data" in result).toBe(false);
+    };
+    const noCapability: AuthorizationContextV1 = {
+      ...sourceAuthorization,
+      grantedCapabilities: ["projection.query"],
+    };
+    const crossProject: AuthorizationContextV1 = {
+      ...sourceAuthorization,
+      projectId: "project-c32-other",
+    };
+    expectDenied(
+      await catalog.readSourceDashboard({
+        queryId: "c32-dashboard-documents-no-capability",
+        projectId,
+        actorId: managerId,
+        requestedAt: now,
+        authorization: noCapability,
+      }),
+    );
+    expectDenied(
+      await catalog.readSourceDashboard({
+        queryId: "c32-dashboard-documents-cross-project",
+        projectId,
+        actorId: managerId,
+        requestedAt: now,
+        authorization: crossProject,
+      }),
+    );
+    expectDenied(
+      await catalog.readMonitoringDashboard({
+        queryId: "c32-dashboard-monitoring-no-capability",
+        projectId,
+        actorId: managerId,
+        requestedAt: now,
+        authorization: { ...monitoringAuthorization, grantedCapabilities: ["projection.query"] },
+      }),
+    );
+    expectDenied(
+      await catalog.readMonitoringDashboard({
+        queryId: "c32-dashboard-monitoring-cross-project",
+        projectId,
+        actorId: managerId,
+        requestedAt: now,
+        authorization: { ...monitoringAuthorization, projectId: "project-c32-other" },
+      }),
+    );
   });
 });

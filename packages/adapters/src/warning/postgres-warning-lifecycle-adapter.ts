@@ -44,6 +44,8 @@ import {
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
   OpenWarningCommandV1Schema,
+  RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1,
+  riskDashboardTimelineResumeV1,
   RiskInputVersionRefV1Schema,
   SpatialScopeRefV1Schema,
   WARNING_RESPONSE_READ_OPERATIONS_V1,
@@ -76,6 +78,9 @@ import {
   type RiskInputVersionRefV1,
   type ResponseRecommendationRefV1,
   type RiskAssessmentRecordRefV1,
+  type RiskDashboardTimelineEventV1,
+  type RiskDashboardWarningsSourceRequestV1,
+  type RiskDashboardWarningsSourceResultV1,
   type RouteDecisionRefV1,
   type SpatialScopeRefV1,
   type WarningAcknowledgementViewV1,
@@ -2090,9 +2095,13 @@ export class PostgresWarningLifecycleAdapter
    * 只读复验：沿 `warning-response.read` 分支复验当前授权上下文。`redacted` 表示授权已撤销或
    * 不可判定，此时失败闭合而不是当作「没有数据」——两者对调用方的含义完全不同。
    */
-  async #verifyReadAuthorization(
-    command: WarningResponseReadQueryV1,
-  ): Promise<AuthorizationContextV1 | undefined> {
+  async #verifyReadAuthorization(command: {
+    readonly queryId: string;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<AuthorizationContextV1 | undefined> {
     const decision = await this.#access
       .verify({
         authorizationContextRef: command.authorization.authorizationContextRef,
@@ -2119,7 +2128,7 @@ export class PostgresWarningLifecycleAdapter
     return context;
   }
 
-  #readDenied(query: WarningResponseReadQueryV1): ModuleErrorV1 {
+  #readDenied(query: { readonly queryId: string }): ModuleErrorV1 {
     return ModuleErrorV1Schema.parse({
       code: "AUTHORIZATION_DENIED",
       category: "authorization",
@@ -2136,7 +2145,7 @@ export class PostgresWarningLifecycleAdapter
    * 读面失败闭合：`blockerKind` 给出稳定详情码，`blockerRef` 按 `<查询身份>:<详情码>` 编码，
    * 让调用方既拿到类型化错误，也能在不解析正文的前提下定位到具体读操作。
    */
-  #readBlocked(query: WarningResponseReadQueryV1, detailCode: string): ModuleErrorV1 {
+  #readBlocked(query: { readonly queryId: string }, detailCode: string): ModuleErrorV1 {
     return ModuleErrorV1Schema.parse({
       code: "BUSINESS_BLOCKED",
       category: "business-blocked",
@@ -2152,7 +2161,7 @@ export class PostgresWarningLifecycleAdapter
     });
   }
 
-  #readUnsupported(query: WarningResponseReadQueryV1): ModuleErrorV1 {
+  #readUnsupported(query: { readonly queryId: string }): ModuleErrorV1 {
     return ModuleErrorV1Schema.parse({
       code: "UNSUPPORTED_CONTRACT",
       category: "technical",
@@ -2266,14 +2275,230 @@ export class PostgresWarningLifecycleAdapter
   }
 
   /**
+   * CH-3 仪表盘预警来源（design D-04、D-05、D-06）。
+   *
+   * 只读 C26 自有表：预警记录、任务、任务—预警关联与确认事实。空间关系沿
+   * `#readableScopeIds` 的可见空间；等级分布是全部预警目录等级，另给出「尚未确认」的
+   * 等级分组——只有后者能作为按等级待决的分母。变化页按 warning_records 的登记时序给出
+   * 记录版本，不表达风险升降或解除。
+   */
+  async readDashboard(
+    request: RiskDashboardWarningsSourceRequestV1,
+  ): Promise<RiskDashboardWarningsSourceResultV1> {
+    const denied = (): RiskDashboardWarningsSourceResultV1 => ({
+      kind: "failed",
+      error: this.#readDenied({ queryId: request.queryId }),
+    });
+    try {
+      if (
+        request.projectId !== request.authorization.projectId ||
+        request.actorId !== request.authorization.actorId ||
+        !request.authorization.grantedCapabilities.includes("warning-response.read")
+      ) {
+        return denied();
+      }
+      const decision = await this.#access
+        .verify({
+          authorizationContextRef: request.authorization.authorizationContextRef,
+          invocationId: request.queryId,
+          projectId: request.projectId,
+          branch: "warning-response.read",
+          requestedSpatialScopeRefs: [],
+          requestedSourceVersionRefs: [],
+          requestedAt: request.requestedAt,
+        })
+        .catch((error: unknown) => {
+          if (error instanceof AccessServiceError) return undefined;
+          throw error;
+        });
+      if (decision === undefined || decision.redacted) return denied();
+      const verified = decision.context;
+      if (
+        verified.projectId !== request.projectId ||
+        verified.actorId !== request.actorId ||
+        !verified.grantedCapabilities.includes("warning-response.read")
+      ) {
+        return denied();
+      }
+      const scopeIds = this.#dashboardScopeIds(request, verified);
+      if (scopeIds === undefined) return denied();
+
+      const summary = (
+        await sql<{
+          readonly open_task_count: number;
+          readonly open_task_warning_count: number;
+          readonly level_counts: readonly { warningLevel: string; count: number }[];
+          readonly unacknowledged_count: number;
+          readonly unacknowledged_level_counts: readonly {
+            warningLevel: string;
+            count: number;
+          }[];
+        }>`
+        SELECT
+          (SELECT count(*)::int FROM business.warning_response_tasks t
+            WHERE t.project_id = ${request.projectId}
+              AND t.status = 'open'
+              AND t.spatial_scope_entity_id = ANY(${scopeIds})) AS open_task_count,
+          (SELECT count(DISTINCT w.warning_record_id)::int
+             FROM business.warning_response_task_warnings w
+             JOIN business.warning_response_tasks t
+               ON t.project_id = w.project_id AND t.task_id = w.task_id
+            WHERE w.project_id = ${request.projectId}
+              AND t.status = 'open'
+              AND t.spatial_scope_entity_id = ANY(${scopeIds})) AS open_task_warning_count,
+          COALESCE(
+            (SELECT jsonb_agg(
+                      jsonb_build_object('warningLevel', bounded.risk_level_id, 'count', bounded.count)
+                      ORDER BY bounded.risk_level_id)
+               FROM (SELECT r.risk_level_id, count(*)::int AS count
+                       FROM business.warning_records r
+                      WHERE r.project_id = ${request.projectId}
+                        AND r.spatial_scope_entity_id = ANY(${scopeIds})
+                      GROUP BY r.risk_level_id
+                      LIMIT ${RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1 + 1}) bounded),
+            '[]'::jsonb) AS level_counts,
+          (SELECT count(*)::int FROM business.warning_records r
+            WHERE r.project_id = ${request.projectId}
+              AND r.spatial_scope_entity_id = ANY(${scopeIds})
+              AND NOT EXISTS (SELECT 1 FROM business.warning_acknowledgements a
+                               WHERE a.project_id = r.project_id
+                                 AND a.warning_record_id = r.warning_record_id
+                                 AND a.warning_record_version_id = r.version_id)) AS unacknowledged_count,
+          COALESCE(
+            (SELECT jsonb_agg(
+                      jsonb_build_object('warningLevel', bounded.risk_level_id, 'count', bounded.count)
+                      ORDER BY bounded.risk_level_id)
+               FROM (SELECT r.risk_level_id, count(*)::int AS count
+                       FROM business.warning_records r
+                      WHERE r.project_id = ${request.projectId}
+                        AND r.spatial_scope_entity_id = ANY(${scopeIds})
+                        AND NOT EXISTS (SELECT 1 FROM business.warning_acknowledgements a
+                                         WHERE a.project_id = r.project_id
+                                           AND a.warning_record_id = r.warning_record_id
+                                           AND a.warning_record_version_id = r.version_id)
+                      GROUP BY r.risk_level_id
+                      LIMIT ${RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1 + 1}) bounded),
+            '[]'::jsonb) AS unacknowledged_level_counts
+      `.execute(this.#db)
+      ).rows[0]!;
+
+      if (
+        summary.level_counts.length > RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1 ||
+        summary.unacknowledged_level_counts.length > RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1
+      ) {
+        return {
+          kind: "failed",
+          error: this.#readBlocked({ queryId: request.queryId }, "dashboard-group-limit"),
+        };
+      }
+
+      const { asOf, pageSize, after } = request.timeline;
+      const resume =
+        after === undefined ? undefined : riskDashboardTimelineResumeV1("warnings", after);
+      // 续页谓词作为独立片段嵌入同一条查询：排序与过滤在同一 SQL 表达，不经 JS 重新排序。
+      const resumeClause =
+        resume === undefined
+          ? sql``
+          : resume.kind === "before"
+            ? sql`AND w.recorded_at < ${resume.recordedAt}::timestamptz`
+            : resume.kind === "at-or-before"
+              ? sql`AND w.recorded_at <= ${resume.recordedAt}::timestamptz`
+              : sql`AND (
+                  w.recorded_at < ${resume.recordedAt}::timestamptz
+                  OR (w.recorded_at = ${resume.recordedAt}::timestamptz
+                      AND w.warning_record_id > ${resume.entityId})
+                  OR (w.recorded_at = ${resume.recordedAt}::timestamptz
+                      AND w.warning_record_id = ${resume.entityId}
+                      AND w.version_id > ${resume.versionId}))`;
+      const eventRows = await sql<{
+        readonly entity_id: string;
+        readonly version_id: string;
+        readonly recorded_at: string;
+        readonly occurred_at: string;
+      }>`
+        SELECT w.warning_record_id AS entity_id,
+               w.version_id AS version_id,
+               to_char(w.recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS recorded_at,
+               to_char(w.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_at
+          FROM business.warning_records w
+         WHERE w.project_id = ${request.projectId}
+           AND w.spatial_scope_entity_id = ANY(${scopeIds})
+           AND w.recorded_at <= ${asOf}::timestamptz
+           ${resumeClause}
+         ORDER BY w.recorded_at DESC, w.warning_record_id ASC, w.version_id ASC
+         LIMIT ${pageSize + 1}
+      `.execute(this.#db);
+      const events: RiskDashboardTimelineEventV1[] = eventRows.rows.map((row) => ({
+        source: "warnings" as const,
+        changeType: "warning-recorded" as const,
+        recordedAt: row.recorded_at,
+        subjectRef: WarningRecordRefV1Schema.parse({
+          kind: "warning-record",
+          reference: { entityId: row.entity_id, versionId: row.version_id },
+        }),
+        occurredAt: row.occurred_at,
+      }));
+
+      return {
+        kind: "ready",
+        asOf,
+        data: {
+          openTaskCount: this.#dashboardCount(summary.open_task_count, request.queryId),
+          openTaskWarningCount: this.#dashboardCount(
+            summary.open_task_warning_count,
+            request.queryId,
+          ),
+          warningLevelCounts: summary.level_counts.map((entry) => ({
+            warningLevel: entry.warningLevel,
+            count: this.#dashboardCount(entry.count, request.queryId),
+          })),
+          unacknowledgedWarningCount: this.#dashboardCount(
+            summary.unacknowledged_count,
+            request.queryId,
+          ),
+          unacknowledgedLevelCounts: summary.unacknowledged_level_counts.map((entry) => ({
+            warningLevel: entry.warningLevel,
+            count: this.#dashboardCount(entry.count, request.queryId),
+          })),
+        },
+        events,
+      };
+    } catch (error) {
+      const typed = ModuleErrorV1Schema.safeParse(error);
+      if (typed.success) return { kind: "failed", error: typed.data };
+      return { kind: "failed", error: this.#toModuleError(error, request.queryId) };
+    }
+  }
+
+  /** 仪表盘请求的空间必须是当前授权空间之一；否则按拒权收口。 */
+  #dashboardScopeIds(
+    request: RiskDashboardWarningsSourceRequestV1,
+    verified: AuthorizationContextV1,
+  ): string[] | undefined {
+    const granted = verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
+    if (request.spatialScopeRef === undefined) return granted;
+    if (!granted.includes(request.spatialScopeRef.reference.entityId)) return undefined;
+    return [request.spatialScopeRef.reference.entityId];
+  }
+
+  /** 统计量必须是可安全呈现的非负整数；超界整来源失败，不溢出也不夹取。 */
+  #dashboardCount(value: number | string, queryId: string): number {
+    const count = Number(value);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error(`dashboard-count-overflow:${queryId}`);
+    }
+    return count;
+  }
+
+  /**
    * 请求的空间范围必须是当前已验证授权范围内的同一空间身份，否则整体拒绝。
    * 目标不存在、跨空间与被撤权对无权用户同形。
    */
   #readableScopeIds(
-    command: WarningResponseReadQueryV1,
+    request: WarningResponseReadQueryV1,
     verified: AuthorizationContextV1,
   ): string[] {
-    const requested = c26RequestedScopeRef(command.payload);
+    const requested = c26RequestedScopeRef(request.payload);
     if (requested === undefined) {
       return verified.spatialScopeRefs.map((scope) => scope.reference.entityId);
     }
@@ -2282,7 +2507,7 @@ export class PostgresWarningLifecycleAdapter
         sameVersionReference(scope.reference, requested.reference),
       )
     ) {
-      throw new WarningResponseReadFailure(this.#readDenied(command));
+      throw new WarningResponseReadFailure(this.#readDenied(request));
     }
     return [requested.reference.entityId];
   }

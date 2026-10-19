@@ -119,6 +119,10 @@
     "./calibration": {
       "types": "./dist/calibration/index.d.ts",
       "import": "./dist/calibration/index.js"
+    },
+    "./risk-dashboard": {
+      "types": "./dist/risk-dashboard/index.d.ts",
+      "import": "./dist/risk-dashboard/index.js"
     }
   }
 }

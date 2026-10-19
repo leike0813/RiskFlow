@@ -31,6 +31,7 @@ import {
 } from "../../../packages/adapters/dist/workflow/index.js";
 import { createPostgresQualityProjectionAdapter } from "../../../packages/adapters/dist/quality/index.js";
 import { ReportExportPolicyV1Schema } from "../../../packages/core/dist/workflow/index.js";
+import { createRiskDashboardReadService } from "../../../packages/core/dist/risk-dashboard/index.js";
 import {
   SYSTEM_OPERATIONS_REASON_CODES_V1,
   SYSTEM_OPERATIONS_COMPONENT_IDS_V1,
@@ -77,6 +78,8 @@ export const REQUIRED_API_PORT_METHODS_V1 = Object.freeze({
   systemOperationsRead: ["read"],
   // CH-2：入口能力读面必须来自真实 C06 实现；缺失即拒绝装配，不降级为空能力。
   projectAccessPresentation: ["read"],
+  // CH-3：仪表盘公共读面由六个来源的所属窄读组合而成，缺一个来源即拒绝装配。
+  riskDashboardRead: ["read"],
 });
 
 /**
@@ -85,7 +88,8 @@ export const REQUIRED_API_PORT_METHODS_V1 = Object.freeze({
  */
 export const REQUIRED_API_PROVIDERS_V1 = Object.freeze({
   db: null,
-  access: ["verify", "authorize"],
+  // CH-3：仪表盘的六个来源各自按业务分支取当前决定，依赖同一 C06 的业务动作判定。
+  access: ["verify", "authorize", "authorizeBusinessAction"],
   artifactStore: ["put", "open"],
   // engineeringData 端口与 catalog resolvers 都取自同一真实 context-source registry。
   contextSource: ["apply", "freeze", "read", "resolveReadQuery"],
@@ -93,15 +97,16 @@ export const REQUIRED_API_PROVIDERS_V1 = Object.freeze({
   knowledgeModeling: ["govern", "resolve", "retrieve"],
   applicableRuleSetAssembly: ["assemble"],
   riskIdentification: ["plan", "analyze", "finalize"],
-  riskIdentificationRead: ["read"],
+  // CH-3：三个所属窄读方法是仪表盘来源的实现本体，缺任一即拒绝装配。
+  riskIdentificationRead: ["read", "readDashboard"],
   riskAssessment: ["prepare", "evaluate"],
-  riskAssessmentRead: ["read"],
+  riskAssessmentRead: ["read", "readDashboard"],
   workflow: ["startRun", "resumeRun", "cancelRun"],
   humanDecisionFeedback: ["record"],
   reviewAudit: ["requestReview", "decideReview", "trace"],
   agentTask: ["startTask", "resumeTask", "cancelTask", "confirmCommand"],
   agentTaskRead: ["read"],
-  warningLifecycle: ["open", "acknowledge", "read"],
+  warningLifecycle: ["open", "acknowledge", "read", "readDashboard"],
   recommendation: ["measureCandidates", "createCandidate", "validateAndRecord"],
   responseLifecycle: ["calculateDeviation"],
   calibration: ["createSuggestion", "createGovernanceDraft", "recordReviewOutcome"],
@@ -366,6 +371,19 @@ export const createDeploymentApiPortsV1 = (options) => {
     db: options.db,
     authorization: options.access,
   });
+  // CH-3：仪表盘只组合六来源的所属窄读方法，不在此处另写聚合规则或 SQL。
+  const riskDashboardRead = createRiskDashboardReadService({
+    sources: {
+      riskRecords: options.riskIdentificationRead,
+      assessments: options.riskAssessmentRead,
+      warnings: options.warningLifecycle,
+      reviews: reviewQueueRead,
+      documents: engineeringDataCatalog,
+      monitoring: engineeringDataCatalog,
+    },
+    authorizeBusinessAction: (input) => options.access.authorizeBusinessAction(input),
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
 
   const ports = {
     ...(options.sourceOriginal === undefined ? {} : { sourceOriginal: options.sourceOriginal }),
@@ -429,6 +447,8 @@ export const createDeploymentApiPortsV1 = (options) => {
     // CH-2 D-07：入口能力读面直接取同一真实 C06 适配器上的独立 port；
     // 缺实现时由 REQUIRED_API_PORT_METHODS_V1 的装配期检查拒绝，不补空能力。
     projectAccessPresentation: options.access.projectAccessPresentation,
+    // CH-3：仪表盘公共读面。
+    riskDashboardRead,
   };
 
   const incomplete = missingPorts(ports);

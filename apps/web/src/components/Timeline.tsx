@@ -1,8 +1,9 @@
+import type { ReactNode } from "react";
 import "./Timeline.css";
 
 export interface TimelineItem {
   time: string;
-  title: string;
+  title: ReactNode;
   actor?: string;
   tone?: "done" | "current";
 }

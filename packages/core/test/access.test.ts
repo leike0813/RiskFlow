@@ -270,13 +270,41 @@ describe("access domain", () => {
   });
 
   it("CH-2 策略升版保留历史身份解析而不改写旧快照", () => {
-    expect(ACCESS_POLICY_REF_V1).toEqual({ entityId: "access-policy", versionId: "v2" });
+    // CH-3 升 v3：只追加仪表盘入口分支，旧 v1／v2 行与授权快照同样不重写。
+    expect(ACCESS_POLICY_REF_V1).toEqual({ entityId: "access-policy", versionId: "v3" });
     // 旧 v1 身份仍被识别为已登记历史，用于恢复主体/范围，不是放行凭据。
-    expect([...ACCESS_POLICY_HISTORY_VERSIONS]).toEqual(["v1", "v2"]);
+    expect([...ACCESS_POLICY_HISTORY_VERSIONS]).toEqual(["v1", "v2", "v3"]);
     expect(isRegisteredAccessPolicyVersion("v1")).toBe(true);
     expect(isRegisteredAccessPolicyVersion("v2")).toBe(true);
-    expect(isRegisteredAccessPolicyVersion("v3")).toBe(false);
+    expect(isRegisteredAccessPolicyVersion("v3")).toBe(true);
+    expect(isRegisteredAccessPolicyVersion("v4")).toBe(false);
     expect(isRegisteredAccessPolicyVersion("latest")).toBe(false);
+  });
+
+  it("CH-3 仪表盘入口分支复用投影读能力且按 D-03 精确授予", () => {
+    // 入口分支不新增 capability 位：只复用既有投影读能力。
+    expect(branchCapability("projection.dashboard-read")).toBe("projection.query");
+    expect(capabilitiesForBranches(["projection.dashboard-read"])).toEqual(["projection.query"]);
+
+    // 四个工程角色取得入口资格；系统管理员的分支集仍为空。
+    for (const role of [
+      "project-risk-manager",
+      "reviewer",
+      "field-responder",
+      "business-viewer",
+    ] as const) {
+      expect(isBranchAllowed([role], "projection.dashboard-read")).toBe(true);
+    }
+    expect(PRESET_ROLE_BRANCHES_V1["system-administrator"]).toEqual([]);
+    expect(isBranchAllowed(["system-administrator"], "projection.dashboard-read")).toBe(false);
+
+    // 入口资格不隐含来源写权：现场处置人员仍无资料目录与复核决定权。
+    expect(isBranchAllowed(["field-responder"], "engineering-data.source-catalog")).toBe(false);
+    expect(isBranchAllowed(["field-responder"], "review-audit.decide-review")).toBe(false);
+    for (const role of ["reviewer", "business-viewer", "field-responder"] as const) {
+      expect(isBranchAllowed([role], "agent-task.start-task")).toBe(false);
+      expect(isBranchAllowed([role], "warning-response.acknowledge")).toBe(false);
+    }
   });
 
   it("authorization scope closure", () => {

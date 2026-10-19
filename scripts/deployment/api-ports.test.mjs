@@ -6,6 +6,7 @@ import {
   createDeploymentApiPortsV1,
 } from "./composition/api-ports.mjs";
 import { ReportExportPolicyV1Schema } from "../../packages/core/dist/workflow/index.js";
+import { ModuleErrorV1Schema } from "../../packages/contracts/dist/ports/index.js";
 
 /**
  * 只验证装配契约：provider 方法存在、缺项拒绝、类型分派。
@@ -28,7 +29,7 @@ const providers = (overrides = {}) => {
   const base = {
     db: {},
     access: {
-      ...stub(["verify", "authorize"]),
+      ...stub(["verify", "authorize", "authorizeBusinessAction"]),
       systemAdministration: stub(["read", "execute"]),
       projectAccessPresentation: stub(["read"]),
     },
@@ -38,15 +39,15 @@ const providers = (overrides = {}) => {
     knowledgeModeling: stub(["govern", "resolve", "retrieve"]),
     applicableRuleSetAssembly: stub(["assemble"]),
     riskIdentification: stub(["plan", "analyze", "finalize"]),
-    riskIdentificationRead: stub(["read"]),
+    riskIdentificationRead: stub(["read", "readDashboard"]),
     riskAssessment: stub(["prepare", "evaluate"]),
-    riskAssessmentRead: stub(["read"]),
+    riskAssessmentRead: stub(["read", "readDashboard"]),
     workflow: stub(["startRun", "resumeRun", "cancelRun"]),
     humanDecisionFeedback: stub(["record"]),
     reviewAudit: stub(["requestReview", "decideReview", "trace"]),
     agentTask: stub(["startTask", "resumeTask", "cancelTask", "confirmCommand"]),
     agentTaskRead: stub(["read"]),
-    warningLifecycle: stub(["open", "acknowledge", "read"]),
+    warningLifecycle: stub(["open", "acknowledge", "read", "readDashboard"]),
     recommendation: stub(["measureCandidates", "createCandidate", "validateAndRecord"]),
     responseLifecycle: stub(["calculateDeviation"]),
     calibration: stub(["createSuggestion", "createGovernanceDraft", "recordReviewOutcome"]),
@@ -141,6 +142,7 @@ describe("生产 API 全端口装配契约", () => {
           open: (command) => (calls.push(["warning.open", command.kind]), "opened"),
           acknowledge: (command) => (calls.push(["warning.acknowledge", command.kind]), "acked"),
           read: () => undefined,
+          readDashboard: () => undefined,
         },
         recommendation: {
           measureCandidates: () => undefined,
@@ -195,7 +197,7 @@ describe("生产 API 全端口装配契约", () => {
   it("engineeringData 就是注入的同一 context-source registry，systemAdministration 取自 access", () => {
     const contextSource = stub(["apply", "freeze", "read", "resolveReadQuery"]);
     const access = {
-      ...stub(["verify", "authorize"]),
+      ...stub(["verify", "authorize", "authorizeBusinessAction"]),
       systemAdministration: stub(["read", "execute"]),
       projectAccessPresentation: stub(["read"]),
     };
@@ -212,7 +214,7 @@ describe("生产 API 全端口装配契约", () => {
       authorizationPolicyRef: { entityId: "access-policy", versionId: "v2" },
     }));
     const access = {
-      ...stub(["verify", "authorize"]),
+      ...stub(["verify", "authorize", "authorizeBusinessAction"]),
       systemAdministration: stub(["read", "execute"]),
       projectAccessPresentation: { read },
     };
@@ -224,6 +226,112 @@ describe("生产 API 全端口装配契约", () => {
         providers({ access: { ...access, projectAccessPresentation: undefined } }),
       ),
     ).toThrow(/projectAccessPresentation/);
+  });
+
+  it("仪表盘公共读面组合六来源的所属窄读，缺来源实现即拒绝装配", () => {
+    const options = providers();
+    const ports = createDeploymentApiPortsV1(options);
+    expect(typeof ports.riskDashboardRead.read).toBe("function");
+    // 组合层只调用所属 Adapter 的窄读方法：六个窄读缺任一即无法完成装配。
+    for (const [provider, method] of [
+      ["riskIdentificationRead", "readDashboard"],
+      ["riskAssessmentRead", "readDashboard"],
+      ["warningLifecycle", "readDashboard"],
+    ]) {
+      expect(() =>
+        createDeploymentApiPortsV1(
+          providers({ [provider]: { ...options[provider], [method]: undefined } }),
+        ),
+      ).toThrow(new RegExp(`${provider}\\.${method}`));
+    }
+    // 装配后的仪表盘服务确实读六来源，而不是回落成目录遍历或空统计。
+    const calls = [];
+    const denied = ModuleErrorV1Schema.parse({
+      code: "AUTHORIZATION_DENIED",
+      category: "authorization",
+      retryable: false,
+      requiredCapability: "projection.query",
+      authorizationPolicyRef: { entityId: "access-policy", versionId: "v3" },
+      stageCode: "risk-dashboard.source-authorization",
+      occurredAt: "2026-10-19T00:00:00.000Z",
+      causalRunId: "dashboard-1",
+    });
+    const tracking = (name) => ({
+      ...stub(["read", "readDashboard"]),
+      readDashboard: async () => {
+        calls.push(name);
+        return { kind: "failed", error: denied };
+      },
+    });
+    const tracked = createDeploymentApiPortsV1(
+      providers({
+        // 来源授权由同一 C06 业务动作判定签发；组合层不自己判定。
+        access: {
+          ...stub(["verify", "authorize", "authorizeBusinessAction"]),
+          authorizeBusinessAction: async (input) => ({
+            context: {
+              schemaVersion: "1",
+              authorizationContextRef: {
+                kind: "authorization-context",
+                reference: { entityId: "auth-1", versionId: "1" },
+              },
+              actorId: "actor-1",
+              projectId: "project-a",
+              grantedCapabilities: [input.capability],
+              spatialScopeRefs: [],
+              sourceAccessGrantRefs: [],
+              authorizationPolicyRef: { entityId: "access-policy", versionId: "v3" },
+              decidedAt: "2026-10-19T00:00:00.000Z",
+              invocation: { kind: "human" },
+            },
+            contextRef: {
+              kind: "authorization-context",
+              reference: { entityId: "auth-1", versionId: "1" },
+            },
+            redacted: false,
+          }),
+          systemAdministration: stub(["read", "execute"]),
+          projectAccessPresentation: stub(["read"]),
+        },
+        riskIdentificationRead: tracking("riskRecords"),
+        riskAssessmentRead: tracking("assessments"),
+        warningLifecycle: {
+          ...stub(["open", "acknowledge", "read"]),
+          readDashboard: async () => {
+            calls.push("warnings");
+            return { kind: "failed", error: denied };
+          },
+        },
+      }),
+    );
+    return tracked.riskDashboardRead
+      .read({
+        queryId: "dashboard-1",
+        projectId: "project-a",
+        actorId: "actor-1",
+        requestedAt: "2026-10-19T00:00:00.000Z",
+        kind: "read",
+        payload: {},
+        authorization: {
+          schemaVersion: "1",
+          authorizationContextRef: {
+            kind: "authorization-context",
+            reference: { entityId: "auth-1", versionId: "1" },
+          },
+          actorId: "actor-1",
+          projectId: "project-a",
+          grantedCapabilities: ["projection.query"],
+          spatialScopeRefs: [],
+          sourceAccessGrantRefs: [],
+          authorizationPolicyRef: { entityId: "access-policy", versionId: "v3" },
+          decidedAt: "2026-10-19T00:00:00.000Z",
+          invocation: { kind: "human" },
+        },
+      })
+      .then((result) => {
+        expect(result.kind).toBe("succeeded");
+        expect(calls).toEqual(["riskRecords", "assessments", "warnings"]);
+      });
   });
 
   it("组装真实公开投影工厂与完整质量两阶段端口，并保留 API 运维结果 Schema", async () => {

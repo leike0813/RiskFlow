@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { SpatialScopeRefV1 } from "@riskflow/contracts/ports";
 
+import { ACCESS_POLICY_REF_V1 } from "@riskflow/core/access";
 import {
   activePasswordDerivations,
   bootstrapInitialSystemAdministrator,
@@ -2772,10 +2773,8 @@ describe.sequential("local identity and project authorization", () => {
       "schemaVersion",
     ]);
     expect(reviewerPresentation.projectId).toBe("project-a");
-    expect(reviewerPresentation.authorizationPolicyRef).toEqual({
-      entityId: "access-policy",
-      versionId: "v2",
-    });
+    // 引用当前授权策略版本；随策略升版变化，不在此钉死具体版本号。
+    expect(reviewerPresentation.authorizationPolicyRef).toEqual(ACCESS_POLICY_REF_V1);
     expect(reviewerPresentation.capabilities).toContain("review-todo.read");
     expect(reviewerPresentation.capabilities).toContain("engineering-data.read");
     expect(reviewerPresentation).not.toHaveProperty("roles");
@@ -2934,7 +2933,7 @@ describe.sequential("local identity and project authorization", () => {
       requestedSourceVersionRefs: [],
     };
     await expect(access!.authorizeBusinessAction(currentRequest)).resolves.toMatchObject({
-      context: { authorizationPolicyRef: { entityId: "access-policy", versionId: "v2" } },
+      context: { authorizationPolicyRef: { entityId: "access-policy", versionId: "v3" } },
     });
     const adminLogin = await access!.login({
       kind: "login",

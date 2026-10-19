@@ -287,6 +287,15 @@ export const WEB_LEGACY_PATH_ALIASES_V1: Readonly<Record<string, string>> = Obje
   "/assessment/quality-evaluation": "/assessment/quality",
 });
 
+/**
+ * 旧运行记录地址的永久规范承载：只有这两个完整路径，未知后缀不触发。
+ * 原 search 原样保留，再覆盖 `tab=runs`。
+ */
+const LEGACY_RUN_RECORD_PATHS_V1: readonly string[] = Object.freeze([
+  "/review-audit/runs",
+  "/review/runs",
+]);
+
 const matchCandidate = (
   candidate: WebRouteCandidateV1,
   actual: readonly string[],
@@ -321,6 +330,15 @@ export const applyWebPathAliasV1 = (
   search = "",
   registry: WebRouteRegistryV1 = WEB_ROUTE_REGISTRY_V1,
 ): string | undefined => {
+  // 完整旧运行路径先于前缀别名：精确 replace 到总览运行页签，保留原 search。
+  if (
+    LEGACY_RUN_RECORD_PATHS_V1.includes(pathname) &&
+    registeredTargetMatches("/overview", registry)
+  ) {
+    const params = new URLSearchParams(search);
+    params.set("tab", "runs");
+    return `/overview?${params.toString()}`;
+  }
   for (const [from, to] of Object.entries(WEB_LEGACY_PATH_ALIASES_V1)) {
     const candidate =
       pathname === from

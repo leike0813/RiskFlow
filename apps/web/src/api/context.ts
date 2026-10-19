@@ -12,21 +12,42 @@ export interface EngineeringSelector {
   readonly assessmentSources?: string;
 }
 
+/**
+ * 只解析属于所选工程的修订：完整 `<projectId>@<versionId>` 必须工程一致；
+ * 裸 `<versionId>` 按既有 project-revision 身份规则等于 projectId。
+ * 多段、空值或别的工程的值不得到版本，调用方据此显示不可定位而不是回落当前修订。
+ */
+const revisionForProject = (
+  projectId: string | null,
+  rawRevisions: readonly string[],
+): string | null => {
+  if (projectId === null) return null;
+  const versions = rawRevisions.flatMap((raw) => {
+    const parts = raw.split("@");
+    if (parts.length === 1) {
+      const bare = parts[0] ?? "";
+      return bare.trim() === "" ? [] : [bare];
+    }
+    if (parts.length !== 2) return [];
+    const [entityId, versionId] = parts;
+    return entityId === projectId && versionId !== undefined && versionId.trim() !== ""
+      ? [versionId]
+      : [];
+  });
+  const unique = [...new Set(versions)];
+  return unique.length === 1 ? unique[0]! : null;
+};
+
 export const selectorFromSearch = (search: string): EngineeringSelector => {
   const params = new URLSearchParams(search);
   const projectId = params.get("project");
-  const revision = params.get("revision");
+  const normalizedProject = projectId !== null && projectId.trim().length > 0 ? projectId : null;
   return {
     ...(params.has("assessmentSources")
       ? { assessmentSources: params.get("assessmentSources")! }
       : {}),
-    projectId: projectId !== null && projectId.trim().length > 0 ? projectId : null,
-    revisionId:
-      revision !== null && revision.includes("@")
-        ? (revision.split("@")[1] ?? null)
-        : revision !== null && revision.trim().length > 0
-          ? revision
-          : null,
+    projectId: normalizedProject,
+    revisionId: revisionForProject(normalizedProject, params.getAll("revision")),
   };
 };
 
@@ -55,7 +76,12 @@ export const projectPathWithSelector = (path: string, selector: EngineeringSelec
   const pathname = queryIndex === -1 ? absolutePath : absolutePath.slice(0, queryIndex);
   const params = new URLSearchParams(queryIndex === -1 ? "" : absolutePath.slice(queryIndex + 1));
   params.set("project", selector.projectId);
-  if (selector.revisionId !== null) params.set("revision", selector.revisionId);
+  if (selector.revisionId !== null) {
+    // 写完整引用，避免裸版本在不同工程下被重新解释成另一个修订。
+    params.set("revision", `${selector.projectId}@${selector.revisionId}`);
+  } else {
+    params.delete("revision");
+  }
   if (selector.assessmentSources !== undefined) {
     params.set("assessmentSources", selector.assessmentSources);
   }

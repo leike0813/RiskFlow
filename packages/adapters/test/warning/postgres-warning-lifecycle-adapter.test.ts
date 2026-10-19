@@ -1,7 +1,14 @@
 import { sql } from "kysely";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { OpenWarningCommandV1Schema } from "@riskflow/contracts/ports";
+import {
+  OpenWarningCommandV1Schema,
+  RiskDashboardWarningsSourceResultV1Schema,
+  type AuthorizationContextV1,
+  type RiskAssessmentRecordRefV1,
+  type RiskDashboardTimelineEventV1,
+  type RiskDashboardWarningsSourceRequestV1,
+} from "@riskflow/contracts/ports";
 import { WarningRecordSchema } from "@riskflow/contracts/records";
 import { WARNING_TRIGGER_TYPE_VALUES } from "@riskflow/contracts/vocabulary";
 
@@ -1331,4 +1338,516 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
       "owning-read-seam-not-injected",
     );
   }, 240_000);
+
+  // ============================================================ CH-3 仪表盘预警来源
+
+  const dashboardScope = (state: WarningLifecyclePostgresFixtureV1): string[] => [
+    state.c25.accessRootScopeRef.reference.entityId,
+  ];
+
+  /** 仪表盘请求信封：授权默认覆盖入口空间，时间上界取远晚于夹具登记时刻的值。 */
+  const dashboardRequest = async (
+    state: WarningLifecyclePostgresFixtureV1,
+    input: {
+      readonly queryId: string;
+      readonly pageSize?: number;
+      readonly asOf?: string;
+      readonly spatialScopeRef?: NonNullable<
+        RiskDashboardWarningsSourceRequestV1["spatialScopeRef"]
+      >;
+      readonly authorization?: AuthorizationContextV1;
+      readonly projectId?: string;
+      readonly actorId?: string;
+    },
+  ): Promise<RiskDashboardWarningsSourceRequestV1> => {
+    const authorization =
+      input.authorization ??
+      (await state.readAuthorization(input.queryId, [state.c25.accessRootScopeRef]));
+    return {
+      queryId: input.queryId,
+      projectId: input.projectId ?? state.projectId,
+      actorId: input.actorId ?? state.managerId,
+      requestedAt: C26_FIXTURE_TIME,
+      authorization,
+      ...(input.spatialScopeRef === undefined ? {} : { spatialScopeRef: input.spatialScopeRef }),
+      timeline: {
+        asOf: input.asOf ?? "2034-12-31T00:00:00.000000Z",
+        pageSize: input.pageSize ?? 5,
+      },
+    };
+  };
+
+  interface WarningDashboardFactsV1 {
+    readonly openTaskCount: number;
+    readonly openTaskWarningCount: number;
+    readonly warningLevelCounts: readonly { warningLevel: string; count: number }[];
+    readonly unacknowledgedWarningCount: number;
+    readonly unacknowledgedLevelCounts: readonly { warningLevel: string; count: number }[];
+    readonly warningRows: readonly {
+      readonly warningRecordId: string;
+      readonly versionId: string;
+      readonly riskLevelId: string;
+      readonly acknowledged: boolean;
+    }[];
+  }
+
+  /**
+   * 从登记事实独立推导期望值：任务、任务—预警关联、预警版本与确认版本分别查询，
+   * 等级分布由测试侧按行聚合，不复制被测 SQL。
+   */
+  const readDashboardFacts = async (
+    state: WarningLifecyclePostgresFixtureV1,
+    scopeEntityIds: readonly string[],
+  ): Promise<WarningDashboardFactsV1> => {
+    const pool = state.c25.postgres.postgres.adminPool;
+    const scope = [...scopeEntityIds];
+    const tasks = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+         FROM business.warning_response_tasks
+        WHERE project_id = $1 AND status = 'open' AND spatial_scope_entity_id = ANY($2::text[])`,
+      [state.projectId, scope],
+    );
+    const openWarnings = await pool.query<{ count: string }>(
+      `SELECT count(DISTINCT link.warning_record_id)::text AS count
+         FROM business.warning_response_task_warnings AS link
+         JOIN business.warning_response_tasks AS task
+           ON task.project_id = link.project_id AND task.task_id = link.task_id
+        WHERE link.project_id = $1 AND task.status = 'open'
+          AND task.spatial_scope_entity_id = ANY($2::text[])`,
+      [state.projectId, scope],
+    );
+    const warnings = await pool.query<{
+      warning_record_id: string;
+      version_id: string;
+      risk_level_id: string;
+    }>(
+      `SELECT warning_record_id, version_id, risk_level_id
+         FROM business.warning_records
+        WHERE project_id = $1 AND spatial_scope_entity_id = ANY($2::text[])`,
+      [state.projectId, scope],
+    );
+    const acknowledgements = await pool.query<{
+      warning_record_id: string;
+      warning_record_version_id: string;
+    }>(
+      `SELECT warning_record_id, warning_record_version_id
+         FROM business.warning_acknowledgements
+        WHERE project_id = $1`,
+      [state.projectId],
+    );
+    const acknowledged = new Set(
+      acknowledgements.rows.map(
+        (row) => `${row.warning_record_id}\u0000${row.warning_record_version_id}`,
+      ),
+    );
+    const levelCounts = (
+      rows: readonly { readonly riskLevelId: string }[],
+    ): readonly { warningLevel: string; count: number }[] => {
+      const counts = new Map<string, number>();
+      for (const row of rows) {
+        counts.set(row.riskLevelId, (counts.get(row.riskLevelId) ?? 0) + 1);
+      }
+      return [...counts.entries()]
+        .sort(([left], [right]) => (left < right ? -1 : 1))
+        .map(([warningLevel, count]) => ({ warningLevel, count }));
+    };
+    const rows = warnings.rows.map((row) => ({
+      warningRecordId: row.warning_record_id,
+      versionId: row.version_id,
+      riskLevelId: row.risk_level_id,
+      acknowledged: acknowledged.has(`${row.warning_record_id}\u0000${row.version_id}`),
+    }));
+    const unacknowledgedRows = rows.filter((row) => !row.acknowledged);
+    return {
+      openTaskCount: Number(tasks.rows[0]!.count),
+      openTaskWarningCount: Number(openWarnings.rows[0]!.count),
+      warningLevelCounts: levelCounts(rows),
+      unacknowledgedWarningCount: unacknowledgedRows.length,
+      unacknowledgedLevelCounts: levelCounts(unacknowledgedRows),
+      warningRows: rows,
+    };
+  };
+
+  /** 仅按源行复制登记事实；版本、评估头与空间可按用例覆盖，正文同步改写身份字段。 */
+  const cloneWarningRow = async (
+    state: WarningLifecyclePostgresFixtureV1,
+    input: {
+      readonly sourceWarningId: string;
+      readonly sourceVersionId: string;
+      readonly warningRecordId: string;
+      readonly versionId: string;
+      readonly assessmentRecordRef: RiskAssessmentRecordRefV1;
+      readonly spatialScope?: { readonly entityId: string; readonly versionId: string };
+      readonly recordedAt?: string;
+    },
+  ): Promise<void> => {
+    await state.c25.postgres.postgres.adminPool.query(
+      `INSERT INTO business.warning_records
+         (project_id, warning_record_id, version_id, schema_version,
+          assessment_record_id, assessment_record_version_id,
+          assessment_input_snapshot_id, assessment_input_snapshot_version_id,
+          preparation_snapshot_id, preparation_snapshot_version_id,
+          risk_input_kind, risk_input_entity_id, risk_input_version_id,
+          spatial_scope_entity_id, spatial_scope_version_id,
+          trigger_type, risk_level_id,
+          warning_aggregation_policy_entity_id, warning_aggregation_policy_version_id,
+          notification_policy_entity_id, notification_policy_version_id,
+          content_digest, warning_payload, command_id, idempotency_key,
+          actor_ref, authorization_context_ref, audit_entry_id, occurred_at, recorded_at)
+       SELECT project_id, $4::text, $5::text, schema_version,
+              $6::text, $7::text,
+              assessment_input_snapshot_id, assessment_input_snapshot_version_id,
+              preparation_snapshot_id, preparation_snapshot_version_id,
+              risk_input_kind, risk_input_entity_id, risk_input_version_id,
+              COALESCE($8::text, spatial_scope_entity_id),
+              COALESCE($9::text, spatial_scope_version_id),
+              trigger_type, risk_level_id,
+              warning_aggregation_policy_entity_id, warning_aggregation_policy_version_id,
+              notification_policy_entity_id, notification_policy_version_id,
+              content_digest,
+              jsonb_set(jsonb_set(warning_payload, '{warningRecordId}', to_jsonb($4::text)),
+                        '{assessmentRecordId}', to_jsonb($6::text)),
+              command_id, idempotency_key,
+              actor_ref, authorization_context_ref, audit_entry_id,
+              occurred_at, COALESCE($10::timestamptz, recorded_at)
+         FROM business.warning_records
+        WHERE project_id = $1 AND warning_record_id = $2 AND version_id = $3`,
+      [
+        state.projectId,
+        input.sourceWarningId,
+        input.sourceVersionId,
+        input.warningRecordId,
+        input.versionId,
+        input.assessmentRecordRef.reference.entityId,
+        input.assessmentRecordRef.reference.versionId,
+        input.spatialScope?.entityId ?? null,
+        input.spatialScope?.versionId ?? null,
+        input.recordedAt ?? null,
+      ],
+    );
+  };
+
+  const sumLevelCounts = (counts: readonly { readonly count: number }[]): number =>
+    counts.reduce((total, entry) => total + entry.count, 0);
+
+  const compareTimelineEvents = (
+    left: RiskDashboardTimelineEventV1,
+    right: RiskDashboardTimelineEventV1,
+  ): number => {
+    if (left.recordedAt !== right.recordedAt) return left.recordedAt < right.recordedAt ? 1 : -1;
+    const leftId = left.subjectRef.reference.entityId;
+    const rightId = right.subjectRef.reference.entityId;
+    if (leftId !== rightId) return leftId < rightId ? -1 : 1;
+    const leftVersion = left.subjectRef.reference.versionId;
+    const rightVersion = right.subjectRef.reference.versionId;
+    return leftVersion === rightVersion ? 0 : leftVersion < rightVersion ? -1 : 1;
+  };
+
+  describe.sequential("CH-3 仪表盘预警来源", () => {
+    it("开放任务、任务预警与全量/未确认等级分布各自取数且互不混用", async () => {
+      const state = fixture!;
+      const assessment = await state.assess({ suffix: "dashboard-facts" });
+      const opened = await state.adapter.open(
+        await state.openCommand({
+          commandId: "c26-dashboard-facts-open",
+          assessmentRecordRef: assessment.assessmentRecordRef,
+        }),
+      );
+      expect(opened.kind).toBe("succeeded");
+      if (opened.kind !== "succeeded") return;
+      expect(opened.result.warningRecordRefs.length).toBeGreaterThan(1);
+      const acknowledged = opened.result.warningRecordRefs[0]!;
+      const acknowledgedResult = await state.adapter.acknowledge(
+        await state.acknowledgeCommand({
+          commandId: "c26-dashboard-facts-ack",
+          warningRecordRef: acknowledged,
+          warningResponseTaskRef: opened.result.warningResponseTaskRefs[0]!,
+        }),
+      );
+      expect(acknowledgedResult.kind).toBe("succeeded");
+
+      const facts = await readDashboardFacts(state, dashboardScope(state));
+      const result = await state.adapter.readDashboard(
+        await dashboardRequest(state, { queryId: "c26-dashboard-facts" }),
+      );
+      expect(RiskDashboardWarningsSourceResultV1Schema.parse(result)).toEqual(result);
+      expect(result.kind).toBe("ready");
+      if (result.kind !== "ready") return;
+
+      expect(result.asOf).toBe("2034-12-31T00:00:00.000000Z");
+      expect(result.data).toEqual({
+        openTaskCount: facts.openTaskCount,
+        openTaskWarningCount: facts.openTaskWarningCount,
+        warningLevelCounts: facts.warningLevelCounts,
+        unacknowledgedWarningCount: facts.unacknowledgedWarningCount,
+        unacknowledgedLevelCounts: facts.unacknowledgedLevelCounts,
+      });
+      // 同一开放任务关联多条预警：任务数与去重预警数本来就不同。
+      expect(facts.openTaskCount).toBeGreaterThan(0);
+      expect(facts.openTaskWarningCount).toBeGreaterThan(facts.openTaskCount);
+      // 全部预警等级分布与未确认等级分布是两种分母，不能互相冒充。
+      expect(result.data.warningLevelCounts).not.toEqual(result.data.unacknowledgedLevelCounts);
+      expect(sumLevelCounts(result.data.warningLevelCounts)).toBe(facts.warningRows.length);
+      expect(sumLevelCounts(result.data.unacknowledgedLevelCounts)).toBe(
+        result.data.unacknowledgedWarningCount,
+      );
+      // 已确认预警不再进入未确认口径；它与开放任务预警数不是同一个集合。
+      expect(
+        facts.warningRows.some(
+          (row) => row.warningRecordId === acknowledged.reference.entityId && row.acknowledged,
+        ),
+      ).toBe(true);
+      expect(facts.unacknowledgedWarningCount).toBe(
+        facts.warningRows.filter((row) => !row.acknowledged).length,
+      );
+      expect(result.data.unacknowledgedWarningCount).not.toBe(result.data.openTaskWarningCount);
+    }, 240_000);
+
+    it("确认只按预警标识与精确版本生效，另一版本仍计入未确认", async () => {
+      const state = fixture!;
+      const assessment = await state.assess({ suffix: "dashboard-version" });
+      const opened = await state.adapter.open(
+        await state.openCommand({
+          commandId: "c26-dashboard-version-open",
+          assessmentRecordRef: assessment.assessmentRecordRef,
+        }),
+      );
+      expect(opened.kind).toBe("succeeded");
+      if (opened.kind !== "succeeded") return;
+      const warningRef = opened.result.warningRecordRefs[0]!;
+      const acknowledgeResult = await state.adapter.acknowledge(
+        await state.acknowledgeCommand({
+          commandId: "c26-dashboard-version-ack",
+          warningRecordRef: warningRef,
+          warningResponseTaskRef: opened.result.warningResponseTaskRefs[0]!,
+        }),
+      );
+      expect(acknowledgeResult.kind).toBe("succeeded");
+
+      const scope = dashboardScope(state);
+      const before = await readDashboardFacts(state, scope);
+      expect(
+        before.warningRows.some(
+          (row) =>
+            row.warningRecordId === warningRef.reference.entityId &&
+            row.versionId === warningRef.reference.versionId &&
+            row.acknowledged,
+        ),
+      ).toBe(true);
+
+      // 同一 warning_record_id 的第二版本挂在未登记过预警的评估头上，避开触发类型唯一约束。
+      const spare = await state.assess({ suffix: "dashboard-version-spare" });
+      await cloneWarningRow(state, {
+        sourceWarningId: warningRef.reference.entityId,
+        sourceVersionId: warningRef.reference.versionId,
+        warningRecordId: warningRef.reference.entityId,
+        versionId: "2",
+        assessmentRecordRef: spare.assessmentRecordRef,
+      });
+
+      const after = await readDashboardFacts(state, scope);
+      expect(after.warningRows).toHaveLength(before.warningRows.length + 1);
+      expect(after.unacknowledgedWarningCount).toBe(before.unacknowledgedWarningCount + 1);
+      const versions = after.warningRows
+        .filter((row) => row.warningRecordId === warningRef.reference.entityId)
+        .map((row) => ({ versionId: row.versionId, acknowledged: row.acknowledged }))
+        .sort((left, right) => (left.versionId < right.versionId ? -1 : 1));
+      expect(versions).toEqual([
+        { versionId: "1", acknowledged: true },
+        { versionId: "2", acknowledged: false },
+      ]);
+
+      const result = await state.adapter.readDashboard(
+        await dashboardRequest(state, { queryId: "c26-dashboard-version" }),
+      );
+      expect(result.kind).toBe("ready");
+      if (result.kind !== "ready") return;
+      expect(result.data.warningLevelCounts).toEqual(after.warningLevelCounts);
+      expect(result.data.unacknowledgedWarningCount).toBe(after.unacknowledgedWarningCount);
+      expect(result.data.unacknowledgedLevelCounts).toEqual(after.unacknowledgedLevelCounts);
+    }, 240_000);
+
+    it("变化页有界、微秒 UTC 时间且按登记时刻与精确版本全序", async () => {
+      const state = fixture!;
+      for (const suffix of [
+        "dashboard-timeline-a",
+        "dashboard-timeline-b",
+        "dashboard-timeline-c",
+      ]) {
+        const assessment = await state.assess({ suffix });
+        const opened = await state.adapter.open(
+          await state.openCommand({
+            commandId: `c26-dashboard-timeline-open-${suffix}`,
+            assessmentRecordRef: assessment.assessmentRecordRef,
+          }),
+        );
+        expect(opened.kind).toBe("succeeded");
+      }
+
+      const scope = dashboardScope(state);
+      const pageSize = 5;
+      const asOf = "2034-12-31T00:00:00.000000Z";
+      const result = await state.adapter.readDashboard(
+        await dashboardRequest(state, {
+          queryId: "c26-dashboard-timeline",
+          pageSize,
+          asOf,
+        }),
+      );
+      expect(result.kind).toBe("ready");
+      if (result.kind !== "ready") return;
+
+      const total = await state.c25.postgres.postgres.adminPool.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+           FROM business.warning_records
+          WHERE project_id = $1 AND spatial_scope_entity_id = ANY($2::text[])
+            AND recorded_at <= $3::timestamptz`,
+        [state.projectId, scope, asOf],
+      );
+      expect(result.events.length).toBeLessThanOrEqual(pageSize + 1);
+      expect(result.events).toHaveLength(Math.min(Number(total.rows[0]!.count), pageSize + 1));
+      for (const event of result.events) {
+        expect(event.recordedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/);
+        expect(event.source).toBe("warnings");
+        expect(event.changeType).toBe("warning-recorded");
+        expect(event.subjectRef.kind).toBe("warning-record");
+      }
+      // 全序：登记时刻降序，同刻按主体标识与版本升序。
+      expect(result.events).toEqual([...result.events].sort(compareTimelineEvents));
+      const stored = await state.c25.postgres.postgres.adminPool.query<{
+        entity_id: string;
+        version_id: string;
+        recorded_at: string;
+      }>(
+        `SELECT warning_record_id AS entity_id,
+                version_id,
+                to_char(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS recorded_at
+           FROM business.warning_records
+          WHERE project_id = $1 AND spatial_scope_entity_id = ANY($2::text[])
+            AND recorded_at <= $3::timestamptz
+          ORDER BY recorded_at DESC, warning_record_id ASC, version_id ASC
+          LIMIT $4`,
+        [state.projectId, scope, asOf, pageSize + 1],
+      );
+      expect(
+        result.events.map((event) => ({
+          entityId: event.subjectRef.reference.entityId,
+          versionId: event.subjectRef.reference.versionId,
+          recordedAt: event.recordedAt,
+        })),
+      ).toEqual(
+        stored.rows.map((row) => ({
+          entityId: row.entity_id,
+          versionId: row.version_id,
+          recordedAt: row.recorded_at,
+        })),
+      );
+    }, 240_000);
+
+    it("能力缺失、越界空间与跨工程授权同形拒权且不返回统计或事件", async () => {
+      const state = fixture!;
+      const noCapability = (
+        await state.openCommand({
+          commandId: "c26-dashboard-no-capability",
+          assessmentRecordRef: await state.assessWithMissingAssessment(),
+        })
+      ).authorization;
+      expect(noCapability.grantedCapabilities).not.toContain("warning-response.read");
+
+      const foreignProject = "project-c26-warning-foreign";
+      const foreignAuthorization = {
+        ...(await state.readAuthorization("c26-dashboard-foreign-project")),
+        projectId: foreignProject,
+      };
+      const results = [
+        await state.adapter.readDashboard(
+          await dashboardRequest(state, {
+            queryId: "c26-dashboard-no-capability",
+            authorization: noCapability,
+          }),
+        ),
+        await state.adapter.readDashboard(
+          await dashboardRequest(state, {
+            queryId: "c26-dashboard-out-of-scope",
+            spatialScopeRef: state.restrictedScopeRef,
+          }),
+        ),
+        await state.adapter.readDashboard(
+          await dashboardRequest(state, {
+            queryId: "c26-dashboard-foreign-project",
+            projectId: foreignProject,
+            authorization: foreignAuthorization,
+          }),
+        ),
+      ];
+      for (const result of results) {
+        expect(result).toMatchObject({
+          kind: "failed",
+          error: { code: "AUTHORIZATION_DENIED", retryable: false },
+        });
+        expect(result).not.toHaveProperty("data");
+        expect(result).not.toHaveProperty("events");
+        expect(JSON.stringify(result)).not.toContain("warningLevelCounts");
+      }
+    }, 120_000);
+
+    it("只授权 A 空间时统计只含 A 空间，请求 B 空间按拒权收口", async () => {
+      const state = fixture!;
+      const assessment = await state.assess({ suffix: "dashboard-scope" });
+      const opened = await state.adapter.open(
+        await state.openCommand({
+          commandId: "c26-dashboard-scope-open",
+          assessmentRecordRef: assessment.assessmentRecordRef,
+        }),
+      );
+      expect(opened.kind).toBe("succeeded");
+      if (opened.kind !== "succeeded") return;
+      const donor = opened.result.warningRecordRefs[0]!;
+      const spare = await state.assess({ suffix: "dashboard-scope-b" });
+      const bWarningId = "warning-record-dashboard-scope-b";
+      await cloneWarningRow(state, {
+        sourceWarningId: donor.reference.entityId,
+        sourceVersionId: donor.reference.versionId,
+        warningRecordId: bWarningId,
+        versionId: "1",
+        assessmentRecordRef: spare.assessmentRecordRef,
+        spatialScope: state.restrictedScopeRef.reference,
+      });
+
+      const factsA = await readDashboardFacts(state, dashboardScope(state));
+      const factsB = await readDashboardFacts(state, [state.restrictedScopeRef.reference.entityId]);
+      expect(factsB.warningRows).toHaveLength(1);
+      expect(factsB.warningRows[0]!.warningRecordId).toBe(bWarningId);
+      expect(factsA.warningRows.some((row) => row.warningRecordId === bWarningId)).toBe(false);
+
+      const result = await state.adapter.readDashboard(
+        await dashboardRequest(state, {
+          queryId: "c26-dashboard-scope-a",
+          spatialScopeRef: state.c25.accessRootScopeRef,
+        }),
+      );
+      expect(result.kind).toBe("ready");
+      if (result.kind !== "ready") return;
+      expect(result.data).toEqual({
+        openTaskCount: factsA.openTaskCount,
+        openTaskWarningCount: factsA.openTaskWarningCount,
+        warningLevelCounts: factsA.warningLevelCounts,
+        unacknowledgedWarningCount: factsA.unacknowledgedWarningCount,
+        unacknowledgedLevelCounts: factsA.unacknowledgedLevelCounts,
+      });
+
+      const denied = await state.adapter.readDashboard(
+        await dashboardRequest(state, {
+          queryId: "c26-dashboard-scope-b",
+          spatialScopeRef: state.restrictedScopeRef,
+        }),
+      );
+      expect(denied).toMatchObject({
+        kind: "failed",
+        error: { code: "AUTHORIZATION_DENIED" },
+      });
+      expect(denied).not.toHaveProperty("data");
+      expect(denied).not.toHaveProperty("events");
+    }, 240_000);
+  });
 });

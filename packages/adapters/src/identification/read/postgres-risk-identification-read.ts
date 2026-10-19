@@ -1,9 +1,9 @@
 import { TextDecoder } from "node:util";
 import { randomUUID } from "node:crypto";
 
-import { sql, type Kysely, type SqlBool } from "kysely";
+import { sql, type Kysely, type RawBuilder, type SqlBool } from "kysely";
 
-import { ACCESS_POLICY_REF_V1 } from "@riskflow/core/access";
+import { ACCESS_POLICY_REF_V1, AccessServiceError } from "@riskflow/core/access";
 import { ArtifactReadRequestV1Schema, type ArtifactStoreV1 } from "@riskflow/core/artifacts";
 import {
   AcceptanceRouteSetV1Schema,
@@ -25,6 +25,8 @@ import {
   IdentificationWorkItemRefV1Schema,
   ModuleErrorV1Schema,
   ReviewDecisionRefV1Schema,
+  RISK_DASHBOARD_GROUP_LIMIT_V1,
+  riskDashboardTimelineResumeV1,
   RiskIdentificationReadQueryV1Schema,
   RouteDecisionRefV1Schema,
   SourceVersionRefV1Schema,
@@ -40,6 +42,10 @@ import {
   type ModuleErrorV1,
   type ReviewDecisionRefV1,
   type ReviewTaskRefV1,
+  type RiskDashboardProcessCountV1,
+  type RiskDashboardRiskRecordsSourceRequestV1,
+  type RiskDashboardRiskRecordsSourceResultV1,
+  type RiskDashboardTimelineEventV1,
   type RiskIdentificationMergeGroupSummaryV1,
   type RiskIdentificationReadPortV1,
   type RiskIdentificationReadQueryV1,
@@ -50,6 +56,8 @@ import {
   type RiskIdentificationWorkItemCoverageV1,
   type RiskRecordCatalogItemV1,
   type RouteDecisionRefV1,
+  type SourceVersionRefV1,
+  type SpatialScopeRefV1,
   type WaitingRefV1,
   type WorkflowRunStatusV1,
 } from "@riskflow/contracts/ports";
@@ -67,6 +75,9 @@ const FINALIZATION_TABLE = "business.identification_finalization_results";
 const RECORDS_TABLE = "business.standardized_risk_records";
 const STAGE_CODE_V1 = "risk-identification.read";
 const CAPABILITY_V1 = "risk-identification.read";
+
+/** 仪表盘来源集合上界：与既有 256 项来源边界一致，溢出即该来源不可用（不部分披露）。 */
+const DASHBOARD_SOURCE_LIMIT_V1 = 256;
 
 /** 与 C24 读侧一致的有界正文读取上限：超出即视为不可信来源，不做部分解析。 */
 const MAX_BODY_BYTES_V1 = 16 * 1024 * 1024;
@@ -183,6 +194,13 @@ const identifierList = (value: unknown): readonly string[] | undefined =>
     ? (value as readonly string[])
     : undefined;
 
+/** SQL count 以 bigint 文本返回：只接受非负安全整数，越界由调用方判为来源溢出。 */
+const safeCount = (value: unknown): number | undefined => {
+  const parsed =
+    typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+};
+
 const decodeCursor = (cursor: string | undefined): number | "invalid" => {
   if (cursor === undefined) return 0;
   if (!/^offset-\d+$/u.test(cursor)) return "invalid";
@@ -236,6 +254,11 @@ const readError = (
         readonly blockerKind: string;
         readonly causalRunId: string;
         readonly occurredAt: string;
+      }
+    | {
+        readonly code: "TRANSIENT_FAILURE" | "TERMINAL_FAILURE";
+        readonly causalRunId: string;
+        readonly occurredAt: string;
       },
 ): ModuleErrorV1 => {
   const common = {
@@ -272,6 +295,30 @@ const readError = (
         blockerRef: {
           kind: "content-artifact",
           reference: { entityId: "risk-identification-read-bound", versionId: "v1" },
+        },
+      });
+    case "TRANSIENT_FAILURE":
+      return ModuleErrorV1Schema.parse({
+        ...common,
+        code: value.code,
+        category: "technical",
+        retryable: true,
+        attempt: 1,
+        retryPolicyRef: { entityId: "read-retry-policy", versionId: "v1" },
+        diagnosticRef: {
+          kind: "diagnostic-artifact",
+          reference: { entityId: "risk-identification-read-failure", versionId: "v1" },
+        },
+      });
+    case "TERMINAL_FAILURE":
+      return ModuleErrorV1Schema.parse({
+        ...common,
+        code: value.code,
+        category: "technical",
+        retryable: false,
+        diagnosticRef: {
+          kind: "diagnostic-artifact",
+          reference: { entityId: "risk-identification-read-failure", versionId: "v1" },
         },
       });
   }
@@ -324,7 +371,17 @@ export interface PostgresRiskIdentificationReadAdapterOptionsV1 {
   readonly authorization: Pick<
     PostgresLocalIdentityAccess,
     "verify" | "readDeploymentAuthorizationSource" | "authorizeBusinessAction"
-  >;
+  > & {
+    /**
+     * 仪表盘来源可见性批验：缺失即无法判定可见集合，来源按不可用失败闭合。
+     * C06 实现把分支原样交给现行策略判定，支持任意模块分支；这里按真实能力声明分支类型。
+     */
+    filterVisibleSources?(input: {
+      readonly branch: ModuleBranchV1;
+      readonly authorization: AuthorizationContextV1;
+      readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+    }): Promise<readonly SourceVersionRefV1[]>;
+  };
   readonly now?: () => Date;
 }
 
@@ -497,6 +554,22 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
     return readError({
       code: "BUSINESS_BLOCKED",
       blockerKind,
+      causalRunId,
+      occurredAt: this.#now().toISOString(),
+    });
+  }
+
+  /**
+   * 仪表盘来源的失败收口（design D-07）：授权不符按拒权收口，未知 DB／I/O 异常按
+   * transient／terminal 映射，不 catch 成拒权——两者对调用方的含义完全不同。
+   */
+  #dashboardError(error: unknown, causalRunId: string, branch: ModuleBranchV1): ModuleErrorV1 {
+    if (error instanceof AccessServiceError) {
+      return this.#denied(causalRunId, branch);
+    }
+    const mapped = mapPostgresError(error, `${STAGE_CODE_V1}.dashboard`);
+    return readError({
+      code: mapped.code === "IDEMPOTENCY_CONFLICT" ? "TERMINAL_FAILURE" : "TRANSIENT_FAILURE",
       causalRunId,
       occurredAt: this.#now().toISOString(),
     });
@@ -1079,6 +1152,22 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
     });
   }
 
+  /**
+   * 目录与仪表盘共享的 accepted 候选片段（design D-04）：同工程、正文为对象、三项登记列
+   * 非空且已成立自动或人工验收。只表达登记列事实，不解析正文。
+   */
+  #candidateRecordPredicate(projectId: string): RawBuilder<SqlBool> {
+    return sql<SqlBool>`project_id = ${projectId}
+      AND jsonb_typeof(payload) = 'object'
+      AND spatial_scope_refs IS NOT NULL
+      AND source_version_refs IS NOT NULL
+      AND evidence_references IS NOT NULL
+      AND jsonb_array_length(spatial_scope_refs) > 0
+      AND jsonb_array_length(source_version_refs) > 0
+      AND jsonb_array_length(evidence_references) > 0
+      AND (route_decision_ref IS NOT NULL OR review_decision_ref IS NOT NULL)`;
+  }
+
   /** 记录行 → 目录条目；正文不可信或验收事实缺席的记录不进入目录（不伪造验收方式）。 */
   #catalogItem(row: StandardizedRiskRecordDbRow): RiskRecordCatalogItemV1 | undefined {
     const envelope = StandardizedRiskRecordEnvelopeSchema.safeParse(row.payload);
@@ -1144,17 +1233,8 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       const scoped = this.#db
         .selectFrom(RECORDS_TABLE)
         .selectAll()
-        .where("project_id", "=", query.projectId)
-        .where(sql<SqlBool>`jsonb_typeof(payload) = 'object'`)
-        // 只纳入带齐评估启动事实的记录：范围/来源/证据缺任一项即无法投影，不进目录。
-        .where(
-          sql<SqlBool>`spatial_scope_refs IS NOT NULL
-            AND source_version_refs IS NOT NULL
-            AND evidence_references IS NOT NULL
-            AND jsonb_array_length(spatial_scope_refs) > 0
-            AND jsonb_array_length(source_version_refs) > 0
-            AND jsonb_array_length(evidence_references) > 0`,
-        )
+        // 目录与仪表盘共用同一 accepted 候选；验收方式再按请求收窄。
+        .where(this.#candidateRecordPredicate(query.projectId))
         .where(
           query.payload.acceptanceKind === "automatic"
             ? sql<SqlBool>`route_decision_ref IS NOT NULL`
@@ -1259,6 +1339,210 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         reference: { entityId: row.audit_entry_id, versionId: "v1" },
       },
     });
+  }
+
+  /**
+   * 仪表盘风险记录来源（design D-04～D-06）：与目录共享 accepted 候选，按当前授权批量判定
+   * 可见来源与空间范围，在 SQL 内聚合计数并输出微秒登记变化页。
+   *
+   * 可见性差异：目录的 `#recordVisibility` 逐条请求 C06，并把证据引用里的来源版本也纳入
+   * 请求；本来源按 design D-03 的批量方式只对登记列 `source_version_refs` 做一次
+   * `filterVisibleSources`，再把「全部登记来源可见」下推为 SQL。证据来源不在登记来源集合
+   * 内时目录可能更严；本来源的多出部分是记录已登记来源可见的版本，不披露正文。
+   */
+  async readDashboard(
+    request: RiskDashboardRiskRecordsSourceRequestV1,
+  ): Promise<RiskDashboardRiskRecordsSourceResultV1> {
+    const branch = READ_BRANCH_V1["record-catalog"];
+    const denied = (): RiskDashboardRiskRecordsSourceResultV1 => ({
+      kind: "failed",
+      error: this.#denied(request.queryId, branch),
+    });
+    try {
+      if (
+        request.projectId !== request.authorization.projectId ||
+        request.actorId !== request.authorization.actorId ||
+        !request.authorization.grantedCapabilities.includes(CAPABILITY_V1)
+      ) {
+        return denied();
+      }
+      const decision = await this.#authorization.verify({
+        authorizationContextRef: request.authorization.authorizationContextRef,
+        invocationId: request.queryId,
+        projectId: request.projectId,
+        branch,
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+        requestedAt: request.requestedAt,
+      });
+      const verified = decision.context;
+      if (
+        decision.redacted ||
+        verified.actorId !== request.actorId ||
+        verified.projectId !== request.projectId ||
+        !verified.grantedCapabilities.includes(CAPABILITY_V1)
+      ) {
+        return denied();
+      }
+
+      const scopeEntityIds = verified.spatialScopeRefs.map((ref) => ref.reference.entityId);
+      const spatialScopeRef = request.spatialScopeRef;
+      if (
+        spatialScopeRef !== undefined &&
+        !scopeEntityIds.includes(spatialScopeRef.reference.entityId)
+      ) {
+        return denied();
+      }
+      const visibilityReader = this.#authorization.filterVisibleSources;
+      if (visibilityReader === undefined) return denied();
+
+      // 先取候选记录的登记来源去重集合（上限+1 检出溢出），再一次性批验当前可见子集。
+      const declared = await this.#db
+        .selectFrom(RECORDS_TABLE)
+        .select(sql<unknown>`jsonb_array_elements(source_version_refs)`.as("source"))
+        .where(this.#candidateRecordPredicate(request.projectId))
+        .distinct()
+        .limit(DASHBOARD_SOURCE_LIMIT_V1 + 1)
+        .execute();
+      if (declared.length > DASHBOARD_SOURCE_LIMIT_V1) {
+        return { kind: "failed", error: this.#blocked("dashboard-source-limit", request.queryId) };
+      }
+      const sources: SourceVersionRefV1[] = [];
+      for (const row of declared) {
+        const parsed = SourceVersionRefV1Schema.safeParse(row.source);
+        if (!parsed.success) return denied();
+        sources.push(parsed.data);
+      }
+      const visibleSources = await visibilityReader.call(this.#authorization, {
+        branch,
+        authorization: verified,
+        sourceVersionRefs: sources,
+      });
+
+      const scoped = this.#dashboardRecordQuery({
+        projectId: request.projectId,
+        scopeEntityIds,
+        visibleSources,
+        ...(spatialScopeRef === undefined ? {} : { spatialScopeRef }),
+      });
+
+      const countRow = await scoped.select(sql<string>`count(*)`.as("count")).executeTakeFirst();
+      const recordedVersionCount = safeCount(countRow?.count);
+      // 计数越界与分组越界同为「有界聚合无法完整表达」，沿用同一不可用类别。
+      if (recordedVersionCount === undefined) {
+        return { kind: "failed", error: this.#blocked("dashboard-group-limit", request.queryId) };
+      }
+
+      const processNode = sql`payload -> 'record' ->> 'processNodeId'`;
+      const groupRows = await scoped
+        .select([
+          sql<string | null>`${processNode}`.as("process_node_id"),
+          sql<string>`count(*)`.as("count"),
+        ])
+        .where(sql<SqlBool>`${processNode} IS NOT NULL AND ${processNode} <> ''`)
+        .groupBy(processNode)
+        .orderBy(processNode, "asc")
+        .limit(RISK_DASHBOARD_GROUP_LIMIT_V1 + 1)
+        .execute();
+      if (groupRows.length > RISK_DASHBOARD_GROUP_LIMIT_V1) {
+        return { kind: "failed", error: this.#blocked("dashboard-group-limit", request.queryId) };
+      }
+      const processCounts: RiskDashboardProcessCountV1[] = [];
+      for (const row of groupRows) {
+        const count = safeCount(row.count);
+        if (count === undefined || row.process_node_id === null) {
+          return { kind: "failed", error: this.#blocked("dashboard-group-limit", request.queryId) };
+        }
+        processCounts.push({ processNodeId: row.process_node_id, count });
+      }
+
+      // 变化页：登记时间按 UTC 微秒文本直接输出，不经过 JS Date 的毫秒截断。
+      let eventsQuery = scoped
+        .select([
+          "risk_record_id",
+          "version_id",
+          sql<string>`to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.as(
+            "recorded_at_text",
+          ),
+        ])
+        .where(sql<SqlBool>`created_at <= ${request.timeline.asOf}::timestamptz`);
+      const after = request.timeline.after;
+      if (after !== undefined) {
+        const resume = riskDashboardTimelineResumeV1("riskRecords", after);
+        if (resume.kind === "before") {
+          eventsQuery = eventsQuery.where(
+            sql<SqlBool>`created_at < ${resume.recordedAt}::timestamptz`,
+          );
+        } else if (resume.kind === "at-or-before") {
+          eventsQuery = eventsQuery.where(
+            sql<SqlBool>`created_at <= ${resume.recordedAt}::timestamptz`,
+          );
+        } else {
+          eventsQuery = eventsQuery.where(
+            sql<SqlBool>`(created_at < ${resume.recordedAt}::timestamptz
+              OR (created_at = ${resume.recordedAt}::timestamptz
+                AND (risk_record_id, version_id) > (${resume.entityId}, ${resume.versionId})))`,
+          );
+        }
+      }
+      const eventRows = await eventsQuery
+        .orderBy("created_at", "desc")
+        .orderBy("risk_record_id", "asc")
+        .orderBy("version_id", "asc")
+        .limit(request.timeline.pageSize + 1)
+        .execute();
+      const events: RiskDashboardTimelineEventV1[] = eventRows.map((row) => ({
+        source: "riskRecords" as const,
+        changeType: "risk-record-recorded" as const,
+        recordedAt: row.recorded_at_text,
+        subjectRef: StandardizedRiskRecordRefV1Schema.parse({
+          kind: "standardized-risk-record",
+          reference: { entityId: row.risk_record_id, versionId: row.version_id },
+        }),
+      }));
+
+      return {
+        kind: "ready",
+        asOf: this.#now().toISOString(),
+        data: { recordedVersionCount, processCounts },
+        events,
+      };
+    } catch (error) {
+      // D-07：授权不符按拒权，未知 DB／I/O 异常按 transient／terminal 映射，
+      // 不把技术故障 catch 成拒权或成功零值。
+      return { kind: "failed", error: this.#dashboardError(error, request.queryId, branch) };
+    }
+  }
+
+  /** 仪表盘可见记录关系：共享候选 + 全部登记来源可见 + 全部空间范围在现行授权内。 */
+  #dashboardRecordQuery(input: {
+    readonly projectId: string;
+    readonly scopeEntityIds: readonly string[];
+    readonly visibleSources: readonly SourceVersionRefV1[];
+    readonly spatialScopeRef?: SpatialScopeRefV1;
+  }) {
+    let query = this.#db
+      .selectFrom(RECORDS_TABLE)
+      .where(this.#candidateRecordPredicate(input.projectId))
+      .where(
+        sql<SqlBool>`NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements(source_version_refs) AS declared
+          WHERE NOT ${JSON.stringify(input.visibleSources)}::jsonb @> jsonb_build_array(declared)
+        )`,
+      )
+      .where(
+        sql<SqlBool>`NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements(spatial_scope_refs) AS scope
+          WHERE scope -> 'reference' ->> 'entityId' IS NULL
+             OR NOT (scope -> 'reference' ->> 'entityId' = ANY(${input.scopeEntityIds}))
+        )`,
+      );
+    if (input.spatialScopeRef !== undefined) {
+      query = query.where(
+        sql<SqlBool>`spatial_scope_refs @> jsonb_build_array(${JSON.stringify(input.spatialScopeRef)}::jsonb)`,
+      );
+    }
+    return query;
   }
 
   /** 验收决定引用：自动路线为路由决定，人工路线为已成立的复核决定；两者必居其一。 */

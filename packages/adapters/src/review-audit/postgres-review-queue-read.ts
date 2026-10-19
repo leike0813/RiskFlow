@@ -1,18 +1,27 @@
 import type { Kysely } from "kysely";
 
-import { ACCESS_POLICY_REF_V1, type LocalIdentityAccessV1 } from "@riskflow/core/access";
+import {
+  ACCESS_POLICY_REF_V1,
+  AccessServiceError,
+  type LocalIdentityAccessV1,
+} from "@riskflow/core/access";
 import type { JsonValue } from "@riskflow/core/persistence";
 import {
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
   ReviewQueueReadQueryV1Schema,
   ReviewTaskRefV1Schema,
+  ReviewTypeV1Schema,
+  RiskDashboardReviewsSourceRequestV1Schema,
+  RiskDashboardReviewsSourceResultV1Schema,
   type AuthorizationContextV1,
   type ModuleErrorV1,
   type ReviewQueueItemV1,
   type ReviewQueueReadPortV1,
   type ReviewQueueReadQueryV1,
   type ReviewQueueReadResultV1,
+  type RiskDashboardReviewsSourceRequestV1,
+  type RiskDashboardReviewsSourceResultV1,
 } from "@riskflow/contracts/ports";
 
 import type { PostgresDatabase } from "../postgres/types.js";
@@ -22,6 +31,8 @@ const STAGE_CODE_V1 = "review-audit.queue-read";
 const CAPABILITY_V1 = "review-audit.read";
 const BRANCH_V1 = "review-audit.queue-read";
 const DEFAULT_PAGE_SIZE_V1 = 50;
+/** 仪表盘复核分组上限：复核类型是闭合枚举，超出即为登记事实异常。 */
+const DASHBOARD_REVIEW_TYPE_LIMIT_V1 = 16;
 
 type TimestampColumn = Date | string;
 
@@ -85,6 +96,55 @@ const readError = (value: {
 };
 
 const failed = (error: ModuleErrorV1): ReviewQueueReadResultV1 => ({ kind: "failed", error });
+
+/** 仪表盘分组超界：整来源失败，不截断后宣称完整。 */
+const dashboardBlocked = (queryId: string, blockerKind: string): ModuleErrorV1 =>
+  ModuleErrorV1Schema.parse({
+    code: "BUSINESS_BLOCKED",
+    category: "business-blocked",
+    retryable: false,
+    blockerKind,
+    blockerRef: { kind: "query-result", reference: { entityId: queryId, versionId: "1" } },
+    stageCode: STAGE_CODE_V1,
+    occurredAt: new Date().toISOString(),
+    causalRunId: queryId,
+  });
+
+/** 授权不符：C06 的授权失败形状，让调用方能区分拒权与技术故障。 */
+const deniedError = (): AccessServiceError =>
+  new AccessServiceError({
+    code: "AUTHORIZATION_DENIED",
+    stage: "verify",
+    occurredAt: new Date().toISOString(),
+    diagnosticRef: {
+      kind: "diagnostic-artifact",
+      reference: { entityId: "review-queue-dashboard-denied", versionId: "1" },
+    },
+    contextRefs: [],
+    retryable: false,
+    requiredCapability: MODULE_BRANCH_CAPABILITY_V1[BRANCH_V1],
+    authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+  });
+
+/**
+ * 仪表盘来源的技术故障：按 transient 收口，不折算成权限拒绝（design D-07）。
+ * 拒权与技术失败对调用方的含义不同：前者不可重试，后者可重试。
+ */
+const dashboardFailed = (queryId: string, occurredAt: string): ModuleErrorV1 =>
+  ModuleErrorV1Schema.parse({
+    code: "TRANSIENT_FAILURE",
+    category: "technical",
+    retryable: true,
+    attempt: 1,
+    retryPolicyRef: { entityId: "read-retry-policy", versionId: "v1" },
+    diagnosticRef: {
+      kind: "diagnostic-artifact",
+      reference: { entityId: "review-queue-dashboard-failure", versionId: "1" },
+    },
+    stageCode: STAGE_CODE_V1,
+    occurredAt,
+    causalRunId: queryId,
+  });
 
 /**
  * 指向其它工程、其它操作者或未持复核读能力的请求先按授权失败收口，伪造请求无法探出差异
@@ -193,6 +253,112 @@ export class PostgresReviewQueueReadAdapter implements ReviewQueueReadPortV1 {
     });
     if (decision.context.actorId !== query.actorId) {
       throw new Error("review queue read authorization denied");
+    }
+    return decision.context;
+  }
+
+  /**
+   * CH-3 仪表盘复核摘要（design D-04、D-05）。
+   *
+   * 复核摘要是工程级口径：不受总览空间筛选影响，只统计当前工程仍为 pending 的复核任务，
+   * 并按复核类型分组。stale pending 仍计入——过期只表示目标版本已被取代，不等于已决定。
+   * 这里不复用 #queueRead 的全量加载与 stale 双循环：SQL 直接按工程与状态分组计数。
+   */
+  async readDashboard(
+    request: RiskDashboardReviewsSourceRequestV1,
+  ): Promise<RiskDashboardReviewsSourceResultV1> {
+    const parsed = RiskDashboardReviewsSourceRequestV1Schema.safeParse(request);
+    if (!parsed.success) {
+      return {
+        kind: "failed",
+        error: readError({
+          code: "AUTHORIZATION_DENIED",
+          causalRunId: request.queryId,
+          occurredAt: this.#now().toISOString(),
+        }),
+      };
+    }
+    const valid = parsed.data;
+    try {
+      // 复核摘要是工程级口径：只按当前授权复验，不按空间筛选。
+      await this.#verifyDashboard(valid);
+      const rows = await this.#db
+        .selectFrom(REVIEW_TASKS_TABLE)
+        .select(["review_type"])
+        .where("project_id", "=", valid.projectId)
+        .where("status", "=", "pending")
+        .execute();
+      const counts = new Map<string, number>();
+      for (const row of rows) {
+        counts.set(row.review_type, (counts.get(row.review_type) ?? 0) + 1);
+      }
+      if (counts.size > DASHBOARD_REVIEW_TYPE_LIMIT_V1) {
+        return {
+          kind: "failed",
+          error: dashboardBlocked(valid.queryId, "dashboard-group-limit"),
+        };
+      }
+      const reviewTypeCounts = [...counts.entries()]
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([reviewType, count]) => {
+          const parsedType = ReviewTypeV1Schema.safeParse(reviewType);
+          if (!parsedType.success) {
+            throw new Error("review task type is not a known review type");
+          }
+          return { reviewType: parsedType.data, count };
+        });
+      return RiskDashboardReviewsSourceResultV1Schema.parse({
+        kind: "ready",
+        asOf: this.#now().toISOString(),
+        data: {
+          pendingCount: rows.length,
+          reviewTypeCounts,
+        },
+      });
+    } catch (error) {
+      // 授权不符按拒权；未知 DB／I/O 异常按 transient 收口，不折算成权限拒绝。
+      if (error instanceof AccessServiceError) {
+        return {
+          kind: "failed",
+          error: readError({
+            code: "AUTHORIZATION_DENIED",
+            causalRunId: valid.queryId,
+            occurredAt: this.#now().toISOString(),
+          }),
+        };
+      }
+      return {
+        kind: "failed",
+        error: dashboardFailed(valid.queryId, this.#now().toISOString()),
+      };
+    }
+  }
+
+  /** 当前授权复验：按复核队列分支重新判定当前权限。 */
+  async #verifyDashboard(
+    request: RiskDashboardReviewsSourceRequestV1,
+  ): Promise<AuthorizationContextV1> {
+    if (
+      request.projectId !== request.authorization.projectId ||
+      request.actorId !== request.authorization.actorId ||
+      !request.authorization.grantedCapabilities.includes(CAPABILITY_V1)
+    ) {
+      throw deniedError();
+    }
+    const decision = await this.#authorization.verify({
+      authorizationContextRef: request.authorization.authorizationContextRef,
+      invocationId: request.queryId,
+      projectId: request.projectId,
+      branch: BRANCH_V1,
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+      requestedAt: request.authorization.decidedAt,
+    });
+    if (
+      decision.context.actorId !== request.actorId ||
+      !decision.context.grantedCapabilities.includes(CAPABILITY_V1)
+    ) {
+      throw deniedError();
     }
     return decision.context;
   }

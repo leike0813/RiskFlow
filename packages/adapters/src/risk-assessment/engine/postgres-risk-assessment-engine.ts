@@ -115,6 +115,8 @@ import {
   KnowledgeReleaseRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
+  RISK_DASHBOARD_GROUP_LIMIT_V1,
+  riskDashboardTimelineResumeV1,
   RiskAssessmentReadQueryV1Schema,
   RiskAssessmentReadResultV1Schema,
   RiskInputVersionRefV1Schema,
@@ -142,6 +144,8 @@ import {
   type RiskAssessmentPortV1,
   type RiskAssessmentReadPortV1,
   type RiskAssessmentReadQueryV1,
+  type RiskDashboardAssessmentsSourceRequestV1,
+  type RiskDashboardAssessmentsSourceResultV1,
   type RiskAssessmentReadResultV1,
   type RiskAssessmentRecordRefV1,
   type RiskInputVersionRefV1,
@@ -2955,7 +2959,140 @@ export class PostgresRiskAssessmentEngine
     }
   }
 
-  #readDenied(query: RiskAssessmentReadQueryV1): ModuleErrorV1 {
+  /**
+   * CH-3 仪表盘评估来源（design D-04、D-05、D-06）：候选关系与目录完全一致；统计按输入快照
+   * 冻结矩阵的精确版本×记录等级分组，变化页按登记时序给出记录版本。
+   */
+  async readDashboard(
+    request: RiskDashboardAssessmentsSourceRequestV1,
+  ): Promise<RiskDashboardAssessmentsSourceResultV1> {
+    const verified = await this.#verifyReadAuthorization(request);
+    if (verified === undefined) return { kind: "failed", error: this.#readDenied(request) };
+    try {
+      const query = await this.#authorizedRecordBase(
+        request.projectId,
+        request.spatialScopeRef === undefined ? {} : { spatialScopeRef: request.spatialScopeRef },
+        verified,
+        request.queryId,
+      );
+      const total = await query
+        .select((eb) => eb.fn.countAll<string>().as("count"))
+        .executeTakeFirstOrThrow();
+      const groups = await query
+        .select("r.risk_level_id")
+        .select([
+          sql<string>`i.snapshot_payload -> 'riskMatrixRef' ->> 'entityId'`.as("matrix_entity_id"),
+          sql<string>`i.snapshot_payload -> 'riskMatrixRef' ->> 'versionId'`.as(
+            "matrix_version_id",
+          ),
+          sql<string>`count(*)`.as("count"),
+        ])
+        .where(sql<SqlBool>`jsonb_typeof(i.snapshot_payload -> 'riskMatrixRef') = 'object'`)
+        .where(
+          sql<SqlBool>`jsonb_typeof(i.snapshot_payload -> 'riskMatrixRef' -> 'entityId') = 'string'`,
+        )
+        .where(
+          sql<SqlBool>`jsonb_typeof(i.snapshot_payload -> 'riskMatrixRef' -> 'versionId') = 'string'`,
+        )
+        .where(sql<SqlBool>`i.snapshot_payload -> 'riskMatrixRef' ->> 'entityId' <> ''`)
+        .where(sql<SqlBool>`i.snapshot_payload -> 'riskMatrixRef' ->> 'versionId' <> ''`)
+        .groupBy(sql`i.snapshot_payload -> 'riskMatrixRef' ->> 'entityId'`)
+        .groupBy(sql`i.snapshot_payload -> 'riskMatrixRef' ->> 'versionId'`)
+        .groupBy("r.risk_level_id")
+        .orderBy(sql`i.snapshot_payload -> 'riskMatrixRef' ->> 'entityId'`, "asc")
+        .orderBy(sql`i.snapshot_payload -> 'riskMatrixRef' ->> 'versionId'`, "asc")
+        .orderBy("r.risk_level_id", "asc")
+        .limit(RISK_DASHBOARD_GROUP_LIMIT_V1 + 1)
+        .execute();
+      if (groups.length > RISK_DASHBOARD_GROUP_LIMIT_V1) {
+        throw new RiskAssessmentReadFailure(
+          this.#readBlocked(request.queryId, "dashboard-group-limit"),
+        );
+      }
+      const { asOf, pageSize, after } = request.timeline;
+      const resume =
+        after === undefined ? undefined : riskDashboardTimelineResumeV1("assessments", after);
+      let eventsQuery = query
+        .select([
+          sql<string>`r.record_id`.as("entity_id"),
+          sql<string>`r.version_id`.as("version_id"),
+          sql<string>`to_char(r.recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.as(
+            "recorded_at",
+          ),
+          sql<string>`to_char(r.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.as(
+            "occurred_at",
+          ),
+        ])
+        .where(sql<SqlBool>`r.recorded_at <= ${asOf}::timestamptz`);
+      if (resume !== undefined) {
+        if (resume.kind === "before") {
+          eventsQuery = eventsQuery.where(
+            sql<SqlBool>`r.recorded_at < ${resume.recordedAt}::timestamptz`,
+          );
+        } else if (resume.kind === "at-or-before") {
+          eventsQuery = eventsQuery.where(
+            sql<SqlBool>`r.recorded_at <= ${resume.recordedAt}::timestamptz`,
+          );
+        } else {
+          eventsQuery = eventsQuery.where(sql<SqlBool>`(
+            r.recorded_at < ${resume.recordedAt}::timestamptz
+            OR (r.recorded_at = ${resume.recordedAt}::timestamptz
+                AND r.record_id > ${resume.entityId})
+            OR (r.recorded_at = ${resume.recordedAt}::timestamptz
+                AND r.record_id = ${resume.entityId}
+                AND r.version_id > ${resume.versionId})
+          )`);
+        }
+      }
+      const rows = await eventsQuery
+        .orderBy("r.recorded_at", "desc")
+        .orderBy("r.record_id", "asc")
+        .orderBy("r.version_id", "asc")
+        .limit(pageSize + 1)
+        .execute();
+      return {
+        kind: "ready",
+        asOf,
+        data: {
+          recordedAssessmentCount: this.#dashboardCount(total.count, request.queryId),
+          matrixLevelCounts: groups.map((row) => ({
+            riskMatrixRef: {
+              entityId: row.matrix_entity_id,
+              versionId: row.matrix_version_id,
+            },
+            riskLevelId: row.risk_level_id,
+            count: this.#dashboardCount(row.count, request.queryId),
+          })),
+        },
+        events: rows.map((row) => ({
+          source: "assessments" as const,
+          changeType: "assessment-recorded" as const,
+          recordedAt: row.recorded_at,
+          subjectRef: {
+            kind: "risk-assessment-record" as const,
+            reference: { entityId: row.entity_id, versionId: row.version_id },
+          },
+          occurredAt: row.occurred_at,
+        })),
+      };
+    } catch (error) {
+      if (error instanceof RiskAssessmentReadFailure) {
+        return { kind: "failed", error: error.error };
+      }
+      return { kind: "failed", error: failureToModuleError(error, request.queryId) };
+    }
+  }
+
+  /** 统计量必须是可安全呈现的非负整数；超界整来源失败，不溢出也不夹取。 */
+  #dashboardCount(value: string | number, queryId: string): number {
+    const count = Number(value);
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new RiskAssessmentReadFailure(this.#readBlocked(queryId, "dashboard-count-overflow"));
+    }
+    return count;
+  }
+
+  #readDenied(query: { readonly queryId: string }): ModuleErrorV1 {
     return moduleError(
       "AUTHORIZATION_DENIED",
       query.queryId,
@@ -2972,9 +3109,13 @@ export class PostgresRiskAssessmentEngine
    * 只读复验：沿 `risk-assessment.read` 分支复验当前授权上下文。`redacted` 表示授权已撤销或
    * 不可判定，此时失败闭合而不是当作「没有数据」——两者对调用方的含义完全不同。
    */
-  async #verifyReadAuthorization(
-    command: RiskAssessmentReadQueryV1,
-  ): Promise<AuthorizationContextV1 | undefined> {
+  async #verifyReadAuthorization(command: {
+    readonly queryId: string;
+    readonly projectId: string;
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<AuthorizationContextV1 | undefined> {
     const decision = await this.#access
       .verify({
         authorizationContextRef: command.authorization.authorizationContextRef,
@@ -3599,19 +3740,26 @@ export class PostgresRiskAssessmentEngine
     };
   }
 
-  /** 同一授权过滤用于目录、历史和 SQL 摘要；不借 C04 私表发现来源授权。 */
-  async #authorizedRecordQuery(
-    command: RiskAssessmentReadQueryV1,
+  /**
+   * 目录、历史与仪表盘共用的受权候选关系：项目、空间与全部来源证据可见性先于任何统计。
+   * 空间或来源不在当前授权内即整体拒绝，不先取行再由调用方过滤。
+   */
+  async #authorizedRecordBase(
+    projectId: string,
+    payload: {
+      readonly operation?: string;
+      readonly spatialScopeRef?: SpatialScopeRefV1 | undefined;
+    },
     verified: AuthorizationContextV1,
+    queryId: string,
   ) {
     const scopeIds = verified.spatialScopeRefs.map((ref) => ref.reference.entityId);
-    const requestedScope =
-      "spatialScopeRef" in command.payload ? command.payload.spatialScopeRef : undefined;
+    const requestedScope = payload.spatialScopeRef;
     if (
       scopeIds.length === 0 ||
       (requestedScope !== undefined && !scopeIds.includes(requestedScope.reference.entityId))
     ) {
-      throw new RiskAssessmentReadFailure(this.#readDenied(command));
+      throw new RiskAssessmentReadFailure(this.#readDenied({ queryId }));
     }
     let query = this.#db
       .selectFrom("business.risk_assessment_records as r")
@@ -3627,7 +3775,7 @@ export class PostgresRiskAssessmentEngine
           .onRef("p.snapshot_id", "=", "i.preparation_snapshot_id")
           .onRef("p.version_id", "=", "i.preparation_snapshot_version_id"),
       )
-      .where("r.project_id", "=", command.projectId)
+      .where("r.project_id", "=", projectId)
       .where(sql<SqlBool>`p.spatial_scope_ref -> 'reference' ->> 'entityId' = ANY(${scopeIds})`)
       .where(
         sql<SqlBool>`jsonb_typeof(p.snapshot_payload -> 'sourceEvidenceReferences') = 'array'`,
@@ -3636,6 +3784,51 @@ export class PostgresRiskAssessmentEngine
       query = query.where(
         sql<SqlBool>`p.spatial_scope_ref = ${JSON.stringify(requestedScope)}::jsonb`,
       );
+    // 仅定位本次记录的来源元数据；权限过滤先于记录分页和SQL聚合。
+    const declared = await query
+      .select(
+        sql<unknown>`jsonb_array_elements(p.snapshot_payload -> 'sourceEvidenceReferences') -> 'sourceVersion'`.as(
+          "source",
+        ),
+      )
+      .distinct()
+      .limit(ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1 + 1)
+      .execute();
+    if (
+      declared.length > ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1 ||
+      this.#access.filterVisibleSources === undefined
+    )
+      throw new RiskAssessmentReadFailure(this.#readDenied({ queryId }));
+    const sources: SourceVersionRefV1[] = [];
+    for (const row of declared) {
+      const reference = VersionReferenceSchema.safeParse(row.source);
+      if (!reference.success) throw new RiskAssessmentReadFailure(this.#readDenied({ queryId }));
+      sources.push({ kind: "source-version", reference: reference.data });
+    }
+    const visible = await this.#access.filterVisibleSources({
+      branch: "risk-assessment.read",
+      authorization: verified,
+      sourceVersionRefs: sources,
+    });
+    const allowedSources = JSON.stringify(visible.map((ref) => ref.reference));
+    return query.where(sql<SqlBool>`NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(p.snapshot_payload -> 'sourceEvidenceReferences') evidence
+      WHERE evidence -> 'sourceVersion' IS NULL
+         OR NOT ${allowedSources}::jsonb @> jsonb_build_array(evidence -> 'sourceVersion')
+    )`);
+  }
+
+  /** 同一授权过滤用于目录、历史和 SQL 摘要；不借 C04 私表发现来源授权。 */
+  async #authorizedRecordQuery(
+    command: RiskAssessmentReadQueryV1,
+    verified: AuthorizationContextV1,
+  ) {
+    let query = await this.#authorizedRecordBase(
+      command.projectId,
+      command.payload,
+      verified,
+      command.queryId,
+    );
     if (command.payload.operation === "record-catalog") {
       if (command.payload.entryMode !== undefined)
         query = query.where("p.entry_mode", "=", command.payload.entryMode);
@@ -3666,38 +3859,7 @@ export class PostgresRiskAssessmentEngine
         )
         .where("p.risk_input_version_id", "=", risk.reference.versionId);
     }
-    // 仅定位本次记录的来源元数据；权限过滤先于记录分页和SQL聚合。
-    const declared = await query
-      .select(
-        sql<unknown>`jsonb_array_elements(p.snapshot_payload -> 'sourceEvidenceReferences') -> 'sourceVersion'`.as(
-          "source",
-        ),
-      )
-      .distinct()
-      .limit(ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1 + 1)
-      .execute();
-    if (
-      declared.length > ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1 ||
-      this.#access.filterVisibleSources === undefined
-    )
-      throw new RiskAssessmentReadFailure(this.#readDenied(command));
-    const sources: SourceVersionRefV1[] = [];
-    for (const row of declared) {
-      const reference = VersionReferenceSchema.safeParse(row.source);
-      if (!reference.success) throw new RiskAssessmentReadFailure(this.#readDenied(command));
-      sources.push({ kind: "source-version", reference: reference.data });
-    }
-    const visible = await this.#access.filterVisibleSources({
-      branch: "risk-assessment.read",
-      authorization: verified,
-      sourceVersionRefs: sources,
-    });
-    const allowedSources = JSON.stringify(visible.map((ref) => ref.reference));
-    return query.where(sql<SqlBool>`NOT EXISTS (
-      SELECT 1 FROM jsonb_array_elements(p.snapshot_payload -> 'sourceEvidenceReferences') evidence
-      WHERE evidence -> 'sourceVersion' IS NULL
-         OR NOT ${allowedSources}::jsonb @> jsonb_build_array(evidence -> 'sourceVersion')
-    )`);
+    return query;
   }
 
   #inputSnapshotKeyOf(row: {

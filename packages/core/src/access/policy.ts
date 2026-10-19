@@ -8,14 +8,15 @@ import { ModuleBranchV1Schema, PresetRoleV1Schema, type PresetRoleV1 } from "./s
 
 // CH-2（design D-06）升 v2 只追加入口资格与原件读取分支；旧 v1 行与授权快照不重写，
 // 历史来源解析只用于恢复已登记主体/范围，当前动作一律按当前策略判权。
-export const ACCESS_POLICY_VERSION = "access-policy/v2" as const;
+// CH-3（design D-03）升 v3 只追加仪表盘入口分支；旧 v1／v2 行与授权快照同样不重写。
+export const ACCESS_POLICY_VERSION = "access-policy/v3" as const;
 export const ACCESS_POLICY_REF_V1 = Object.freeze({
   entityId: "access-policy",
-  versionId: "v2",
+  versionId: "v3",
 });
 
 /** 已登记的历史策略身份：只用于解析旧授权快照的主体与范围，不是放行凭据。 */
-export const ACCESS_POLICY_HISTORY_VERSIONS = Object.freeze(["v1", "v2"] as const);
+export const ACCESS_POLICY_HISTORY_VERSIONS = Object.freeze(["v1", "v2", "v3"] as const);
 export type AccessPolicyHistoryVersion = (typeof ACCESS_POLICY_HISTORY_VERSIONS)[number];
 export const isRegisteredAccessPolicyVersion = (
   versionId: string,
@@ -57,6 +58,8 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "review-audit.read",
     // CH-2（design D-05）：聚合入口资格，不是查询能力；不因此获得任何 Agent 分支。
     "review-todo.read",
+    // CH-3（design D-03）：仪表盘入口资格；六个来源的读权由各来源分支单独判权。
+    "projection.dashboard-read",
   ),
   "field-responder": branchSet(
     "warning-response.record-execution",
@@ -80,6 +83,9 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     // CH-2（design D-05）：现场处置人员取得聚合入口资格，但因无资料目录入口
     // 不补原件读取分支，也不借 UI 补授资料路径；执行/反馈写权不变。
     "review-todo.read",
+    // CH-3（design D-03）：仪表盘入口资格；现场处置人员仍无资料目录来源，
+    // 该来源在仪表盘内按当前授权独立失败，不影响其它来源。
+    "projection.dashboard-read",
   ),
   "business-viewer": branchSet(
     "projection.query",
@@ -109,6 +115,8 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "projection.report-read",
     // CH-2（design D-05）：查看者取得聚合入口资格；不因此获得任何写权或 Agent 能力。
     "review-todo.read",
+    // CH-3（design D-03）：仪表盘入口资格；不因此获得任何来源写权或 Agent 能力。
+    "projection.dashboard-read",
   ),
 });
 

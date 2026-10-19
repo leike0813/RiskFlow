@@ -1,12 +1,14 @@
 /**
- * CH-2 D-02/SH-S06 原生桌面缩放取证（IP-07）。
+ * CH-3 D-10 原生桌面缩放取证（IP-06 / task 6.3）。
  *
  * 只用真实 Chromium 外窗口 + 原生 Ctrl+0 / Ctrl+plus 缩放：不用模拟 viewport、
  * CSS zoom、deviceScaleFactor 或 pageScaleFactor 代替真实 200%。每个组合实际完成
- * 导航、左右栏折叠、已有确认与取消、以及焦点恢复；有二维溢出时实际改变 scrollLeft。
+ * 导航、左右栏折叠、已有确认与取消、焦点恢复，以及总览的分布／时间线／分页可达；
+ * 有二维溢出时实际改变 scrollLeft。
  *
  * 结果按 CH-1 `evidence/native-zoom.json` 的形态记录：窗口外尺寸与 CSS 视口分开写，
  * 不把 1920 的无溢出记成发生滚动。工具不可用时明确失败，不靠 viewport 近似。
+ * 证据根改到本 change，CH-2 已归档证据不动。
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -19,7 +21,7 @@ import { startBusinessBrowserServer } from "./business-server.mjs";
 
 const CHANGE_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../openspec/changes/prepare-web-shell-route-and-access-seams",
+  "../../../../openspec/changes/deliver-risk-overview-dashboard",
 );
 const EVIDENCE_DIR = resolve(CHANGE_ROOT, "evidence");
 const SHOT_DIR = resolve(EVIDENCE_DIR, "native-zoom");
@@ -161,7 +163,7 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
   await expect(openDock).toBeFocused();
   await expect(page.getByRole("tabpanel")).toHaveCount(0);
 
-  const slug = `ch2-${windowSize.width}x${windowSize.height}-${zoom.percent}`;
+  const slug = `ch3-${windowSize.width}x${windowSize.height}-${zoom.percent}`;
   mkdirSync(SHOT_DIR, { recursive: true });
   const capture = async (suffix) => {
     // 原生缩放会改变 DPR；不传 CSS clip，避免自动截图按旧 DPR 裁掉右半屏。
@@ -200,6 +202,7 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
   expect(overflowResult.pageOverflow).toBe(false);
   if (overflowResult.overflow) expect(overflowResult.scrolled).toBe(true);
   page.off("request", countCommand);
+  const overview = await checkOverviewAtZoom(page, server, capture);
   return {
     width: windowSize.width,
     height: windowSize.height,
@@ -216,7 +219,43 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
     errorVisible: true,
     errorColor,
     failedRequests,
-    screenshots: [`native-zoom/${slug}-layout.png`, `native-zoom/${slug}-error.png`],
+    ...overview,
+    screenshots: [
+      `native-zoom/${slug}-layout.png`,
+      `native-zoom/${slug}-error.png`,
+      `native-zoom/${slug}-overview.png`,
+    ],
+  };
+};
+
+/**
+ * 总览在原生缩放下仍可操作（design D-10）：分布图有时间线可读、变化页可键盘触发，
+ * 且总览自身不产生二维溢出。断言只落在可观察行为上，不锁具体数值。
+ */
+const checkOverviewAtZoom = async (page, server, capture) => {
+  await page.goto(`${server.origin}/overview?project=${server.projectId}`);
+  await expect(page.locator("h1.page-title")).toHaveText("风险态势总览");
+  // 分布区与统计真实渲染出内容，不停在加载态或失败骨架。
+  await expect(page.getByRole("heading", { name: "工序风险记录分布" })).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(page.getByText(/已入库风险记录版本/).first()).toBeVisible();
+  const chartCount = await page.locator(".chart-surface").count();
+  expect(chartCount).toBeGreaterThan(0);
+  // 变化时间线可达：键盘能聚焦到「继续读取更早变化」入口。
+  const more = page.getByRole("button", { name: "继续读取更早变化" });
+  if ((await more.count()) > 0) {
+    await more.focus();
+    expect(await focusIsVisible(page)).toBe(true);
+  }
+  const overviewOverflow = await measureOverflow(page);
+  expect(overviewOverflow.pageOverflow).toBe(false);
+  if (overviewOverflow.overflow) expect(overviewOverflow.scrolled).toBe(true);
+  await capture("overview");
+  return {
+    overviewChartCount: chartCount,
+    overviewTimelineFocusable: true,
+    overviewOverflow,
   };
 };
 

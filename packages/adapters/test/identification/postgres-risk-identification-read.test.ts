@@ -35,6 +35,7 @@ import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   AuthorizationContextV1Schema,
   RiskIdentificationReadQueryV1Schema,
+  RiskDashboardRiskRecordsSourceRequestV1Schema,
   type AgentTaskRefV1,
   type AuthorizationContextV1,
   type IdentificationCandidateSetRefV1,
@@ -42,8 +43,13 @@ import {
   type ModuleBranchV1,
   type ModuleCapabilityV1,
   type ReviewTaskRefV1,
+  type RiskDashboardRiskRecordsSourceRequestV1,
+  type RiskDashboardTimelineAfterV1,
+  type RiskDashboardTimelineEventV1,
   type RiskIdentificationReadQueryV1,
+  type RiskRecordCatalogItemV1,
   type StandardizedRiskRecordRefV1,
+  type SourceVersionRefV1,
   type SpatialScopeRefV1,
   type WorkflowRunRefV1,
 } from "@riskflow/contracts/ports";
@@ -120,11 +126,18 @@ interface ReadAccessControllerV1 {
   readonly port: Pick<
     PostgresLocalIdentityAccess,
     "verify" | "readDeploymentAuthorizationSource" | "authorizeBusinessAction"
-  >;
+  > & {
+    filterVisibleSources(input: {
+      readonly branch?: ModuleBranchV1;
+      readonly authorization: AuthorizationContextV1;
+      readonly sourceVersionRefs: readonly SourceVersionRefV1[];
+    }): Promise<readonly SourceVersionRefV1[]>;
+  };
   revoke(): void;
   narrowScope(): void;
   widenScope(): void;
   denySource(sourceId: string): void;
+  denyVisibleSources(): void;
   hideResource(contextId: string): void;
   restore(): void;
   issue(input: {
@@ -144,6 +157,7 @@ const createReadAccess = (): ReadAccessControllerV1 => {
   let scopeWidened = false;
   const deniedSources = new Set<string>();
   const hiddenResources = new Set<string>();
+  let visibleSourcesDenied = false;
   const historical = AuthorizationContextV1Schema.parse({
     schemaVersion: "1",
     authorizationContextRef: refOf("authorization-context", "authorization-c33"),
@@ -181,6 +195,9 @@ const createReadAccess = (): ReadAccessControllerV1 => {
     denySource: (sourceId) => {
       deniedSources.add(sourceId);
     },
+    denyVisibleSources: () => {
+      visibleSourcesDenied = true;
+    },
     hideResource: (contextId) => {
       hiddenResources.add(contextId);
     },
@@ -190,6 +207,7 @@ const createReadAccess = (): ReadAccessControllerV1 => {
       scopeWidened = false;
       deniedSources.clear();
       hiddenResources.clear();
+      visibleSourcesDenied = false;
     },
     issue: (input) => {
       const projectId = input.projectId ?? PROJECT_ID;
@@ -273,6 +291,13 @@ const createReadAccess = (): ReadAccessControllerV1 => {
             request.requestedSourceVersionRefs.length === 0 ? [] : [...SOURCE_GRANTS],
         });
         return { context, contextRef: context.authorizationContextRef, redacted: false };
+      },
+      filterVisibleSources: async (request) => {
+        if (revoked || visibleSourcesDenied) denied("authorize.visible-sources");
+        // 与真实 C06 同形：无来源权时只是不进入可见子集，不抛错也不返回空成功统计。
+        return request.sourceVersionRefs.filter(
+          (ref) => !deniedSources.has(ref.reference.entityId),
+        );
       },
       verify: async (request) => {
         if (revoked) denied("verify.current");
@@ -1390,13 +1415,207 @@ const seedCompletedRun = async (
   };
 };
 
+interface DashboardRecordSpecV1 {
+  readonly suffix: string;
+  readonly processNodeId?: string;
+  readonly spatialScope?: string;
+  readonly sourceVersion?: string;
+}
+
+/** 仪表盘夹具：一次命令成批登记同一 occurredAt 的风险记录版本（与生产 insertRecords 同路径）。 */
+const seedDashboardRecords = async (
+  f: ReadTestFixture,
+  occurredAt: string,
+  specs: readonly DashboardRecordSpecV1[],
+  commandSuffix: string,
+): Promise<void> => {
+  const rows = specs.map((spec) => {
+    const recordId = `risk-record:${PROJECT_ID}:${spec.suffix}`;
+    return StandardizedRiskRecordWriteV1Schema.parse({
+      riskRecordId: recordId,
+      versionId: "v1",
+      riskRecordRef: refOf("standardized-risk-record", recordId, "v1"),
+      rowId: `row-${spec.suffix}`,
+      idempotencyKey: `identification.accept-groups:${spec.suffix}`,
+      requestDigest: sha(`dashboard-record-request-${spec.suffix}`),
+      projectId: PROJECT_ID,
+      workPlanRef: refOf("identification-work-plan", "identification-work-plan:dashboard"),
+      identificationRunRef: refOf(
+        "workflow-run",
+        `workflow-run:${PROJECT_ID}:dashboard`,
+        sha("dashboard-run-version"),
+      ),
+      inputSnapshotRef: refOf("identification-input-snapshot", "input-snapshot-dashboard"),
+      mergePlanRef: refOf("merge-plan", "merge-plan:dashboard"),
+      routeDecisionRef: refOf("route-decision", `route-decision:${spec.suffix}`),
+      groupId: "group-1",
+      groupVersionId: sha(`group-version-${spec.suffix}`),
+      groupRef: refOf(
+        "identification-group",
+        `identification-group:dashboard:${spec.suffix}`,
+        sha(`group-${spec.suffix}`),
+      ),
+      representativeCandidateRefs: [
+        refOf(
+          "content-artifact",
+          `candidate-artifact-${spec.suffix}`,
+          `sha256:${sha(`candidate-${spec.suffix}`)}`,
+        ),
+      ],
+      sourceSegmentIds: [`segment-${spec.suffix}`],
+      mechanismEntryIds: [`mechanism-${spec.suffix}`],
+      spatialScopeRefs: [refOf("spatial-scope", spec.spatialScope ?? "scope-c33")],
+      sourceVersionRefs: [
+        refOf("source-version", spec.sourceVersion ?? `source-version-${spec.suffix}`),
+      ],
+      evidenceReferences: [
+        {
+          locator: { sourceSegmentId: `segment-${spec.suffix}` },
+          sourceVersion: {
+            entityId: spec.sourceVersion ?? `source-version-${spec.suffix}`,
+            versionId: "v1",
+          },
+        },
+      ],
+      authorizationScopeDigest: registrationScopeDigest,
+      authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+      actorRef: ACTOR_ID,
+      commandId: `c33-fixture-dashboard-${commandSuffix}`,
+      occurredAt,
+    });
+  });
+  const records = specs.map((spec) => {
+    const recordId = `risk-record:${PROJECT_ID}:${spec.suffix}`;
+    return StandardizedRiskRecordEnvelopeSchema.parse({
+      riskRecordId: recordId,
+      record: {
+        processNodeId: spec.processNodeId ?? "node-dashboard",
+        riskSource: `risk-source-${spec.suffix}`,
+        riskFactor: `risk-factor-${spec.suffix}`,
+        riskEvent: `risk-event-${spec.suffix}`,
+        riskElementRelations: [
+          { sourceElement: "element-a", relation: "induces", targetElement: "element-b" },
+        ],
+        evidenceLocator: { sourceSegmentId: `segment-${spec.suffix}` },
+        modelConfidence: 0.6,
+      },
+      riskMechanismEntryIds: [`mechanism-${spec.suffix}`],
+      sourceIds: [`segment-${spec.suffix}`],
+      compositeConfidence: { value: 0.6, basis: ["model-confidence"] },
+      version: {
+        reference: plainRef(recordId, "v1"),
+        effectivePeriod: { validFrom: occurredAt },
+        systemTime: { recordedAt: occurredAt },
+      },
+      audit: {
+        actorId: ACTOR_ID,
+        action: "identification.accept-groups",
+        recordedAt: occurredAt,
+      },
+    });
+  });
+  const head = rows[0];
+  if (head === undefined) throw new TypeError("dashboard record seeding requires rows");
+  const command: AtomicCommandV1 = {
+    projectId: PROJECT_ID,
+    commandKind: "identification.accept-groups",
+    commandId: `c33-fixture-dashboard-${commandSuffix}`,
+    idempotencyKey: `c33-fixture-dashboard-${commandSuffix}`,
+    payload: {
+      fixture: "合成样本、待甲方复核",
+      recordIds: rows.map((row) => row.riskRecordId),
+    },
+    actorRef: ACTOR_ID,
+    authorizationContextRef: refOf("authorization-context", "authorization-c33"),
+    issuedAt: TIMESTAMP,
+  };
+  await f.transactionUnit.execute(command, async (context) => {
+    const outcome = await f.finalizationAdapter.insertRecords(
+      { rows, records, occurredAt },
+      context,
+    );
+    if (outcome.kind !== "inserted") throw new TypeError("dashboard record seeding failed");
+    return {
+      resultRef: head.riskRecordRef,
+      audit: {
+        auditEntryId: `${command.commandId}:audit`,
+        projectId: PROJECT_ID,
+        action: command.commandKind,
+        targetRef: head.riskRecordRef,
+        actorRef: ACTOR_ID,
+        authorizationContextRef: command.authorizationContextRef,
+        occurredAt,
+        recordedAt: occurredAt,
+        version: head.riskRecordRef.reference,
+        commandId: command.commandId,
+        idempotencyKey: command.idempotencyKey,
+      },
+      events: [],
+    } satisfies AtomicCommitV1;
+  });
+};
+
+/** 仪表盘来源请求：授权按 `risk-identification.record-catalog` 分支签发。 */
+const dashboardRequest = (
+  f: ReadTestFixture,
+  options: {
+    readonly pageSize?: number;
+    readonly asOf?: string;
+    readonly after?: RiskDashboardTimelineAfterV1;
+    readonly spatialScopeRef?: SpatialScopeRefV1;
+  } = {},
+): RiskDashboardRiskRecordsSourceRequestV1 => {
+  const queryId = `c33-dashboard-query-${++queryCount}`;
+  const authorization = f.access.issue({
+    invocationId: queryId,
+    branch: "risk-identification.record-catalog",
+    capability: "risk-identification.read",
+  }).authorization;
+  return RiskDashboardRiskRecordsSourceRequestV1Schema.parse({
+    queryId,
+    projectId: PROJECT_ID,
+    actorId: authorization.actorId,
+    requestedAt: TIMESTAMP,
+    authorization,
+    ...(options.spatialScopeRef === undefined ? {} : { spatialScopeRef: options.spatialScopeRef }),
+    timeline: {
+      asOf: options.asOf ?? "2034-12-31T00:00:00.000000Z",
+      pageSize: options.pageSize ?? 5,
+      ...(options.after === undefined ? {} : { after: options.after }),
+    },
+  });
+};
+
+/** 目录读全量（跨页）后按空间范围筛选：作为仪表盘统计的同口径 oracle。 */
+const catalogItemsInScopes = async (
+  f: ReadTestFixture,
+  scopeEntityIds: readonly string[],
+): Promise<RiskRecordCatalogItemV1[]> => {
+  const items: RiskRecordCatalogItemV1[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await f.reader.read(
+      readQuery(f, "record-catalog", {
+        pageSize: 50,
+        ...(cursor === undefined ? {} : { cursor }),
+      }),
+    );
+    if (page.kind !== "succeeded") throw new TypeError("record-catalog page failed");
+    items.push(...page.result.items);
+    cursor = page.result.nextCursor;
+  } while (cursor !== undefined);
+  return items.filter((item) =>
+    item.spatialScopeRefs.every((ref) => scopeEntityIds.includes(ref.reference.entityId)),
+  );
+};
+
 const DENIED_SHAPE = {
   code: "AUTHORIZATION_DENIED",
   category: "authorization",
   retryable: false,
   stageCode: "risk-identification.read",
   requiredCapability: "risk-identification.read",
-  authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+  authorizationPolicyRef: { entityId: "access-policy", versionId: "v3" },
 } as const;
 
 describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
@@ -2430,5 +2649,295 @@ describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
     } finally {
       await access.close();
     }
+  });
+
+  it("readDashboard 与 record-catalog 同口径完整计数并按工序分组", async () => {
+    const f = requireFixture();
+    const specs: DashboardRecordSpecV1[] = [
+      ...Array.from({ length: 45 }, (_, index) => ({
+        suffix: `dash-a-${index}`,
+        processNodeId: "node-dash-a",
+      })),
+      ...Array.from({ length: 10 }, (_, index) => ({
+        suffix: `dash-b-${index}`,
+        processNodeId: "node-dash-b",
+      })),
+      // 当前授权看不到的空间：不计入统计，也不影响其它记录。
+      {
+        suffix: "dash-other-space",
+        processNodeId: "node-dash-hidden",
+        spatialScope: "spatial-scope-other",
+      },
+    ];
+    await seedDashboardRecords(f, "2033-01-01T00:00:00.123456Z", specs, "dashboard-a");
+
+    const expected = await catalogItemsInScopes(f, ["scope-c33"]);
+    // 目录需要翻页两次（50/页）才算完整：只取第一页会少算。
+    expect(expected.length).toBeGreaterThan(50);
+    const expectedGroups: Record<string, number> = {};
+    for (const item of expected) {
+      expectedGroups[item.processNodeId] = (expectedGroups[item.processNodeId] ?? 0) + 1;
+    }
+
+    const result = await f.reader.readDashboard(dashboardRequest(f, { pageSize: 1 }));
+    if (result.kind !== "ready") throw new TypeError("dashboard read failed");
+    expect(result.data.recordedVersionCount).toBe(expected.length);
+    expect(
+      Object.fromEntries(
+        result.data.processCounts.map((entry) => [entry.processNodeId, entry.count]),
+      ),
+    ).toEqual(expectedGroups);
+    expect(result.events).toHaveLength(2);
+    expect(result.events.every((event) => event.source === "riskRecords")).toBe(true);
+    expect(result.asOf).toBe(TIMESTAMP);
+  });
+
+  it("readDashboard 变化页按登记时间倒序、同刻按主体升序，续页不重不漏且遵守 asOf", async () => {
+    const f = requireFixture();
+    await seedDashboardRecords(
+      f,
+      "2033-02-01T00:00:01.123456Z",
+      [{ suffix: "dash-t1", processNodeId: "node-dash-timeline" }],
+      "dashboard-t1",
+    );
+    await seedDashboardRecords(
+      f,
+      "2033-02-01T00:00:02.000001Z",
+      [
+        { suffix: "dash-t2", processNodeId: "node-dash-timeline" },
+        { suffix: "dash-t3", processNodeId: "node-dash-timeline" },
+      ],
+      "dashboard-t23",
+    );
+    await seedDashboardRecords(
+      f,
+      "2033-02-01T00:00:03.500000Z",
+      [{ suffix: "dash-t4", processNodeId: "node-dash-timeline" }],
+      "dashboard-t4",
+    );
+    // asOf 之后登记的记录不得出现在变化页。
+    await seedDashboardRecords(
+      f,
+      "2033-02-02T00:00:00.000000Z",
+      [{ suffix: "dash-future", processNodeId: "node-dash-timeline" }],
+      "dashboard-future",
+    );
+    const asOf = "2033-02-01T23:59:59.999999Z";
+    const expected = (await catalogItemsInScopes(f, ["scope-c33"]))
+      .filter((item) => !item.riskRecordRef.reference.entityId.endsWith("dash-future"))
+      .map((item) => item.riskRecordRef.reference);
+
+    const collected: RiskDashboardTimelineEventV1[] = [];
+    let after: RiskDashboardTimelineAfterV1 | undefined;
+    for (let page = 0; page < 100; page += 1) {
+      const result = await f.reader.readDashboard(
+        dashboardRequest(f, {
+          pageSize: 7,
+          asOf,
+          ...(after === undefined ? {} : { after }),
+        }),
+      );
+      if (result.kind !== "ready") throw new TypeError("dashboard timeline read failed");
+      expect(result.events.length).toBeLessThanOrEqual(8);
+      collected.push(...result.events.slice(0, 7));
+      if (result.events.length <= 7) break;
+      const last = result.events[6];
+      if (last === undefined) throw new TypeError("dashboard timeline page missing position");
+      after = {
+        recordedAt: last.recordedAt,
+        source: "riskRecords",
+        entityId: last.subjectRef.reference.entityId,
+        versionId: last.subjectRef.reference.versionId,
+      };
+    }
+
+    expect(collected.map((event) => event.subjectRef.reference)).toEqual(expected);
+    expect(
+      new Set(
+        collected.map(
+          (event) =>
+            `${event.subjectRef.reference.entityId}@${event.subjectRef.reference.versionId}`,
+        ),
+      ).size,
+    ).toBe(collected.length);
+    expect(
+      collected.some((event) => event.subjectRef.reference.entityId.endsWith("dash-future")),
+    ).toBe(false);
+    expect(collected[0]?.recordedAt).toBe("2033-02-01T00:00:03.500000Z");
+    expect(
+      collected.find((event) => event.subjectRef.reference.entityId.endsWith("dash-t1"))
+        ?.recordedAt,
+    ).toBe("2033-02-01T00:00:01.123456Z");
+    expect(
+      collected.every((event) =>
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/u.test(event.recordedAt),
+      ),
+    ).toBe(true);
+    // 同刻按主体标识升序：dash-t2 在 dash-t3 之前。
+    expect(
+      collected
+        .filter((event) => event.recordedAt === "2033-02-01T00:00:02.000001Z")
+        .map((event) => event.subjectRef.reference.entityId.split(":").at(-1)),
+    ).toEqual(["dash-t2", "dash-t3"]);
+
+    // 全局位置折算：位置来源在本来源之前（assessments）时同刻仍计入，之后（warnings）时越过。
+    const atOrBefore = await f.reader.readDashboard(
+      dashboardRequest(f, {
+        pageSize: 7,
+        asOf,
+        after: {
+          recordedAt: "2033-02-01T00:00:02.000001Z",
+          source: "assessments",
+          entityId: "assessment-position",
+          versionId: "v1",
+        },
+      }),
+    );
+    if (atOrBefore.kind !== "ready") throw new TypeError("dashboard at-or-before failed");
+    expect(atOrBefore.events[0]?.recordedAt).toBe("2033-02-01T00:00:02.000001Z");
+    const before = await f.reader.readDashboard(
+      dashboardRequest(f, {
+        pageSize: 7,
+        asOf,
+        after: {
+          recordedAt: "2033-02-01T00:00:02.000001Z",
+          source: "warnings",
+          entityId: "warning-position",
+          versionId: "v1",
+        },
+      }),
+    );
+    if (before.kind !== "ready") throw new TypeError("dashboard before failed");
+    expect(before.events[0]?.recordedAt).toBe("2033-02-01T00:00:01.123456Z");
+  });
+
+  it("readDashboard 来源不可见时整来源失败且不吞成零，恢复后与目录同口径", async () => {
+    const f = requireFixture();
+    const baseline = await f.reader.readDashboard(dashboardRequest(f));
+    if (baseline.kind !== "ready") throw new TypeError("dashboard baseline failed");
+
+    f.access.denyVisibleSources();
+    try {
+      expect(await f.reader.readDashboard(dashboardRequest(f))).toMatchObject({
+        kind: "failed",
+        error: DENIED_SHAPE,
+      });
+      // 同一工程其它读面不受该来源失败影响。
+      expect(await f.reader.read(readQuery(f, "record-catalog", { pageSize: 1 }))).toMatchObject({
+        kind: "succeeded",
+      });
+    } finally {
+      f.access.restore();
+    }
+
+    // 单条记录来源不可见：批验返回子集，该版本不计入，但不使整个来源失败。
+    f.access.denySource("source-version-dash-a-0");
+    try {
+      const filtered = await f.reader.readDashboard(dashboardRequest(f));
+      if (filtered.kind !== "ready") throw new TypeError("dashboard filtered failed");
+      expect(filtered.data.recordedVersionCount).toBe(baseline.data.recordedVersionCount - 1);
+      expect(await f.reader.readDashboard(dashboardRequest(f))).toEqual(filtered);
+    } finally {
+      f.access.restore();
+    }
+
+    // 当前空间不在现行授权内：不返回其它空间统计。
+    expect(
+      await f.reader.readDashboard(
+        dashboardRequest(f, { spatialScopeRef: refOf("spatial-scope", "spatial-scope-other") }),
+      ),
+    ).toMatchObject({ kind: "failed", error: DENIED_SHAPE });
+  });
+
+  /**
+   * 规模证据（implementation-plan V-02）：100 与 1000 条可见记录下的真实读取表现。
+   * 只记录真实耗时与读取边界，不设未经批准的延迟阈值。
+   */
+  it("readDashboard 在 100 与 1000 条规模下计数准确、事件有界且耗时可观测", async () => {
+    const f = requireFixture();
+    for (const size of [100, 1000]) {
+      await seedDashboardRecords(
+        f,
+        "2033-06-01T00:00:00.000000Z",
+        Array.from({ length: size }, (_, index) => ({
+          suffix: `dash-scale-${size}-${index}`,
+          processNodeId: `node-dash-scale-${index % 8}`,
+          // 规模场景共用一份资料来源：可见来源集合必须与记录条数解耦。
+          sourceVersion: "source-version-dash-scale",
+        })),
+        `dashboard-scale-${size}`,
+      );
+      const before = Date.now();
+      const result = await f.reader.readDashboard(dashboardRequest(f, { pageSize: 50 }));
+      const durationMs = Date.now() - before;
+      if (result.kind !== "ready") throw new TypeError("dashboard scale read failed");
+      // 计数等于同筛选下的完整可见集合，不受目录页大小影响。
+      const expected = await catalogItemsInScopes(f, ["scope-c33"]);
+      expect(result.data.recordedVersionCount).toBe(expected.length);
+      expect(result.data.recordedVersionCount).toBeGreaterThanOrEqual(size);
+      // 事件页有界：最多 pageSize+1 条候选。
+      expect(result.events.length).toBeLessThanOrEqual(51);
+      // 工序分组有界：不超过受控分组上限。
+      expect(result.data.processCounts.length).toBeLessThanOrEqual(256);
+      // 授权元数据批量有界：可见来源集合不随记录条数线性增长。
+      console.info(
+        `[dashboard-scale] size=${size} durationMs=${durationMs} visibleRecords=${result.data.recordedVersionCount} events=${result.events.length} processGroups=${result.data.processCounts.length}`,
+      );
+    }
+  });
+
+  it("readDashboard 工序号缺失的版本计入总数但不进入工序分组", async () => {
+    const f = requireFixture();
+    const before = await f.reader.readDashboard(dashboardRequest(f));
+    if (before.kind !== "ready") throw new TypeError("dashboard before missing-process failed");
+    await seedDashboardRecords(
+      f,
+      "2033-03-01T00:00:00.000000Z",
+      [{ suffix: "dash-missing-process", processNodeId: "node-dash-missing" }],
+      "dashboard-missing",
+    );
+    await f.postgres.adminPool.query(
+      "UPDATE business.standardized_risk_records SET payload = payload #- '{record,processNodeId}' WHERE risk_record_id = $1",
+      [`risk-record:${PROJECT_ID}:dash-missing-process`],
+    );
+    const after = await f.reader.readDashboard(dashboardRequest(f));
+    if (after.kind !== "ready") throw new TypeError("dashboard after missing-process failed");
+    expect(after.data.recordedVersionCount).toBe(before.data.recordedVersionCount + 1);
+    expect(after.data.processCounts).toEqual(before.data.processCounts);
+  });
+
+  it("readDashboard 工序分组超界时整来源失败而不是截断", async () => {
+    const f = requireFixture();
+    await seedDashboardRecords(
+      f,
+      "2033-04-01T00:00:00.000000Z",
+      Array.from({ length: 257 }, (_, index) => ({
+        suffix: `dash-group-${index}`,
+        processNodeId: `node-dash-group-${index}`,
+        sourceVersion: "source-version-dash-group-shared",
+      })),
+      "dashboard-groups",
+    );
+    expect(await f.reader.readDashboard(dashboardRequest(f))).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", blockerKind: "dashboard-group-limit" },
+    });
+  });
+
+  it("readDashboard 来源集合超界时整来源失败", async () => {
+    const f = requireFixture();
+    await seedDashboardRecords(
+      f,
+      "2033-05-01T00:00:00.000000Z",
+      Array.from({ length: 257 }, (_, index) => ({
+        suffix: `dash-source-${index}`,
+        processNodeId: "node-dash-source",
+      })),
+      "dashboard-sources",
+    );
+    expect(await f.reader.readDashboard(dashboardRequest(f))).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", blockerKind: "dashboard-source-limit" },
+    });
   });
 });

@@ -14,7 +14,13 @@ import {
   type PreparedCommandV1,
 } from "./client";
 
-import { ContractReferenceV1Schema, type ContractReferenceV1 } from "@riskflow/contracts/ports";
+import {
+  ContractReferenceV1Schema,
+  RiskDashboardReadSuccessV1Schema,
+  type ContractReferenceV1,
+  type RiskDashboardReadSuccessV1,
+  type SpatialScopeRefV1,
+} from "@riskflow/contracts/ports";
 
 // ------------------------------------------------------------------ 解码工具
 
@@ -2015,17 +2021,41 @@ export const readRiskOverviewRunPage = async (
   };
 };
 
-/**
- * 链运行摘要（run-records 页沿用）：等价于取第一页。调用方若要按页推进请用
- * `readRiskOverviewRunPage`，本页只呈现第一页并显式说明分页口径。
- */
-export const readRiskOverviewRuns = async (
+// ============================================================================
+// 风险态势仪表盘读面（design D-02、D-09）
+//
+// 一次请求返回六个来源的有限摘要与一页变化。解码直接用 contracts 的 success
+// Schema：六个来源联合手写解码会退化成第二套契约；形状漂移统一收敛为 TERMINAL_FAILURE。
+// ============================================================================
+
+export interface RiskDashboardReadInputV1 {
+  readonly spatialScopeRef?: SpatialScopeRefV1;
+  readonly timelinePageSize?: number;
+  readonly timelineCursor?: string;
+}
+
+export const readRiskDashboard = async (
   projectId: string,
-  projectRevisionRef: KindRef,
+  input: RiskDashboardReadInputV1 = {},
   signal?: AbortSignal,
-): Promise<RunSummaryItemView[]> => [
-  ...(await readRiskOverviewRunPage(projectId, projectRevisionRef, {}, signal)).items,
-];
+): Promise<RiskDashboardReadSuccessV1> => {
+  const parsed = RiskDashboardReadSuccessV1Schema.safeParse(
+    await submitQuery({
+      projectId,
+      branch: "projection.dashboard-read",
+      payload: {
+        ...(input.spatialScopeRef === undefined ? {} : { spatialScopeRef: input.spatialScopeRef }),
+        ...(input.timelinePageSize === undefined
+          ? {}
+          : { timelinePageSize: input.timelinePageSize }),
+        ...(input.timelineCursor === undefined ? {} : { timelineCursor: input.timelineCursor }),
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  );
+  if (!parsed.success) throw drift();
+  return parsed.data;
+};
 
 // ============================================================================
 // C34 风险评估读面（design D-04、D-05）

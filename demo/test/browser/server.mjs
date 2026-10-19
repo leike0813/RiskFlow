@@ -69,6 +69,7 @@ import { createPostgresRiskAssessmentEngine } from "../../../packages/adapters/d
 import { createPostgresStandardizedRiskInputFactsReader } from "../../../packages/adapters/dist/identification/read/index.js";
 import { createPostgresExternalRiskInputFactsReader } from "../../../packages/adapters/dist/engineering-data/context-source/index.js";
 import { createRiskInputFactsReader } from "../../../packages/core/dist/risk-assessment/engine/index.js";
+import { createRiskDashboardReadService } from "../../../packages/core/dist/risk-dashboard/index.js";
 import {
   CALIBRATION_VALIDATION_POLICY,
   DEMO_FORECAST_POLICIES,
@@ -4893,11 +4894,37 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
       },
     };
 
+    const engineeringDataCatalog = createPostgresEngineeringDataCatalogAdapter({
+      db: appRuntime.db,
+      access,
+      artifactStore,
+      resolvers: {
+        resolveReadQuery: (query, options) => registry.resolveReadQuery(query, options),
+        resolveSnapshotQuery: (query, options) =>
+          monitoringStore.resolveSnapshotQuery(query, options),
+      },
+    });
+
     const api = buildApi({
       access,
       ports: {
         riskAssessmentRead: assessmentEngine,
         warningResponseRead: warningLifecycle,
+        // CH-3 仪表盘公共读面：只组合六来源的所属窄读，不在夹具里另写聚合规则。
+        riskDashboardRead: createRiskDashboardReadService({
+          sources: {
+            riskRecords: identificationRead,
+            assessments: assessmentEngine,
+            warnings: warningLifecycle,
+            reviews: createPostgresReviewQueueReadAdapter({
+              db: appRuntime.db,
+              authorization: access,
+            }),
+            documents: engineeringDataCatalog,
+            monitoring: engineeringDataCatalog,
+          },
+          authorizeBusinessAction: (input) => access.authorizeBusinessAction(input),
+        }),
         /**
          * C34 写命令接缝：HTTP 端口按公开命令联合分派到各领域适配器的真实方法。
          * 缺这一组注入，`warning-response.acknowledge` 等分支在 C30 直接 NOT_FOUND——
@@ -4923,16 +4950,7 @@ export const startDemoBrowserServer = async ({ riskLevelOnly = false } = {}) => 
         calibrationGovernance: calibration,
         workflow: riskFlowComposition.runtime.workflowPort,
         engineeringData: registry,
-        engineeringDataCatalog: createPostgresEngineeringDataCatalogAdapter({
-          db: appRuntime.db,
-          access,
-          artifactStore,
-          resolvers: {
-            resolveReadQuery: (query, options) => registry.resolveReadQuery(query, options),
-            resolveSnapshotQuery: (query, options) =>
-              monitoringStore.resolveSnapshotQuery(query, options),
-          },
-        }),
+        engineeringDataCatalog,
         knowledgeGovernanceRead: createPostgresKnowledgeGovernanceReadAdapter({
           db: appRuntime.db,
           access,

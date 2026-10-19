@@ -4,15 +4,22 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { AccessServiceError, type LocalIdentityAccessV1 } from "@riskflow/core/access";
+import {
+  ACCESS_POLICY_REF_V1,
+  AccessServiceError,
+  type LocalIdentityAccessV1,
+} from "@riskflow/core/access";
 import {
   AuthorizationContextV1Schema,
   ReviewQueueReadQueryV1Schema,
   ReviewRequestV1Schema,
+  RiskDashboardReviewsSourceRequestV1Schema,
   type AuthorizationContextV1,
   type ReviewQueueReadQueryV1,
   type ReviewRequestV1,
   type ReviewTargetRefV1,
+  type RiskDashboardReviewsSourceRequestV1,
+  type RiskDashboardReviewsSourceResultV1,
 } from "@riskflow/contracts/ports";
 
 import {
@@ -350,7 +357,8 @@ describe.sequential("PostgreSQL review queue read adapter (C33)", () => {
       expect(result.error).toMatchObject({
         retryable: false,
         requiredCapability: "review-audit.read",
-        authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+        // 拒权错误引用当前授权策略版本；随策略升版变化，不在此钉死具体版本号。
+        authorizationPolicyRef: ACCESS_POLICY_REF_V1,
       });
     };
 
@@ -419,5 +427,159 @@ describe.sequential("PostgreSQL review queue read adapter (C33)", () => {
     if (empty.kind !== "succeeded") throw new TypeError("empty project read failed");
     expect(empty.result.items).toEqual([]);
     expect(empty.result.nextCursor).toBeUndefined();
+  });
+
+  const dashboardRequestFor = (
+    projectId: string,
+    authorization: AuthorizationContextV1,
+    spatialScopeRef?: RiskDashboardReviewsSourceRequestV1["spatialScopeRef"],
+  ): RiskDashboardReviewsSourceRequestV1 =>
+    RiskDashboardReviewsSourceRequestV1Schema.parse({
+      queryId: nextId("dashboard-query"),
+      projectId,
+      actorId: authorization.actorId,
+      requestedAt: REVIEW_TEST_TIMESTAMP,
+      authorization,
+      ...(spatialScopeRef === undefined ? {} : { spatialScopeRef }),
+    });
+
+  const readDashboardData = async (
+    projectId: string,
+    authorization: AuthorizationContextV1,
+    spatialScopeRef?: RiskDashboardReviewsSourceRequestV1["spatialScopeRef"],
+  ) => {
+    const result = await readAdapterFor(authorization).readDashboard(
+      dashboardRequestFor(projectId, authorization, spatialScopeRef),
+    );
+    if (result.kind !== "ready") throw new TypeError("review dashboard read failed");
+    return result.data;
+  };
+
+  it("仪表盘复核摘要是工程级口径并按复核类型分组计数", async () => {
+    const projectId = "queue-project-dashboard";
+    const authorization = authorizationFor(projectId);
+    await requestTask(authorization, { suffix: "dashboard-group-a" });
+    await requestTask(authorization, { suffix: "dashboard-group-b" });
+    await requestTask(authorization, {
+      suffix: "dashboard-knowledge",
+      reviewType: "knowledge-revision",
+    });
+
+    const data = await readDashboardData(projectId, authorization);
+    expect(data.pendingCount).toBe(3);
+    expect(data.reviewTypeCounts).toEqual([
+      { reviewType: "identification-group", count: 2 },
+      { reviewType: "knowledge-revision", count: 1 },
+    ]);
+  });
+
+  it("目标版本被取代的 stale pending 仍计入工程待决定复核", async () => {
+    const projectId = "queue-project-dashboard-stale";
+    const authorization = authorizationFor(projectId);
+    const staleV1 = await requestTask(authorization, {
+      suffix: "dashboard-stale-v1",
+      targetEntityId: "group-dashboard-stale",
+      targetVersionId: "1",
+      waitingRunEntityId: "run-dashboard-stale-1",
+      issuedAt: "2030-01-01T00:00:01.000Z",
+    });
+    await requestTask(authorization, {
+      suffix: "dashboard-stale-v2",
+      targetEntityId: "group-dashboard-stale",
+      targetVersionId: "2",
+      waitingRunEntityId: "run-dashboard-stale-2",
+      issuedAt: "2030-01-01T00:00:02.000Z",
+    });
+
+    // 队列口径确认被取代的目标版本仍是 pending 且 stale。
+    const queue = await readAdapterFor(authorization).read(queueQueryFor(projectId, authorization));
+    if (queue.kind !== "succeeded") throw new TypeError("queue read failed");
+    expect(
+      queue.result.items.find(
+        (item) =>
+          item.reviewTaskRef.reference.entityId === staleV1.reviewTaskRef.reference.entityId,
+      ),
+    ).toMatchObject({ status: "pending", stale: true });
+
+    // stale 不等于已决定：仪表盘仍把两条 pending 都算入工程口径。
+    const data = await readDashboardData(projectId, authorization);
+    expect(data.pendingCount).toBe(2);
+    expect(data.reviewTypeCounts).toEqual([{ reviewType: "identification-group", count: 2 }]);
+  });
+
+  it("已决定的复核不再计入待决定数与类型分组", async () => {
+    const projectId = "queue-project-dashboard-decided";
+    const authorization = authorizationFor(projectId);
+    await requestTask(authorization, { suffix: "dashboard-decided-group" });
+    const knowledge = await requestTask(authorization, {
+      suffix: "dashboard-decided-knowledge",
+      reviewType: "knowledge-revision",
+    });
+    const decision = await writeAdapterFor(authorization).decideReview({
+      kind: "decide-review",
+      commandId: nextId("decide-dashboard"),
+      idempotencyKey: nextId("idempotency-decide-dashboard"),
+      projectId,
+      actorId: authorization.actorId,
+      issuedAt: REVIEW_TEST_TIMESTAMP,
+      authorization,
+      payload: {
+        reviewTaskRef: knowledge.reviewTaskRef,
+        targetRef: knowledge.request.payload.targetRef,
+        decision: { reviewType: "knowledge-revision", kind: "approve-publication" },
+        reasonCode: "reviewed",
+      },
+    });
+    if (decision.kind !== "succeeded") throw new TypeError("decideReview seeding failed");
+
+    const data = await readDashboardData(projectId, authorization);
+    expect(data.pendingCount).toBe(1);
+    expect(data.reviewTypeCounts).toEqual([{ reviewType: "identification-group", count: 1 }]);
+  });
+
+  it("复核摘要是工程级，不受总览空间选择影响", async () => {
+    const projectId = "queue-project-dashboard-spatial";
+    const authorization = authorizationFor(projectId);
+    await requestTask(authorization, { suffix: "dashboard-spatial-a" });
+    await requestTask(authorization, { suffix: "dashboard-spatial-b" });
+
+    const engineering = await readDashboardData(projectId, authorization);
+    const spatial = await readDashboardData(projectId, authorization, {
+      kind: "spatial-scope",
+      reference: { entityId: "scope-not-in-this-project", versionId: "1" },
+    });
+    expect(engineering).toEqual(spatial);
+    expect(spatial.pendingCount).toBe(2);
+  });
+
+  it("仪表盘复核摘要无权同形失败且不返回计数", async () => {
+    const projectId = "queue-project-dashboard-denied";
+    const authorization = authorizationFor(projectId);
+    await requestTask(authorization, { suffix: "dashboard-denied-seed" });
+    const reader = readAdapterFor(authorization);
+
+    const expectDenied = (result: RiskDashboardReviewsSourceResultV1): void => {
+      expect(result.kind).toBe("failed");
+      if (result.kind !== "failed") return;
+      expect(result.error.code).toBe("AUTHORIZATION_DENIED");
+      expect("data" in result).toBe(false);
+    };
+
+    // 冻结上下文不持复核读能力 → 同形授权失败。
+    expectDenied(
+      await reader.readDashboard(
+        dashboardRequestFor(
+          projectId,
+          authorizationFor(projectId, { capabilities: ["review-audit.request"] }),
+        ),
+      ),
+    );
+
+    // 冻结上下文指向其它工程 → 同形授权失败。
+    expectDenied(
+      await reader.readDashboard(
+        dashboardRequestFor(projectId, authorizationFor("queue-project-dashboard-other")),
+      ),
+    );
   });
 });

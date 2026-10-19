@@ -72,6 +72,8 @@ import {
   ReviewRequestV1Schema,
   RiskAssessmentReadQueryV1Schema,
   RiskAssessmentReadResultV1Schema,
+  RiskDashboardReadQueryV1Schema,
+  RiskDashboardReadResultV1Schema,
   RiskIdentificationReadQueryV1Schema,
   RiskIdentificationReadResultV1Schema,
   CalibrationGovernanceCommandV1Schema,
@@ -127,6 +129,8 @@ import {
   type ProjectionResultReadPortV1,
   type ProjectionResultReadQueryV1,
   type RecommendationCommandV1,
+  type RiskDashboardReadPortV1,
+  type RiskDashboardReadQueryV1,
   type ResumeAgentTaskCommandV1,
   type ResumeWorkflowRunCommandV1,
   type ReviewAuditPortV1,
@@ -508,6 +512,11 @@ export interface ApiPortsV1 {
   readonly reviewAuditRead?: ReviewAuditReadPortV1;
   readonly projectionReportRead?: ProjectionReportReadPortV1;
   /**
+   * CH-3 风险总览仪表盘读面：独立可选注入位，未注入时对应查询分支不激活。
+   * 入口能力与六个来源的读权分别判定，组合层不因缺来源而伪造空结果。
+   */
+  readonly riskDashboardRead?: RiskDashboardReadPortV1;
+  /**
    * C35 独立系统管理面注入位：HTTP 只从唯一 Cookie 取会话 token 并转交，
    * 不构造管理授权上下文，管理身份证明全部在所属适配器内完成（design D-10）。
    */
@@ -815,6 +824,10 @@ const invokeReviewAuditRead: HttpInvokerV1 = (ports, request) =>
 const invokeProjectionReportRead: HttpInvokerV1 = (ports, request) =>
   ports.projectionReportRead?.read(request as ProjectionReportReadQueryV1) ??
   missingPort("projectionReportRead");
+// CH-3 仪表盘读面：直接转发 `read`；六个来源的读权由组合层按来源分支分别判定。
+const invokeRiskDashboardRead: HttpInvokerV1 = (ports, request) =>
+  ports.riskDashboardRead?.read(request as RiskDashboardReadQueryV1) ??
+  missingPort("riskDashboardRead");
 const invokeCalibrationGovernance: HttpInvokerV1 = (ports, request) => {
   const command = request as CalibrationGovernanceCommandV1;
   const governance = ports.calibrationGovernance;
@@ -1183,6 +1196,14 @@ export const HTTP_ROUTE_CATALOG_V1: readonly HttpRouteEntryV1[] = Object.freeze(
     "projectionReportRead",
     invokeProjectionReportRead,
     "projection.report-read",
+  ),
+  // CH-3 仪表盘读面：独立查询分支；未注入端口时不激活（design D-08）。
+  ...queryRoutes(
+    RiskDashboardReadQueryV1Schema,
+    RiskDashboardReadResultV1Schema,
+    "riskDashboardRead",
+    invokeRiskDashboardRead,
+    [["projection.dashboard-read", "read"]],
   ),
   ...commandRoutesByResult(
     CalibrationGovernanceCommandV1Schema,

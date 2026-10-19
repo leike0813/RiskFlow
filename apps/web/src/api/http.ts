@@ -1,6 +1,7 @@
 import {
   AuthorizationContextRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
+  ProjectAccessPresentationV1Schema,
 } from "@riskflow/contracts/ports";
 import { IsoDateTimeSchema, VersionReferenceSchema } from "@riskflow/contracts/common";
 import type {
@@ -47,6 +48,26 @@ export type SessionReferenceV1 = Readonly<{
   entityId: string;
   versionId: string;
 }>;
+
+/**
+ * 当前工程入口能力呈现视图（CH-2 design D-07）。
+ *
+ * 只承载界面入口资格：既不是授权上下文，也不能证明任何对象或来源可读。
+ * 能力集合来自服务端当前成员事实，客户端不构造角色镜像。
+ */
+export type ProjectAccessPresentationViewV1 = Readonly<{
+  projectId: string;
+  capabilities: readonly ModuleCapabilityV1[];
+}>;
+
+const decodeProjectAccessPresentation = (value: unknown): ProjectAccessPresentationViewV1 => {
+  const parsed = ProjectAccessPresentationV1Schema.safeParse(value);
+  if (!parsed.success) throw new Error("invalid project access presentation");
+  return Object.freeze({
+    projectId: parsed.data.projectId,
+    capabilities: Object.freeze([...parsed.data.capabilities]),
+  });
+};
 
 export type SessionMetadataViewV1 = Readonly<{
   schemaVersion: typeof HTTP_SCHEMA_VERSION_V1;
@@ -113,7 +134,7 @@ export type RegisteredC09OperationV1<TRequest, TResult> = C09OperationV1<TReques
 type AnyC09OperationV1 = C09OperationV1<never, unknown>;
 
 export type C09SystemRouteKindV1 =
-  "login" | "change-password" | "logout" | "introspect" | "openapi" | "sse";
+  "login" | "change-password" | "logout" | "introspect" | "project-access" | "openapi" | "sse";
 export type C09SystemRouteEntryV1 = Readonly<{
   method: "POST" | "GET";
   path: string;
@@ -150,6 +171,15 @@ export const C09_SYSTEM_ROUTE_CATALOG_V1: readonly C09SystemRouteEntryV1[] = Obj
     path: "/api/v1/session",
     kind: "introspect" as const,
     requiresSession: false,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+  }),
+  // CH-2：入口能力读面是唯一的工程级 GET；没有 query/body，服务端未注入时
+  // 该路由与 OpenAPI 操作都不出现，客户端据此呈现接缝不可用。
+  Object.freeze({
+    method: "GET" as const,
+    path: "/api/v1/projects/:projectId/access",
+    kind: "project-access" as const,
+    requiresSession: true,
     mediaType: HTTP_JSON_MEDIA_TYPE_V1,
   }),
   Object.freeze({
@@ -598,6 +628,16 @@ export type C09ClientV1 = Readonly<{
   logout: (signal: AbortSignal) => Promise<void>;
   /** 当前会话自省：GET 无请求体，身份只来自同源安全 Cookie。 */
   introspectSession: (signal: AbortSignal) => Promise<SessionMetadataViewV1>;
+  /**
+   * 当前工程入口能力呈现：GET 无请求体，身份只来自同源安全 Cookie。
+   *
+   * 专用方法而不是通用 URL 查询器：路径只由工程标识拼出，客户端不能借它
+   * 声明 actor、角色或能力；服务端未注入该接缝时按统一未找到失败。
+   */
+  readProjectAccessPresentation: (
+    projectId: string,
+    signal: AbortSignal,
+  ) => Promise<ProjectAccessPresentationViewV1>;
   submit: <TRequest, TResult>(
     operation: RegisteredC09OperationV1<TRequest, TResult>,
     request: TRequest,
@@ -736,6 +776,20 @@ export const createC09Client = (input?: {
       }
     },
     introspectSession: async (signal) => (await submit(introspectOperation, {}, signal)).value,
+    readProjectAccessPresentation: async (projectId, signal) => {
+      let path: string;
+      try {
+        path = safeProjectPath("/api/v1/projects/:projectId/access", projectId);
+      } catch {
+        throw new C09HttpError(makeSafeHttpError({ code: "CONTRACT_INVALID" }));
+      }
+      const { response, body } = await requestJson({ fetcher, path, method: "GET", signal });
+      try {
+        return decodeProjectAccessPresentation(body);
+      } catch {
+        throw new C09HttpError(makeSafeHttpError({ requestId: requestIdFromResponse(response) }));
+      }
+    },
     submit,
     subscribe: (subscription: C09RunSubscriptionInputV1) => sse.subscribe(subscription),
   });

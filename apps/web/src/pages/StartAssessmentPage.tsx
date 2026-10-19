@@ -2,16 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
-import { ConfirmButton } from "../components/ConfirmButton";
+import { ConfirmButton, useProjectConfirmationScope } from "../components/ConfirmButton";
 import { PageStateView } from "../components/PageStateView";
 import { useEngineering, usePageQuery, useProjectPath } from "../api/engineering";
+import { clientError } from "../api/client";
+import { availabilityFromBusiness } from "../shared/actions.js";
 import {
   actionAvailability,
+  asContractReference,
+  prepareStartAssessment,
   readAssessmentEntryContext,
   readAssessmentRecordCatalog,
   readEngineeringContext,
   readPendingRiskCatalog,
-  submitStartAssessment,
+  sendStartAssessment,
   type EngineeringContextView,
   type EntryContextView,
   type KindRef,
@@ -228,31 +232,7 @@ export default function StartAssessmentPage() {
     identityRef.current = { identity, commandId: `demo-assess-${newCommandId()}` };
   }
   const commandId = identityRef.current.commandId;
-
-  const start = async () => {
-    const projectId = selector.projectId;
-    if (projectId === null || selectedScope === null || revisionRef === null) return;
-    if (riskInput === null || snapshot === null || runPolicy === null) return;
-    const started = await submitStartAssessment(projectId, {
-      commandId,
-      graphVersion: runPolicy.graphVersion,
-      retryPolicyRef: runPolicy.retryPolicyRef,
-      riskInput,
-      spatialScopeRef: selectedScope,
-      projectRevisionRef: revisionRef,
-      applicabilityMetadataSnapshotRef: snapshot,
-      ...(monitoring.refs.length === 0 ? {} : { monitoringSnapshotRefs: monitoring.refs }),
-      ...(entryMode === "reassess" && previousRecord !== null
-        ? { previousAssessmentRecordRef: previousRecord, reason, changedInputRefs: changed.refs }
-        : {}),
-    });
-    if (identityRef.current.commandId !== commandId) return;
-    navigate(
-      projectPath(
-        `assessment/runs/${started.workflowRunRef.reference.entityId}?version=${started.workflowRunRef.reference.versionId}`,
-      ),
-    );
-  };
+  const scope = useProjectConfirmationScope();
 
   return (
     <AppShell
@@ -563,53 +543,102 @@ export default function StartAssessmentPage() {
               )}
               <ConfirmButton
                 label="启动评估"
-                resetKey={identity}
-                availability={
-                  availability === "allowed" && runnable ? "allowed" : "business-unavailable"
-                }
-                unavailableReason={
-                  missing
-                    ? entryMode === "reassess"
-                      ? "缺少工程修订、空间范围、风险输入、适用性快照、前驱记录或 1～64 项合法变化引用"
-                      : "缺少工程修订、空间范围、风险输入或适用性快照"
-                    : preparationMissingKinds.length > 0
-                      ? "请先准备评分配置"
-                      : runPolicy === null
-                        ? "部署未注入合格的运行策略"
-                        : "当前角色无启动评估的权限"
-                }
-                summary={[
-                  `工程：${selector.projectId ?? "—"}`,
-                  `工程修订：${revisionRef?.reference.entityId ?? "—"} · ${revisionRef?.reference.versionId ?? "—"}`,
-                  `空间范围：${selectedScope.reference.entityId} · ${selectedScope.reference.versionId}`,
-                  `风险输入：${riskInput?.reference.entityId ?? "—"} · ${riskInput?.reference.versionId ?? "—"}`,
-                  `适用性快照：${snapshot?.reference.entityId ?? "—"} · ${snapshot?.reference.versionId ?? "—"}`,
-                  `监测引用（${monitoring.refs.length} 项）：${
-                    monitoring.refs
-                      .map(
-                        (ref) => `${ref.kind}/${ref.reference.entityId}@${ref.reference.versionId}`,
-                      )
-                      .join("、") || "—"
-                  }`,
-                  entryMode === "reassess"
-                    ? `入口模式：重评（reassess）· 原因 ${reason}`
-                    : "入口模式：初评（assess）",
-                  ...(entryMode === "reassess"
-                    ? [
-                        `前驱评估记录：${previousRecord?.reference.entityId ?? "—"} · ${previousRecord?.reference.versionId ?? "—"}`,
-                        `变化引用（${changed.refs.length} 项）：${
-                          changed.refs
-                            .map(
-                              (ref) =>
-                                `${ref.kind}/${ref.reference.entityId}@${ref.reference.versionId}`,
-                            )
-                            .join("、") || "—"
-                        }`,
-                      ]
-                    : []),
-                  "预计结果：登记一次有限评估运行；评估依据在运行内冻结",
-                ]}
-                onConfirm={start}
+                availability={availabilityFromBusiness(
+                  availability === "allowed" && runnable ? "allowed" : "business-unavailable",
+                  { kind: "business", capability: "workflow.start" },
+                )}
+                requiredPermission={{ kind: "business", capability: "workflow.start" }}
+                scope={scope}
+                intentRevision={identity}
+                createPlan={() => {
+                  // 请求在打开确认这一刻定型：命令身份、幂等键与冻结输入此后不再重算。
+                  if (
+                    scope === undefined ||
+                    scope.kind !== "project" ||
+                    selectedScope === null ||
+                    revisionRef === null ||
+                    riskInput === null ||
+                    snapshot === null ||
+                    runPolicy === null
+                  )
+                    throw clientError("CONTRACT_INVALID");
+                  const request = prepareStartAssessment(scope.projectId, {
+                    commandId,
+                    graphVersion: runPolicy.graphVersion,
+                    retryPolicyRef: runPolicy.retryPolicyRef,
+                    riskInput,
+                    spatialScopeRef: selectedScope,
+                    projectRevisionRef: revisionRef,
+                    applicabilityMetadataSnapshotRef: snapshot,
+                    ...(monitoring.refs.length === 0
+                      ? {}
+                      : { monitoringSnapshotRefs: monitoring.refs }),
+                    ...(entryMode === "reassess" && previousRecord !== null
+                      ? {
+                          previousAssessmentRecordRef: previousRecord,
+                          reason,
+                          changedInputRefs: changed.refs,
+                        }
+                      : {}),
+                  });
+                  return {
+                    confirmationId: `confirm-${request.envelope.commandId}`,
+                    operationId: "workflow.start-run",
+                    scope,
+                    targets: [
+                      asContractReference(selectedScope),
+                      asContractReference(revisionRef),
+                      asContractReference(riskInput),
+                      asContractReference(snapshot),
+                      ...(entryMode === "reassess" && previousRecord !== null
+                        ? [asContractReference(previousRecord)]
+                        : []),
+                    ],
+                    inputVersions: [
+                      {
+                        entityId: revisionRef.reference.entityId,
+                        versionId: revisionRef.reference.versionId,
+                      },
+                      {
+                        entityId: selectedScope.reference.entityId,
+                        versionId: selectedScope.reference.versionId,
+                      },
+                      {
+                        entityId: riskInput.reference.entityId,
+                        versionId: riskInput.reference.versionId,
+                      },
+                      {
+                        entityId: snapshot.reference.entityId,
+                        versionId: snapshot.reference.versionId,
+                      },
+                    ],
+                    expectedFacts: [
+                      entryMode === "reassess"
+                        ? "workflow-reassessment:v1"
+                        : "workflow-assessment:v1",
+                    ],
+                    externalEffects: ["登记一次有限评估运行；评估依据在运行内冻结"],
+                    impact: "standard",
+                    commandId: request.envelope.commandId,
+                    idempotencyKey: request.envelope.idempotencyKey,
+                    request,
+                  };
+                }}
+                submit={async (plan) => ({
+                  kind: "reference",
+                  resultRef: asContractReference(
+                    (await sendStartAssessment(plan.request)).workflowRunRef,
+                  ),
+                })}
+                onSucceeded={(result) => {
+                  if (identityRef.current.commandId !== commandId) return;
+                  if (result.kind !== "reference" || !("reference" in result.resultRef)) return;
+                  navigate(
+                    projectPath(
+                      `assessment/runs/${result.resultRef.reference.entityId}?version=${result.resultRef.reference.versionId}`,
+                    ),
+                  );
+                }}
               />
             </Card>
           </>

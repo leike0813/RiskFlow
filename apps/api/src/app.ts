@@ -6,11 +6,13 @@ import { z } from "zod";
 
 import {
   AccessCommandResultV1Schema,
+  ProjectAccessPresentationRequestV1Schema,
   type LocalIdentityAccessV1,
   type SystemAdministrationPortV1,
 } from "@riskflow/core/access";
 import {
   ProjectionQueryV1Schema,
+  ProjectAccessPresentationV1Schema,
   SourceOriginalQueryV1Schema,
   RunSubscriptionRequestV1Schema,
   WorkflowRunRefV1Schema,
@@ -858,7 +860,9 @@ export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {
   // 会话、自省与 openapi 已有各自的专用处理；这里只注册 C35 新增的四条系统面路由。
   for (const entry of activeHttpSystemRouteCatalog(ports).filter(
     (candidate) =>
-      candidate.activationPortKeys !== undefined && candidate.kind !== "source-original",
+      candidate.activationPortKeys !== undefined &&
+      candidate.kind !== "source-original" &&
+      candidate.kind !== "project-access",
   )) {
     const handler = (request: FastifyRequest, reply: FastifyReply) =>
       runSystem({
@@ -872,6 +876,40 @@ export const buildApi = (options: BuildApiOptionsV1): FastifyInstance => {
       });
     if (entry.method === "GET") app.get(entry.path, handler);
     else app.post(entry.path, handler);
+  }
+
+  // CH-2 入口能力读面（design D-07）：Cookie 保护、无 body/query、响应只读入口资格。
+  // 端口未注入时本路由不注册，调用方按统一未找到收口，不会得到假空能力。
+  const accessPresentation = ports.projectAccessPresentation;
+  if (accessPresentation !== undefined) {
+    app.get("/api/v1/projects/:projectId/access", async (request, reply) => {
+      const requestId = requestIdFor(request, generateId);
+      const now = requestNow(clock);
+      reply.header("cache-control", "no-store");
+      const token = cookieToken(request);
+      const sessionError = sessionFailure(reply, token, requestId, now);
+      if (sessionError !== undefined) return sessionError;
+      try {
+        // 未登记查询参数一律契约失败：客户端不得借查询串声明 actor、角色或能力。
+        if (Object.keys(request.query ?? {}).length > 0) {
+          throw new HttpTransportError(invalidRequest(requestId, now));
+        }
+        const presentation = ProjectAccessPresentationRequestV1Schema.parse({
+          requestId,
+          requestedAt: asIso(now),
+          sessionToken: token as string,
+          projectId: pathProjectId(request),
+        });
+        return reply
+          .code(200)
+          .type(HTTP_JSON_MEDIA_TYPE_V1)
+          .send(
+            ProjectAccessPresentationV1Schema.parse(await accessPresentation.read(presentation)),
+          );
+      } catch (error) {
+        return responseFailure(reply, mapHttpError({ error, requestId, now }));
+      }
+    });
   }
 
   for (const entry of activeHttpRouteCatalog(ports)) {

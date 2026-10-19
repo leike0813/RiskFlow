@@ -239,6 +239,22 @@ export const SessionCommandV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type SessionCommandV1 = z.infer<typeof SessionCommandV1Schema>;
 
+/**
+ * 当前工程入口能力呈现的内部请求（CH-2 design D-07）。
+ *
+ * sessionToken 只由 HTTP 从安全 Cookie 注入；请求不接受 actor、角色、能力或来源集合。
+ * 与会话自省分离：它不改变 SessionMetadataV1 形状，也不签发任何授权上下文。
+ */
+export const ProjectAccessPresentationRequestV1Schema = z.strictObject({
+  requestId: IdentifierSchema,
+  requestedAt: IsoDateTimeSchema,
+  sessionToken: z.string().min(1).max(512),
+  projectId: IdentifierSchema,
+});
+export type ProjectAccessPresentationRequestV1 = z.infer<
+  typeof ProjectAccessPresentationRequestV1Schema
+>;
+
 const authorizationRequestBase = {
   invocationId: IdentifierSchema,
   projectId: IdentifierSchema,

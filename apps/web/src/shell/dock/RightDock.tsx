@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
+import type { ModuleCapabilityV1 } from "@riskflow/contracts/ports";
+
 import { decodeSafeHttpError, type SafeHttpErrorV1 } from "../../api/errors.js";
 import { dockTabIndexForKey } from "../../shared/focus.js";
 
@@ -42,6 +44,10 @@ export type RightDockPropsV1 = Readonly<{
   versionAuditSummary?: ReactNode | undefined;
   relatedObjects?: ReactNode | undefined;
   agentContribution?: AgentContributionV1 | undefined;
+  /** 当前工程入口能力；未就绪时为 undefined，表示资格未知而不是无权。 */
+  capabilities?: readonly ModuleCapabilityV1[] | undefined;
+  /** 入口能力读取的技术故障：已获准位置保留并给出重试，不解释为零事项。 */
+  capabilityFailure?: Readonly<{ error: SafeHttpErrorV1; retry: () => void }> | undefined;
   onPanelChange?: ((panel: DockPanelV1) => void) | undefined;
 }>;
 
@@ -115,6 +121,28 @@ const AgentPanel = ({
   return <div data-dock-state="ready">{contribution.slot()}</div>;
 };
 
+/**
+ * CH-2 D-08：停靠贡献按入口资格独立筛选。
+ *
+ * 每一类贡献声明自己的入口能力位——待办读 `review-todo.read`、助手读 `agent-task.read`，
+ * 上下文沿获准证据槽。两类入口权相互独立：不要求交集，单页签被拒不影响另一类。
+ * 能力未知（尚未读取）保留位置与原因；已被当前工程确认拒绝时不再提供该页签。
+ */
+export const dockContributionsV1 = (capabilities: readonly ModuleCapabilityV1[] | undefined) =>
+  (
+    [
+      { id: "context", requiredCapability: null },
+      { id: "agent", requiredCapability: "agent-task.read" },
+    ] as const
+  )
+    .filter(
+      (contribution) =>
+        contribution.requiredCapability === null ||
+        capabilities === undefined ||
+        capabilities.includes(contribution.requiredCapability),
+    )
+    .map((contribution) => contribution.id);
+
 export const RightDock = ({
   initialPanel = "closed",
   evidence,
@@ -124,9 +152,14 @@ export const RightDock = ({
   versionAuditSummary,
   relatedObjects,
   agentContribution,
+  capabilities,
+  capabilityFailure,
   onPanelChange,
 }: RightDockPropsV1): ReactNode => {
+  const contributions = dockContributionsV1(capabilities);
   const [panel, setPanel] = useState<DockPanelV1>(initialPanel);
+  // 已确认被拒的位置不再出现在页签里；当前页签若因此消失则回到关闭态。
+  const allowedPanel = panel === "closed" || contributions.includes(panel) ? panel : "closed";
   const openButtonRef = useRef<HTMLButtonElement | null>(null);
   const panelHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -135,24 +168,25 @@ export const RightDock = ({
   const visibleEvidence = evidenceInContext ? evidence : undefined;
   const staleEvidence = isEvidenceStale(evidence, evidenceInContext);
   useEffect(() => {
-    if (panel === "closed" && previousPanel.current !== "closed")
+    if (allowedPanel === "closed" && previousPanel.current !== "closed")
       openButtonRef.current?.focus({ preventScroll: true });
-    if (panel !== "closed" && previousPanel.current === "closed")
+    if (allowedPanel !== "closed" && previousPanel.current === "closed")
       panelHeadingRef.current?.focus({ preventScroll: true });
-    previousPanel.current = panel;
-  }, [panel]);
+    previousPanel.current = allowedPanel;
+  }, [allowedPanel]);
   useEffect(() => {
-    if (staleEvidence && panel === "context") {
+    if (staleEvidence && allowedPanel === "context") {
       setPanel("closed");
       onPanelChange?.("closed");
     }
-  }, [staleEvidence, onPanelChange, panel]);
+  }, [staleEvidence, onPanelChange, allowedPanel]);
   const changePanel = (next: DockPanelV1): void => {
+    if (next !== "closed" && !contributions.includes(next)) return;
     setPanel(next);
     onPanelChange?.(next);
   };
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number): void => {
-    const next = dockTabIndexForKey(index, event.key, 2);
+    const next = dockTabIndexForKey(index, event.key, contributions.length);
     if (next === undefined) {
       if (event.key === "Escape" && panel !== "closed") {
         event.preventDefault();
@@ -161,12 +195,12 @@ export const RightDock = ({
       return;
     }
     event.preventDefault();
-    changePanel(next === 0 ? "context" : "agent");
+    changePanel(contributions[next] ?? "closed");
     tabRefs.current[next]?.focus();
   };
   return (
-    <aside className="right-dock" aria-label="上下文与 Agent 停靠区" data-panel={panel}>
-      {panel === "closed" ? (
+    <aside className="right-dock" aria-label="上下文与 Agent 停靠区" data-panel={allowedPanel}>
+      {allowedPanel === "closed" ? (
         <button
           ref={openButtonRef}
           type="button"
@@ -180,9 +214,17 @@ export const RightDock = ({
           <h2 ref={panelHeadingRef} tabIndex={-1} id="dock-panel-heading">
             上下文与 Agent 停靠区
           </h2>
+          {capabilityFailure === undefined ? null : (
+            <p data-dock-state="capability-failed">
+              入口能力读取失败（{capabilityFailure.error.code}）
+              <button type="button" onClick={capabilityFailure.retry}>
+                重试
+              </button>
+            </p>
+          )}
           <div className="dock-toolbar">
             <div role="tablist" aria-label="停靠区面板">
-              {(["context", "agent"] as const).map((tab, index) => (
+              {contributions.map((tab, index) => (
                 <button
                   key={tab}
                   ref={(element) => {
@@ -190,9 +232,9 @@ export const RightDock = ({
                   }}
                   type="button"
                   role="tab"
-                  aria-selected={panel === tab}
+                  aria-selected={allowedPanel === tab}
                   aria-controls={`dock-${tab}`}
-                  tabIndex={panel === tab ? 0 : -1}
+                  tabIndex={allowedPanel === tab ? 0 : -1}
                   onClick={() => changePanel(tab)}
                   onKeyDown={(event) => onTabKeyDown(event, index)}
                 >
@@ -204,7 +246,7 @@ export const RightDock = ({
               关闭
             </button>
           </div>
-          {panel === "context" ? (
+          {allowedPanel === "context" ? (
             <section id="dock-context" role="tabpanel" aria-label="上下文" tabIndex={0}>
               {contextSummary}
               {visibleEvidence === undefined ? null : <Evidence content={visibleEvidence} />}

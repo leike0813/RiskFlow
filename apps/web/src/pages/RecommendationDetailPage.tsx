@@ -2,15 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
-import { ConfirmButton } from "../components/ConfirmButton";
+import { ConfirmButton, useProjectConfirmationScope } from "../components/ConfirmButton";
 import { PageStateView } from "../components/PageStateView";
 import { StatusTag } from "../components/StatusTag";
 import { useEngineering, usePageQuery, useProjectPath } from "../api/engineering";
+import { clientError, type PreparedCommandV1 } from "../api/client";
+import { availabilityFromBusiness } from "../shared/actions.js";
+import type { CommandConfirmationPlanV1 } from "../shared/confirmation.js";
 import {
   actionAvailability,
+  asContractReference,
+  prepareRecommendationDecision,
   readResponseRecommendation,
   readWarningResponseResolve,
-  submitRecommendationDecision,
+  sendRecommendationDecision,
   type KindRef,
   type RecommendationView,
   type WarningResponseResolveView,
@@ -87,28 +92,7 @@ export default function RecommendationDetailPage() {
     setSearchParams(next, { replace: true });
   }, [resolve.state, version]);
 
-  const decide = async (decision: "adopted" | "declined") => {
-    if (recommendation.state.kind !== "ready" || selector.projectId === null) return;
-    const ref = recommendation.state.value.responseRecommendationRef;
-    await submitRecommendationDecision(selector.projectId, {
-      commandId: `demo-decide-${decision}-${command.current.id}`,
-      responseRecommendationRef: ref,
-      decision,
-      reasonCode: decision === "adopted" ? "adopt-per-response-plan" : "decline-per-response-plan",
-      ...(decision === "adopted" && preActionSnapshot !== "" && preActionSnapshotVersion !== ""
-        ? {
-            preActionMonitoringSnapshotRef: {
-              kind: "monitoring-snapshot",
-              reference: {
-                entityId: preActionSnapshot,
-                versionId: preActionSnapshotVersion,
-              },
-            },
-          }
-        : {}),
-    });
-    setTick((value) => value + 1);
-  };
+  const scope = useProjectConfirmationScope();
 
   const actions = recommendation.state.kind === "ready" ? recommendation.state.value.actions : [];
   const decideAvailability = actionAvailability(actions, "warning-response.adopt-recommendation");
@@ -124,6 +108,49 @@ export default function RecommendationDetailPage() {
             versionId: preActionSnapshotVersion,
           },
         };
+
+  const decidePlan = (
+    recommendationRef: KindRef,
+    decision: "adopted" | "declined",
+  ): CommandConfirmationPlanV1<PreparedCommandV1> => {
+    // 请求在打开确认这一刻定型：命令身份、幂等键与采纳所需的执行前监测快照此后不再重算。
+    if (scope === undefined || scope.kind !== "project") throw clientError("CONTRACT_INVALID");
+    if (decision === "adopted" && monitorSnapshotRef === null)
+      throw clientError("CONTRACT_INVALID");
+    const request = prepareRecommendationDecision(scope.projectId, {
+      commandId: `demo-decide-${decision}-${command.current.id}`,
+      responseRecommendationRef: recommendationRef,
+      decision,
+      reasonCode: decision === "adopted" ? "adopt-per-response-plan" : "decline-per-response-plan",
+      ...(decision === "adopted" && monitorSnapshotRef !== null
+        ? { preActionMonitoringSnapshotRef: monitorSnapshotRef }
+        : {}),
+    });
+    return {
+      confirmationId: `confirm-${request.envelope.commandId}`,
+      operationId: "warning-response.adopt-recommendation",
+      scope,
+      targets: [
+        asContractReference(recommendationRef),
+        ...(monitorSnapshotRef === null ? [] : [asContractReference(monitorSnapshotRef)]),
+      ],
+      inputVersions: [
+        {
+          entityId: recommendationRef.reference.entityId,
+          versionId: recommendationRef.reference.versionId,
+        },
+      ],
+      expectedFacts: ["response-recommendation:v1"],
+      externalEffects:
+        decision === "adopted"
+          ? ["登记人工采纳并建立真实等待运行；只有预测运行成立后才提交决定"]
+          : ["登记拒绝事实；不启动预测运行"],
+      impact: "standard",
+      commandId: request.envelope.commandId,
+      idempotencyKey: request.envelope.idempotencyKey,
+      request,
+    };
+  };
 
   return (
     <AppShell
@@ -278,52 +305,56 @@ export default function RecommendationDetailPage() {
                 <div className="wd-header-actions">
                   <ConfirmButton
                     label="采纳建议"
-                    resetKey={inputIdentity}
-                    availability={
+                    availability={availabilityFromBusiness(
                       decideAvailability === "hidden" || decideAvailability === null
                         ? "hidden"
                         : decided === undefined &&
                             decideAvailability === "allowed" &&
                             monitorSnapshotRef !== null
                           ? "allowed"
-                          : "business-unavailable"
-                    }
-                    unavailableReason={
-                      decided !== undefined
-                        ? "该建议已有终局决定"
-                        : decideAvailability !== "allowed"
-                          ? "当前角色无采纳权限"
-                          : "请填写执行前监测快照标识和版本"
-                    }
-                    summary={[
-                      `工程：${selector.projectId ?? "—"}`,
-                      `建议：${value.responseRecommendationRef.reference.entityId} · ${value.responseRecommendationRef.reference.versionId}`,
-                      `执行前监测快照：${monitorSnapshotRef?.reference.entityId ?? "—"} · ${monitorSnapshotRef?.reference.versionId ?? "—"}`,
-                      "预计结果：登记人工采纳并建立真实等待运行；只有预测运行成立后才提交决定",
-                    ]}
-                    onConfirm={() => decide("adopted")}
+                          : "business-unavailable",
+                      { kind: "business", capability: "warning-response.record" },
+                    )}
+                    requiredPermission={{
+                      kind: "business",
+                      capability: "warning-response.record",
+                    }}
+                    scope={scope}
+                    intentRevision={inputIdentity}
+                    createPlan={() => decidePlan(value.responseRecommendationRef, "adopted")}
+                    submit={async (plan) => ({
+                      kind: "reference",
+                      resultRef: asContractReference(
+                        (await sendRecommendationDecision(plan.request)).routeDecisionRef,
+                      ),
+                    })}
+                    onSucceeded={() => setTick((value) => value + 1)}
                   />
                   <ConfirmButton
                     label="拒绝建议"
-                    resetKey={inputIdentity}
                     tone="danger"
-                    availability={
+                    availability={availabilityFromBusiness(
                       decideAvailability === "hidden" || decideAvailability === null
                         ? "hidden"
                         : decided === undefined && decideAvailability === "allowed"
                           ? "allowed"
-                          : "business-unavailable"
-                    }
-                    unavailableReason={
-                      decided !== undefined ? "该建议已有终局决定" : "当前角色无决定权限"
-                    }
-                    summary={[
-                      `工程：${selector.projectId ?? "—"}`,
-                      `建议：${value.responseRecommendationRef.reference.entityId}`,
-                      "语义：拒绝终止该建议的处置路径",
-                      "预计结果：登记拒绝事实；不启动预测运行",
-                    ]}
-                    onConfirm={() => decide("declined")}
+                          : "business-unavailable",
+                      { kind: "business", capability: "warning-response.record" },
+                    )}
+                    requiredPermission={{
+                      kind: "business",
+                      capability: "warning-response.record",
+                    }}
+                    scope={scope}
+                    intentRevision={inputIdentity}
+                    createPlan={() => decidePlan(value.responseRecommendationRef, "declined")}
+                    submit={async (plan) => ({
+                      kind: "reference",
+                      resultRef: asContractReference(
+                        (await sendRecommendationDecision(plan.request)).routeDecisionRef,
+                      ),
+                    })}
+                    onSucceeded={() => setTick((value) => value + 1)}
                   />
                 </div>
               </Card>

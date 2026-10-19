@@ -4991,6 +4991,9 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
         projectionReportRead: reportExport.reportRead,
         // 系统管理：C06 自身的系统管理端口（六项管理动作与账号/工程目录都走它）。
         systemAdministration: access.systemAdministration,
+        // CH-2 D-07：入口能力读面直接取同一真实 C06 适配器上的独立 port，
+        // 浏览器里看到的能力集合因此来自当前成员事实，不是客户端角色镜像。
+        projectAccessPresentation: access.projectAccessPresentation,
         // 运维读取：本装配显式实现的真实提供者，见其定义处的事实来源说明。
         systemOperationsRead,
       },

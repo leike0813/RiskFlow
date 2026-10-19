@@ -16,7 +16,7 @@ import {
 import type { ConfirmationStateV1 } from "../src/shared/confirmation.js";
 import type { WebActionV1 } from "../src/shared/actions.js";
 import { WEB_NAVIGATION_V1 } from "../src/shell/navigation.js";
-import { isEvidenceStale, RightDock } from "../src/shell/dock/RightDock.js";
+import { dockContributionsV1, isEvidenceStale, RightDock } from "../src/shell/dock/RightDock.js";
 import { AgentDockContent, type AgentDockViewV1 } from "../src/agent/AgentDock.js";
 import type { AgentTaskRefView } from "../src/api/agentAuditOperations.js";
 
@@ -109,7 +109,7 @@ describe("C10 Web shell SSR 结构", () => {
     expect(notFound).toContain("not-found");
   });
 
-  it("shares seven page states across all five shell variants", () => {
+  it("shares seven page states across all five single-region shells", () => {
     const states = [
       { kind: "idle" as const },
       { kind: "loading" as const, previous: null },
@@ -133,22 +133,36 @@ describe("C10 Web shell SSR 结构", () => {
       }
     }
     const loading = renderToStaticMarkup(
-      <PageFrame title="列表" state={{ kind: "loading", previous: null }} />,
+      <PageFrame
+        title="列表"
+        state={{ kind: "loading", previous: null }}
+        regions={[{ descriptor: { key: "list", kind: "list" }, content: "ready-body" }]}
+      />,
     );
     expect(loading).toContain("page-skeleton");
     expect(loading).not.toContain("暂无可显示内容");
+    // 加载占位不先渲染旧区域内容，避免先闪现为空态或旧数据。
+    expect(loading).not.toContain("ready-body");
     const empty = renderToStaticMarkup(
       <PageFrame
         title="列表"
         state={{ kind: "empty" }}
+        regions={[{ descriptor: { key: "list", kind: "list" }, content: "ready-body" }]}
         actions={[
           action("allowed-action", { kind: "allowed" }),
-          action("forbidden-action", { kind: "forbidden", requiredCapability: "projection.query" }),
+          action("forbidden-action", {
+            kind: "forbidden",
+            requiredPermission: { kind: "business", capability: "projection.query" },
+          }),
+          action("hidden-action", { kind: "hidden" }),
         ]}
       />,
     );
     expect(empty).toContain("allowed-action");
     expect(empty).not.toContain("forbidden-action");
+    // hidden 完全不渲染，不用 disabled 透露目标存在。
+    expect(empty).not.toContain("hidden-action");
+    expect(empty).not.toContain("ready-body");
     const secret = renderToStaticMarkup(
       <PageFrame
         title="错误"
@@ -156,9 +170,93 @@ describe("C10 Web shell SSR 结构", () => {
           kind: "error",
           error: makeSafeHttpError({ requestId: "safe-id" }),
         }}
+        regions={[{ descriptor: { key: "list", kind: "list" }, content: "ready-body" }]}
       />,
     );
     expect(secret).not.toContain("database password");
+    // 页面级失败不保留任何旧区域。
+    expect(secret).not.toContain("ready-body");
+  });
+
+  it("按序输出多个区域组合，区域顺序与失败互不掩盖", () => {
+    const html = renderToStaticMarkup(
+      <PageFrame
+        title="风险态势"
+        state={{ kind: "ready", value: { recorded: 3 } }}
+        regions={[
+          {
+            descriptor: { key: "summary", kind: "detail" },
+            content: (value: { recorded: number }) => <p>已入库 {value.recorded}</p>,
+          },
+          {
+            descriptor: { key: "distribution", kind: "list" },
+            content: <p>分布表</p>,
+          },
+          {
+            descriptor: { key: "trend", kind: "chart", variant: "trend" },
+            content: <p>趋势</p>,
+          },
+          { descriptor: { key: "actions", kind: "action" }, content: <p>动作</p> },
+        ]}
+      />,
+    );
+    // 单一 h1：区域组合不再叠加骨架标题。
+    expect(html.match(/<h1/g)).toHaveLength(1);
+    const order = ["summary", "distribution", "trend", "actions"].map((key) =>
+      html.indexOf(
+        `page-region-${key === "summary" ? "detail" : key === "trend" ? "chart" : key === "actions" ? "action" : "list"}`,
+      ),
+    );
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect([...order].sort((left, right) => left - right)).toEqual(order);
+    expect(html).toContain('data-region-variant="trend"');
+    // 非 chart 区域不带 variant：描述符不是自由字典。
+    expect(html.match(/data-region-variant/g)).toHaveLength(1);
+    expect(html).toContain("已入库 3");
+  });
+
+  it("左栏折叠由用户显式切换且保留全部七入口", () => {
+    const html = renderToStaticMarkup(
+      <App
+        pathname="/overview"
+        session={{ kind: "authenticated", metadata }}
+        context={context}
+        capabilities={availableCapabilities}
+      />,
+    );
+    // 折叠控件与两条栏状态都由组件持有；初值是展开左栏 + 收起右栏。
+    expect(html).toContain('class="app-nav-toggle"');
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('data-nav="expanded"');
+    expect(html).toContain('data-dock="closed"');
+    // 折叠不卸载导航：七项入口与可访问名称始终在 DOM 里。
+    expect((html.match(/data-navigation=/g) ?? []).length).toBe(7);
+    expect(html).toContain("收起导航");
+    // 自动下沉规则已移除：CSS 不再按视口宽度把右栏折到主区下方。
+    expect(html).not.toContain("app-shell-dock-stacked");
+  });
+
+  it("停靠贡献按入口资格独立筛选，不要求两类能力交集", () => {
+    // 未知资格：保留两个位置与原因，而不是假装无权。
+    expect(dockContributionsV1(undefined)).toEqual(["context", "agent"]);
+    // 只授予助手：待办入口未交付，因此只有助手位置；两者互不依赖。
+    expect(dockContributionsV1(["agent-task.read"])).toEqual(["context", "agent"]);
+    // 只授予待办入口：助手页签不再提供，上下文证据槽仍保留。
+    expect(dockContributionsV1(["review-todo.read"])).toEqual(["context"]);
+    // 两个入口权都没有：只保留上下文位置，不渲染空待办或假计数。
+    expect(dockContributionsV1([])).toEqual(["context"]);
+
+    const denied = renderToStaticMarkup(
+      <RightDock
+        initialPanel="agent"
+        capabilities={[]}
+        agentContribution={{ kind: "ready", slot: () => <span>agent-body</span> }}
+      />,
+    );
+    // 被拒的助手页签既不出现，也不显示其内容。
+    expect(denied).not.toContain("agent-body");
+    expect(denied).not.toContain('role="tab"');
+    expect(denied).toContain("打开停靠区");
   });
 
   it("renders typed confirmation semantics without exposing arbitrary payload text", () => {
@@ -167,7 +265,12 @@ describe("C10 Web shell SSR 结构", () => {
       plan: {
         confirmationId: "confirmation-1",
         operationId: "test.command",
-        projectId: "project-1",
+        scope: {
+          kind: "project",
+          projectId: "project-1",
+          contextRevision: 1,
+          sessionRef: { entityId: "session-1", versionId: "1" },
+        },
         targets: [
           { kind: "project-revision", reference: { entityId: "project-1", versionId: "v1" } },
         ],
@@ -185,7 +288,7 @@ describe("C10 Web shell SSR 结构", () => {
       <CommandConfirmationDialog
         state={state}
         availability={{ kind: "allowed" }}
-        requiredCapability="projection.query"
+        requiredPermission={{ kind: "business", capability: "projection.query" }}
         onCancel={() => undefined}
       />,
     );

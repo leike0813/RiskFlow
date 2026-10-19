@@ -6,11 +6,21 @@ import {
 
 import { ModuleBranchV1Schema, PresetRoleV1Schema, type PresetRoleV1 } from "./schema.js";
 
-export const ACCESS_POLICY_VERSION = "access-policy/v1" as const;
+// CH-2（design D-06）升 v2 只追加入口资格与原件读取分支；旧 v1 行与授权快照不重写，
+// 历史来源解析只用于恢复已登记主体/范围，当前动作一律按当前策略判权。
+export const ACCESS_POLICY_VERSION = "access-policy/v2" as const;
 export const ACCESS_POLICY_REF_V1 = Object.freeze({
   entityId: "access-policy",
-  versionId: "v1",
+  versionId: "v2",
 });
+
+/** 已登记的历史策略身份：只用于解析旧授权快照的主体与范围，不是放行凭据。 */
+export const ACCESS_POLICY_HISTORY_VERSIONS = Object.freeze(["v1", "v2"] as const);
+export type AccessPolicyHistoryVersion = (typeof ACCESS_POLICY_HISTORY_VERSIONS)[number];
+export const isRegisteredAccessPolicyVersion = (
+  versionId: string,
+): versionId is AccessPolicyHistoryVersion =>
+  (ACCESS_POLICY_HISTORY_VERSIONS as readonly string[]).includes(versionId);
 
 const allBranches = Object.freeze(Object.keys(MODULE_BRANCH_CAPABILITY_V1) as ModuleBranchV1[]);
 const branchSet = (...branches: ModuleBranchV1[]): readonly ModuleBranchV1[] =>
@@ -28,6 +38,9 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "engineering-data.evidence-access",
     "engineering-data.context-read",
     "engineering-data.source-catalog",
+    // CH-2（design D-05）：复核人已有资料目录读能力，补齐同一读面下的原件读取分支。
+    // 来源可见性仍逐次检查空间与 source grant，目录可见不等于来源可见。
+    "engineering-data.source-original-read",
     "engineering-data.monitoring-catalog",
     "engineering-data.read-result",
     "knowledge-modeling.governance-read",
@@ -42,6 +55,8 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     // C35：复核人加入统一复核/活动窄读（design D-02），沿原 review-audit.read 能力
     // 读取获准主题；不因此获得 Agent 读面或任何写权。
     "review-audit.read",
+    // CH-2（design D-05）：聚合入口资格，不是查询能力；不因此获得任何 Agent 分支。
+    "review-todo.read",
   ),
   "field-responder": branchSet(
     "warning-response.record-execution",
@@ -62,6 +77,9 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "risk-identification.record-read",
     "risk-assessment.read",
     "warning-response.read",
+    // CH-2（design D-05）：现场处置人员取得聚合入口资格，但因无资料目录入口
+    // 不补原件读取分支，也不借 UI 补授资料路径；执行/反馈写权不变。
+    "review-todo.read",
   ),
   "business-viewer": branchSet(
     "projection.query",
@@ -71,6 +89,9 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     "engineering-data.evidence-access",
     "engineering-data.context-read",
     "engineering-data.source-catalog",
+    // CH-2（design D-05）：查看者已有资料目录读能力，同样补齐原件读取分支；
+    // 无来源权时仍在原件读取处被拒，不扩大来源可见集合，也不新增任何写权。
+    "engineering-data.source-original-read",
     "engineering-data.monitoring-catalog",
     "engineering-data.read-result",
     "knowledge-modeling.governance-read",
@@ -86,6 +107,8 @@ const roleBranches: Readonly<Record<PresetRoleV1, readonly ModuleBranchV1[]>> = 
     // 分别沿原 review-audit.read 与 projection.export 能力；不新增任何写权。
     "review-audit.read",
     "projection.report-read",
+    // CH-2（design D-05）：查看者取得聚合入口资格；不因此获得任何写权或 Agent 能力。
+    "review-todo.read",
   ),
 });
 

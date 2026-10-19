@@ -7,11 +7,14 @@
 import {
   C09HttpError,
   clientError,
-  postCommand,
-  submitCommand,
+  prepareCommand,
+  sendPreparedCommand,
   submitQuery,
   unwrapQueryResult,
+  type PreparedCommandV1,
 } from "./client";
+
+import { ContractReferenceV1Schema, type ContractReferenceV1 } from "@riskflow/contracts/ports";
 
 // ------------------------------------------------------------------ 解码工具
 
@@ -1801,7 +1804,7 @@ export interface ReviewDecisionSubmittedView {
  * 原样通过/拒绝：经既有 review-audit.decide-review 命令提交。decision 由调用方按复核类型
  * 构造（契约判别联合），commandId 作幂等键可重放；陈旧版本/无权由服务端失败闭合。
  */
-export const submitReviewDecision = async (
+export const prepareReviewDecision = (
   projectId: string,
   input: {
     readonly reviewTaskRef: ReviewTaskRefView;
@@ -1809,28 +1812,30 @@ export const submitReviewDecision = async (
     readonly reasonCode: string;
     readonly commandId?: string;
   },
+): PreparedCommandV1 =>
+  prepareCommand({
+    projectId,
+    branch: "review-audit.decide-review",
+    payload: {
+      reviewTaskRef: {
+        kind: "review-task",
+        reference: input.reviewTaskRef.reviewTaskRef.reference,
+        waitingRunRef: input.reviewTaskRef.waitingRunRef,
+        reviewType: input.reviewTaskRef.reviewType,
+        targetRef: input.reviewTaskRef.targetRef,
+      },
+      targetRef: input.reviewTaskRef.targetRef,
+      decision: input.decision,
+      reasonCode: input.reasonCode,
+    },
+    ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+  });
+
+export const sendReviewDecision = async (
+  prepared: PreparedCommandV1,
   signal?: AbortSignal,
 ): Promise<ReviewDecisionSubmittedView> => {
-  const result = asRecord(
-    await submitCommand({
-      projectId,
-      branch: "review-audit.decide-review",
-      payload: {
-        reviewTaskRef: {
-          kind: "review-task",
-          reference: input.reviewTaskRef.reviewTaskRef.reference,
-          waitingRunRef: input.reviewTaskRef.waitingRunRef,
-          reviewType: input.reviewTaskRef.reviewType,
-          targetRef: input.reviewTaskRef.targetRef,
-        },
-        targetRef: input.reviewTaskRef.targetRef,
-        decision: input.decision,
-        reasonCode: input.reasonCode,
-      },
-      ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-      ...(signal === undefined ? {} : { signal }),
-    }),
-  );
+  const result = asRecord(unwrapQueryResult(await sendPreparedCommand(prepared, signal)));
   return { reviewDecisionRef: asKindRef(result.reviewDecisionRef) };
 };
 
@@ -2066,6 +2071,17 @@ export const actionAvailability = (
   branch: string,
 ): ReadActionAvailability | null =>
   actions.find((action) => action.branch === branch)?.availability ?? null;
+
+/**
+ * 页面读到的精确引用进入确认摘要前的唯一校验口。
+ *
+ * 页面不自己拼 kind 字符串：契约联合才是判别来源，形状漂移在边界收敛为 TERMINAL_FAILURE。
+ */
+export const asContractReference = (value: unknown): ContractReferenceV1 => {
+  const parsed = ContractReferenceV1Schema.safeParse(value);
+  if (!parsed.success) throw drift();
+  return parsed.data;
+};
 
 /** 只读游标是不透明串：页面原样回传，不解析、不改写。 */
 const asCursor = (value: unknown): { readonly nextCursor?: string } =>
@@ -2670,26 +2686,33 @@ export interface AssessmentRunView {
   readonly actions: readonly ReadActionView[];
 }
 
-export const submitAssessmentPreparationResume = async (
+export const prepareAssessmentPreparationResume = (
   projectId: string,
   input: { readonly commandId: string; readonly run: AssessmentRunView },
-): Promise<void> => {
+): PreparedCommandV1 => {
   const preparationRef = input.run.waitingRef?.ref;
   if (input.run.waitingRef?.kind !== "business-preparation" || preparationRef === undefined)
     throw clientError("CONTRACT_INVALID");
-  const response = asRecord(
-    await postCommand({
-      projectId,
-      branch: "workflow.resume-run",
-      commandId: input.commandId,
-      payload: {
-        workflowRunRef: input.run.runRef,
-        expectedStateVersion: input.run.stateVersion.versionId,
-        resumeCause: { kind: "business-preparation-ready", preparationRef },
-      },
-    }),
-  );
-  if (response.kind !== "waiting") unwrapQueryResult(response);
+  return prepareCommand({
+    projectId,
+    branch: "workflow.resume-run",
+    commandId: input.commandId,
+    payload: {
+      workflowRunRef: input.run.runRef,
+      expectedStateVersion: input.run.stateVersion.versionId,
+      resumeCause: { kind: "business-preparation-ready", preparationRef },
+    },
+  });
+};
+
+export const sendAssessmentPreparationResume = async (
+  prepared: PreparedCommandV1,
+  signal?: AbortSignal,
+): Promise<void> => {
+  // 恢复运行的成功终局是 waiting：没有 result，只有缺项与准备引用，两种终局都合法。
+  const response = asRecord(await sendPreparedCommand(prepared, signal));
+  if (response.kind === "waiting") return;
+  unwrapQueryResult(response);
 };
 
 /**
@@ -3650,84 +3673,89 @@ export interface StartAssessmentInput {
 }
 
 /** P-RA-02 启动初评或重评；返回登记的运行引用，页面据此跳运行深链。 */
-export const submitStartAssessment = async (
+export const prepareStartAssessment = (
   projectId: string,
   input: StartAssessmentInput,
-  signal?: AbortSignal,
-): Promise<{ readonly workflowRunRef: KindRef; readonly entryMode: string }> => {
+): PreparedCommandV1 => {
   const reassess = input.previousAssessmentRecordRef !== undefined;
   if (reassess && (input.reason === undefined || (input.changedInputRefs?.length ?? 0) === 0)) {
     throw clientError("CONTRACT_INVALID");
   }
-  const response = asRecord(
-    await postCommand({
-      projectId,
-      branch: "workflow.start-run",
-      commandId: input.commandId,
-      payload: reassess
-        ? {
-            graphVersion: input.graphVersion,
-            retryPolicyRef: input.retryPolicyRef,
-            entryMode: "reassess",
-            previousAssessmentRecordRef: input.previousAssessmentRecordRef,
-            reason: input.reason,
-            changedInputRefs: [...(input.changedInputRefs ?? [])],
-            riskInput: input.riskInput,
-            spatialScopeRef: input.spatialScopeRef,
-            ...(input.projectRevisionRef === undefined
-              ? {}
-              : { projectRevisionRef: input.projectRevisionRef }),
-            applicabilityMetadataSnapshotRef: input.applicabilityMetadataSnapshotRef,
-            ...(input.monitoringSnapshotRefs === undefined
-              ? {}
-              : { monitoringSnapshotRefs: [...input.monitoringSnapshotRefs] }),
-          }
-        : {
-            graphVersion: input.graphVersion,
-            retryPolicyRef: input.retryPolicyRef,
-            entryMode: "assess",
-            riskInput: input.riskInput,
-            spatialScopeRef: input.spatialScopeRef,
-            ...(input.projectRevisionRef === undefined
-              ? {}
-              : { projectRevisionRef: input.projectRevisionRef }),
-            applicabilityMetadataSnapshotRef: input.applicabilityMetadataSnapshotRef,
-            ...(input.monitoringSnapshotRefs === undefined
-              ? {}
-              : { monitoringSnapshotRefs: [...input.monitoringSnapshotRefs] }),
-          },
-      ...(signal === undefined ? {} : { signal }),
-    }),
-  );
-  const result = response.kind === "waiting" ? response : asRecord(unwrapQueryResult(response));
+  return prepareCommand({
+    projectId,
+    branch: "workflow.start-run",
+    commandId: input.commandId,
+    payload: reassess
+      ? {
+          graphVersion: input.graphVersion,
+          retryPolicyRef: input.retryPolicyRef,
+          entryMode: "reassess",
+          previousAssessmentRecordRef: input.previousAssessmentRecordRef,
+          reason: input.reason,
+          changedInputRefs: [...(input.changedInputRefs ?? [])],
+          riskInput: input.riskInput,
+          spatialScopeRef: input.spatialScopeRef,
+          ...(input.projectRevisionRef === undefined
+            ? {}
+            : { projectRevisionRef: input.projectRevisionRef }),
+          applicabilityMetadataSnapshotRef: input.applicabilityMetadataSnapshotRef,
+          ...(input.monitoringSnapshotRefs === undefined
+            ? {}
+            : { monitoringSnapshotRefs: [...input.monitoringSnapshotRefs] }),
+        }
+      : {
+          graphVersion: input.graphVersion,
+          retryPolicyRef: input.retryPolicyRef,
+          entryMode: "assess",
+          riskInput: input.riskInput,
+          spatialScopeRef: input.spatialScopeRef,
+          ...(input.projectRevisionRef === undefined
+            ? {}
+            : { projectRevisionRef: input.projectRevisionRef }),
+          applicabilityMetadataSnapshotRef: input.applicabilityMetadataSnapshotRef,
+          ...(input.monitoringSnapshotRefs === undefined
+            ? {}
+            : { monitoringSnapshotRefs: [...input.monitoringSnapshotRefs] }),
+        },
+  });
+};
+
+export const sendStartAssessment = async (
+  prepared: PreparedCommandV1,
+  signal?: AbortSignal,
+): Promise<{ readonly workflowRunRef: KindRef; readonly disposition: string }> => {
+  // 服务端只返回 workflowRunRef 与 disposition；入口模式由页面本地状态持有，不从结果反推。
+  const result = asRecord(unwrapQueryResult(await sendPreparedCommand(prepared, signal)));
   return {
     workflowRunRef: asKindRef(result.workflowRunRef),
-    entryMode: reassess ? "reassess" : "assess",
+    disposition: asString(result.disposition),
   };
 };
 
 /** P-WR-02 预警确认：只形成确认事实，不关闭任务。 */
-export const submitWarningAcknowledgement = async (
+export const prepareWarningAcknowledgement = (
   projectId: string,
   input: {
     readonly commandId: string;
     readonly warningRecordRef: KindRef;
     readonly warningResponseTaskRef: KindRef;
   },
+): PreparedCommandV1 =>
+  prepareCommand({
+    projectId,
+    branch: "warning-response.acknowledge",
+    commandId: input.commandId,
+    payload: {
+      warningRecordRef: input.warningRecordRef,
+      warningResponseTaskRef: input.warningResponseTaskRef,
+    },
+  });
+
+export const sendWarningAcknowledgement = async (
+  prepared: PreparedCommandV1,
   signal?: AbortSignal,
 ): Promise<{ readonly warningRecordRef: KindRef }> => {
-  const result = asRecord(
-    await submitCommand({
-      projectId,
-      branch: "warning-response.acknowledge",
-      commandId: input.commandId,
-      payload: {
-        warningRecordRef: input.warningRecordRef,
-        warningResponseTaskRef: input.warningResponseTaskRef,
-      },
-      ...(signal === undefined ? {} : { signal }),
-    }),
-  );
+  const result = asRecord(unwrapQueryResult(await sendPreparedCommand(prepared, signal)));
   return { warningRecordRef: asKindRef(result.warningRecordRef) };
 };
 
@@ -3735,7 +3763,7 @@ export const submitWarningAcknowledgement = async (
  * P-RS-01 采纳或拒绝正式建议：拒绝不启动预测。采纳必须带执行前监测快照的精确选择器，
  * 页面不提交“最新监测”。
  */
-export const submitRecommendationDecision = async (
+export const prepareRecommendationDecision = (
   projectId: string,
   input: {
     readonly commandId: string;
@@ -3744,27 +3772,30 @@ export const submitRecommendationDecision = async (
     readonly reasonCode: string;
     readonly preActionMonitoringSnapshotRef?: KindRef;
   },
-  signal?: AbortSignal,
-): Promise<{ readonly routeDecisionRef: KindRef; readonly decision: "adopted" | "declined" }> => {
+): PreparedCommandV1 => {
   if (input.decision === "adopted" && input.preActionMonitoringSnapshotRef === undefined) {
     throw clientError("CONTRACT_INVALID");
   }
-  const result = asRecord(
-    await submitCommand({
-      projectId,
-      branch: "warning-response.adopt-recommendation",
-      commandId: input.commandId,
-      payload: {
-        responseRecommendationRef: input.responseRecommendationRef,
-        decision: input.decision,
-        reasonCode: input.reasonCode,
-        ...(input.preActionMonitoringSnapshotRef === undefined
-          ? {}
-          : { preActionMonitoringSnapshotRef: input.preActionMonitoringSnapshotRef }),
-      },
-      ...(signal === undefined ? {} : { signal }),
-    }),
-  );
+  return prepareCommand({
+    projectId,
+    branch: "warning-response.adopt-recommendation",
+    commandId: input.commandId,
+    payload: {
+      responseRecommendationRef: input.responseRecommendationRef,
+      decision: input.decision,
+      reasonCode: input.reasonCode,
+      ...(input.preActionMonitoringSnapshotRef === undefined
+        ? {}
+        : { preActionMonitoringSnapshotRef: input.preActionMonitoringSnapshotRef }),
+    },
+  });
+};
+
+export const sendRecommendationDecision = async (
+  prepared: PreparedCommandV1,
+  signal?: AbortSignal,
+): Promise<{ readonly routeDecisionRef: KindRef; readonly decision: "adopted" | "declined" }> => {
+  const result = asRecord(unwrapQueryResult(await sendPreparedCommand(prepared, signal)));
   if (result.kind !== "adoption" && result.kind !== "decline") throw drift();
   return {
     routeDecisionRef: asKindRef(result.routeDecisionRef),
@@ -3782,7 +3813,7 @@ export interface EvidenceReferenceInput {
  * P-RS-02 执行登记：两类来源都登记人工事实，采纳路径的建议不会被当作执行记录重复登记。
  * 执行身份取当前 verified actor，不提供自由编辑。
  */
-export const submitExecutionRecord = async (
+export const prepareExecutionRecord = (
   projectId: string,
   input: {
     readonly commandId: string;
@@ -3796,29 +3827,32 @@ export const submitExecutionRecord = async (
     readonly occurredAt: string;
     readonly evidenceReferences: readonly EvidenceReferenceInput[];
   },
+): PreparedCommandV1 => {
+  if (input.evidenceReferences.length === 0) throw clientError("CONTRACT_INVALID");
+  return prepareCommand({
+    projectId,
+    branch: "warning-response.record-execution",
+    commandId: input.commandId,
+    payload: {
+      actionSource: input.actionSource,
+      executedByActorId: input.executedByActorId,
+      recordedByActorId: input.executedByActorId,
+      occurredAt: input.occurredAt,
+      evidenceReferences: input.evidenceReferences,
+    },
+  });
+};
+
+export const sendExecutionRecord = async (
+  prepared: PreparedCommandV1,
   signal?: AbortSignal,
 ): Promise<{ readonly executionRecordRef: KindRef }> => {
-  if (input.evidenceReferences.length === 0) throw clientError("CONTRACT_INVALID");
-  const result = asRecord(
-    await submitCommand({
-      projectId,
-      branch: "warning-response.record-execution",
-      commandId: input.commandId,
-      payload: {
-        actionSource: input.actionSource,
-        executedByActorId: input.executedByActorId,
-        recordedByActorId: input.executedByActorId,
-        occurredAt: input.occurredAt,
-        evidenceReferences: input.evidenceReferences,
-      },
-      ...(signal === undefined ? {} : { signal }),
-    }),
-  );
+  const result = asRecord(unwrapQueryResult(await sendPreparedCommand(prepared, signal)));
   return { executionRecordRef: asKindRef(result.executionRecordRef) };
 };
 
 /** P-RS-02 反馈登记：提交实际评估的精确选择器，页面不提交 P/C 数值。 */
-export const submitResponseFeedback = async (
+export const prepareResponseFeedback = (
   projectId: string,
   input: {
     readonly commandId: string;
@@ -3828,23 +3862,25 @@ export const submitResponseFeedback = async (
     readonly occurredAt: string;
     readonly actualAssessmentRecordRef: KindRef;
   },
+): PreparedCommandV1 =>
+  prepareCommand({
+    projectId,
+    branch: "warning-response.record-feedback",
+    commandId: input.commandId,
+    payload: {
+      executionRecordRef: input.executionRecordRef,
+      postActionMonitoringSnapshotRef: input.postActionMonitoringSnapshotRef,
+      feedbackArtifactRef: input.feedbackArtifactRef,
+      occurredAt: input.occurredAt,
+      actualAssessmentRecordRef: input.actualAssessmentRecordRef,
+    },
+  });
+
+export const sendResponseFeedback = async (
+  prepared: PreparedCommandV1,
   signal?: AbortSignal,
 ): Promise<{ readonly feedbackRef: KindRef }> => {
-  const result = asRecord(
-    await submitCommand({
-      projectId,
-      branch: "warning-response.record-feedback",
-      commandId: input.commandId,
-      payload: {
-        executionRecordRef: input.executionRecordRef,
-        postActionMonitoringSnapshotRef: input.postActionMonitoringSnapshotRef,
-        feedbackArtifactRef: input.feedbackArtifactRef,
-        occurredAt: input.occurredAt,
-        actualAssessmentRecordRef: input.actualAssessmentRecordRef,
-      },
-      ...(signal === undefined ? {} : { signal }),
-    }),
-  );
+  const result = asRecord(unwrapQueryResult(await sendPreparedCommand(prepared, signal)));
   return { feedbackRef: asKindRef(result.feedbackRef) };
 };
 
@@ -3861,7 +3897,7 @@ export interface CalibrationReviewOutcomeSubmittedView {
  * P-RS-05 校准收口：拒绝与退回走各自的公共分支，错误 outcome 在契约边界被拒绝。
  * 命令只接受精确建议与决定引用，不接受裸标识。
  */
-export const submitCalibrationReviewOutcome = async (
+export const prepareCalibrationReviewOutcome = (
   projectId: string,
   input: {
     readonly commandId: string;
@@ -3869,22 +3905,24 @@ export const submitCalibrationReviewOutcome = async (
     readonly reviewDecisionRef: KindRef;
     readonly outcome: CalibrationReviewOutcomeV1;
   },
+): PreparedCommandV1 =>
+  prepareCommand({
+    projectId,
+    branch: "warning-response.calibration-review-outcome",
+    commandId: input.commandId,
+    payload: {
+      schemaVersion: "1",
+      calibrationSuggestionRef: input.calibrationSuggestionRef,
+      reviewDecisionRef: input.reviewDecisionRef,
+      outcome: input.outcome,
+    },
+  });
+
+export const sendCalibrationReviewOutcome = async (
+  prepared: PreparedCommandV1,
   signal?: AbortSignal,
 ): Promise<CalibrationReviewOutcomeSubmittedView> => {
-  const result = asRecord(
-    await submitCommand({
-      projectId,
-      branch: "warning-response.calibration-review-outcome",
-      commandId: input.commandId,
-      payload: {
-        schemaVersion: "1",
-        calibrationSuggestionRef: input.calibrationSuggestionRef,
-        reviewDecisionRef: input.reviewDecisionRef,
-        outcome: input.outcome,
-      },
-      ...(signal === undefined ? {} : { signal }),
-    }),
-  );
+  const result = asRecord(unwrapQueryResult(await sendPreparedCommand(prepared, signal)));
   const outcome = asString(result.outcome);
   if (outcome !== "rejected" && outcome !== "returned") throw drift();
   return {
@@ -3906,29 +3944,31 @@ export interface CalibrationGovernanceDraftSubmittedView {
 /**
  * P-RS-05 校准草案：只提交未发布修订，发布由既有知识治理负责，页面不得据此显示已发布。
  */
-export const submitCalibrationGovernanceDraft = async (
+export const prepareCalibrationGovernanceDraft = (
   projectId: string,
   input: {
     readonly commandId: string;
     readonly calibrationSuggestionRef: KindRef;
     readonly reviewDecisionRef: KindRef;
   },
+): PreparedCommandV1 =>
+  prepareCommand({
+    projectId,
+    branch: "warning-response.calibration-governance-draft",
+    commandId: input.commandId,
+    payload: {
+      schemaVersion: "1",
+      calibrationSuggestionRef: input.calibrationSuggestionRef,
+      reviewDecisionRef: input.reviewDecisionRef,
+      outcome: "approve-draft-creation",
+    },
+  });
+
+export const sendCalibrationGovernanceDraft = async (
+  prepared: PreparedCommandV1,
   signal?: AbortSignal,
 ): Promise<CalibrationGovernanceDraftSubmittedView> => {
-  const result = asRecord(
-    await submitCommand({
-      projectId,
-      branch: "warning-response.calibration-governance-draft",
-      commandId: input.commandId,
-      payload: {
-        schemaVersion: "1",
-        calibrationSuggestionRef: input.calibrationSuggestionRef,
-        reviewDecisionRef: input.reviewDecisionRef,
-        outcome: "approve-draft-creation",
-      },
-      ...(signal === undefined ? {} : { signal }),
-    }),
-  );
+  const result = asRecord(unwrapQueryResult(await sendPreparedCommand(prepared, signal)));
   return {
     governanceDraftRef: asConfigRef(result.governanceDraftRef),
     knowledgeRevisionRef: asKindRef(result.knowledgeRevisionRef),

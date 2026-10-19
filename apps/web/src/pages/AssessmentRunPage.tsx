@@ -2,15 +2,19 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
-import { ConfirmButton } from "../components/ConfirmButton";
+import { ConfirmButton, useProjectConfirmationScope } from "../components/ConfirmButton";
 import { PageStateView } from "../components/PageStateView";
 import { StatusTag } from "../components/StatusTag";
 import { useEngineering, usePageQuery, useProjectPath } from "../api/engineering";
+import { clientError } from "../api/client";
+import { availabilityFromBusiness } from "../shared/actions.js";
 import {
   actionAvailability,
+  asContractReference,
+  prepareAssessmentPreparationResume,
   readAssessmentResolve,
   readAssessmentRun,
-  submitAssessmentPreparationResume,
+  sendAssessmentPreparationResume,
   type AssessmentResolveView,
   type AssessmentRunView,
   type KindRef,
@@ -136,6 +140,7 @@ export default function AssessmentRunPage() {
     run.state.kind === "ready"
       ? actionAvailability(run.state.value.actions, "workflow.cancel-run")
       : null;
+  const scope = useProjectConfirmationScope();
   const resumeCommand = useRef({ key: "", commandId: "" });
 
   return (
@@ -300,20 +305,48 @@ export default function AssessmentRunPage() {
                 {value.waitingRef?.kind === "business-preparation" ? (
                   <ConfirmButton
                     label="准备完成，继续"
-                    resetKey={runKey + value.stateVersion.versionId}
-                    availability={resumeAvailability ?? "hidden"}
-                    summary={["重新检查本阶段所需资料与配置，齐备后继续本次运行。"]}
-                    onConfirm={async () => {
-                      if (selector.projectId === null) return;
+                    availability={availabilityFromBusiness(resumeAvailability ?? "hidden", {
+                      kind: "business",
+                      capability: "workflow.resume",
+                    })}
+                    requiredPermission={{ kind: "business", capability: "workflow.resume" }}
+                    scope={scope}
+                    intentRevision={`${runKey}|${value.stateVersion.versionId}`}
+                    createPlan={() => {
+                      // 请求在打开确认这一刻定型：命令身份与幂等键此后不再重算。
+                      if (scope === undefined || scope.kind !== "project")
+                        throw clientError("CONTRACT_INVALID");
                       const key = runKey + value.stateVersion.versionId;
                       if (resumeCommand.current.key !== key)
                         resumeCommand.current = { key, commandId: crypto.randomUUID() };
-                      await submitAssessmentPreparationResume(selector.projectId, {
+                      const request = prepareAssessmentPreparationResume(scope.projectId, {
                         commandId: resumeCommand.current.commandId,
                         run: value,
                       });
-                      run.retry();
+                      return {
+                        confirmationId: `confirm-${request.envelope.commandId}`,
+                        operationId: "workflow.resume-run",
+                        scope,
+                        targets: [asContractReference(value.runRef)],
+                        inputVersions: [
+                          {
+                            entityId: value.runRef.reference.entityId,
+                            versionId: value.stateVersion.versionId,
+                          },
+                        ],
+                        expectedFacts: ["workflow-run:v1"],
+                        externalEffects: ["重新检查本阶段所需资料与配置，齐备后继续本次运行"],
+                        impact: "standard",
+                        commandId: request.envelope.commandId,
+                        idempotencyKey: request.envelope.idempotencyKey,
+                        request,
+                      };
                     }}
+                    submit={async (plan) => {
+                      await sendAssessmentPreparationResume(plan.request);
+                      return { kind: "reference", resultRef: asContractReference(value.runRef) };
+                    }}
+                    onSucceeded={() => run.retry()}
                   />
                 ) : (
                   <p className="ar-note">

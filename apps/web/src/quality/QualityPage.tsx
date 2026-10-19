@@ -270,7 +270,7 @@ export const createQualityAssessmentRouteContribution = (input: {
     path: "/assessment/quality",
     title: "质量评估",
     section: "assessment",
-    shellKind: "list",
+    regions: [{ kind: "list" as const }],
     contextRequirement: "project",
     requiredViewCapability: null,
     render: (): ReactNode => (

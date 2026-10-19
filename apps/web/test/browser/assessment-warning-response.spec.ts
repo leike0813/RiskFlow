@@ -78,6 +78,27 @@ const localDateTimeNow = (page) =>
     return new Date(next.getTime() - next.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
   });
 
+/** 唯一确认对话框是原生 `<dialog>`：按对话框角色定位，不再依赖任何自定义类名。 */
+const confirmationDialog = (page) => page.getByRole("dialog");
+
+/**
+ * 收口成功态对话框：提交成功后原生 dialog 仍留在页面上（只呈现「命令已提交」），
+ * 若调用方随成功刷新或导航而卸载了触发组件，对话框随之消失。两条路都收口到「对话框不存在」。
+ */
+const closeConfirmationDialog = async (page) => {
+  const dialog = confirmationDialog(page);
+  // 提交成功后对话框有两种归宿：触发组件随刷新或导航卸载，或仍以成功态停留。
+  // 两种都收口到「对话框不再存在」——还在就按取消，仍在提交中就等它落定。
+  await expect(async () => {
+    if (!(await dialog.isVisible().catch(() => false))) return;
+    const cancel = dialog.getByRole("button", { name: "取消", exact: true });
+    if (!(await cancel.isEnabled().catch(() => false))) return;
+    await cancel.click({ timeout: 2_000 });
+    await expect(dialog).toHaveCount(0);
+  }).toPass({ timeout: 30_000 });
+  await expect(dialog).toHaveCount(0);
+};
+
 test("资料来源由用户声明，修改范围重新读取，切换工程清除来源", async ({ page }) => {
   await login(page, server.operatorLogin, `/assessment/records?project=${server.projectId}`);
   await expect(page.getByRole("button", { name: "资料来源：未选择" })).toBeVisible();
@@ -631,12 +652,15 @@ test("响应丢失后重试逐字节复用首次冻结的完整信封，服务�
   // 首次确认的应答被掐断时，对话框留在原处等重试：因此这里先看对话框是否已开，
   // 已开就直接复用，不再去点触发按钮（否则会同时命中按钮与对话框里的确认）。
   const confirm = async () => {
-    const dialog = page.locator(".confirm-dialog");
+    const dialog = confirmationDialog(page);
     if (!(await dialog.isVisible().catch(() => false))) {
       await page.getByRole("button", { name: "确认预警", exact: true }).click();
       await expect(dialog).toBeVisible();
     }
-    await dialog.getByRole("button", { name: /^确认/ }).click();
+    // 首次提交走「确认提交」；可重试失败态下对话框只给「重试」，两者重发同一份冻结信封。
+    const retry = dialog.getByRole("button", { name: "重试", exact: true });
+    if (await retry.isVisible().catch(() => false)) await retry.click();
+    else await dialog.getByRole("button", { name: "确认提交" }).click();
   };
 
   await confirm();
@@ -654,38 +678,22 @@ test("响应丢失后重试逐字节复用首次冻结的完整信封，服务�
     })
     .toBeTruthy();
 
-  const failure = page.getByRole("dialog").getByRole("alert");
+  // 失败态如实呈现安全错误字段：网络层失败闭合为可重试的 TRANSIENT_FAILURE，不是原始响应。
+  const dialog = confirmationDialog(page);
+  const failure = dialog.locator("[data-confirmation-state='error']");
   await expect(failure).toContainText("TRANSIENT_FAILURE");
-  const failureId = await failure.getAttribute("id");
-  expect(failureId).not.toBeNull();
-  await expect(page.getByRole("dialog")).toHaveAttribute("aria-describedby", failureId!);
-  const failureColors = await failure.evaluate((element) => {
+  await expect(failure).toContainText("可重试");
+  await expect(failure.locator("code")).toHaveText("TRANSIENT_FAILURE");
+  const failureColor = await failure.evaluate((element) => getComputedStyle(element).color);
+  const expectedColor = await page.evaluate(() => {
     const probe = document.createElement("span");
     probe.style.color = "var(--error)";
-    probe.style.backgroundColor = "var(--error-soft)";
     document.body.appendChild(probe);
-    const expected = getComputedStyle(probe);
-    const actual = getComputedStyle(element);
-    const colors = {
-      actual: [actual.color, actual.backgroundColor],
-      expected: [expected.color, expected.backgroundColor],
-    };
+    const value = getComputedStyle(probe).color;
     probe.remove();
-    return colors;
+    return value;
   });
-  expect(failureColors.actual).toEqual(failureColors.expected);
-
-  const submit = page.getByRole("dialog").getByRole("button", { name: /^确认/ });
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  expect(
-    await submit.evaluate((element) => parseFloat(getComputedStyle(element).transitionDuration)),
-  ).toBeGreaterThan(0.001);
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect
-    .poll(() =>
-      submit.evaluate((element) => parseFloat(getComputedStyle(element).transitionDuration)),
-    )
-    .toBeLessThanOrEqual(0.001);
+  expect(failureColor).toBe(expectedColor);
 
   // 响应丢失：用户按同一意图再次确认，必须复用同一冻结信封而不是生成新时间的新命令。
   await confirm();
@@ -735,11 +743,15 @@ test("取消确认不发出任何写命令，也不留下确认事实", async ({
   const confirm = page.getByRole("button", { name: "确认预警", exact: true });
   await expect(confirm).toBeVisible();
   await confirm.click();
-  const dialog = page.locator(".confirm-dialog");
+  const dialog = confirmationDialog(page);
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "确认命令" })).toBeVisible();
   // 焦点落在对话框内，取消可达；关闭后对话框消失，页面仍停在未确认。
-  await dialog.getByRole("button", { name: "取消" }).click();
+  await expect(dialog.getByRole("button", { name: "取消", exact: true })).toBeFocused();
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
   await expect(dialog).toHaveCount(0);
+  // 关闭后焦点归还触发按钮，对话框不再截获后续键盘操作。
+  await expect(confirm).toBeFocused();
   expect(commands, "取消不得发出任何写命令").toHaveLength(0);
 
   const after = await postBranch(
@@ -889,9 +901,18 @@ test("业务准备等待显示缺项，继续提交原准备引用并刷新状�
   await expect(page.getByText("评分配置", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "准备完成，继续", exact: true }).click();
   const before = reads;
-  await page.getByRole("button", { name: "确认准备完成，继续", exact: true }).click();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const dialog = confirmationDialog(page);
+  await expect(dialog).toBeVisible();
+  // 缺项已在页面上如实列出；确认摘要按精确输入版本绑定当前状态版本，而不是重新取一个。
+  await expect(dialog.locator("section[aria-label='输入版本']")).toContainText(
+    `${server.paginatedRunRef.reference.entityId}@${stateVersion}`,
+  );
+  await dialog.getByRole("button", { name: "确认提交" }).click();
+  await closeConfirmationDialog(page);
+  // 刷新只在 onSucceeded 里发生：等待终局被判成终态失败时不会重读，
+  // 因此重读发生即证明恢复运行的 waiting 终局走了成功分支。
   await expect.poll(() => reads).toBeGreaterThan(before);
+  // 提交仍带原准备引用与读到的状态版本：继续动作不重造准备事实。
   expect(submission.payload).toEqual({
     workflowRunRef: server.paginatedRunRef,
     expectedStateVersion: stateVersion,
@@ -981,11 +1002,16 @@ test("独立行动使用真实已发布措施，执行与反馈不产生预测�
   const invalidExecution = page.waitForResponse((response) =>
     response.url().endsWith("/commands/warning-response.record-execution"),
   );
-  await page.getByRole("button", { name: "确认登记执行", exact: true }).click();
+  await confirmationDialog(page).getByRole("button", { name: "确认提交" }).click();
   const invalidHttp = await invalidExecution;
   expect(invalidHttp.status()).toBeGreaterThanOrEqual(400);
   expect((await invalidHttp.json()).code).toBe("BUSINESS_BLOCKED");
   expect(new URL(page.url()).searchParams.get("execution")).toBeNull();
+  // 终止失败：对话框如实给出安全错误摘要，只保留取消，计划不得被重试。
+  // 服务端错误码由上面的真实应答断言；此处锁确认层对终止失败的处理。
+  const blockedFailure = confirmationDialog(page).locator("[data-confirmation-state='error']");
+  await expect(blockedFailure).toContainText("不可重试");
+  await expect(confirmationDialog(page).getByRole("button", { name: "重试" })).toHaveCount(0);
   await page.getByRole("dialog").getByRole("button", { name: "取消", exact: true }).click();
   await page.getByLabel("措施发布版本").fill(server.measureLibraryReleaseRef.versionId);
   let releaseResponse;
@@ -1006,7 +1032,7 @@ test("独立行动使用真实已发布措施，执行与反馈不产生预测�
   const executionResponse = page.waitForResponse((response) =>
     response.url().endsWith("/commands/warning-response.record-execution"),
   );
-  await page.getByRole("button", { name: "确认登记执行", exact: true }).click();
+  await confirmationDialog(page).getByRole("button", { name: "确认提交" }).click();
   const { response: executionHttp, body: execution } = await submitted;
   try {
     expect(executionHttp.status(), JSON.stringify(execution)).toBe(200);
@@ -1053,7 +1079,7 @@ test("独立行动使用真实已发布措施，执行与反馈不产生预测�
   const feedbackResponse = page.waitForResponse((response) =>
     response.url().endsWith("/commands/warning-response.record-feedback"),
   );
-  await page.getByRole("button", { name: "确认登记反馈", exact: true }).click();
+  await confirmationDialog(page).getByRole("button", { name: "确认提交" }).click();
   const feedbackHttp = await feedbackResponse;
   const feedback = await feedbackHttp.json();
   expect(feedbackHttp.status(), JSON.stringify(feedback)).toBe(200);
@@ -1164,11 +1190,11 @@ test("采纳、执行与反馈成立真实事实后，偏差驱动出校准建�
   const adoptionResponse = page.waitForResponse((response) =>
     response.url().includes("/commands/warning-response.adopt-recommendation"),
   );
-  await page.getByRole("button", { name: "确认采纳建议", exact: true }).click();
+  await confirmationDialog(page).getByRole("button", { name: "确认提交" }).click();
   const adoptionHttp = await adoptionResponse;
   const adopted = { status: adoptionHttp.status(), body: await adoptionHttp.json() };
   expect(adopted.status, `采纳应成立，实际 ${JSON.stringify(adopted.body)}`).toBe(200);
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await closeConfirmationDialog(page);
   await expect(page.getByText("已采纳", { exact: true })).toBeVisible();
   const adoption = adopted.body?.result;
   // 结果判别式本身就是决定事实：`adoption` 表示已采纳并已产生真实预测运行绑定，
@@ -1220,12 +1246,12 @@ test("采纳、执行与反馈成立真实事实后，偏差驱动出校准建�
   const executionResponse = page.waitForResponse((response) =>
     response.url().endsWith("/commands/warning-response.record-execution"),
   );
-  await page.getByRole("button", { name: "确认登记执行", exact: true }).click();
+  await confirmationDialog(page).getByRole("button", { name: "确认提交" }).click();
   const executionHttp = await executionResponse;
   const execution = { status: executionHttp.status(), body: await executionHttp.json() };
   expect(execution.status, JSON.stringify(execution.body)).toBe(200);
   const executionRef = execution.body.result.executionRecordRef;
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await closeConfirmationDialog(page);
   await expect
     .poll(() => new URL(page.url()).searchParams.get("version"))
     .toBe(executionRef.reference.versionId);
@@ -1247,7 +1273,7 @@ test("采纳、执行与反馈成立真实事实后，偏差驱动出校准建�
   const feedbackResponse = page.waitForResponse((response) =>
     response.url().endsWith("/commands/warning-response.record-feedback"),
   );
-  await page.getByRole("button", { name: "确认登记反馈", exact: true }).click();
+  await confirmationDialog(page).getByRole("button", { name: "确认提交" }).click();
   const feedbackHttp = await feedbackResponse;
   const feedback = { status: feedbackHttp.status(), body: await feedbackHttp.json() };
   expect(feedback.status, JSON.stringify(feedback.body)).toBe(200);
@@ -1374,12 +1400,12 @@ test("采纳、执行与反馈成立真实事实后，偏差驱动出校准建�
   const draftResponse = page.waitForResponse((response) =>
     response.url().includes("/commands/warning-response.calibration-governance-draft"),
   );
-  await page.getByRole("button", { name: "确认创建治理草案", exact: true }).click();
+  await confirmationDialog(page).getByRole("button", { name: "确认提交" }).click();
   const draftHttp = await draftResponse;
   const draftBody = await draftHttp.json();
   expect(draftHttp.status(), JSON.stringify(draftBody)).toBe(200);
   expect(draftBody.result.knowledgeRevisionRef).toBeTruthy();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await closeConfirmationDialog(page);
   await expect(
     page.getByText(draftBody.result.knowledgeRevisionRef.reference.entityId, { exact: false }),
   ).toBeVisible();
@@ -1474,17 +1500,19 @@ test("启动向导按精确引用门控：缺输入不提交、取消与 Escape 
 
   // 确认对话框：焦点落到取消、Escape 关闭、取消不发出任何写命令、关闭后焦点归还触发按钮。
   await trigger.click();
-  const dialog = page.locator(".confirm-dialog");
+  const dialog = confirmationDialog(page);
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "取消" })).toBeFocused();
+  await expect(dialog.getByRole("heading", { name: "确认命令" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "取消", exact: true })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
 
   await trigger.click();
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "取消" }).click();
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
   await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
   expect(commands, "取消不得发出任何写命令").toHaveLength(0);
 });
 
@@ -1549,7 +1577,19 @@ test("启动向导以完整精确引用提交初评，命令载荷精确且返�
   });
 
   await page.getByRole("button", { name: "启动评估", exact: true }).click();
-  await page.locator(".confirm-dialog").getByRole("button", { name: "确认启动评估" }).click();
+  const startDialog = confirmationDialog(page);
+  await expect(startDialog).toBeVisible();
+  // 确认摘要如实给出入口模式与用户选定的精确引用，不伪造默认版本。
+  await expect(startDialog.locator("section[aria-label='预计事实']")).toContainText(
+    "workflow-assessment:v1",
+  );
+  await expect(startDialog.locator("section[aria-label='目标对象']")).toContainText(
+    refs.scope.reference.entityId,
+  );
+  await expect(startDialog.locator("section[aria-label='目标对象']")).toContainText(
+    refs.riskInput.reference.entityId,
+  );
+  await startDialog.getByRole("button", { name: "确认提交" }).click();
   await page.waitForURL(/assessment\/runs\/[^?]+\?.*version=/, { timeout: 60_000 });
 
   // 命令载荷逐项精确：监测/风险输入/适用性快照/空间与工作流策略都取用户选定与已读事实，不伪造版本。
@@ -1594,12 +1634,16 @@ test("启动向导响应丢失后按原身份原载荷重试，取得同一运�
     await route.continue();
   });
 
-  const dialog = page.locator(".confirm-dialog");
+  const dialog = confirmationDialog(page);
   await page.getByRole("button", { name: "启动评估", exact: true }).click();
-  await dialog.getByRole("button", { name: "确认启动评估" }).click();
-  // 首次应答被掐断：对话框留在原处等重试。
+  await dialog.getByRole("button", { name: "确认提交" }).click();
+  // 首次应答被掐断：对话框留在原处等重试，且只给「重试」——重试复用同一冻结计划。
   await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "确认启动评估" }).click();
+  await expect(dialog.locator("[data-confirmation-state='error']")).toContainText(
+    "TRANSIENT_FAILURE",
+  );
+  await expect(dialog.getByRole("button", { name: "确认提交" })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "重试" }).click();
   await expect.poll(() => envelopes.length, { timeout: 60_000 }).toBe(2);
   expect(envelopes[1], "重试必须逐字节复用首次冻结的完整信封").toBe(envelopes[0]);
   await page.waitForURL(/assessment\/runs\/[^?]+\?.*version=/, { timeout: 60_000 });
@@ -1611,7 +1655,7 @@ test("启动向导以完整精确引用提交重评，返回真实重评运行",
   // 重评需要真实前驱：先经真实 UI 初评落一条评估记录。
   await openStartWizard(page);
   await page.getByRole("button", { name: "启动评估", exact: true }).click();
-  await page.locator(".confirm-dialog").getByRole("button", { name: "确认启动评估" }).click();
+  await confirmationDialog(page).getByRole("button", { name: "确认提交" }).click();
   await page.waitForURL(/assessment\/runs\//, { timeout: 60_000 });
 
   await login(page, server.operatorLogin, withProject("/assessment/start"));
@@ -1653,7 +1697,16 @@ test("启动向导以完整精确引用提交重评，返回真实重评运行",
   const trigger = page.getByRole("button", { name: "启动评估", exact: true });
   await expect(trigger).toBeEnabled();
   await trigger.click();
-  await page.locator(".confirm-dialog").getByRole("button", { name: "确认启动评估" }).click();
+  const reassessDialog = confirmationDialog(page);
+  await expect(reassessDialog).toBeVisible();
+  // 重评入口如实标注为 reassess，并绑定前驱评估记录与用户选定的前驱监测快照。
+  await expect(reassessDialog.locator("section[aria-label='预计事实']")).toContainText(
+    "workflow-reassessment:v1",
+  );
+  await expect(reassessDialog.locator("section[aria-label='目标对象']")).toContainText(
+    server.assessStartInput.riskInput.reference.entityId,
+  );
+  await reassessDialog.getByRole("button", { name: "确认提交" }).click();
   await page.waitForURL(/assessment\/runs\/[^?]+\?.*version=/, { timeout: 60_000 });
   await expect(page.locator("h1.page-title")).toHaveText("评估运行");
   await expect(page.locator("dt", { hasText: "入口模式" }).locator("..")).toContainText("reassess");

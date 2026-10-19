@@ -30,6 +30,7 @@ const providers = (overrides = {}) => {
     access: {
       ...stub(["verify", "authorize"]),
       systemAdministration: stub(["read", "execute"]),
+      projectAccessPresentation: stub(["read"]),
     },
     artifactStore: stub(["put", "open"]),
     contextSource: stub(["apply", "freeze", "read", "resolveReadQuery"]),
@@ -196,10 +197,33 @@ describe("生产 API 全端口装配契约", () => {
     const access = {
       ...stub(["verify", "authorize"]),
       systemAdministration: stub(["read", "execute"]),
+      projectAccessPresentation: stub(["read"]),
     };
     const ports = createDeploymentApiPortsV1(providers({ contextSource, access }));
     expect(ports.engineeringData).toBe(contextSource);
     expect(ports.systemAdministration).toBe(access.systemAdministration);
+  });
+
+  it("入口能力读面取自同一真实 C06 适配器，缺失时拒绝装配而不是空能力", () => {
+    const read = vi.fn(async () => ({
+      schemaVersion: "1",
+      projectId: "project-a",
+      capabilities: [],
+      authorizationPolicyRef: { entityId: "access-policy", versionId: "v2" },
+    }));
+    const access = {
+      ...stub(["verify", "authorize"]),
+      systemAdministration: stub(["read", "execute"]),
+      projectAccessPresentation: { read },
+    };
+    const ports = createDeploymentApiPortsV1(providers({ access }));
+    expect(ports.projectAccessPresentation).toBe(access.projectAccessPresentation);
+    // 装配层不包一层空实现：路由拿到的是真实 C06 端口本身。
+    expect(() =>
+      createDeploymentApiPortsV1(
+        providers({ access: { ...access, projectAccessPresentation: undefined } }),
+      ),
+    ).toThrow(/projectAccessPresentation/);
   });
 
   it("组装真实公开投影工厂与完整质量两阶段端口，并保留 API 运维结果 Schema", async () => {

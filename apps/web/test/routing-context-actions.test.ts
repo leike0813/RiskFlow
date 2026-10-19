@@ -22,7 +22,11 @@ import {
   invokeWebAction,
   type WebActionV1,
 } from "../src/shared/actions.js";
-import { hasExactlySevenBusinessNavigation, WEB_NAVIGATION_V1 } from "../src/shell/navigation.js";
+import {
+  hasExactlySevenBusinessNavigation,
+  navigationPermission,
+  WEB_NAVIGATION_V1,
+} from "../src/shell/navigation.js";
 
 const scope: SpatialScopeRefV1 = {
   kind: "spatial-scope",
@@ -59,7 +63,7 @@ describe("C10 路由、上下文与动作原语", () => {
       path: "/projects/:projectId",
       title: "项目详情",
       section: "projects",
-      shellKind: "detail",
+      regions: [{ kind: "detail" }],
       contextRequirement: "project",
       requiredViewCapability: "engineering-data.read",
       render: () => null,
@@ -170,9 +174,43 @@ describe("C10 路由、上下文与动作原语", () => {
     expect(guard.isCurrent(second)).toBe(false);
   });
 
+  it("能力未知与确实无权必须可区分，切工程时旧能力不复活", () => {
+    const overview = WEB_NAVIGATION_V1[0]!;
+    // 未注入／检查中／技术故障三种「未知」都不得解释为无权，也不得解释为有全部能力。
+    expect(navigationPermission(overview, undefined)).toBe("unknown");
+    expect(navigationPermission(overview, [overview.requiredCapability])).toBe("allowed");
+    // 真实空集合才是被服务端确认的「当前没有入口权」。
+    expect(navigationPermission(overview, [])).toBe("denied");
+    // 空集合也不能被误当成管理员：任一具体能力位都必须来自真实集合。
+    expect(WEB_NAVIGATION_V1.every((item) => navigationPermission(item, []) === "denied")).toBe(
+      true,
+    );
+
+    // 切工程中止上一代在途读取，迟到响应不再被接受：新代次是唯一有效来源。
+    const guard = createRequestRevisionGuard();
+    const projectA = reduceWebContext(INITIAL_WEB_CONTEXT_V1, {
+      type: "project-selected",
+      projectId: "project-a",
+    });
+    const projectB = reduceWebContext(projectA, {
+      type: "project-selected",
+      projectId: "project-b",
+    });
+    const lateA = guard.begin({ revision: projectA.revision, routeId: "project-access.read" });
+    const currentB = guard.begin({ revision: projectB.revision, routeId: "project-access.read" });
+    expect(lateA.signal.aborted).toBe(true);
+    expect(guard.accept(lateA)).toBe(false);
+    expect(guard.accept(currentB)).toBe(true);
+    // 重复读取不排队：同代新请求同样取代上一条在途。
+    const repeated = guard.begin({ revision: projectB.revision, routeId: "project-access.read" });
+    const previous = guard.begin({ revision: projectB.revision, routeId: "project-access.read" });
+    expect(repeated.signal.aborted).toBe(true);
+    expect(guard.accept(previous)).toBe(true);
+  });
+
   it("separates unknown, forbidden, blocked and unavailable actions", () => {
     const common = {
-      requiredCapability: "projection.query" as const,
+      requiredPermission: { kind: "business", capability: "projection.query" } as const,
       permission: "allowed" as const,
       business: { kind: "allowed" as const },
       route: "available" as const,
@@ -183,7 +221,11 @@ describe("C10 路由、上下文与动作原语", () => {
     });
     expect(deriveActionAvailability({ ...common, permission: "denied" })).toEqual({
       kind: "forbidden",
-      requiredCapability: "projection.query",
+      requiredPermission: { kind: "business", capability: "projection.query" },
+    });
+    // hidden 优先于一切：调用方声明目标不可披露时不留任何痕迹。
+    expect(deriveActionAvailability({ ...common, permission: "hidden" })).toEqual({
+      kind: "hidden",
     });
     expect(
       deriveActionAvailability({
@@ -213,7 +255,7 @@ describe("C10 路由、上下文与动作原语", () => {
 });
 
 describe("C37 旧前缀别名与质量子路径", () => {
-  it("旧前缀重定向到新 section 根，并保留 search", () => {
+  it("旧前缀重定向到新 section 根，并保留 search 与编码身份", () => {
     expect(resolveWebRoute("/project")).toEqual({
       kind: "redirect",
       from: "/project",
@@ -225,10 +267,33 @@ describe("C37 旧前缀别名与质量子路径", () => {
       to: "/review-audit",
     });
     expect(resolveWebRoute("/project?revision=7").to).toBe("/projects?revision=7");
-    expect(resolveWebRoute("/project/risk-1?tab=evidence")).toMatchObject({
+    // 已登记的详情模板按段边界透传 search 与编码后的路径身份。
+    const detail = createWebRouteRegistry([
+      {
+        routeId: "projects.documents.param",
+        path: "/projects/documents/:docId",
+        title: "资料",
+        section: "projects",
+        regions: [{ kind: "detail" }],
+        contextRequirement: "project",
+        requiredViewCapability: null,
+        render: null,
+      },
+    ]);
+    expect(resolveWebRoute("/project/documents/doc-1?tab=evidence", detail)).toMatchObject({
       kind: "redirect",
-      to: "/projects/risk-1?tab=evidence",
+      to: "/projects/documents/doc-1?tab=evidence",
     });
+    expect(resolveWebRoute("/project/documents/a%3Ab?revision=7", detail)).toMatchObject({
+      kind: "redirect",
+      to: "/projects/documents/a%3Ab?revision=7",
+    });
+  });
+
+  it("未登记后缀不重定向到另一个对象", () => {
+    // 别名不得把未知旧后缀变成另一个合法页面：目标未登记时直接未找到。
+    expect(resolveWebRoute("/project/risk-1").kind).toBe("not-found");
+    expect(resolveWebRoute("/review/unknown-child").kind).toBe("not-found");
   });
 
   it("别名只落在段边界上，不误伤既有路径", () => {
@@ -245,7 +310,7 @@ describe("C37 旧前缀别名与质量子路径", () => {
         path: "/assessment/quality",
         title: "质量评估",
         section: "assessment",
-        shellKind: "list",
+        regions: [{ kind: "list" }],
         contextRequirement: "project",
         requiredViewCapability: null,
         render: null,

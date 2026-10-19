@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { MODULE_BRANCH_CAPABILITY_V1 } from "@riskflow/contracts/ports";
 import {
   PRESET_ROLE_BRANCHES_V1,
+  ACCESS_POLICY_HISTORY_VERSIONS,
+  ACCESS_POLICY_REF_V1,
   AccessErrorV1Schema,
   AuthorizationRequestV1Schema,
   DisplayNameV1Schema,
@@ -22,6 +24,7 @@ import {
   evaluateSourceAccess,
   isAuthorizationSubset,
   isBranchAllowed,
+  isRegisteredAccessPolicyVersion,
   isSpatialScopeCovered,
   projectionAccess,
   type SpatialScopeNodeV1,
@@ -215,6 +218,65 @@ describe("access domain", () => {
         expect(isBranchAllowed([role], branch)).toBe(false);
       }
     }
+  });
+
+  it("CH-2 聚合入口资格与原件读面按 D-05 精确授予", () => {
+    // 入口资格是新分支映射到同名 capability，不隐含任何查询或写权。
+    expect(branchCapability("review-todo.read")).toBe("review-todo.read");
+    expect(capabilitiesForBranches(["review-todo.read"])).toEqual(["review-todo.read"]);
+
+    // 四个工程角色取得入口资格；系统管理员的分支集仍为空。
+    for (const role of [
+      "project-risk-manager",
+      "reviewer",
+      "field-responder",
+      "business-viewer",
+    ] as const) {
+      expect(isBranchAllowed([role], "review-todo.read")).toBe(true);
+    }
+    expect(PRESET_ROLE_BRANCHES_V1["system-administrator"]).toEqual([]);
+
+    // 已有资料目录读能力的 reviewer 与业务查看者补齐原件读取分支；
+    // 无资料目录入口的现场处置人员不因此获得资料路径。
+    expect(isBranchAllowed(["reviewer"], "engineering-data.source-original-read")).toBe(true);
+    expect(isBranchAllowed(["business-viewer"], "engineering-data.source-original-read")).toBe(
+      true,
+    );
+    expect(PRESET_ROLE_BRANCHES_V1["field-responder"]).not.toContain(
+      "engineering-data.source-original-read",
+    );
+
+    // 入口资格不得为复核人增授 Agent 读面或任何领域写权。
+    for (const branch of ["agent-task.read", "agent-task.read-failure-evidence"] as const) {
+      expect(isBranchAllowed(["reviewer"], branch)).toBe(false);
+      expect(isBranchAllowed(["business-viewer"], branch)).toBe(false);
+      expect(isBranchAllowed(["field-responder"], branch)).toBe(false);
+    }
+    expect(isBranchAllowed(["field-responder"], "warning-response.adopt-recommendation")).toBe(
+      false,
+    );
+    for (const role of ["reviewer", "business-viewer"] as const) {
+      for (const capability of [
+        "engineering-data.write",
+        "warning-response.record",
+        "warning-response.recommend",
+        "risk-assessment.prepare",
+        "risk-identification.run",
+        "agent-task.start",
+      ] as const) {
+        expect(capabilitiesForBranches(PRESET_ROLE_BRANCHES_V1[role])).not.toContain(capability);
+      }
+    }
+  });
+
+  it("CH-2 策略升版保留历史身份解析而不改写旧快照", () => {
+    expect(ACCESS_POLICY_REF_V1).toEqual({ entityId: "access-policy", versionId: "v2" });
+    // 旧 v1 身份仍被识别为已登记历史，用于恢复主体/范围，不是放行凭据。
+    expect([...ACCESS_POLICY_HISTORY_VERSIONS]).toEqual(["v1", "v2"]);
+    expect(isRegisteredAccessPolicyVersion("v1")).toBe(true);
+    expect(isRegisteredAccessPolicyVersion("v2")).toBe(true);
+    expect(isRegisteredAccessPolicyVersion("v3")).toBe(false);
+    expect(isRegisteredAccessPolicyVersion("latest")).toBe(false);
   });
 
   it("authorization scope closure", () => {

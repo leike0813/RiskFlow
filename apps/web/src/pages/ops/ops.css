@@ -123,13 +123,6 @@
   font-size: 13px;
 }
 
-.op-form-error {
-  margin: 0;
-  color: var(--error);
-  font-size: 13px;
-  line-height: 20px;
-}
-
 .op-chips {
   display: flex;
   flex-wrap: wrap;
@@ -274,49 +267,6 @@
   font-weight: 500;
   background: var(--bluegray-soft);
   white-space: nowrap;
-}
-
-/* 勾选确认（管理动作）：高影响动作才用风险色加强，其余保持中性蓝。 */
-.op-confirm {
-  border: 1px solid var(--blue);
-  border-radius: 6px;
-  background: var(--blue-soft);
-  padding: 12px;
-  margin-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.op-confirm--danger {
-  border-color: var(--error);
-  background: var(--error-soft);
-}
-
-.op-confirm-lead {
-  margin: 0;
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.op-confirm-summary {
-  margin: 0;
-  padding-left: 20px;
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.op-confirm-ack {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.op-confirm-actions {
-  display: flex;
-  gap: 8px;
 }
 
 @media (max-width: 64rem) {

@@ -2,13 +2,21 @@ import { useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
-import { ConfirmButton } from "../components/ConfirmButton";
+import { ConfirmButton, useProjectConfirmationScope } from "../components/ConfirmButton";
 import { PageStateView } from "../components/PageStateView";
 import { SectionTabs } from "../components/SectionTabs";
 import { StatusTag, type StatusTone } from "../components/StatusTag";
 import { VersionTag } from "../components/VersionTag";
 import { useEngineering, usePageQuery, useProjectPath, type PageState } from "../api/engineering";
-import { submitReviewDecision, type ReviewTaskRefView as ReviewTaskRef } from "../api/operations";
+import { clientError, type PreparedCommandV1 } from "../api/client";
+import { availabilityFromBusiness } from "../shared/actions.js";
+import type { CommandConfirmationPlanV1 } from "../shared/confirmation.js";
+import {
+  asContractReference,
+  prepareReviewDecision,
+  sendReviewDecision,
+  type ReviewTaskRefView as ReviewTaskRef,
+} from "../api/operations";
 import { readReviewTaskDetail, type ReviewTaskDetailView } from "../api/agentAuditOperations";
 import "./ReviewDetailPage.css";
 
@@ -150,24 +158,25 @@ const decisionCommandId = (
 };
 
 /**
- * 全部复核页面的唯一决定提交路径：经既有 review-audit.decide-review 命令下发，
- * 幂等、陈旧版本与授权仍由服务端闭合。
+ * 全部复核页面共用的唯一决定请求构造：命令身份、幂等键与决定联合在此定型。
+ * 陈旧版本与授权仍由服务端闭合。
  */
-export const submitReviewTaskDecision = async (request: {
+export const prepareReviewTaskDecision = (request: {
   readonly projectId: string;
   readonly reviewTaskRef: ReviewTaskRef;
   readonly reviewType: string;
   readonly option: ReviewDecisionOption;
   readonly candidateRef?: RevisedCandidateRefInput;
-}): Promise<string> => {
-  const submitted = await submitReviewDecision(request.projectId, {
+}): PreparedCommandV1 =>
+  prepareReviewDecision(request.projectId, {
     reviewTaskRef: request.reviewTaskRef,
     decision: buildReviewDecision(request.reviewType, request.option, request.candidateRef),
     reasonCode: reasonCodeFor(request.option.kind),
     commandId: decisionCommandId(request.reviewTaskRef, request.option, request.candidateRef),
   });
-  return submitted.reviewDecisionRef.reference.entityId;
-};
+
+/** 全部复核页面共用的唯一决定提交路径：只消费已冻结的请求。 */
+export const sendReviewTaskDecision = sendReviewDecision;
 
 export type DecisionAvailability = "allowed" | "denied" | "business-unavailable" | "hidden";
 
@@ -197,21 +206,16 @@ interface DetailQueryResult {
   readonly detail?: ReviewTaskDetailView;
 }
 
-const DECISION_SUMMARY_LEAD =
-  "决定写入审计日志且不可撤销；命令携带幂等键，重复提交同一决定不重复生效";
-
 /**
  * 复核决定面板：队列、详情与识别复核三处共用同一构造器与提交路径，
  * 按钮可用性取 decide-review 分支的真实判定，任务非 pending 时只读。
  */
 export function ReviewDecisionPanel({
-  projectId,
   taskRef,
   detail,
   candidateOptions,
   onDecided,
 }: {
-  readonly projectId: string;
   readonly taskRef: ReviewTaskRef;
   readonly detail: ReviewTaskDetailView;
   /** 候选集引用来自所属模块；缺身份版本的条目只能定位，不能据此构造决定。 */
@@ -221,6 +225,7 @@ export function ReviewDecisionPanel({
   const [candidateIndex, setCandidateIndex] = useState(0);
   const options = reviewDecisionOptions(detail.reviewType);
   const availability = decideAvailability(detail);
+  const scope = useProjectConfirmationScope();
   const selected = candidateOptions[candidateIndex];
   const candidateRef =
     selected !== undefined && selected.versionId !== undefined && selected.versionId.length > 0
@@ -233,16 +238,55 @@ export function ReviewDecisionPanel({
     );
   }
 
-  const submit = async (option: ReviewDecisionOption) => {
+  const plan = (option: ReviewDecisionOption): CommandConfirmationPlanV1<PreparedCommandV1> => {
+    // 请求在打开确认这一刻定型：命令身份、幂等键与决定联合此后不再重算。
+    if (scope === undefined || scope.kind !== "project") throw clientError("CONTRACT_INVALID");
+    if (option.requiresCandidateRef && candidateRef === undefined)
+      throw clientError("CONTRACT_INVALID");
+    const candidateInput = option.requiresCandidateRef ? candidateRef : undefined;
+    const request = prepareReviewTaskDecision({
+      projectId: scope.projectId,
+      reviewTaskRef: taskRef,
+      reviewType: detail.reviewType,
+      option,
+      ...(candidateInput === undefined ? {} : { candidateRef: candidateInput }),
+    });
+    return {
+      confirmationId: `confirm-${request.envelope.commandId}`,
+      operationId: REVIEW_DECIDE_BRANCH,
+      scope,
+      targets: [asContractReference(taskRef.reviewTaskRef)],
+      inputVersions: [
+        {
+          entityId: taskRef.reviewTaskRef.reference.entityId,
+          versionId: taskRef.reviewTaskRef.reference.versionId,
+        },
+        {
+          entityId: detail.targetRef.reference.entityId,
+          versionId: detail.targetRef.reference.versionId,
+        },
+      ],
+      expectedFacts: ["review-task:v1"],
+      externalEffects: [`${option.label}：决定写入审计日志且不可撤销，等待中的运行据此恢复或改道`],
+      impact: "standard",
+      commandId: request.envelope.commandId,
+      idempotencyKey: request.envelope.idempotencyKey,
+      request,
+    };
+  };
+
+  const submit = async (option: ReviewDecisionOption, prepared: PreparedCommandV1) => {
     try {
-      const decisionRefId = await submitReviewTaskDecision({
-        projectId,
-        reviewTaskRef: taskRef,
-        reviewType: detail.reviewType,
-        option,
-        ...(option.requiresCandidateRef && candidateRef !== undefined ? { candidateRef } : {}),
+      const submitted = await sendReviewDecision(prepared);
+      onDecided({
+        label: option.label,
+        ok: true,
+        detail: `已登记决定 ${submitted.reviewDecisionRef.reference.entityId}`,
       });
-      onDecided({ label: option.label, ok: true, detail: `已登记决定 ${decisionRefId}` });
+      return {
+        kind: "reference" as const,
+        resultRef: asContractReference(submitted.reviewDecisionRef),
+      };
     } catch (error) {
       const code = error instanceof Error ? error.message : "TERMINAL_FAILURE";
       onDecided({ label: option.label, ok: false, detail: `提交失败（${code}）` });
@@ -268,19 +312,17 @@ export function ReviewDecisionPanel({
             <li key={option.kind} className="rv-decision-item">
               <ConfirmButton
                 label={option.label}
-                availability={effective}
-                {...(reason === undefined ? {} : { unavailableReason: reason })}
-                resetKey={`${detail.reviewTaskRef.reference.entityId}-${detail.reviewTaskRef.reference.versionId}`}
-                summary={[
-                  `工程：${projectId}`,
-                  `对象：${REVIEW_TYPE_LABEL[detail.reviewType] ?? detail.reviewType} ${detail.targetRef.kind} ${detail.targetRef.reference.entityId}`,
-                  `精确版本：任务 ${detail.reviewTaskRef.reference.versionId} · 目标 ${detail.targetRef.reference.versionId}`,
-                  `决定：${option.kind}${candidateRef !== undefined && option.requiresCandidateRef ? ` · 候选 ${candidateRef.entityId}@${candidateRef.versionId}` : ""}`,
-                  `预计结果：${option.label}，等待中的运行据此恢复或改道`,
-                  `副作用：${DECISION_SUMMARY_LEAD}`,
-                ]}
-                onConfirm={() => submit(option)}
+                availability={availabilityFromBusiness(effective, {
+                  kind: "business",
+                  capability: "review-audit.decide",
+                })}
+                requiredPermission={{ kind: "business", capability: "review-audit.decide" }}
+                scope={scope}
+                intentRevision={`${detail.reviewTaskRef.reference.entityId}-${detail.reviewTaskRef.reference.versionId}-${candidateRef?.entityId ?? ""}-${candidateRef?.versionId ?? ""}`}
+                createPlan={() => plan(option)}
+                submit={(frozen) => submit(option, frozen.request)}
               />
+              {reason === undefined ? null : <p className="rv-muted">{reason}</p>}
             </li>
           );
         })}
@@ -567,7 +609,6 @@ export default function ReviewDetailPage() {
                     <div className="rv-muted">尚未选择工程，无法提交决定。</div>
                   ) : (
                     <ReviewDecisionPanel
-                      projectId={projectId}
                       taskRef={taskRef}
                       detail={detail}
                       candidateOptions={[]}

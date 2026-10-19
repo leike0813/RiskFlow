@@ -90,8 +90,16 @@ export const useAgentTaskOptional = (): AgentTaskContextValue | null =>
 
 export function AgentTaskProvider(props: {
   readonly projectId?: string;
+  /**
+   * CH-2 D-08：助手入口资格。为 false 时不发起任何 list/detail 读取，也不安排轮询。
+   *
+   * 未取得 `agent-task.read` 的角色仍保留原复核入口与精确详情——本 Provider 只拥有
+   * Agent 事实，缺席不得被解释成"本域也没有复核能力"。
+   */
+  readonly allowed?: boolean;
   readonly children: ReactNode;
 }): ReactElement {
+  const allowed = props.allowed !== false;
   const [snapshot, setSnapshot] = useState<AgentTaskSnapshot>(EMPTY_SNAPSHOT);
   const [filters, setFiltersState] = useState<AgentTaskFilters>({});
   const [taskRef, setTaskRef] = useState<Pick<AgentTaskRefView, "kind" | "reference"> | undefined>(
@@ -125,10 +133,19 @@ export function AgentTaskProvider(props: {
 
   useEffect(() => () => clearPending(), [clearPending]);
 
+  // 资格被拒或工程变化时清空 Agent 事实并停止刷新；服务端继续拥有任务事实本身。
+  useEffect(() => {
+    if (allowed) return;
+    clearPending();
+    setSnapshot({ generation: generationRef.current, loading: false });
+    setTaskRef(undefined);
+    setFiltersState({});
+  }, [allowed, clearPending]);
+
   const load = useCallback(
     async (generation: number) => {
       const projectId = props.projectId;
-      if (projectId === undefined || inFlightRef.current) return;
+      if (!allowed || projectId === undefined || inFlightRef.current) return;
       inFlightRef.current = true;
       const controller = new AbortController();
       abortRef.current = controller;
@@ -210,12 +227,12 @@ export function AgentTaskProvider(props: {
         if (abortRef.current === controller) abortRef.current = undefined;
       }
     },
-    [props.projectId, filters.taskType, filters.status, filters.parentRunRef, taskRef],
+    [allowed, props.projectId, filters.taskType, filters.status, filters.parentRunRef, taskRef],
   );
 
   // 单在途节拍刷新：上一轮结束（或超时）后才安排下一轮，慢读不会堆叠请求。
   useEffect(() => {
-    if (props.projectId === undefined) return undefined;
+    if (!allowed || props.projectId === undefined) return undefined;
     const generation = generationRef.current;
     const tick = () => {
       void load(generation).finally(() => {
@@ -230,7 +247,7 @@ export function AgentTaskProvider(props: {
         timerRef.current = undefined;
       }
     };
-  }, [load, props.projectId]);
+  }, [allowed, load, props.projectId]);
 
   const value = useMemo<AgentTaskContextValue>(
     () => ({

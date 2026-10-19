@@ -19,6 +19,7 @@ import {
   type WarningResponseOverviewView,
 } from "../api/operations";
 import { NextPageButton, VersionRefText, stateTone } from "./assessmentResponseShared";
+import { PageRegions, type PageRegionV1 } from "../shared/page-shells/PageFrame.js";
 import "./RiskOverviewPage.css";
 import "./assessment-response.css";
 
@@ -101,22 +102,13 @@ export default function RiskOverviewPage() {
     });
   }
 
-  return (
-    <AppShell
-      activeNav="overview"
-      agentContext={selector.projectId === null ? [] : [selector.projectId]}
-    >
-      <div className="page ov-page">
-        <header className="page-header ov-header">
-          <div className="ov-title-row">
-            <h1 className="page-title">风险态势总览</h1>
-            <p className="page-subtitle">按已入库记录统计的评估与预警态势</p>
-          </div>
-          {revisionRef !== null && (
-            <StatusTag tone="neutral">工程修订 {revisionRef.reference.versionId}</StatusTag>
-          )}
-        </header>
-
+  // CH-2 D-03：总览页实际消费有序区域。
+  // 四块内容都沿用原取数与原 PageStateView：摘要、两个分布表与原投影续页各自
+  // 成功／空／失败，不以一处成功掩盖另一处失败，也不把表格换成图表或新聚合。
+  const regions: readonly PageRegionV1<null>[] = [
+    {
+      descriptor: { key: "assessment-summary", kind: "detail" },
+      content: (
         <div className="ov-kpi-row">
           <PageStateView state={assessment.state} title="评估摘要" emptyMessage="暂无评估摘要">
             {(value) => (
@@ -146,7 +138,11 @@ export default function RiskOverviewPage() {
             )}
           </PageStateView>
         </div>
-
+      ),
+    },
+    {
+      descriptor: { key: "risk-level-distribution", kind: "list" },
+      content: (
         <Card title="风险状态分布" style={{ marginTop: 16 }}>
           <PageStateView
             state={assessment.state}
@@ -177,7 +173,11 @@ export default function RiskOverviewPage() {
             }
           </PageStateView>
         </Card>
-
+      ),
+    },
+    {
+      descriptor: { key: "warning-level-distribution", kind: "list" },
+      content: (
         <Card title="预警等级分布" style={{ marginTop: 16 }}>
           <PageStateView state={warning.state} title="预警等级分布" emptyMessage="暂无已登记预警">
             {(value) =>
@@ -204,7 +204,11 @@ export default function RiskOverviewPage() {
             }
           </PageStateView>
         </Card>
-
+      ),
+    },
+    {
+      descriptor: { key: "projection-run-history", kind: "list" },
+      content: (
         <Card title="运行摘要（原投影追溯）" style={{ marginTop: 16 }}>
           <p className="ar-note">
             本区来自既有投影查询，按页读取；与上方摘要口径不同，不合并统计。
@@ -268,6 +272,27 @@ export default function RiskOverviewPage() {
             )}
           </PageStateView>
         </Card>
+      ),
+    },
+  ];
+
+  return (
+    <AppShell
+      activeNav="overview"
+      agentContext={selector.projectId === null ? [] : [selector.projectId]}
+    >
+      <div className="page ov-page">
+        <header className="page-header ov-header">
+          <div className="ov-title-row">
+            <h1 className="page-title">风险态势总览</h1>
+            <p className="page-subtitle">按已入库记录统计的评估与预警态势</p>
+          </div>
+          {revisionRef !== null && (
+            <StatusTag tone="neutral">工程修订 {revisionRef.reference.versionId}</StatusTag>
+          )}
+        </header>
+
+        <PageRegions regions={regions} value={null} />
       </div>
     </AppShell>
   );

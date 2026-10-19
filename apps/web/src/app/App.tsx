@@ -18,8 +18,9 @@ import {
   type WebRouteResolutionV1,
 } from "./routes.js";
 import { AppShell, type AppShellPropsV1 } from "../shell/AppShell.js";
+import type { SafeHttpErrorV1 } from "../api/errors.js";
 import { safeErrorFields } from "../shared/page-shells/PageFrame.js";
-import { PageFrame } from "../shared/page-shells/PageFrame.js";
+import { PageFrame, type PageRegionV1 } from "../shared/page-shells/PageFrame.js";
 import type { SessionChangePasswordInputV1, SessionLoginInputV1 } from "../api/http.js";
 import { useAgentDockContribution } from "../agent/AgentDock.js";
 
@@ -29,6 +30,13 @@ export type AppPropsV1 = Readonly<{
   context?: WebContextV1;
   registry?: WebRouteRegistryV1;
   capabilities?: readonly ModuleCapabilityV1[];
+  /** 入口能力读取的技术故障：带安全原因与重试；未就绪或无权都不走这里。 */
+  capabilityFailure?:
+    | Readonly<{
+        error: SafeHttpErrorV1;
+        retry: () => void;
+      }>
+    | undefined;
   projectOptions?: AppShellPropsV1["projectOptions"];
   spatialScopeOptions?: AppShellPropsV1["spatialScopeOptions"];
   processNodeOptions?: AppShellPropsV1["processNodeOptions"];
@@ -217,12 +225,20 @@ const sessionContent = (input: {
   return null;
 };
 
-const shellVariant = (
-  kind: "list" | "detail" | "run" | "governance" | "review" | "custom",
-): "list" | "detail" | "run" | "governance" | "review" => (kind === "custom" ? "detail" : kind);
+/**
+ * 门禁骨架只占位一个 detail 区域：权限态、不可用态与工程空态不承载业务正文，
+ * 因此这里不按路由登记的区域数量渲染内容——只有真实 ready 页面才组合自己的区域。
+ */
+const gateRegion: readonly PageRegionV1<never>[] = [
+  { descriptor: { key: "gate", kind: "detail" }, content: null },
+];
 
 const UnavailableRoute = ({ title, code }: { title: string; code: string }): ReactNode => (
-  <PageFrame title={title} variant="detail" state={{ kind: "unavailable", reasons: [{ code }] }} />
+  <PageFrame
+    title={title}
+    regions={gateRegion}
+    state={{ kind: "unavailable", reasons: [{ code }] }}
+  />
 );
 
 const routeContentFor = (input: {
@@ -241,7 +257,7 @@ const routeContentFor = (input: {
       return (
         <PageFrame
           title={route.title}
-          variant={shellVariant(route.shellKind)}
+          regions={gateRegion}
           state={{ kind: "unavailable", reasons: [{ code: "permission-checking" }] }}
         />
       );
@@ -249,19 +265,13 @@ const routeContentFor = (input: {
       return (
         <PageFrame
           title={route.title}
-          variant={shellVariant(route.shellKind)}
+          regions={gateRegion}
           state={{ kind: "forbidden", requiredCapability: route.requiredViewCapability }}
         />
       );
   }
   if (route.contextRequirement !== "none" && input.context.projectId === null)
-    return (
-      <PageFrame
-        title={route.title}
-        variant={shellVariant(route.shellKind)}
-        state={{ kind: "empty" }}
-      />
-    );
+    return <PageFrame title={route.title} regions={gateRegion} state={{ kind: "empty" }} />;
   if (route.render === null) return <UnavailableRoute title={route.title} code="route-missing" />;
   const node =
     input.routeContent?.(input.resolution, input.context) ?? route.render(input.resolution);
@@ -458,6 +468,7 @@ const AppShellBody = ({
         </Fragment>
       }
       capabilities={props.capabilities}
+      capabilityFailure={props.capabilityFailure}
       projectOptions={props.projectOptions}
       spatialScopeOptions={props.spatialScopeOptions}
       processNodeOptions={props.processNodeOptions}

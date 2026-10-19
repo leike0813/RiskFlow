@@ -7,6 +7,12 @@ export { RunPageShell } from "./RunPageShell.js";
 export type { DetailPageShellPropsV1 } from "./DetailPageShell.js";
 export type { GovernancePageShellPropsV1 } from "./GovernancePageShell.js";
 export type { ListPageShellPropsV1 } from "./ListPageShell.js";
-export type { PageFramePropsV1, PageFrameVariantV1 } from "./PageFrame.js";
+export type {
+  PageChartVariantV1,
+  PageFramePropsV1,
+  PageRegionDescriptorV1,
+  PageRegionKindV1,
+  PageRegionV1,
+} from "./PageFrame.js";
 export type { ReviewWorkbenchShellPropsV1 } from "./ReviewWorkbenchShell.js";
 export type { RunPageShellPropsV1 } from "./RunPageShell.js";

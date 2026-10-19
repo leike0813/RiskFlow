@@ -125,7 +125,6 @@ export default function IdentificationReviewPage() {
                         </div>
                       )}
                       <ReviewDecisionPanel
-                        projectId={projectId}
                         taskRef={taskRef}
                         detail={detail}
                         candidateOptions={detail.revisedCandidateRefs.map((candidateRef) => ({

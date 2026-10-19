@@ -21,11 +21,14 @@ import {
   IdentityAdministrationCommandV1Schema,
   isAuthorizationSubset,
   isBranchAllowed,
+  isRegisteredAccessPolicyVersion,
   LoginCommandV1Schema,
   LogoutCommandV1Schema,
   ModuleBranchV1Schema,
   PasswordV1Schema,
   ProjectAccessCommandV1Schema,
+  ProjectAccessPresentationRequestV1Schema,
+  capabilitiesForBranches,
   evaluateSourceAccess,
   projectionAccess,
   ReadSessionCommandV1Schema,
@@ -48,6 +51,8 @@ import {
   type LoginCommandV1,
   type LogoutCommandV1,
   type ProjectAccessCommandV1,
+  type ProjectAccessPresentationPortV1,
+  type ProjectAccessPresentationRequestV1,
   type ReadSessionCommandV1,
   type SessionMetadataV1,
   type SessionResultV1,
@@ -70,6 +75,8 @@ import {
 import {
   AuthorizationContextV1Schema,
   ModuleCapabilityV1Schema,
+  ProjectAccessPresentationV1Schema,
+  type ProjectAccessPresentationV1,
   type AuthorizationContextV1,
   type AgentTaskRefV1,
   type AuthorizationContextRefV1,
@@ -217,6 +224,13 @@ export interface PostgresLocalIdentityAccess extends LocalIdentityAccessV1 {
     readonly requestedAt: string;
   }): Promise<AuthorizationDecisionV1>;
   readonly systemAdministration: SystemAdministrationPortV1;
+  /**
+   * CH-2（design D-07）：当前工程入口能力读取的独立注入位。
+   *
+   * 刻意不加进 LocalIdentityAccessV1：既有实现与全部 mock 都不必为入口读取补假方法，
+   * 缺真实实现时部署装配直接拒绝，而不是降级为空能力。
+   */
+  readonly projectAccessPresentation: ProjectAccessPresentationPortV1;
 }
 
 /**
@@ -807,10 +821,12 @@ const currentProjectManagerActor = async (
   if (stored.context.projectId !== projectId || stored.context.actorId !== stored.row.actor_id) {
     throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
   }
+  // CH-2（design D-06）：已登记的 v1/v2 策略身份都用于恢复旧快照的主体与范围，
+  // 未知策略身份拒绝；放行与否仍取决于下方当前账号、当前成员与 isBranchAllowed。
   if (
     stored.row.branch !== branch ||
+    !isRegisteredAccessPolicyVersion(stored.context.authorizationPolicyRef.versionId) ||
     stored.context.authorizationPolicyRef.entityId !== ACCESS_POLICY_REF_V1.entityId ||
-    stored.context.authorizationPolicyRef.versionId !== ACCESS_POLICY_REF_V1.versionId ||
     !stored.context.grantedCapabilities.includes(branchCapability(branch))
   ) {
     throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
@@ -3499,7 +3515,9 @@ export const createPostgresLocalIdentityAccess = (
         context.grantedCapabilities.length !== 1 ||
         !context.grantedCapabilities.includes(branchCapability(branch.data)) ||
         context.authorizationPolicyRef.entityId !== ACCESS_POLICY_REF_V1.entityId ||
-        context.authorizationPolicyRef.versionId !== ACCESS_POLICY_REF_V1.versionId
+        // CH-2（design D-06）：这里只解析旧快照的登记来源与范围，返回值不是放行凭据；
+        // 当前动作仍由 verifyDeploymentContext / authorizeBusinessAction 重新判权。
+        !isRegisteredAccessPolicyVersion(context.authorizationPolicyRef.versionId)
       ) {
         return undefined;
       }
@@ -4103,8 +4121,69 @@ export const createPostgresLocalIdentityAccess = (
     execute: administrationExecute,
   };
 
+  /**
+   * CH-2（design D-07）：当前工程入口能力呈现。
+   *
+   * 在短只读事务里复用既有会话验证、当前账号、工程与当前成员查询，按服务端角色并集
+   * 映射出入口资格投影。它不签发授权上下文、不新建业务收据：受限会话、停用账号、
+   * 非成员或暂停工程一律按既有边界拒绝，审计沿用既有安全访问事件且失败即整体失败。
+   * 权限被撤销后旧工程不再返回任何能力，前端拿到的只是当前角色级入口资格。
+   */
+  const projectAccessPresentation: ProjectAccessPresentationPortV1 = {
+    read: async (
+      request: ProjectAccessPresentationRequestV1,
+    ): Promise<ProjectAccessPresentationV1> => {
+      const parsed = ProjectAccessPresentationRequestV1Schema.safeParse(request);
+      if (!parsed.success)
+        throw makeAccessError("ACCESS_CONTRACT_INVALID", "project-access.read", clock);
+      const valid = parsed.data;
+      try {
+        return await db.transaction().execute(async (transaction) => {
+          const tx = transaction as unknown as AccessDb;
+          // 首次改密按原会话规则拒绝（PASSWORD_CHANGE_REQUIRED），不接受受限会话读入口。
+          const authenticated = await authenticateSession(
+            tx,
+            valid.sessionToken,
+            "project-access.read",
+          );
+          const project = await queryProject(tx, valid.projectId);
+          if (project === undefined || project.status !== "active") {
+            throw makeAccessError("AUTHORIZATION_DENIED", "project-access.read", clock);
+          }
+          const membership = await queryMembership(
+            tx,
+            valid.projectId,
+            authenticated.account.account_id,
+          );
+          if (membership === undefined || membership.status !== "active") {
+            throw makeAccessError("AUTHORIZATION_DENIED", "project-access.read", clock);
+          }
+          const touched = await touchSession(tx, authenticated);
+          await appendSecurityAudit(
+            tx,
+            securityAudit("project-access.read", "success", "ACCESS_PRESENTED", nowDate(clock), {
+              subject_ref: touched.account.account_id,
+              project_ref: valid.projectId,
+              request_ref: valid.requestId,
+              policy_ref: jsonValue(ACCESS_POLICY_REF_V1),
+            }),
+          );
+          return ProjectAccessPresentationV1Schema.parse({
+            schemaVersion: "1",
+            projectId: valid.projectId,
+            capabilities: capabilitiesForBranches(branchesForRoles(membership.roles)),
+            authorizationPolicyRef: ACCESS_POLICY_REF_V1,
+          });
+        });
+      } catch (error) {
+        throw asAccessError(error, "project-access.read", clock);
+      }
+    },
+  };
+
   return {
     systemAdministration,
+    projectAccessPresentation,
     executeDeploymentProjectAccess,
     administerIdentity: identityCommand,
     administerProject: projectCommand,

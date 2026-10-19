@@ -153,6 +153,7 @@ import {
   type StartAgentTaskCommandV1,
   type StartWorkflowRunCommandV1,
   type TraceQueryV1,
+  ProjectAccessPresentationV1Schema,
   type WarningResponsePortV1,
   type WarningResponseRecordCommandV1,
   type WorkflowPortV1,
@@ -174,6 +175,7 @@ import {
   type AccessErrorV1,
   type AuthorizationDecisionV1,
   type LocalIdentityAccessV1,
+  type ProjectAccessPresentationPortV1,
 } from "@riskflow/core/access";
 import {
   IdentifierSchema,
@@ -515,6 +517,12 @@ export interface ApiPortsV1 {
    * 不激活（design D-11），避免以内部探测冒充事实。
    */
   readonly systemOperationsRead?: SystemOperationsReadPortV1;
+  /**
+   * CH-2（design D-07）：当前工程入口能力呈现的独立可选注入位。
+   * 未注入时 GET /api/v1/projects/:projectId/access 与其 OpenAPI 操作都不激活，
+   * 客户端据此呈现接缝不可用，而不是把假空能力当成"当前没有入口权"。
+   */
+  readonly projectAccessPresentation?: ProjectAccessPresentationPortV1;
   /**
    * C36 窄投影 port：只在未提供完整 `projection` port 时把原 `projection.query` 路由绑定到它，
    * 只接受 `quality-evaluation` 查询类型；SSE 与导出仍只由完整 port 激活。
@@ -1758,7 +1766,8 @@ export type HttpSystemRouteKindV1 =
   | "administration-identity"
   | "administration-queries"
   | "administration-commands"
-  | "operations-queries";
+  | "operations-queries"
+  | "project-access";
 export type HttpSystemRouteEntryV1 = Readonly<{
   method: "POST" | "GET";
   path: string;
@@ -1863,6 +1872,17 @@ export const HTTP_SYSTEM_ROUTE_CATALOG_V1: readonly HttpSystemRouteEntryV1[] = O
     requiresSession: true,
     mediaType: HTTP_JSON_MEDIA_TYPE_V1,
     activationPortKeys: ["systemAdministration", "systemOperationsRead"] as const,
+  }),
+  // CH-2 独立入口能力读面（design D-07）：只有路径上的工程，没有 body/query 参数；
+  // 未注入真实 port 时该路由与对应 OpenAPI 操作都不注册。
+  Object.freeze({
+    method: "GET" as const,
+    path: "/api/v1/projects/:projectId/access",
+    kind: "project-access" as const,
+    resultSchema: ProjectAccessPresentationV1Schema,
+    requiresSession: true,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+    activationPortKeys: ["projectAccessPresentation"] as const,
   }),
   Object.freeze({
     method: "GET" as const,

@@ -3029,3 +3029,159 @@ describe("C19 applicable-rule-set assembly route", () => {
     await granted.close();
   });
 });
+
+describe("CH-2 当前工程入口能力呈现路由", () => {
+  const presentation = (capabilities: string[] = ["review-todo.read"]) => ({
+    schemaVersion: "1" as const,
+    projectId: "project-a",
+    capabilities,
+    authorizationPolicyRef: { entityId: "access-policy", versionId: "v2" },
+  });
+  const presentationApp = (
+    read: (request: Record<string, unknown>) => Promise<unknown>,
+    origin: string = ORIGIN,
+  ) =>
+    buildApi({
+      access: accessStub(),
+      ports: { projectAccessPresentation: { read: read as never } },
+      publicOrigin: origin,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+  it("只按路径工程与安全 Cookie 读取入口能力，响应禁止缓存且不含凭据", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const app = presentationApp(async (request) => {
+      calls.push(request);
+      return presentation();
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/projects/project-a/access",
+      headers: { origin: ORIGIN, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    const body = response.json() as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual([
+      "authorizationPolicyRef",
+      "capabilities",
+      "projectId",
+      "schemaVersion",
+    ]);
+    expect(body).not.toHaveProperty("sessionToken");
+    expect(body).not.toHaveProperty("authorizationContext");
+    expect(body).not.toHaveProperty("roles");
+    // 会话 token 只在服务端从 Cookie 注入；请求不接受任何身份声明字段。
+    expect(calls[0]).toMatchObject({
+      projectId: "project-a",
+      sessionToken: "opaque-token",
+    });
+    expect(Object.keys(calls[0]!).sort()).toEqual([
+      "projectId",
+      "requestId",
+      "requestedAt",
+      "sessionToken",
+    ]);
+    await app.close();
+  });
+
+  it("缺 Cookie 拒绝，伪造查询参数与非法结果按原边界失败", async () => {
+    let calls = 0;
+    const app = presentationApp(async () => {
+      calls += 1;
+      return presentation();
+    });
+    const anonymous = await app.inject({
+      method: "GET",
+      url: "/api/v1/projects/project-a/access",
+      headers: { origin: ORIGIN },
+    });
+    expect(anonymous.statusCode).toBe(401);
+
+    // 未登记查询参数按契约失败：客户端不得借查询串声明 actor、角色或能力。
+    const forged = await app.inject({
+      method: "GET",
+      url: "/api/v1/projects/project-a/access?actorId=someone&capabilities=review-todo.read",
+      headers: { origin: ORIGIN, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+    });
+    expect(forged.statusCode).toBe(400);
+    expect(forged.json().code).toBe("CONTRACT_INVALID");
+    expect(calls).toBe(0);
+    await app.close();
+
+    const drifted = presentationApp(async () => ({
+      ...presentation(),
+      sessionToken: "leaked",
+    }));
+    const bad = await drifted.inject({
+      method: "GET",
+      url: "/api/v1/projects/project-a/access",
+      headers: { origin: ORIGIN, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+    });
+    expect(bad.statusCode).toBeGreaterThanOrEqual(400);
+    expect(bad.body).not.toContain("leaked");
+    expect(bad.body).not.toContain("opaque-token");
+    await drifted.close();
+  });
+
+  it("端口未注入时路由与 OpenAPI 操作都不激活", async () => {
+    const app = appFor();
+    const missing = await app.inject({
+      method: "GET",
+      url: "/api/v1/projects/project-a/access",
+      headers: { origin: ORIGIN, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+    });
+    expect(missing.statusCode).toBe(404);
+    const document = (await app.inject({ method: "GET", url: "/api/v1/openapi.json" })).json() as {
+      paths: Record<string, unknown>;
+    };
+    expect(document.paths["/api/v1/projects/{projectId}/access"]).toBeUndefined();
+    await app.close();
+
+    const active = presentationApp(async () => presentation());
+    const activeDocument = (
+      await active.inject({ method: "GET", url: "/api/v1/openapi.json" })
+    ).json() as {
+      paths: Record<string, Record<string, Record<string, unknown>>>;
+    };
+    const operation = activeDocument.paths["/api/v1/projects/{projectId}/access"]?.get;
+    expect(operation).toBeDefined();
+    expect(operation?.operationId).toBe("riskflow_project-access");
+    expect(operation?.security).toEqual([{ sessionCookie: [] }]);
+    expect(operation?.requestBody).toBeUndefined();
+    await active.close();
+  });
+
+  it("无权与不可读按既有同形边界收口，不泄露工程或身份存在性", async () => {
+    const app = presentationApp(async () => {
+      throw new AccessServiceError(
+        AccessErrorV1Schema.parse({
+          code: "AUTHORIZATION_DENIED",
+          retryable: false,
+          stage: "project-access.read",
+          occurredAt: NOW,
+          requiredCapability: "review-todo.read",
+          authorizationPolicyRef: { entityId: "access-policy", versionId: "v2" },
+          diagnosticRef: {
+            kind: "diagnostic-artifact",
+            reference: { entityId: "diagnostic", versionId: "1" },
+          },
+          contextRefs: [],
+        }),
+      );
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/projects/project-b/access",
+      headers: { origin: ORIGIN, cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token` },
+    });
+    // 无权与工程不存在同形：同一条安全边界，不因新增读面而放宽。
+    expect(response.statusCode, response.body).toBe(404);
+    expect(response.json().code).toBe("NOT_FOUND");
+    expect(response.body).not.toContain("opaque-token");
+    expect(response.body).not.toContain("project-b");
+    await app.close();
+  });
+});

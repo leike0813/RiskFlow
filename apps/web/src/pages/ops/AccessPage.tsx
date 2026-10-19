@@ -10,20 +10,23 @@
  */
 import { useEffect, useState } from "react";
 import { Card } from "../../components/Card";
+import { ConfirmButton, useSystemConfirmationScope } from "../../components/ConfirmButton";
 import { StatusTag } from "../../components/StatusTag";
 import { VersionTag } from "../../components/VersionTag";
 import {
-  createSystemAccount,
-  disableSystemAccount,
   listSystemAccounts,
   listSystemMemberships,
   listSystemProjects,
   listSystemSpatialScopes,
-  openSystemProject,
+  prepareCreateSystemAccount,
+  prepareDisableSystemAccount,
+  prepareOpenSystemProject,
+  prepareResetSystemAccountPassword,
+  prepareReviseSystemMembership,
+  prepareSuspendSystemProject,
   readSystemIdentity,
-  resetSystemAccountPassword,
-  reviseSystemMembership,
-  suspendSystemProject,
+  sendAdministrationCommand,
+  type PreparedAdministrationCommandV1,
   type KindRef,
   type VersionRef,
   type SystemAccountView,
@@ -31,7 +34,8 @@ import {
   type SystemProjectView,
   type SystemSpatialScopeView,
 } from "../../api/agentAuditOperations";
-import { C09HttpError } from "../../api/client";
+import { clientError } from "../../api/client";
+import type { CommandConfirmationPlanV1 } from "../../shared/confirmation";
 import {
   ACCOUNT_STATUS_LABEL,
   HIGH_IMPACT_ACTIONS,
@@ -67,7 +71,6 @@ type Intent =
   | {
       readonly action: "create-account";
       readonly commandId: string;
-      readonly fingerprint: string;
       readonly target: string;
       readonly loginName: string;
       readonly displayName: string;
@@ -76,7 +79,6 @@ type Intent =
   | {
       readonly action: "disable-account";
       readonly commandId: string;
-      readonly fingerprint: string;
       readonly target: string;
       readonly expectedVersion: VersionRef;
       readonly summary: readonly string[];
@@ -84,7 +86,6 @@ type Intent =
   | {
       readonly action: "reset-password";
       readonly commandId: string;
-      readonly fingerprint: string;
       readonly target: string;
       readonly expectedVersion: VersionRef;
       readonly summary: readonly string[];
@@ -92,7 +93,6 @@ type Intent =
   | {
       readonly action: "open-project";
       readonly commandId: string;
-      readonly fingerprint: string;
       readonly target: string;
       readonly initialRiskManagerAccountId: string;
       readonly summary: readonly string[];
@@ -100,7 +100,6 @@ type Intent =
   | {
       readonly action: "suspend-project";
       readonly commandId: string;
-      readonly fingerprint: string;
       readonly target: string;
       readonly expectedVersion: VersionRef;
       readonly summary: readonly string[];
@@ -108,7 +107,6 @@ type Intent =
   | {
       readonly action: "revise-membership";
       readonly commandId: string;
-      readonly fingerprint: string;
       readonly target: string;
       readonly expectedVersion: VersionRef;
       readonly projectId: string;
@@ -118,13 +116,6 @@ type Intent =
       readonly status: string;
       readonly summary: readonly string[];
     };
-
-/** 一次失败的命令身份：非口令字段未变时重试沿用，变了就是新意图。 */
-interface RetryIntent {
-  readonly action: string;
-  readonly commandId: string;
-  readonly fingerprint: string;
-}
 
 const scopeKey = (ref: KindRef): string =>
   `${ref.kind}:${ref.reference.entityId}@${ref.reference.versionId}`;
@@ -181,33 +172,22 @@ export default function AccessPage() {
   const [draftStatus, setDraftStatus] = useState("active");
 
   // --- 命令确认与结果 ---
-  const [intent, setIntent] = useState<Intent | null>(null);
-  const [acknowledged, setAcknowledged] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [failureCode, setFailureCode] = useState<string | null>(null);
-  const [retryIntent, setRetryIntent] = useState<RetryIntent | null>(null);
+  // CH-2 D-10：不再有第二套 Intent/acknowledged/submitting/retryIntent 状态机。
+  // 唯一确认原语持有计划与提交状态；本组件只保留输入草稿与结果列表。
+  const scope = useSystemConfirmationScope();
+  // 待确认的管理意图：只带目标与版本，口令不在其中（口令只在冻结请求快照里）。
+  const [pendingIntent, setPendingIntent] = useState<Intent | null>(null);
   const [outcomes, setOutcomes] = useState<
     readonly { readonly action: string; readonly target: string; readonly code: string }[]
   >([]);
 
-  const closeDialog = () => {
-    setIntent(null);
-    setAcknowledged(false);
-    setFailureCode(null);
-    // 关闭即释放口令输入：值不留在组件状态里。
-    setPassword("");
+  const ask = (next: Intent): void => {
+    setPendingIntent(next);
   };
 
-  /** 同动作同非口令字段沿用原命令标识；任何字段改变都产生新身份。 */
-  const commandIdFor = (action: string, fingerprint: string): string =>
-    retryIntent !== null && retryIntent.action === action && retryIntent.fingerprint === fingerprint
-      ? retryIntent.commandId
-      : newCommandId(action);
-
-  const ask = (next: Intent) => {
-    setIntent(next);
-    setAcknowledged(false);
-    setFailureCode(null);
+  const releaseSecrets = () => {
+    // 关闭、失效或成功即释放口令输入：值不留在组件状态里。
+    setPassword("");
   };
 
   const reloadAll = () => {
@@ -219,115 +199,88 @@ export default function AccessPage() {
     }
   };
 
-  /** 提交已确认的管理命令；口令只在这一次调用里出现。 */
-  const execute = async (current: Intent, passwordValue: string) => {
-    setSubmitting(true);
-    setFailureCode(null);
-    try {
-      let resultRef: { entityId: string; versionId: string };
-      switch (current.action) {
-        case "create-account":
-          resultRef = (
-            await createSystemAccount({
-              loginName: current.loginName,
-              displayName: current.displayName,
-              password: passwordValue,
-              commandId: current.commandId,
-            })
-          ).resultRef;
-          break;
-        case "reset-password":
-          resultRef = (
-            await resetSystemAccountPassword({
+  /**
+   * CH-2 D-09/D-10：六项管理动作共用同一条确认路径与 system scope。
+   *
+   * 请求在打开确认这一刻构造并冻结，口令只存在于这份非渲染快照里：它不进摘要、
+   * 目标、inputVersions、日志或任何缓存。重试重发原快照，因此同一命令身份下用户
+   * 重新输入相同口令仍可原样提交；改输入则取得新身份并重新确认。
+   */
+  const administrationPlan = (
+    current: Intent,
+  ): CommandConfirmationPlanV1<PreparedAdministrationCommandV1> => {
+    if (scope === undefined || scope.kind !== "system") throw clientError("CONTRACT_INVALID");
+    const high = HIGH_IMPACT_ACTIONS.includes(current.action);
+    const request =
+      current.action === "create-account"
+        ? prepareCreateSystemAccount({
+            loginName: current.loginName,
+            displayName: current.displayName,
+            password,
+            commandId: current.commandId,
+          })
+        : current.action === "reset-password"
+          ? prepareResetSystemAccountPassword({
               accountId: current.target,
               expectedVersion: current.expectedVersion,
-              password: passwordValue,
+              password,
               commandId: current.commandId,
             })
-          ).resultRef;
-          break;
-        case "disable-account":
-          resultRef = (
-            await disableSystemAccount({
-              accountId: current.target,
-              expectedVersion: current.expectedVersion,
-              commandId: current.commandId,
-            })
-          ).resultRef;
-          break;
-        case "open-project":
-          resultRef = (
-            await openSystemProject({
-              projectId: current.target,
-              initialRiskManagerAccountId: current.initialRiskManagerAccountId,
-              commandId: current.commandId,
-            })
-          ).resultRef;
-          break;
-        case "suspend-project":
-          resultRef = (
-            await suspendSystemProject({
-              projectId: current.target,
-              expectedVersion: current.expectedVersion,
-              commandId: current.commandId,
-            })
-          ).resultRef;
-          break;
-        case "revise-membership":
-          resultRef = (
-            await reviseSystemMembership({
-              projectId: current.projectId,
-              membershipId: current.membershipId,
-              expectedVersion: current.expectedVersion,
-              accountId: current.target,
-              roles: current.roles,
-              spatialScopeRefs: current.scopeRefs,
-              status: current.status,
-              commandId: current.commandId,
-            })
-          ).resultRef;
-          break;
-      }
-      setOutcomes((previous) => [
-        {
-          action: current.action,
-          target: current.target,
-          code: `${resultRef.entityId} · ${resultRef.versionId}`,
-        },
-        ...previous,
-      ]);
-      setRetryIntent(null);
-      closeDialog();
-      setPassword("");
-      setLoginName("");
-      setDisplayName("");
-      setResetAccountId(null);
-      setNewProjectId("");
-      setInitialRiskManagerAccountId("");
-      reloadAll();
-    } catch (error) {
-      // 失败保留原命令标识：用户重新输入相同口令后可沿同一身份重试，
-      // 服务端仍按同键异载荷判定冲突，界面如实呈现错误码。
-      setRetryIntent({
-        action: current.action,
-        commandId: current.commandId,
-        fingerprint: current.fingerprint,
-      });
-      setFailureCode(error instanceof C09HttpError ? error.error.code : "TERMINAL_FAILURE");
-      setPassword("");
-      throw error;
-    } finally {
-      setSubmitting(false);
-    }
+          : current.action === "disable-account"
+            ? prepareDisableSystemAccount({
+                accountId: current.target,
+                expectedVersion: current.expectedVersion,
+                commandId: current.commandId,
+              })
+            : current.action === "open-project"
+              ? prepareOpenSystemProject({
+                  projectId: current.target,
+                  initialRiskManagerAccountId: current.initialRiskManagerAccountId,
+                  commandId: current.commandId,
+                })
+              : current.action === "suspend-project"
+                ? prepareSuspendSystemProject({
+                    projectId: current.target,
+                    expectedVersion: current.expectedVersion,
+                    commandId: current.commandId,
+                  })
+                : prepareReviseSystemMembership({
+                    projectId: current.projectId,
+                    membershipId: current.membershipId,
+                    expectedVersion: current.expectedVersion,
+                    accountId: current.target,
+                    roles: current.roles,
+                    spatialScopeRefs: current.scopeRefs,
+                    status: current.status,
+                    commandId: current.commandId,
+                  });
+    return {
+      confirmationId: `confirm-${request.commandId}`,
+      operationId: "system-administration.execute",
+      scope,
+      targets: [],
+      inputVersions: [],
+      expectedFacts: current.summary,
+      externalEffects: [SYSTEM_ACTION_LABEL[current.action] ?? current.action],
+      impact: high ? "high" : "standard",
+      commandId: request.commandId,
+      idempotencyKey: request.idempotencyKey,
+      request,
+    };
   };
 
-  const confirmIntent = async () => {
-    if (intent === null) return;
-    try {
-      await execute(intent, password);
-    } catch {
-      // 失败码已就地呈现，对话框保持打开供原身份重试。
-    }
+  const administrationSucceeded = (current: Intent) => (): void => {
+    setOutcomes((previous) => [
+      { action: current.action, target: current.target, code: current.commandId },
+      ...previous,
+    ]);
+    releaseSecrets();
+    setLoginName("");
+    setDisplayName("");
+    setResetAccountId(null);
+    setNewProjectId("");
+    setInitialRiskManagerAccountId("");
+    reloadAll();
   };
 
   const can = (action: string) => allowedActions.includes(action);
@@ -416,11 +369,9 @@ export default function AccessPage() {
                                 disabled={!can("create-account")}
                                 title={actionHint("create-account")}
                                 onClick={() => {
-                                  const fingerprint = `create-account|${loginName}|${displayName}`;
                                   ask({
                                     action: "create-account",
-                                    commandId: commandIdFor("create-account", fingerprint),
-                                    fingerprint,
+                                    commandId: newCommandId("create-account"),
                                     target: loginName,
                                     loginName,
                                     displayName,
@@ -500,14 +451,9 @@ export default function AccessPage() {
                                               className="op-btn"
                                               disabled={password.length === 0}
                                               onClick={() => {
-                                                const fingerprint = `reset-password|${account.accountRef.entityId}`;
                                                 ask({
                                                   action: "reset-password",
-                                                  commandId: commandIdFor(
-                                                    "reset-password",
-                                                    fingerprint,
-                                                  ),
-                                                  fingerprint,
+                                                  commandId: newCommandId("reset-password"),
                                                   target: account.accountRef.entityId,
                                                   expectedVersion: account.accountRef,
                                                   summary: [
@@ -557,14 +503,9 @@ export default function AccessPage() {
                                           }
                                           title={actionHint("disable-account")}
                                           onClick={() => {
-                                            const fingerprint = `disable-account|${account.accountRef.entityId}`;
                                             ask({
                                               action: "disable-account",
-                                              commandId: commandIdFor(
-                                                "disable-account",
-                                                fingerprint,
-                                              ),
-                                              fingerprint,
+                                              commandId: newCommandId("disable-account"),
                                               target: account.accountRef.entityId,
                                               expectedVersion: account.accountRef,
                                               summary: [
@@ -618,11 +559,9 @@ export default function AccessPage() {
                                 disabled={!can("open-project")}
                                 title={actionHint("open-project")}
                                 onClick={() => {
-                                  const fingerprint = `open-project|${newProjectId}|${initialRiskManagerAccountId}`;
                                   ask({
                                     action: "open-project",
-                                    commandId: commandIdFor("open-project", fingerprint),
-                                    fingerprint,
+                                    commandId: newCommandId("open-project"),
                                     target: newProjectId,
                                     initialRiskManagerAccountId,
                                     summary: [
@@ -695,14 +634,9 @@ export default function AccessPage() {
                                           }
                                           title={actionHint("suspend-project")}
                                           onClick={() => {
-                                            const fingerprint = `suspend-project|${project.projectId}`;
                                             ask({
                                               action: "suspend-project",
-                                              commandId: commandIdFor(
-                                                "suspend-project",
-                                                fingerprint,
-                                              ),
-                                              fingerprint,
+                                              commandId: newCommandId("suspend-project"),
                                               target: project.projectId,
                                               expectedVersion: project.accessRevisionRef,
                                               summary: [
@@ -980,20 +914,9 @@ export default function AccessPage() {
                                                   if (selectedMembership === undefined) return;
                                                   const targetAccountId =
                                                     selectedMembership.accountRef.entityId;
-                                                  const fingerprint = `revise-membership|${selectedMembershipKey}|${targetAccountId}|${[
-                                                    ...draftRoles,
-                                                  ]
-                                                    .sort()
-                                                    .join(",")}|${[...draftScopes]
-                                                    .sort()
-                                                    .join(",")}|${draftStatus}`;
                                                   ask({
                                                     action: "revise-membership",
-                                                    commandId: commandIdFor(
-                                                      "revise-membership",
-                                                      fingerprint,
-                                                    ),
-                                                    fingerprint,
+                                                    commandId: newCommandId("revise-membership"),
                                                     target: targetAccountId,
                                                     expectedVersion:
                                                       selectedMembership.membershipRef,
@@ -1053,67 +976,45 @@ export default function AccessPage() {
                 )}
               </SystemReadView>
 
-              {intent === null ? null : (
-                <div
-                  className={`op-confirm${
-                    HIGH_IMPACT_ACTIONS.includes(intent.action) ? " op-confirm--danger" : ""
-                  }`}
-                  role="group"
-                  aria-label="管理动作确认"
-                >
-                  <p className="op-confirm-lead">
-                    请确认「{SYSTEM_ACTION_LABEL[intent.action] ?? intent.action}
-                    」的对象、范围与后果：
-                  </p>
-                  <ul className="op-confirm-summary">
-                    {intent.summary.map((line) => (
-                      <li key={line}>{line}</li>
-                    ))}
-                  </ul>
-                  <p className="op-confirm-summary">
-                    命令标识 <span className="mono">{intent.commandId}</span>：
-                    同一标识重试不重复生效；改变任一字段即产生新身份。
-                  </p>
-                  {HIGH_IMPACT_ACTIONS.includes(intent.action) && (
-                    <label className="op-confirm-ack">
-                      <input
-                        type="checkbox"
-                        checked={acknowledged}
-                        onChange={(event) => setAcknowledged(event.target.checked)}
-                      />
-                      我已确认该管理动作的对象、范围与后果
-                    </label>
-                  )}
-                  {failureCode !== null && (
-                    <p className="op-form-error">
-                      提交失败（{failureCode}）。口令已清空，请重新输入相同口令后重试。
-                    </p>
-                  )}
-                  <div className="op-confirm-actions">
-                    <button
-                      type="button"
-                      className={`op-btn${HIGH_IMPACT_ACTIONS.includes(intent.action) ? " op-btn-danger" : " op-btn-primary"}`}
-                      disabled={
-                        submitting ||
-                        (HIGH_IMPACT_ACTIONS.includes(intent.action) && !acknowledged) ||
-                        ((intent.action === "create-account" ||
-                          intent.action === "reset-password") &&
-                          password.length === 0)
-                      }
-                      onClick={() => void confirmIntent()}
-                    >
-                      {submitting ? "提交中…" : "确认执行"}
-                    </button>
-                    <button
-                      type="button"
-                      className="op-btn"
-                      disabled={submitting}
-                      onClick={closeDialog}
-                    >
-                      取消
-                    </button>
-                  </div>
-                </div>
+              {/*
+                CH-2 D-10：内联确认与孤立样式已删除。六项管理动作共用唯一确认原语与
+                system scope；口令只在冻结请求快照里，摘要、日志与缓存都不含它。
+              */}
+              {pendingIntent === null ? null : (
+                <ConfirmButton
+                  label={`确认${SYSTEM_ACTION_LABEL[pendingIntent.action] ?? pendingIntent.action}`}
+                  tone={HIGH_IMPACT_ACTIONS.includes(pendingIntent.action) ? "danger" : "primary"}
+                  availability={{
+                    kind:
+                      can(pendingIntent.action) &&
+                      !(
+                        (pendingIntent.action === "create-account" ||
+                          pendingIntent.action === "reset-password") &&
+                        password.length === 0
+                      )
+                        ? "allowed"
+                        : "unavailable",
+                    reason: "context-incomplete",
+                  }}
+                  requiredPermission={{ kind: "system", action: pendingIntent.action }}
+                  scope={scope}
+                  intentRevision={`${pendingIntent.action}|${pendingIntent.target}`}
+                  createPlan={() => administrationPlan(pendingIntent)}
+                  submit={async (plan) => {
+                    const result = await sendAdministrationCommand(plan.request);
+                    return {
+                      kind: "command-result",
+                      result: {
+                        kind: "system-administration",
+                        resultRef: {
+                          kind: "authorization-context",
+                          reference: result.resultRef,
+                        },
+                      },
+                    };
+                  }}
+                  onSucceeded={administrationSucceeded(pendingIntent)}
+                />
               )}
             </>
           );

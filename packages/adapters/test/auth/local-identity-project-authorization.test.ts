@@ -2708,4 +2708,246 @@ describe.sequential("local identity and project authorization", () => {
       ).resolves.toBeUndefined();
     }
   }, 180_000);
+  it("CH-2 入口能力呈现只来自当前工程成员事实并按当前权限收敛", async () => {
+    const present = async (sessionToken: string, projectId: string) =>
+      access!.projectAccessPresentation.read({
+        requestId: `ch2-present-${projectId}`,
+        requestedAt: "2030-01-01T00:00:00.000Z",
+        sessionToken,
+        projectId,
+      });
+    // 自建账号与成员：本用例不依赖其它用例留下的成员状态或过期管理上下文。
+    const adminLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "ch2-login-admin",
+      loginName: "admin001",
+      password: ADMIN_CHANGED_PASSWORD,
+    });
+    const ch2AdminContext = adminLogin.systemAdministrationContextRef!;
+    const account = await access!.administerIdentity({
+      kind: "create-account",
+      commandId: "ch2-command-create-reviewer",
+      idempotencyKey: "ch2-idem-create-reviewer",
+      expectedVersion: "none",
+      authorizationContextRef: ch2AdminContext,
+      loginName: "ch2review001",
+      displayName: "CH-2 reviewer",
+      password: "ch2-reviewer-password-v1",
+    });
+    await access!.administerProject({
+      kind: "revise-membership",
+      projectId: "project-a",
+      commandId: "ch2-command-membership-reviewer",
+      idempotencyKey: "ch2-idem-membership-reviewer",
+      expectedVersion: "none",
+      authorizationContextRef: ch2AdminContext,
+      membershipId: "ch2-membership-reviewer",
+      accountId: account.resultRef.entityId,
+      roles: ["reviewer"],
+      spatialScopeRefs: [rootScopeRef!],
+      status: "active",
+    });
+    const reviewerLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "ch2-login-reviewer",
+      loginName: "ch2review001",
+      password: "ch2-reviewer-password-v1",
+    });
+    const reviewerSession = reviewerLogin.restricted
+      ? (
+          await access!.changePassword({
+            kind: "change-password",
+            sessionToken: reviewerLogin.sessionToken,
+            newPassword: "ch2-reviewer-password-v1",
+          })
+        ).sessionToken
+      : reviewerLogin.sessionToken;
+
+    // 字段面严格只有那四项，入口资格不含来源范围、角色或会话凭证。
+    const reviewerPresentation = await present(reviewerSession, "project-a");
+    expect(Object.keys(reviewerPresentation).sort()).toEqual([
+      "authorizationPolicyRef",
+      "capabilities",
+      "projectId",
+      "schemaVersion",
+    ]);
+    expect(reviewerPresentation.projectId).toBe("project-a");
+    expect(reviewerPresentation.authorizationPolicyRef).toEqual({
+      entityId: "access-policy",
+      versionId: "v2",
+    });
+    expect(reviewerPresentation.capabilities).toContain("review-todo.read");
+    expect(reviewerPresentation.capabilities).toContain("engineering-data.read");
+    expect(reviewerPresentation).not.toHaveProperty("roles");
+    expect(reviewerPresentation).not.toHaveProperty("sourceAccessGrantRefs");
+    expect(reviewerPresentation).not.toHaveProperty("sessionToken");
+
+    // 未登记字段按请求契约拒绝：接口不接受 actor/角色/能力。
+    await expect(
+      access!.projectAccessPresentation.read({
+        requestId: "ch2-present-forged",
+        requestedAt: "2030-01-01T00:00:00.000Z",
+        sessionToken: reviewerSession,
+        projectId: "project-a",
+        actorId: userAccountId!,
+      } as never),
+    ).rejects.toMatchObject({ details: { code: "ACCESS_CONTRACT_INVALID" } });
+
+    // 无效会话与未知工程按原边界失败，不解释为"没有任何能力"。
+    await expect(present("not-a-session-token", "project-a")).rejects.toMatchObject({
+      details: { code: "SESSION_REVOKED" },
+    });
+    await expect(present(reviewerSession, "project-missing")).rejects.toMatchObject({
+      details: { code: "AUTHORIZATION_DENIED" },
+    });
+
+    // 当前撤权立即生效；既有成功审计行不被抹掉。
+    const auditCount = async () =>
+      Number(
+        (
+          await fixture!.adminPool.query<{ count: string }>(
+            "SELECT count(*)::text AS count FROM business.security_audit_events WHERE event_kind = 'project-access.read' AND outcome = 'success'",
+          )
+        ).rows[0]!.count,
+      );
+    const auditBefore = await auditCount();
+    expect(auditBefore).toBeGreaterThan(0);
+    await access!.administerProject({
+      kind: "revise-membership",
+      projectId: "project-a",
+      commandId: "ch2-command-remove-reviewer",
+      idempotencyKey: "ch2-idem-remove-reviewer",
+      expectedVersion: { entityId: "ch2-membership-reviewer", versionId: "1" },
+      authorizationContextRef: ch2AdminContext,
+      membershipId: "ch2-membership-reviewer",
+      accountId: account.resultRef.entityId,
+      roles: ["reviewer"],
+      spatialScopeRefs: [rootScopeRef!],
+      status: "removed",
+    });
+    await expect(present(reviewerSession, "project-a")).rejects.toMatchObject({
+      details: { code: "AUTHORIZATION_DENIED" },
+    });
+    expect(await auditCount()).toBe(auditBefore);
+
+    // 原件读取仍逐次检查来源权限：补齐分支不等于来源可见。
+    const responderLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "ch2-login-responder",
+      loginName: "respond001",
+      password: RESPONDER_PASSWORD,
+    });
+    const responderSession = responderLogin.restricted
+      ? (
+          await access!.changePassword({
+            kind: "change-password",
+            sessionToken: responderLogin.sessionToken,
+            newPassword: RESPONDER_PASSWORD,
+          })
+        ).sessionToken
+      : responderLogin.sessionToken;
+    const responder = await present(responderSession, "project-a");
+    expect(responder.capabilities).toContain("review-todo.read");
+    await expect(
+      access!.authorize({
+        invocation: { kind: "human-session", sessionToken: responderSession },
+        invocationId: "ch2-responder-source-original",
+        projectId: "project-a",
+        branch: "engineering-data.source-original-read",
+        requestedSpatialScopeRefs: [],
+        requestedSourceVersionRefs: [],
+      }),
+    ).rejects.toMatchObject({ details: { code: "AUTHORIZATION_DENIED" } });
+
+    const viewerLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "ch2-login-viewer",
+      loginName: "viewer001",
+      password: VIEWER_PASSWORD,
+    });
+    const viewerSession = viewerLogin.restricted
+      ? (
+          await access!.changePassword({
+            kind: "change-password",
+            sessionToken: viewerLogin.sessionToken,
+            newPassword: VIEWER_PASSWORD,
+          })
+        ).sessionToken
+      : viewerLogin.sessionToken;
+    const viewerOriginal = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: viewerSession },
+      invocationId: "ch2-viewer-source-original",
+      projectId: "project-a",
+      branch: "engineering-data.source-original-read",
+      requestedSpatialScopeRefs: [rootScopeRef!],
+      requestedSourceVersionRefs: [],
+    });
+    // 查看者已取得原件读取分支；具体来源是否可读仍由该分支自己的来源授权逐次判定。
+    expect(viewerOriginal.context.grantedCapabilities).toEqual(["engineering-data.read"]);
+    const viewerPresentation = await present(viewerSession, "project-a");
+    expect(viewerPresentation.capabilities).toContain("review-todo.read");
+  }, 180_000);
+
+  it("CH-2 策略升版后历史快照仍可解析而当前动作按当前权限判权", async () => {
+    // 一条已登记的 v1 策略快照：旧行不改写，只用于恢复登记来源与范围。
+    const viewerLogin = await access!.login({
+      kind: "login",
+      loginAttemptId: "login-ch2-legacy-viewer",
+      loginName: "viewer001",
+      password: VIEWER_PASSWORD,
+    });
+    const legacyContext = await access!.authorize({
+      invocation: {
+        kind: "human-session",
+        sessionToken: viewerLogin.sessionToken,
+      },
+      invocationId: "ch2-legacy-v1-source",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [rootScopeRef!],
+      requestedSourceVersionRefs: [],
+    });
+    await fixture!.adminPool.query(
+      "UPDATE business.authorization_contexts SET context_json = jsonb_set(context_json, '{authorizationPolicyRef,versionId}', to_jsonb($3::text)) WHERE context_id = $1 AND version_id = $2",
+      [
+        legacyContext.contextRef.reference.entityId,
+        legacyContext.contextRef.reference.versionId,
+        "v1",
+      ],
+    );
+    const legacySource = await access!.readDeploymentAuthorizationSource({
+      authorizationContextRef: legacyContext.contextRef,
+      projectId: "project-a",
+      actorId: legacyContext.context.actorId,
+    });
+    // 历史 v1 快照仍可解析出登记来源，正文读取随后单独按当前权限执行。
+    expect(legacySource).toBeDefined();
+    expect(legacySource!.invocationId).toBe("ch2-legacy-v1-source");
+
+    // 未登记策略身份一律拒绝。
+    await fixture!.adminPool.query(
+      "UPDATE business.authorization_contexts SET context_json = jsonb_set(context_json, '{authorizationPolicyRef,versionId}', to_jsonb($3::text)) WHERE context_id = $1 AND version_id = $2",
+      [
+        legacyContext.contextRef.reference.entityId,
+        legacyContext.contextRef.reference.versionId,
+        "v99",
+      ],
+    );
+    await expect(
+      access!.readDeploymentAuthorizationSource({
+        authorizationContextRef: legacyContext.contextRef,
+        projectId: "project-a",
+        actorId: legacyContext.context.actorId,
+      }),
+    ).resolves.toBeUndefined();
+    // 历史行本身不被改写：仍是调用方写入的那一行。
+    const historicalRow = await fixture!.adminPool.query<{ context_json: unknown }>(
+      "SELECT context_json FROM business.authorization_contexts WHERE context_id = $1 AND version_id = $2",
+      [legacyContext.contextRef.reference.entityId, legacyContext.contextRef.reference.versionId],
+    );
+    expect(
+      (historicalRow.rows[0]!.context_json as { authorizationPolicyRef: { versionId: string } })
+        .authorizationPolicyRef.versionId,
+    ).toBe("v99");
+  }, 180_000);
 });

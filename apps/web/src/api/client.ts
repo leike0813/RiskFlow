@@ -320,115 +320,63 @@ export interface CommandEnvelope {
   readonly payload: Record<string, unknown>;
 }
 
-/** 稳定摘要：键按字典序排列，使对象字面量写法差异不影响同一 payload 的判定。 */
-const canonicalPayloadDigest = (payload: Record<string, unknown>): string => {
-  const normalize = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(normalize);
-    if (typeof value === "object" && value !== null) {
-      const record = value as Record<string, unknown>;
-      const sorted: Record<string, unknown> = {};
-      for (const key of Object.keys(record).sort()) sorted[key] = normalize(record[key]);
-      return sorted;
-    }
-    return value;
-  };
-  return JSON.stringify(normalize(payload));
-};
-
 /**
- * 冻结信封登记：同一 `commandId` 的重试逐字节复用首次冻结的请求。
+ * CH-2 D-10：唯一业务请求接缝。
  *
- * D-07 要求动作确认冻结整个信封（含 `issuedAt`/`commandId`/`idempotencyKey`/空间/来源），
- * 网络异常后的重试必须原样重发；只保留 commandId 再刷新时间会被服务端按同键异载荷拒绝。
+ * `prepareCommand` 在打开确认时构造完整传输信封——含 `issuedAt`、命令标识/幂等键与当时的
+ * 评估来源；`sendPreparedCommand` 只发送这份已冻结的请求。重试因此逐字节复用同一载荷，
+ * 不再需要按 commandId 缓存的全局冻结表：编辑输入重新 prepare 即取得新身份。
  */
-const frozenCommands = new Map<
-  string,
-  { readonly digest: string; readonly envelope: CommandEnvelope }
->();
-
-/** 登记项上限：只服务同一次确认的即时重试，不承担长期重放记忆。 */
-const FROZEN_COMMAND_LIMIT_V1 = 200;
-
-const freezeCommandEnvelope = (input: {
+export type PreparedCommandV1 = Readonly<{
   readonly projectId: string;
   readonly branch: string;
-  readonly commandId: string;
-  readonly payload: Record<string, unknown>;
-  readonly spatialScopeRefs: readonly unknown[];
-  readonly sourceVersionRefs: readonly unknown[];
-}): CommandEnvelope => {
-  const key = `${input.projectId}|${input.branch}|${input.commandId}`;
-  const digest = canonicalPayloadDigest({
-    payload: input.payload,
-    requestedSpatialScopeRefs: input.spatialScopeRefs,
-    requestedSourceVersionRefs: input.sourceVersionRefs,
-  });
-  const frozen = frozenCommands.get(key);
-  if (frozen !== undefined && frozen.digest === digest) return frozen.envelope;
-  if (frozenCommands.size >= FROZEN_COMMAND_LIMIT_V1) {
-    const oldest = frozenCommands.keys().next();
-    if (!oldest.done) frozenCommands.delete(oldest.value);
-  }
-  const envelope: CommandEnvelope = {
-    schemaVersion: "1",
-    commandId: input.commandId,
-    // 命令标识即幂等键：同一 commandId 重放同一命令，不重复产生业务事实。
-    idempotencyKey: input.commandId,
-    issuedAt: new Date().toISOString(),
-    requestedSpatialScopeRefs: input.spatialScopeRefs,
-    requestedSourceVersionRefs: input.sourceVersionRefs,
-    payload: input.payload,
-  };
-  frozenCommands.set(key, { digest, envelope });
-  return envelope;
-};
+  readonly envelope: CommandEnvelope;
+}>;
 
-/**
- * 丢弃某条命令的冻结信封：目标引用变化时调用方重新确认并取得新身份。
- * 陈旧版本必须刷新后再次确认，不在这里自动改引用。
- */
-export const discardFrozenCommand = (
-  projectId: string,
-  branch: string,
-  commandId: string,
-): void => {
-  frozenCommands.delete(`${projectId}|${branch}|${commandId}`);
-};
-
-export const postCommand = async (input: {
+export const prepareCommand = (input: {
   readonly projectId: string;
   readonly branch: string;
   readonly payload: Record<string, unknown>;
   readonly commandId?: string;
   readonly spatialScopeRefs?: readonly unknown[];
   readonly sourceVersionRefs?: readonly unknown[];
-  readonly signal?: AbortSignal;
-}): Promise<unknown> => {
+}): PreparedCommandV1 => {
   assertProjectId(input.projectId);
-  const envelope = freezeCommandEnvelope({
+  const commandId = input.commandId ?? nextCommandId(input.projectId, input.branch);
+  return Object.freeze({
     projectId: input.projectId,
     branch: input.branch,
-    commandId: input.commandId ?? nextCommandId(input.projectId, input.branch),
-    payload: input.payload,
-    spatialScopeRefs: [...(input.spatialScopeRefs ?? [])],
-    sourceVersionRefs: [
-      ...(input.sourceVersionRefs ??
-        (input.branch === "workflow.start-run" ? selectedAssessmentSources(input.projectId) : [])),
-    ],
-  });
-  return postRaw({
-    path: `/api/v1/projects/${encodeURIComponent(input.projectId)}/commands/${input.branch}`,
-    body: envelope as unknown as Record<string, unknown>,
-    ...(input.signal === undefined ? {} : { signal: input.signal }),
+    envelope: Object.freeze({
+      schemaVersion: "1" as const,
+      commandId,
+      // 命令标识即幂等键：同一 commandId 重放同一命令，不重复产生业务事实。
+      idempotencyKey: commandId,
+      issuedAt: new Date().toISOString(),
+      requestedSpatialScopeRefs: [...(input.spatialScopeRefs ?? [])],
+      requestedSourceVersionRefs: [
+        ...(input.sourceVersionRefs ??
+          (input.branch === "workflow.start-run"
+            ? selectedAssessmentSources(input.projectId)
+            : [])),
+      ],
+      payload: input.payload,
+    }),
   });
 };
 
-export const submitCommand = async (input: {
-  readonly projectId: string;
-  readonly branch: string;
-  readonly payload: Record<string, unknown>;
-  readonly commandId?: string;
-  readonly spatialScopeRefs?: readonly unknown[];
-  readonly sourceVersionRefs?: readonly unknown[];
-  readonly signal?: AbortSignal;
-}): Promise<unknown> => unwrapQueryResult(await postCommand(input));
+/**
+ * 发送已冻结命令，返回原始 moduleResult 信封。
+ *
+ * 信封原样交给调用方的既有 result decoder：`succeeded` 与 `waiting` 是两种合法终局
+ * （例如 workflow.resume-run 只返回 waiting 且没有 result），因此这里不预先剥离。
+ * 需要 succeeded 结果的调用方自行套 `unwrapQueryResult`。
+ */
+export const sendPreparedCommand = async (
+  prepared: PreparedCommandV1,
+  signal?: AbortSignal,
+): Promise<unknown> =>
+  postRaw({
+    path: `/api/v1/projects/${encodeURIComponent(prepared.projectId)}/commands/${prepared.branch}`,
+    body: prepared.envelope as unknown as Record<string, unknown>,
+    ...(signal === undefined ? {} : { signal }),
+  });

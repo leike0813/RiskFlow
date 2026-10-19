@@ -2,6 +2,7 @@ import { useEffect, useState, type ChangeEvent, type MouseEvent, type ReactNode 
 
 import type { ModuleCapabilityV1, SpatialScopeRefV1 } from "@riskflow/contracts/ports";
 
+import type { SafeHttpErrorV1 } from "../api/errors.js";
 import { focusMainHeading } from "../shared/focus.js";
 import { useEngineeringOptional } from "../api/engineering.js";
 import { readAssessmentSourceSelection } from "../api/client.js";
@@ -32,6 +33,8 @@ export type AppShellPropsV1 = Readonly<{
   context: WebContextV1;
   routeContent?: ReactNode | undefined;
   capabilities?: readonly ModuleCapabilityV1[] | undefined;
+  /** 入口能力读取的技术故障：保留已获准位置并给出重试，不解释为零事项。 */
+  capabilityFailure?: Readonly<{ error: SafeHttpErrorV1; retry: () => void }> | undefined;
   projectOptions?: readonly WebProjectOptionV1[] | undefined;
   spatialScopeOptions?: readonly WebSpatialScopeOptionV1[] | undefined;
   processNodeOptions?: readonly WebProcessNodeOptionV1[] | undefined;
@@ -361,6 +364,7 @@ export const AppShell = ({
   context,
   routeContent,
   capabilities,
+  capabilityFailure,
   projectOptions,
   spatialScopeOptions,
   processNodeOptions,
@@ -379,6 +383,10 @@ export const AppShell = ({
   // 注销生命周期：进行中禁止重复提交；失败保持现有会话并提供重试。
   const [logoutPending, setLogoutPending] = useState(false);
   const [logoutFailed, setLogoutFailed] = useState(false);
+  // CH-2 D-02：左栏在 152px 与 48px 间由用户显式切换，只在组件短生命周期内保存开合，
+  // 不持久化也不影响导航条目本身——折叠不卸载导航、不丢焦点。
+  const [navCompact, setNavCompact] = useState(false);
+  const [dockPanel, setDockPanel] = useState<DockPanelV1>(initialDockPanel ?? "closed");
   const logoutClick = (): void => {
     if (onLogout === undefined || logoutPending) return;
     setLogoutPending(true);
@@ -397,7 +405,11 @@ export const AppShell = ({
   const activeSection = route.kind === "matched" ? route.route.section : null;
   const title = routeTitle(route);
   return (
-    <div className="app-shell">
+    <div
+      className="app-shell"
+      data-nav={navCompact ? "compact" : "expanded"}
+      data-dock={dockPanel === "closed" ? "closed" : "open"}
+    >
       <a className="skip-link" href="#main-content">
         跳到主内容
       </a>
@@ -429,7 +441,16 @@ export const AppShell = ({
         </div>
       </header>
       <nav className="app-nav" aria-label="业务导航">
-        <ul>
+        <button
+          type="button"
+          className="app-nav-toggle"
+          aria-expanded={!navCompact}
+          aria-controls="app-nav-list"
+          onClick={() => setNavCompact((current) => !current)}
+        >
+          {navCompact ? "展开导航" : "收起导航"}
+        </button>
+        <ul id="app-nav-list">
           {WEB_NAVIGATION_V1.map((item) => (
             <li key={item.id}>
               <NavigationItem
@@ -465,7 +486,10 @@ export const AppShell = ({
         {routeContent}
       </main>
       <RightDock
-        initialPanel={initialDockPanel}
+        initialPanel={dockPanel}
+        onPanelChange={setDockPanel}
+        capabilities={capabilities}
+        capabilityFailure={capabilityFailure}
         evidence={evidence}
         evidenceContextRevision={evidenceContextRevision}
         contextRevision={context.revision}

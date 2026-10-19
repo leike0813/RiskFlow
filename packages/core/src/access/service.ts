@@ -9,11 +9,16 @@ import type {
   LoginCommandV1,
   LogoutCommandV1,
   ProjectAccessCommandV1,
+  ProjectAccessPresentationRequestV1,
   ReadSessionCommandV1,
   SessionMetadataV1,
   SessionResultV1,
 } from "./schema.js";
-import type { AuthorizationContextV1, SourceVersionRefV1 } from "@riskflow/contracts/ports";
+import type {
+  AuthorizationContextV1,
+  ProjectAccessPresentationV1,
+  SourceVersionRefV1,
+} from "@riskflow/contracts/ports";
 
 export type {
   AccessCommandResultV1,
@@ -26,6 +31,7 @@ export type {
   LoginCommandV1,
   LogoutCommandV1,
   ProjectAccessCommandV1,
+  ProjectAccessPresentationRequestV1,
   ReadSessionCommandV1,
   SessionMetadataV1,
   SessionResultV1,
@@ -61,4 +67,14 @@ export interface LocalIdentityAccessV1 {
   readSession(command: ReadSessionCommandV1): Promise<SessionMetadataV1>;
   authorize(request: AuthorizationRequestV1): Promise<AuthorizationDecisionV1>;
   verify(request: AuthorizationVerificationRequestV1): Promise<AuthorizationDecisionV1>;
+}
+
+/**
+ * 当前工程入口能力呈现端口（CH-2 design D-07）。
+ *
+ * 与 LocalIdentityAccessV1 分离：既有实现与 mock 不必为入口读取补假方法，
+ * 真实实现由 PostgresLocalIdentityAccess.projectAccessPresentation 单独返回。
+ */
+export interface ProjectAccessPresentationPortV1 {
+  read(request: ProjectAccessPresentationRequestV1): Promise<ProjectAccessPresentationV1>;
 }

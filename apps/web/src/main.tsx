@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
-import type { ProjectRevisionRefV1 } from "@riskflow/contracts/ports";
+import type { ModuleCapabilityV1, ProjectRevisionRefV1 } from "@riskflow/contracts/ports";
 
 import {
   C09HttpError,
   createC09Client,
   makeSafeHttpError,
+  type SafeHttpErrorV1,
   type SessionChangePasswordInputV1,
   type SessionLoginInputV1,
   type SessionMetadataViewV1,
@@ -114,6 +115,20 @@ const sessionFromRestoreFailure = (error: unknown): SessionStateV1 =>
  */
 const AUTH_GENERATION_REVISION = INITIAL_WEB_CONTEXT_V1.revision;
 
+/**
+ * 当前工程入口能力（CH-2 design D-08）。
+ *
+ * 短生命周期三态：只有 `ready` 才把能力集合交给壳层，`failed` 显式给出安全原因与重试。
+ * 能力未知绝不当成空集合或管理员身份：壳层据此呈现接缝不可用，原合法深链仍由服务端判权。
+ */
+type ProjectCapabilitiesV1 =
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "checking" }
+  | { readonly kind: "ready"; readonly capabilities: readonly ModuleCapabilityV1[] }
+  | { readonly kind: "failed"; readonly error: SafeHttpErrorV1 };
+
+const NO_PROJECT_CAPABILITIES_V1: ProjectCapabilitiesV1 = Object.freeze({ kind: "unavailable" });
+
 const AppRoot = (): ReactNode => {
   // 入口初态是 checking：恢复完成前既不跳登录页，也不发任何业务查询。
   const [session, setSession] = useState<SessionStateV1>({ kind: "checking" });
@@ -210,6 +225,41 @@ const AppRoot = (): ReactNode => {
         spatialScopeRef={current.spatialScopeRef}
       />
     ) : undefined;
+
+  /**
+   * 当前工程入口能力读取（CH-2 design D-08）。
+   *
+   * 只在正式会话且已选择工程时发起：会话身份、工程与 context revision 任一变化即中止
+   * 在途并重新发起，读取单在途，迟到响应被丢弃，因此切工程或注销都不会复活旧工程能力。
+   * 失败保留可重试故障而不是伪空集合——能力未知与确实没有入口权必须可区分；只有
+   * `ready` 才把集合交给 `App`，壳层据此判断页面门禁与停靠贡献。
+   */
+  const [capabilities, setCapabilities] = useState<ProjectCapabilitiesV1>(
+    NO_PROJECT_CAPABILITIES_V1,
+  );
+  // 失败保留可重试：手动重试重新推进 tick，重新发起同一次读取而不是复用旧结果。
+  const [capabilityRetry, requestCapabilityRetry] = useState(0);
+  const canReadCapabilities = session.kind === "authenticated" && webContext.projectId !== null;
+  const capabilityProjectId = webContext.projectId;
+  useEffect(() => {
+    if (!canReadCapabilities || capabilityProjectId === null) {
+      setCapabilities(NO_PROJECT_CAPABILITIES_V1);
+      return;
+    }
+    const controller = new AbortController();
+    setCapabilities({ kind: "checking" });
+    void client.readProjectAccessPresentation(capabilityProjectId, controller.signal).then(
+      (presentation) => {
+        if (!controller.signal.aborted)
+          setCapabilities({ kind: "ready", capabilities: presentation.capabilities });
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted) return;
+        setCapabilities({ kind: "failed", error: safeHttpErrorOf(error) });
+      },
+    );
+    return () => controller.abort();
+  }, [canReadCapabilities, capabilityProjectId, webContext.revision, capabilityRetry]);
   /**
    * 这里不再下发 pathname：`App` 自带 popstate 监听与会话跳转（匿名 → 带 `next` 的
    * 登录页、受限 → 带 `next` 的改密页），把 pathname 钉死会让这些跳转永不生效，
@@ -252,11 +302,29 @@ const AppRoot = (): ReactNode => {
         深链是真实 `<Link>`，放在 Router 外会解构到 null 的路由上下文并整页崩掉。
       */}
       <BrowserRouter>
-        <EngineeringGate context={webContext} canReadBusiness={session.kind === "authenticated"}>
+        <EngineeringGate
+          context={webContext}
+          canReadBusiness={session.kind === "authenticated"}
+          canUseAgentTask={
+            capabilities.kind === "ready" && capabilities.capabilities.includes("agent-task.read")
+          }
+        >
           <App
             session={session}
             context={webContext}
             registry={registry}
+            // 能力未知（未注入、检查中或技术故障）都不下发集合：壳层据此呈现
+            // 接缝不可用，而不是把未知当成无权或管理员。
+            {...(capabilities.kind === "ready" ? { capabilities: capabilities.capabilities } : {})}
+            // 技术故障带安全原因与重试；停靠页签据此保留已获准位置而非解释为零事项。
+            capabilityFailure={
+              capabilities.kind === "failed"
+                ? {
+                    error: capabilities.error,
+                    retry: () => requestCapabilityRetry((current) => current + 1),
+                  }
+                : undefined
+            }
             projectOptions={selection.projectIds.map((projectId) => ({
               projectId,
               label: projectId,
@@ -287,11 +355,14 @@ const AppRoot = (): ReactNode => {
 const EngineeringGate = ({
   context,
   canReadBusiness,
+  canUseAgentTask,
   children,
 }: {
   readonly context: WebContextV1;
   /** 只有正式会话才允许发起业务读；受限/改密前不得有任何业务查询。 */
   readonly canReadBusiness: boolean;
+  /** 当前工程是否已获准 `agent-task.read`；未就绪或被拒都按不发起读取处理。 */
+  readonly canUseAgentTask: boolean;
   readonly children: ReactNode;
 }): ReactNode => {
   // 工程 context-read 直接由 URL 选择器驱动：它自己就是 Provider 的生产者，
@@ -360,6 +431,9 @@ const EngineeringGate = ({
         {...(state.kind === "ready" && selector.projectId !== null
           ? { projectId: selector.projectId }
           : {})}
+        // 助手入口独立判定：待办入口权不与它取交集，无权时只停止 Agent 读取，
+        // 原复核入口与精确详情不受影响。
+        allowed={canUseAgentTask}
       >
         {/* 证据抽屉是迁入页面的共享入口：由 Provider 统一持有当前定位目标。 */}
         <EvidenceProvider>{children}</EvidenceProvider>

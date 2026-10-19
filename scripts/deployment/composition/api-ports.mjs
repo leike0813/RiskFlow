@@ -75,6 +75,8 @@ export const REQUIRED_API_PORT_METHODS_V1 = Object.freeze({
   qualityProjectionQuery: ["query", "candidateSourceVersionRefs", "queryWithSourceGrants"],
   systemAdministration: ["read", "execute"],
   systemOperationsRead: ["read"],
+  // CH-2：入口能力读面必须来自真实 C06 实现；缺失即拒绝装配，不降级为空能力。
+  projectAccessPresentation: ["read"],
 });
 
 /**
@@ -424,6 +426,9 @@ export const createDeploymentApiPortsV1 = (options) => {
     runEventSubscription: options.runEvents,
     ...createDeploymentApiReadProvidersV1(options),
     systemAdministration: options.access.systemAdministration,
+    // CH-2 D-07：入口能力读面直接取同一真实 C06 适配器上的独立 port；
+    // 缺实现时由 REQUIRED_API_PORT_METHODS_V1 的装配期检查拒绝，不补空能力。
+    projectAccessPresentation: options.access.projectAccessPresentation,
   };
 
   const incomplete = missingPorts(ports);

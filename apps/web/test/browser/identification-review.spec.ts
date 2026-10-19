@@ -90,6 +90,24 @@ const gotoSpa = async (page, path) => {
 
 const ids = () => server.identification;
 
+/**
+ * 收口成功态对话框：原生 dialog 在成功后仍留在页面上（只呈现「命令已提交」），
+ * 若调用方随成功刷新而卸载了触发组件，对话框随之消失。两条路都收口到「对话框不再存在」。
+ */
+const closeConfirmationDialog = async (page) => {
+  const dialog = page.getByRole("dialog");
+  // 提交成功后对话框有两种归宿：触发组件随上下文修订刷新而卸载，或仍以成功态停留。
+  // 两种都收口到「对话框不再存在」——还在就按取消，仍在提交中就等它落定。
+  await expect(async () => {
+    if (!(await dialog.isVisible().catch(() => false))) return;
+    const cancel = dialog.getByRole("button", { name: "取消", exact: true });
+    if (!(await cancel.isEnabled().catch(() => false))) return;
+    await cancel.click({ timeout: 2_000 });
+    await expect(dialog).toHaveCount(0);
+  }).toPass({ timeout: 30_000 });
+  await expect(dialog).toHaveCount(0);
+};
+
 test("识别域页面未登录跳转登录页，登录后回到原目标页", async ({ page }) => {
   await login(page, server.operatorLogin, withProject("/identification"));
   await expect(page.getByRole("heading", { name: "识别任务", level: 1 })).toBeVisible();
@@ -368,7 +386,7 @@ test("复核决定：通过、拒绝、批量通过与重复提交幂等", async
   await login(page, server.operatorLogin, withProject("/review"));
   await expect(page.getByText(ids().pendingTask.reference.entityId)).toBeVisible();
 
-  // 通过：确认对话框呈现工程/对象/精确版本/预计结果/副作用。
+  // 通过：确认对话框如实呈现作用域、命令身份与预计事实。
   // 同时拦截并原样留存命令信封，供下方同幂等键重放（逐字节一致才构成服务端重放）。
   let approveRequestBody = "";
   await page.route("**/commands/review-audit.decide-review", async (route) => {
@@ -377,13 +395,26 @@ test("复核决定：通过、拒绝、批量通过与重复提交幂等", async
   });
   const pendingRow = page.locator("tr", { hasText: ids().pendingTask.reference.entityId });
   await pendingRow.getByRole("button", { name: "通过" }).click();
-  await expect(page.locator(".confirm-dialog")).toBeVisible();
-  await expect(
-    page.locator(".confirm-dialog").getByText(`工程：${server.projectId}`),
-  ).toBeVisible();
-  await expect(page.locator(".confirm-dialog").getByText(/预计结果：按原样通过/)).toBeVisible();
-  await expect(page.locator(".confirm-dialog").getByText(/副作用：决定写入审计日志/)).toBeVisible();
-  await page.locator(".confirm-dialog").getByRole("button", { name: "确认通过" }).click();
+  const approveDialog = page.getByRole("dialog");
+  await expect(approveDialog).toBeVisible();
+  await expect(approveDialog.getByRole("heading", { name: "确认命令" })).toBeVisible();
+  // 摘要逐项来自冻结计划：作用域如实是当前工程，决定命令、命令标识与预计事实都指向这条复核任务。
+  const summaryRow = (label) => approveDialog.locator(`dl > div:has(> dt:text-is("${label}"))`);
+  const summaryValue = (label) => summaryRow(label).locator("dd");
+  await expect(summaryValue("作用域")).toHaveText(server.projectId);
+  await expect(summaryValue("命令")).toHaveText("review-audit.decide-review");
+  await expect(summaryValue("命令标识")).toContainText(
+    `decide-${ids().pendingTask.reference.entityId}-`,
+  );
+  // 幂等键与命令标识同值：同一次确认只产生一个幂等身份，重放键才不会另起一条命令。
+  await expect(summaryValue("幂等键")).toHaveText(await summaryValue("命令标识").innerText());
+  await expect(approveDialog.locator("section[aria-label='预计事实']")).toContainText(
+    `review-decision:${ids().pendingTask.reference.entityId}`,
+  );
+  await approveDialog.getByRole("button", { name: "确认提交" }).click();
+  // 决定成立的证据是队列登记项与幂等重放，不是对话框文案：
+  // 成功态对话框会随本次命令带来的上下文修订刷新而自行失效。
+  await closeConfirmationDialog(page);
   const approveOutcome = page.locator(".rq-outcomes li", {
     hasText: ids().pendingTask.reference.entityId,
   });
@@ -423,7 +454,12 @@ test("复核决定：通过、拒绝、批量通过与重复提交幂等", async
   // 拒绝：freshTask（stale 系列的现行版本）。
   const freshRow = page.locator("tr", { hasText: ids().freshTask.reference.entityId });
   await freshRow.getByRole("button", { name: "拒绝" }).click();
-  await page.locator(".confirm-dialog").getByRole("button", { name: "确认拒绝" }).click();
+  const rejectDialog = page.getByRole("dialog");
+  await expect(rejectDialog).toBeVisible();
+  // 单条决定是标准影响面：无需额外勾选即可提交。
+  await expect(rejectDialog.getByLabel("我已确认高影响操作")).toHaveCount(0);
+  await rejectDialog.getByRole("button", { name: "确认提交" }).click();
+  await closeConfirmationDialog(page);
   await expect(
     page
       .locator(".rq-outcomes li", { hasText: ids().freshTask.reference.entityId })
@@ -435,8 +471,23 @@ test("复核决定：通过、拒绝、批量通过与重复提交幂等", async
     await page.getByLabel(`选择 ${task.reference.entityId}`).check();
   }
   await page.getByRole("button", { name: "批量通过" }).click();
-  await expect(page.locator(".confirm-dialog").getByText(/对象：2 项/)).toBeVisible();
-  await page.locator(".confirm-dialog").getByRole("button", { name: "确认批量通过" }).click();
+  const batchDialog = page.getByRole("dialog");
+  await expect(batchDialog).toBeVisible();
+  // 目标对象逐项如实列出两条被选中的复核任务，不合并成计数文案。
+  await expect(batchDialog.locator("section[aria-label='目标对象'] li")).toHaveCount(2);
+  for (const task of ids().batchTasks) {
+    await expect(batchDialog.locator("section[aria-label='预计事实']")).toContainText(
+      `review-decision:${task.reference.entityId}`,
+    );
+  }
+  // 批量是高影响动作：未显式确认时提交按钮禁用，勾选后才可用。
+  const batchAcknowledge = batchDialog.getByLabel("我已确认高影响操作");
+  await expect(batchAcknowledge).toBeVisible();
+  await expect(batchDialog.getByRole("button", { name: "确认提交" })).toBeDisabled();
+  await batchAcknowledge.check();
+  await expect(batchDialog.getByRole("button", { name: "确认提交" })).toBeEnabled();
+  await batchDialog.getByRole("button", { name: "确认提交" }).click();
+  await closeConfirmationDialog(page);
   for (const task of ids().batchTasks) {
     await expect(
       page
@@ -457,10 +508,14 @@ test("viewer 可读复核队列但决定失败闭合", async ({ page }) => {
   await expect(page.getByText(ids().viewerTask.reference.entityId)).toBeVisible();
   const row = page.locator("tr", { hasText: ids().viewerTask.reference.entityId });
   await row.getByRole("button", { name: "通过" }).click();
-  await page.locator(".confirm-dialog").getByRole("button", { name: "确认通过" }).click();
-  // 无 decide-review 分支：服务端失败闭合（无权与不存在同形），就地呈现错误码。
-  await expect(page.locator(".confirm-dialog").getByText(/提交失败（NOT_FOUND）/)).toBeVisible();
-  await page.locator(".confirm-dialog").getByRole("button", { name: "取消" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "确认提交" }).click();
+  // 无 decide-review 分支：服务端失败闭合（无权与不存在同形），就地呈现安全错误码。
+  const failure = dialog.locator("[data-confirmation-state='error']");
+  await expect(failure).toContainText("NOT_FOUND");
+  await expect(failure).toContainText("不可重试");
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
   await expect(
     page
       .locator(".rq-outcomes li", { hasText: ids().viewerTask.reference.entityId })

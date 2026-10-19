@@ -49,8 +49,21 @@ button[disabled] {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 16rem minmax(0, 1fr) minmax(0, 22rem);
+  /* CH-2 D-02：直接消费生产尺寸令牌；右栏关闭时由组件移除该列占位。 */
+  grid-template-columns: var(--nav-width) minmax(0, 1fr) var(--dock-width);
   min-height: 100vh;
+}
+
+.app-shell[data-nav="compact"] {
+  grid-template-columns: var(--nav-width-compact) minmax(0, 1fr) var(--dock-width);
+}
+
+.app-shell[data-dock="closed"] {
+  grid-template-columns: var(--nav-width) minmax(0, 1fr);
+}
+
+.app-shell[data-nav="compact"][data-dock="closed"] {
+  grid-template-columns: var(--nav-width-compact) minmax(0, 1fr);
 }
 
 .app-header {
@@ -78,8 +91,26 @@ button[disabled] {
 
 .app-nav {
   padding: 1rem 0.75rem;
+  overflow-y: auto;
   border-right: 1px solid var(--border);
   background: var(--card);
+}
+
+/* CH-2 D-02：折叠只改变宽度与文字视觉呈现，不卸载导航、不丢失焦点。 */
+.app-shell[data-nav="compact"] .app-nav {
+  padding-inline: 0.25rem;
+}
+
+.app-shell[data-nav="compact"] .app-nav a,
+.app-shell[data-nav="compact"] .app-nav [role="link"] {
+  padding-inline: 0.3rem;
+  text-align: center;
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.app-nav-toggle {
+  margin-bottom: 0.5rem;
 }
 
 .app-nav ul {
@@ -114,6 +145,7 @@ button[disabled] {
 .app-main {
   min-width: 0;
   padding: 1.25rem;
+  overflow-y: auto;
 }
 
 .app-main > h1 {
@@ -157,8 +189,19 @@ button[disabled] {
 
 .right-dock {
   padding: 1rem;
+  overflow-y: auto;
   border-left: 1px solid var(--border);
   background: var(--card);
+}
+
+/* CH-2 D-03：有序区域块只是呈现结构，宽度可收缩并允许内部折行。 */
+.page-region {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.page-region + .page-region {
+  margin-top: 1rem;
 }
 
 .dock-panel {
@@ -265,18 +308,6 @@ button[disabled] {
 @keyframes page-loading {
   to {
     background-position: -200% 0;
-  }
-}
-
-@media (max-width: 64rem) {
-  .app-shell {
-    grid-template-columns: 13rem minmax(0, 1fr);
-  }
-
-  .right-dock {
-    grid-column: 1 / -1;
-    border-top: 1px solid var(--border);
-    border-left: 0;
   }
 }
 

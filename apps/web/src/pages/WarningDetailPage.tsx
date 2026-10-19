@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
-import { ConfirmButton } from "../components/ConfirmButton";
+import { ConfirmButton, useProjectConfirmationScope } from "../components/ConfirmButton";
+import { clientError } from "../api/client";
+import { availabilityFromBusiness } from "../shared/actions.js";
 import { PageStateView } from "../components/PageStateView";
 import { StatusTag } from "../components/StatusTag";
 import { useEngineering, usePageQuery, useProjectPath } from "../api/engineering";
@@ -11,7 +13,9 @@ import {
   readAssessmentRecord,
   readWarningRecord,
   readWarningResponseResolve,
-  submitWarningAcknowledgement,
+  asContractReference,
+  prepareWarningAcknowledgement,
+  sendWarningAcknowledgement,
   type AssessmentRecordView,
   type KindRef,
   type WarningRecordView,
@@ -89,17 +93,11 @@ export default function WarningDetailPage() {
     [assessmentRef?.reference.entityId, assessmentRef?.reference.versionId],
   );
 
-  const acknowledge = async () => {
-    if (warning.state.kind !== "ready" || selector.projectId === null) return;
-    await submitWarningAcknowledgement(selector.projectId, {
-      commandId: `demo-ack-${warning.state.value.warningRecordRef.reference.entityId}-${warning.state.value.warningRecordRef.reference.versionId}`,
-      warningRecordRef: warning.state.value.warningRecordRef,
-      warningResponseTaskRef: warning.state.value.taskRef,
-    });
-    setTick((value) => value + 1);
-  };
-
-  const availability =
+  const acknowledgementRef =
+    warning.state.kind === "ready" ? warning.state.value.warningRecordRef : null;
+  const taskRef = warning.state.kind === "ready" ? warning.state.value.taskRef : null;
+  const scope = useProjectConfirmationScope();
+  const acknowledgementAvailability =
     warning.state.kind === "ready"
       ? actionAvailability(warning.state.value.actions, "warning-response.acknowledge")
       : null;
@@ -126,21 +124,53 @@ export default function WarningDetailPage() {
             )}
             <ConfirmButton
               label="确认预警"
-              availability={
-                availability === "allowed" ? "allowed" : (availability ?? "business-unavailable")
-              }
-              unavailableReason={
-                warning.state.kind === "ready" && warning.state.value.acknowledgement !== undefined
-                  ? "该预警已确认"
-                  : "当前不可执行确认"
-              }
-              summary={[
-                `工程：${selector.projectId ?? "—"}`,
-                `预警：${warning.state.kind === "ready" ? warning.state.value.warningRecordRef.reference.entityId : "—"}`,
-                "语义：确认表示已读并接管该预警，不消除预警",
-                "预计结果：登记一条确认事实；处置任务状态不变",
-              ]}
-              onConfirm={acknowledge}
+              availability={availabilityFromBusiness(acknowledgementAvailability, {
+                kind: "business",
+                capability: "warning-response.record",
+              })}
+              requiredPermission={{ kind: "business", capability: "warning-response.record" }}
+              scope={scope}
+              intentRevision={`${warningId ?? ""}|${warning.state.kind}`}
+              createPlan={() => {
+                // 请求在打开确认这一刻定型：命令身份、幂等键与来源引用此后不再重算。
+                if (
+                  scope === undefined ||
+                  scope.kind !== "project" ||
+                  acknowledgementRef === null ||
+                  taskRef === null
+                )
+                  throw clientError("CONTRACT_INVALID");
+                const request = prepareWarningAcknowledgement(scope.projectId, {
+                  commandId: `demo-ack-${acknowledgementRef.reference.entityId}-${acknowledgementRef.reference.versionId}`,
+                  warningRecordRef: acknowledgementRef,
+                  warningResponseTaskRef: taskRef,
+                });
+                return {
+                  confirmationId: `confirm-${request.envelope.commandId}`,
+                  operationId: "warning-response.acknowledge",
+                  scope,
+                  targets: [asContractReference(acknowledgementRef), asContractReference(taskRef)],
+                  inputVersions: [
+                    {
+                      entityId: acknowledgementRef.reference.entityId,
+                      versionId: acknowledgementRef.reference.versionId,
+                    },
+                  ],
+                  expectedFacts: ["warning-record:v1"],
+                  externalEffects: ["该预警进入已确认状态"],
+                  impact: "standard",
+                  commandId: request.envelope.commandId,
+                  idempotencyKey: request.envelope.idempotencyKey,
+                  request,
+                };
+              }}
+              submit={async (plan) => ({
+                kind: "reference",
+                resultRef: asContractReference(
+                  (await sendWarningAcknowledgement(plan.request)).warningRecordRef,
+                ),
+              })}
+              onSucceeded={() => setTick((value) => value + 1)}
             />
           </div>
         </header>

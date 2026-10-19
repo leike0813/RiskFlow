@@ -211,6 +211,70 @@ describe("C10 C09 HTTP 与 OpenAPI 边界", () => {
     expect(() => decodeSessionMetadata({ ...sessionMetadata, ...patch })).toThrow();
   });
 
+  it("reads the current project access presentation over GET without client-declared identity", async () => {
+    const calls: Array<{ input: RequestInfo | URL; init: RequestInit | undefined }> = [];
+    const client = createC09Client({
+      fetcher: async (input, init) => {
+        calls.push({ input, init });
+        return new Response(
+          JSON.stringify({
+            schemaVersion: "1",
+            projectId: "project-1",
+            capabilities: ["projection.query", "review-todo.read"],
+            authorizationPolicyRef: { entityId: "access-policy", versionId: "v2" },
+          }),
+          { status: 200 },
+        );
+      },
+    });
+    const signal = new AbortController().signal;
+    const presentation = await client.readProjectAccessPresentation("project-1", signal);
+
+    expect(presentation.projectId).toBe("project-1");
+    expect(presentation.capabilities).toEqual(["projection.query", "review-todo.read"]);
+    const call = calls[0]!;
+    expect(String(call.input)).toBe("/api/v1/projects/project-1/access");
+    expect(call.init?.method).toBe("GET");
+    // 无请求体、无 Authorization：客户端不能借这条读面声明 actor、角色或能力。
+    expect(call.init?.body).toBeUndefined();
+    const headers = new Headers(call.init?.headers);
+    expect(headers.get("authorization")).toBeNull();
+    expect(call.init?.credentials).toBe("same-origin");
+  });
+
+  it("入口能力读面：路径不可注入、响应形状漂移与不可用都不伪造成空能力", async () => {
+    const signal = new AbortController().signal;
+    const client = createC09Client({
+      fetcher: async () => new Response("", { status: 404 }),
+    });
+    // 服务端未注入该接缝时按统一未找到失败，而不是返回空集合。
+    await expect(client.readProjectAccessPresentation("project-1", signal)).rejects.toBeInstanceOf(
+      C09HttpError,
+    );
+
+    // 工程标识不能带路径分隔符：专用方法不是通用 URL 查询器。
+    await expect(
+      client.readProjectAccessPresentation("project-1/../../admin", signal),
+    ).rejects.toBeInstanceOf(C09HttpError);
+
+    const drifted = createC09Client({
+      fetcher: async () =>
+        new Response(
+          JSON.stringify({
+            schemaVersion: "1",
+            projectId: "project-1",
+            capabilities: ["review-todo.read"],
+            authorizationPolicyRef: { entityId: "access-policy", versionId: "v2" },
+            roles: ["reviewer"],
+          }),
+          { status: 200 },
+        ),
+    });
+    await expect(drifted.readProjectAccessPresentation("project-1", signal)).rejects.toBeInstanceOf(
+      C09HttpError,
+    );
+  });
+
   it("reduces malformed and public C09 errors to safe stable fields", async () => {
     const safe = makeSafeHttpError({
       requestId: "request-1",

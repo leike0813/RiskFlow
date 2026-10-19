@@ -1,198 +1,166 @@
-import { useEffect, useId, useRef, useState } from "react";
-import { C09HttpError } from "../api/http";
-import { Icon } from "./icons";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { useEngineering } from "../api/engineering.js";
+import { useSession } from "../api/session.js";
+
+import type { WebActionAvailabilityV1, WebActionPermissionV1 } from "../shared/actions.js";
+import {
+  createConfirmationController,
+  type CommandConfirmationPlanV1,
+  type CommandConfirmationResultV1,
+  type CommandConfirmationScopeV1,
+  type ConfirmationStateV1,
+} from "../shared/confirmation.js";
+import { CommandConfirmationDialog } from "../shared/CommandConfirmationDialog.js";
+import { Icon } from "./icons.js";
 import "./ConfirmButton.css";
 
-export type ConfirmActionAvailability = "allowed" | "denied" | "business-unavailable" | "hidden";
+export type ConfirmButtonPropsV1<TRequest> = Readonly<{
+  label: string;
+  tone?: "primary" | "danger";
+  availability: WebActionAvailabilityV1;
+  /** 唯一权限描述：业务 capability 或系统管理动作，由调用方声明。 */
+  requiredPermission: WebActionPermissionV1;
+  /** 打开确认时构造一次完整计划；请求在此时已定型。 */
+  createPlan: () => CommandConfirmationPlanV1<TRequest>;
+  /** 提交只消费冻结计划，不再读取页面输入或重新生成命令身份。 */
+  submit: (plan: CommandConfirmationPlanV1<TRequest>) => Promise<CommandConfirmationResultV1>;
+  /** 当前作用域；pathname 与 intentRevision 变化由调用方更新。 */
+  scope: CommandConfirmationScopeV1 | undefined;
+  /** 调用方在输入变化时更新，使旧计划失效并要求重新确认。 */
+  intentRevision: string;
+  onSucceeded?: (result: CommandConfirmationResultV1) => void;
+}>;
 
 /**
- * 命令确认按钮：点击弹确认对话框（工程、对象、版本、预计结果、副作用）。
+ * CH-2 D-09：真实"触发按钮 + 现有控制器 + 唯一原生 Dialog"的组合组件。
  *
- * 全部写动作都必须绑定 onConfirm：确认对话框不是装饰，未接线时不渲染按钮。
- * `availability` 来自精确读的 `actions`：`denied` 置灰并说明所需能力，
- * `business-unavailable` 置灰并显示业务原因，`hidden` 完全不渲染。
- * 打开时焦点移入对话框、Escape 与遮罩关闭、关闭后焦点归还触发按钮；
- * 提交中禁止重复提交；失败就地呈现错误码并保持对话框打开供原载荷重试。
+ * 它不持有第二套确认／提交／错误／焦点状态机：所有状态归 `createConfirmationController`，
+ * 组件只负责桥接 React 刷新。scope、pathname 与 intentRevision 变化时旧计划失效；
+ * 编辑输入必须重新构造计划并取得新命令身份。
  */
-export function ConfirmButton({
+export function ConfirmButton<TRequest>({
   label,
-  summary,
   tone = "primary",
-  availability = "allowed",
-  unavailableReason,
-  resetKey,
-  onConfirm,
-}: {
-  label: string;
-  summary: readonly string[];
-  tone?: "primary" | "danger";
-  availability?: ConfirmActionAvailability;
-  unavailableReason?: string;
-  /** 上下文标识（如工程）：变化时关闭对话框并清除失败残留，避免旧上下文污染新上下文。 */
-  resetKey?: string;
-  onConfirm: () => Promise<void>;
-}) {
-  const [open, setOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [failureCode, setFailureCode] = useState<string | null>(null);
-  const failureId = useId();
+  availability,
+  requiredPermission,
+  createPlan,
+  submit,
+  scope,
+  intentRevision,
+  onSucceeded,
+}: ConfirmButtonPropsV1<TRequest>) {
+  const [controller] = useState(() => createConfirmationController<TRequest>());
+  const [state, setState] = useState<ConfirmationStateV1<TRequest>>(() => controller.getState());
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
-  const cancelRef = useRef<HTMLButtonElement | null>(null);
-  // 已卸载或上下文已切换时忽略迟到的写响应：迟到的 success/failure 不得关闭新上下文的对话框
-  // 或写入失败残留。
-  const aliveRef = useRef(true);
-  const attemptRef = useRef(0);
+  const sync = useCallback(() => setState(controller.getState()), [controller]);
 
+  // 作用域或调用方输入变化即失效：旧计划不能再提交，也不能再重试。
   useEffect(() => {
-    aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-    };
-  }, []);
+    controller.invalidate(scope);
+    sync();
+  }, [controller, scope, intentRevision, sync]);
+  useEffect(() => () => controller.invalidate(undefined), [controller]);
 
-  useEffect(() => {
-    attemptRef.current += 1;
-    setOpen(false);
-    setSubmitting(false);
-    setFailureCode(null);
-  }, [resetKey]);
+  if (availability.kind === "hidden") return null;
 
-  useEffect(() => {
-    if (!open) return;
-    cancelRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        if (!submitting) {
-          setOpen(false);
-          setFailureCode(null);
-          triggerRef.current?.focus();
-        }
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusable === undefined || focusable.length === 0) return;
-      // 无可聚焦元素时不劫持 Tab：交给浏览器默认顺序。
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (first === undefined || last === undefined) return;
-      const active = document.activeElement;
-      if (event.shiftKey && active === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [open, submitting]);
-
-  if (availability === "hidden") return null;
-
-  const close = () => {
-    if (submitting) return;
-    setOpen(false);
-    setFailureCode(null);
-    triggerRef.current?.focus();
+  const open = (): void => {
+    if (availability.kind !== "allowed") return;
+    if (!controller.open(createPlan(), availability)) return;
+    sync();
   };
 
-  const confirm = async () => {
-    const attempt = (attemptRef.current += 1);
-    setSubmitting(true);
-    setFailureCode(null);
-    try {
-      await onConfirm();
-      if (!aliveRef.current || attempt !== attemptRef.current) return;
-      setOpen(false);
-      triggerRef.current?.focus();
-    } catch (error) {
-      if (!aliveRef.current || attempt !== attemptRef.current) return;
-      setFailureCode(error instanceof C09HttpError ? error.error.code : "TERMINAL_FAILURE");
-    } finally {
-      if (aliveRef.current && attempt === attemptRef.current) setSubmitting(false);
-    }
+  // 首次提交与重试共用同一条成功出口：业务事实只关心成功与否，不关心第几次送达。
+  const finishSubmit = (ok: boolean): void => {
+    sync();
+    if (!ok) return;
+    const next = controller.getState();
+    if (next.kind === "succeeded") onSucceeded?.(next.result);
   };
 
-  const disabled = availability !== "allowed";
+  const confirm = async (): Promise<void> => {
+    if (state.kind !== "reviewing") return;
+    // 逐项推进：开始提交后立即同步，提交中重复点击由控制器单在途拒绝。
+    void controller.confirm(async (plan) => submit(plan)).then(finishSubmit);
+    sync();
+  };
+
+  const retry = async (): Promise<void> => {
+    void controller.retry(async (plan) => submit(plan)).then(finishSubmit);
+    sync();
+  };
+
+  const cancel = (): void => {
+    controller.cancel();
+    sync();
+  };
 
   return (
     <>
       <button
-        type="button"
         ref={triggerRef}
+        type="button"
         className={`confirm-btn confirm-btn--${tone}`}
-        onClick={() => setOpen(true)}
-        disabled={disabled}
-        title={disabled ? (unavailableReason ?? "当前不可执行该操作") : undefined}
+        disabled={availability.kind !== "allowed"}
+        aria-disabled={availability.kind === "allowed" ? undefined : true}
+        onClick={open}
       >
+        <Icon name="check" />
         {label}
       </button>
-      {disabled && unavailableReason !== undefined && (
-        <span className="confirm-btn-reason">{unavailableReason}</span>
-      )}
-      {open && (
-        <div className="confirm-overlay" onClick={close}>
-          <div
-            className="confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-label={`确认${label}`}
-            aria-describedby={failureCode === null ? undefined : failureId}
-            ref={dialogRef}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <header className="confirm-dialog-header">
-              <span className="confirm-dialog-title">操作确认</span>
-              <button
-                type="button"
-                className="confirm-dialog-close"
-                onClick={close}
-                aria-label="关闭"
-                disabled={submitting}
-              >
-                <Icon name="close" size={16} />
-              </button>
-            </header>
-            <div className="confirm-dialog-body">
-              <p className="confirm-dialog-lead">请确认以下信息后执行「{label}」：</p>
-              <ul className="confirm-summary">
-                {summary.map((line, index) => (
-                  <li key={index}>{line}</li>
-                ))}
-              </ul>
-              {failureCode !== null && (
-                <p id={failureId} className="confirm-dialog-error" role="alert">
-                  提交失败（{failureCode}），可重试或取消。
-                </p>
-              )}
-            </div>
-            <footer className="confirm-dialog-footer">
-              <button
-                type="button"
-                ref={cancelRef}
-                className="confirm-btn confirm-btn--ghost"
-                onClick={close}
-                disabled={submitting}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className={`confirm-btn confirm-btn--${tone}`}
-                onClick={() => void confirm()}
-                disabled={submitting}
-              >
-                {submitting ? "提交中…" : `确认${label}`}
-              </button>
-            </footer>
-          </div>
-        </div>
-      )}
+      <CommandConfirmationDialog
+        state={state}
+        availability={availability}
+        requiredPermission={requiredPermission}
+        openerRef={triggerRef}
+        onAcknowledge={() => {
+          controller.acknowledge();
+          sync();
+        }}
+        onConfirm={() => confirm()}
+        onRetry={() => retry()}
+        onCancel={cancel}
+      />
     </>
   );
 }
+
+/**
+ * 当前确认作用域：工程命令取工程标识、上下文修订与会话引用。
+ *
+ * 未选工程、检查中、匿名或受限时返回 undefined——确认层据此不生成任何计划，
+ * 而不是伪造一个空工程。系统管理用 `useSystemConfirmationScope`。
+ */
+export const useProjectConfirmationScope = (): CommandConfirmationScopeV1 | undefined => {
+  const { context } = useEngineering();
+  const session = useSession();
+  const metadata = session.metadata;
+  return useMemo(() => {
+    if (context.projectId === null || metadata === null || session.state.kind !== "authenticated")
+      return undefined;
+    return Object.freeze({
+      kind: "project" as const,
+      projectId: context.projectId,
+      contextRevision: context.revision,
+      sessionRef: Object.freeze({ ...metadata.sessionRef }),
+    });
+  }, [context.projectId, context.revision, metadata, session.state.kind]);
+};
+
+/**
+ * 系统管理确认作用域：只用真实账号与会话引用。
+ *
+ * 未选择工程不影响系统管理；反过来也绝不因为已选工程就获得资料或业务权限。
+ */
+export const useSystemConfirmationScope = (): CommandConfirmationScopeV1 | undefined => {
+  const session = useSession();
+  const metadata = session.metadata;
+  return useMemo(() => {
+    if (metadata === null || session.state.kind !== "authenticated") return undefined;
+    return Object.freeze({
+      kind: "system" as const,
+      accountRef: Object.freeze({ ...metadata.accountRef }),
+      sessionRef: Object.freeze({ ...metadata.sessionRef }),
+    });
+  }, [metadata, session.state.kind]);
+};

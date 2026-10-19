@@ -7,8 +7,8 @@ import {
   createConfirmationController,
   invalidateConfirmation,
   openConfirmation,
+  type CommandConfirmationScopeV1,
 } from "../src/shared/confirmation.js";
-import { INITIAL_WEB_CONTEXT_V1, type WebContextV1 } from "../src/app/state.js";
 
 const target: ContractReferenceV1 = {
   kind: "project-revision",
@@ -18,8 +18,12 @@ const target: ContractReferenceV1 = {
 const plan = (impact: "standard" | "high" = "standard") => ({
   confirmationId: "confirmation-1",
   operationId: "engineering-data.register-source-delivery",
-  scope: { kind: "project", projectId: "project-1", contextRevision: 3 } as const,
-  projectId: "project-1",
+  scope: {
+    kind: "project",
+    projectId: "project-1",
+    contextRevision: 3,
+    sessionRef: { entityId: "session-1", versionId: "1" },
+  } as const satisfies CommandConfirmationScopeV1,
   targets: [target],
   inputVersions: [{ entityId: "source-1", versionId: "v1" }],
   expectedFacts: ["source-delivery"],
@@ -73,10 +77,11 @@ describe("C10 命令确认原语", () => {
     expect(await retryController.confirm(async () => Promise.reject(retryError))).toBe(false);
     const failed = retryController.getState();
     expect(failed.kind).toBe("retryable-failure");
-    if (failed.kind === "retryable-failure") expect(failed.plan).toBe(firstPlan);
+    // 计划在打开确认时已拍快照：重试消费的是那份快照，而不是调用方的源对象。
+    if (failed.kind === "retryable-failure") expect(failed.plan).toMatchObject(firstPlan);
     expect(
       await retryController.retry(async (submitted) => {
-        expect(submitted).toBe(firstPlan);
+        expect(submitted).toBe(failed.kind === "retryable-failure" ? failed.plan : undefined);
         return success("result-2");
       }),
     ).toBe(true);
@@ -120,7 +125,7 @@ describe("C10 命令确认原语", () => {
     ).toBe(false);
     expect(
       await controller.retry(async (submitted) => {
-        expect(submitted).toBe(highPlan);
+        expect(submitted).toMatchObject(highPlan);
         expect(submitted.commandId).toBe("command-1");
         expect(submitted.idempotencyKey).toBe("idempotency-1");
         return success("high-retry");
@@ -136,73 +141,106 @@ describe("C37 project/system 确认作用域", () => {
     operationId: "administration.command" as const,
     scope: {
       kind: "system" as const,
-      administrationContextRef: { entityId: "admin-context-1", versionId: "v4" },
-      sessionRevision: 7,
+      accountRef: { entityId: "account-admin", versionId: "3" },
+      sessionRef: { entityId: "session-1", versionId: "4" },
     },
-    projectId: "",
     request: { targetAccountId: "account-2" },
   });
 
-  const context = (revision: number, projectId: string) =>
-    ({
-      ...INITIAL_WEB_CONTEXT_V1,
-      revision,
-      projectId,
-    }) as WebContextV1;
+  const systemScope = (sessionVersionId = "4"): CommandConfirmationScopeV1 => ({
+    kind: "system",
+    accountRef: { entityId: "account-admin", versionId: "3" },
+    sessionRef: { entityId: "session-1", versionId: sessionVersionId },
+  });
 
-  it("系统作用域不因工程切换而失效，管理修订变化才失效", () => {
+  const projectScope = (
+    projectId: string,
+    contextRevision: number,
+  ): CommandConfirmationScopeV1 => ({
+    kind: "project",
+    projectId,
+    contextRevision,
+    sessionRef: { entityId: "session-1", versionId: "1" },
+  });
+
+  it("系统作用域不因工程切换而失效，会话变化才失效", () => {
     const opened = openConfirmation(systemPlan(), { kind: "allowed" });
     expect(opened.kind).toBe("reviewing");
 
-    // 换工程不影响系统命令确认。
-    const afterProjectSwitch = invalidateConfirmation(opened, context(3, "project-2"), {
-      project: { revision: 3, projectId: "project-2" },
-      system: {
-        administrationContextRef: { entityId: "admin-context-1", versionId: "v4" },
-        sessionRevision: 7,
-      },
-    });
-    expect(afterProjectSwitch.kind).toBe("reviewing");
+    // 未选择工程、换工程都不影响系统管理确认：作用域没有工程字段可比。
+    expect(invalidateConfirmation(opened, systemScope()).kind).toBe("reviewing");
+    expect(invalidateConfirmation(opened, undefined).kind).toBe("closed");
 
-    // 管理上下文修订变化必须失效。
-    const afterAdminChange = invalidateConfirmation(opened, context(3, "project-1"), {
-      project: { revision: 3, projectId: "project-1" },
-      system: {
-        administrationContextRef: { entityId: "admin-context-1", versionId: "v5" },
-        sessionRevision: 7,
-      },
-    });
-    expect(afterAdminChange.kind).toBe("closed");
+    // 会话代次变化必须失效。
+    expect(invalidateConfirmation(opened, systemScope("5")).kind).toBe("closed");
   });
 
   it("工程作用域在工程或修订变化时失效", () => {
     const opened = openConfirmation(plan(), { kind: "allowed" });
-    expect(
-      invalidateConfirmation(opened, context(3, "project-1"), {
-        project: { revision: 3, projectId: "project-1" },
-        system: undefined,
-      }).kind,
-    ).toBe("reviewing");
-    expect(
-      invalidateConfirmation(opened, context(4, "project-1"), {
-        project: { revision: 4, projectId: "project-1" },
-        system: undefined,
-      }).kind,
-    ).toBe("closed");
-    expect(
-      invalidateConfirmation(opened, context(3, "project-2"), {
-        project: { revision: 3, projectId: "project-2" },
-        system: undefined,
-      }).kind,
-    ).toBe("closed");
+    expect(invalidateConfirmation(opened, projectScope("project-1", 3)).kind).toBe("reviewing");
+    expect(invalidateConfirmation(opened, projectScope("project-1", 4)).kind).toBe("closed");
+    expect(invalidateConfirmation(opened, projectScope("project-2", 3)).kind).toBe("closed");
+    // 作用域判别不同即失效：工程确认不会因为出现了 system 作用域而续命。
+    expect(invalidateConfirmation(opened, systemScope()).kind).toBe("closed");
   });
 
-  it("打开确认时深冻结请求，重试复用同一份载荷", () => {
+  it("retryable-failure 同样参加失效，旧计划不得在上下文已变后重试", () => {
+    const planValue = plan();
+    const controller = createConfirmationController<typeof planValue>();
+    expect(controller.open(planValue, { kind: "allowed" })).toBe(true);
+    return controller
+      .confirm(async () =>
+        Promise.reject(makeSafeHttpError({ code: "TRANSIENT_FAILURE", retryable: true })),
+      )
+      .then(async () => {
+        expect(controller.getState().kind).toBe("retryable-failure");
+        controller.invalidate(projectScope("project-2", 3));
+        expect(controller.getState().kind).toBe("closed");
+        let calls = 0;
+        expect(
+          await controller.retry(async () => {
+            calls += 1;
+            return success();
+          }),
+        ).toBe(false);
+        expect(calls).toBe(0);
+      });
+  });
+
+  it("取消或失效后到达的迟到成功不得覆盖后来状态", async () => {
+    const planValue = plan();
+    const controller = createConfirmationController<typeof planValue>();
+    expect(controller.open(planValue, { kind: "allowed" })).toBe(true);
+    let release: ((value: ReturnType<typeof success>) => void) | undefined;
+    const pending = controller.confirm(
+      () => new Promise<ReturnType<typeof success>>((resolve) => (release = resolve)),
+    );
+    expect(controller.getState().kind).toBe("submitting");
+    controller.invalidate(undefined);
+    release?.(success("late"));
+    expect(await pending).toBe(false);
+    expect(controller.getState().kind).toBe("closed");
+  });
+
+  it("打开确认时拍快照并递归冻结：改源对象不改已确认载荷", () => {
     const mutable = systemPlan();
     const opened = openConfirmation(mutable, { kind: "allowed" });
     if (opened.kind !== "reviewing") throw new Error("expected reviewing");
     expect(Object.isFrozen(opened.plan.request)).toBe(true);
     expect(Object.isFrozen(opened.plan.scope)).toBe(true);
+    // 嵌套载荷同样冻结：浅冻结会让已确认的嵌套请求保持可变。
+    expect(Object.isFrozen(opened.plan.targets)).toBe(true);
+  });
+
+  it("快照与源对象解耦：打开后修改源对象不影响已确认的计划", () => {
+    const mutable = { ...plan(), request: { projectId: "project-1", nested: { value: "a" } } };
+    const opened = openConfirmation(mutable, { kind: "allowed" });
+    if (opened.kind !== "reviewing") throw new Error("expected reviewing");
+    (mutable.request.nested as { value: string }).value = "b";
+    expect(opened.plan.request).toEqual({
+      projectId: "project-1",
+      nested: { value: "a" },
+    });
   });
 
   it("管理命令回执按 command-result 收口，不伪造领域 resultRef", async () => {

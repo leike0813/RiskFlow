@@ -2,15 +2,22 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
-import { ConfirmButton } from "../components/ConfirmButton";
+import { ConfirmButton, useProjectConfirmationScope } from "../components/ConfirmButton";
 import { PageStateView } from "../components/PageStateView";
 import { useEngineering, usePageQuery, useProjectPath } from "../api/engineering";
+import { clientError, type PreparedCommandV1 } from "../api/client";
+import { availabilityFromBusiness } from "../shared/actions.js";
+import type { CommandConfirmationPlanV1 } from "../shared/confirmation.js";
 import {
   actionAvailability,
+  asContractReference,
+  prepareExecutionRecord,
+  prepareResponseFeedback,
   readExecutionRecord,
   readWarningTask,
-  submitExecutionRecord,
-  submitResponseFeedback,
+  sendExecutionRecord,
+  sendResponseFeedback,
+  type EvidenceReferenceInput,
   type ExecutionView,
   type KindRef,
   type WarningTaskView,
@@ -198,9 +205,11 @@ export default function ExecutionRegisterPage() {
     feedbackForm.actualAssessmentVersion !== "" &&
     feedbackForm.feedbackAt !== "";
 
-  const registerExecution = async () => {
-    if (selector.projectId === null || task.state.kind !== "ready") return;
-    const submittedContext = contextKey;
+  const scope = useProjectConfirmationScope();
+
+  const executionPlan = (): CommandConfirmationPlanV1<PreparedCommandV1> => {
+    // 请求在打开确认这一刻定型：命令身份、幂等键与录入载荷此后不再重算。
+    if (scope === undefined || scope.kind !== "project") throw clientError("CONTRACT_INVALID");
     const actionSource =
       execForm.mode === "adopted-recommendation"
         ? {
@@ -220,7 +229,7 @@ export default function ExecutionRegisterPage() {
               reference: { entityId: ref.id, versionId: ref.version },
             })),
           };
-    const evidenceReferences = [
+    const evidenceReferences: readonly EvidenceReferenceInput[] = [
       {
         locator: { sourceSegmentId: execForm.evidenceSegment },
         sourceVersion: {
@@ -229,7 +238,7 @@ export default function ExecutionRegisterPage() {
         },
       },
     ];
-    const ref = await submitExecutionRecord(selector.projectId, {
+    const request = prepareExecutionRecord(scope.projectId, {
       commandId: stableCommandId("demo-exec", {
         contextKey,
         actionSource,
@@ -242,19 +251,34 @@ export default function ExecutionRegisterPage() {
       occurredAt: new Date(execForm.executedAt).toISOString(),
       evidenceReferences,
     });
-    if (currentContext.current !== submittedContext) return;
-    // 真实精确执行引用写回地址：反馈区据此读取权威版本，而不是复用录入标识。
-    const next = new URLSearchParams(searchParams);
-    next.set("execution", ref.executionRecordRef.reference.entityId);
-    next.set("version", ref.executionRecordRef.reference.versionId);
-    setSearchParams(next);
-    setTick((value) => value + 1);
+    return {
+      confirmationId: `confirm-${request.envelope.commandId}`,
+      operationId: "warning-response.record-execution",
+      scope,
+      targets:
+        actionSource.kind === "adopted-recommendation"
+          ? [asContractReference(actionSource.responseRecommendationRef)]
+          : actionSource.measureReleaseRefs.map((ref) => asContractReference(ref)),
+      inputVersions: [
+        {
+          entityId: execForm.evidenceSourceId,
+          versionId: execForm.evidenceSourceVersion,
+        },
+      ],
+      expectedFacts: ["warning-response-task:v1"],
+      externalEffects: ["登记人工执行事实；采纳来源不被当作执行记录重复登记"],
+      impact: "standard",
+      commandId: request.envelope.commandId,
+      idempotencyKey: request.envelope.idempotencyKey,
+      request,
+    };
   };
 
-  const registerFeedback = async () => {
-    if (selector.projectId === null || execution.state.kind !== "ready") return;
-    const submittedContext = contextKey;
-    const executionRecordRef = execution.state.value.executionRecordRef;
+  const feedbackPlan = (
+    executionRecordRef: KindRef,
+  ): CommandConfirmationPlanV1<PreparedCommandV1> => {
+    // 请求在打开确认这一刻定型：命令身份、幂等键与精确选择器此后不再重算。
+    if (scope === undefined || scope.kind !== "project") throw clientError("CONTRACT_INVALID");
     const postActionMonitoringSnapshotRef = {
       kind: "monitoring-snapshot" as const,
       reference: {
@@ -276,7 +300,7 @@ export default function ExecutionRegisterPage() {
         versionId: feedbackForm.actualAssessmentVersion,
       },
     };
-    const result = await submitResponseFeedback(selector.projectId, {
+    const request = prepareResponseFeedback(scope.projectId, {
       commandId: stableCommandId("demo-feedback", {
         contextKey,
         executionRecordRef,
@@ -291,12 +315,29 @@ export default function ExecutionRegisterPage() {
       occurredAt: new Date(feedbackForm.feedbackAt).toISOString(),
       actualAssessmentRecordRef,
     });
-    if (currentContext.current !== submittedContext) return;
-    navigate(
-      projectPath(
-        `response/feedback/${result.feedbackRef.reference.entityId}?version=${result.feedbackRef.reference.versionId}`,
-      ),
-    );
+    return {
+      confirmationId: `confirm-${request.envelope.commandId}`,
+      operationId: "warning-response.record-feedback",
+      scope,
+      targets: [
+        asContractReference(executionRecordRef),
+        asContractReference(feedbackArtifactRef),
+        asContractReference(postActionMonitoringSnapshotRef),
+        asContractReference(actualAssessmentRecordRef),
+      ],
+      inputVersions: [
+        {
+          entityId: executionRecordRef.reference.entityId,
+          versionId: executionRecordRef.reference.versionId,
+        },
+      ],
+      expectedFacts: ["execution-record:v1"],
+      externalEffects: ["登记正式反馈事实；偏差由领域侧按冻结偏差策略计算"],
+      impact: "standard",
+      commandId: request.envelope.commandId,
+      idempotencyKey: request.envelope.idempotencyKey,
+      request,
+    };
   };
 
   return (
@@ -523,29 +564,36 @@ export default function ExecutionRegisterPage() {
                     <p className="ar-note">执行身份取当前已核实主体，不可自由编辑。</p>
                     <ConfirmButton
                       label="登记执行"
-                      resetKey={contextKey + JSON.stringify(execForm)}
-                      availability={
+                      availability={availabilityFromBusiness(
                         executionAvailability === "allowed" && executionInputComplete
                           ? "allowed"
-                          : "business-unavailable"
-                      }
-                      unavailableReason={
-                        executionAvailability !== "allowed"
-                          ? "当前角色无登记执行的权限"
-                          : execForm.mode === "independent-action"
-                            ? "措施发布引用、发生时间与证据来源均必填"
-                            : "建议引用、发生时间与证据来源均必填"
-                      }
-                      summary={[
-                        `工程：${selector.projectId ?? "—"}`,
-                        execForm.mode === "adopted-recommendation"
-                          ? `来源建议：${execForm.recommendationId || "—"} · ${execForm.recommendationVersion || "—"}`
-                          : `措施发布：${measureRefs.map((ref) => `${ref.id} · ${ref.version}`).join("；") || "—"}`,
-                        `执行时间：${execForm.executedAt || "—"}`,
-                        `证据来源段：${execForm.evidenceSegment || "—"} · ${execForm.evidenceSourceId || "—"} · ${execForm.evidenceSourceVersion || "—"}`,
-                        "执行身份：当前已核实主体，不可自由编辑",
-                      ]}
-                      onConfirm={registerExecution}
+                          : "business-unavailable",
+                        { kind: "business", capability: "warning-response.record" },
+                      )}
+                      requiredPermission={{
+                        kind: "business",
+                        capability: "warning-response.record",
+                      }}
+                      scope={scope}
+                      intentRevision={contextKey + JSON.stringify(execForm)}
+                      createPlan={executionPlan}
+                      submit={async (plan) => ({
+                        kind: "reference",
+                        resultRef: asContractReference(
+                          (await sendExecutionRecord(plan.request)).executionRecordRef,
+                        ),
+                      })}
+                      onSucceeded={(result) => {
+                        if (currentContext.current !== contextKey) return;
+                        if (result.kind !== "reference" || !("reference" in result.resultRef))
+                          return;
+                        // 真实精确执行引用写回地址：反馈区据此读取权威版本，而不是复用录入标识。
+                        const next = new URLSearchParams(searchParams);
+                        next.set("execution", result.resultRef.reference.entityId);
+                        next.set("version", result.resultRef.reference.versionId);
+                        setSearchParams(next);
+                        setTick((value) => value + 1);
+                      }}
                     />
                   </FieldCard>
                 </div>
@@ -737,26 +785,35 @@ export default function ExecutionRegisterPage() {
                     </p>
                     <ConfirmButton
                       label="登记反馈"
-                      resetKey={contextKey + JSON.stringify(feedbackForm)}
-                      availability={
+                      availability={availabilityFromBusiness(
                         feedbackAvailability === "allowed" && feedbackInputComplete
                           ? "allowed"
-                          : "business-unavailable"
-                      }
-                      unavailableReason={
-                        feedbackAvailability !== "allowed"
-                          ? "当前角色无登记反馈的权限"
-                          : "反馈工件、处置后监测快照、实际评估记录的标识与版本及发生时间均必填"
-                      }
-                      summary={[
-                        `工程：${selector.projectId ?? "—"}`,
-                        `执行记录：${value.executionRecordRef.reference.entityId} · ${value.executionRecordRef.reference.versionId}`,
-                        `反馈工件：${feedbackForm.feedbackArtifactId || "—"} · ${feedbackForm.feedbackArtifactVersion || "—"}`,
-                        `处置后监测快照：${feedbackForm.postActionSnapshotId || "—"} · ${feedbackForm.postActionSnapshotVersion || "—"}`,
-                        `实际评估记录：${feedbackForm.actualAssessmentId || "—"} · ${feedbackForm.actualAssessmentVersion || "—"}`,
-                        "预计结果：登记正式反馈事实并进入反馈详情；偏差按冻结偏差策略计算",
-                      ]}
-                      onConfirm={registerFeedback}
+                          : "business-unavailable",
+                        { kind: "business", capability: "warning-response.record" },
+                      )}
+                      requiredPermission={{
+                        kind: "business",
+                        capability: "warning-response.record",
+                      }}
+                      scope={scope}
+                      intentRevision={contextKey + JSON.stringify(feedbackForm)}
+                      createPlan={() => feedbackPlan(value.executionRecordRef)}
+                      submit={async (plan) => ({
+                        kind: "reference",
+                        resultRef: asContractReference(
+                          (await sendResponseFeedback(plan.request)).feedbackRef,
+                        ),
+                      })}
+                      onSucceeded={(result) => {
+                        if (currentContext.current !== contextKey) return;
+                        if (result.kind !== "reference" || !("reference" in result.resultRef))
+                          return;
+                        navigate(
+                          projectPath(
+                            `response/feedback/${result.resultRef.reference.entityId}?version=${result.resultRef.reference.versionId}`,
+                          ),
+                        );
+                      }}
                     />
                   </FieldCard>
                 </div>

@@ -1,8 +1,11 @@
 import { useState } from "react";
+
+import { clientError, type PreparedCommandV1 } from "../api/client";
+import type { CommandConfirmationPlanV1 } from "../shared/confirmation";
 import { Link } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
-import { ConfirmButton } from "../components/ConfirmButton";
+import { ConfirmButton, useProjectConfirmationScope } from "../components/ConfirmButton";
 import { DataTable, type DataTableColumn } from "../components/DataTable";
 import { PageStateView } from "../components/PageStateView";
 import { SectionTabs } from "../components/SectionTabs";
@@ -10,17 +13,20 @@ import { StatusTag } from "../components/StatusTag";
 import { VersionTag } from "../components/VersionTag";
 import { useEngineering, usePageQuery, useProjectPath } from "../api/engineering";
 import {
+  asContractReference,
   readReviewQueue,
   type ReviewQueueItemView,
   type ReviewQueuePageView,
 } from "../api/operations";
+import { safeHttpErrorOf } from "../quality/QualityPage";
 import {
   REVIEW_STATUS_LABEL,
   REVIEW_STATUS_TONE,
   REVIEW_TYPE_LABEL,
   reviewDecisionOptions,
   reviewTabs,
-  submitReviewTaskDecision,
+  prepareReviewTaskDecision,
+  sendReviewTaskDecision,
   type ReviewDecisionOption,
 } from "./ReviewDetailPage";
 import "./ReviewQueuePage.css";
@@ -76,48 +82,70 @@ export default function ReviewQueuePage() {
     [typeFilter, statusFilter],
   );
 
-  const submitDecision = async (item: ReviewQueueItemView, option: ReviewDecisionOption) => {
-    const projectId = selector.projectId;
-    if (projectId === null) return;
-    try {
-      const decisionRefId = await submitReviewTaskDecision({
-        projectId,
-        reviewTaskRef: item.reviewTaskRef,
-        reviewType: item.reviewTaskRef.reviewType,
-        option,
-      });
-      setOutcomes((prev) => [
-        {
-          entityId: taskEntityId(item),
-          decisionLabel: option.label,
-          ok: true,
-          decisionRefId,
-          waitingRunId: item.reviewTaskRef.waitingRunRef.reference.entityId,
-        },
-        ...prev,
-      ]);
-      retry();
-    } catch (error) {
-      setOutcomes((prev) => [
-        {
-          entityId: taskEntityId(item),
-          decisionLabel: option.label,
-          ok: false,
-          code: error instanceof Error ? error.message : "TERMINAL_FAILURE",
-        },
-        ...prev,
-      ]);
-      throw error;
-    }
+  const scope = useProjectConfirmationScope();
+
+  /**
+   * CH-2 D-10：一项复核决定的请求在打开确认这一刻构造。
+   *
+   * 批量确认只是冻结多份同样的单条命令，逐项按原幂等与事务执行；不新增 bulk API。
+   */
+  const decisionRequest = (
+    item: ReviewQueueItemView,
+    option: ReviewDecisionOption,
+  ): PreparedCommandV1 => {
+    if (scope === undefined || scope.kind !== "project") throw clientError("CONTRACT_INVALID");
+    return prepareReviewTaskDecision({
+      projectId: scope.projectId,
+      reviewTaskRef: item.reviewTaskRef,
+      reviewType: item.reviewTaskRef.reviewType,
+      option,
+    });
   };
 
-  const confirmSummary = (item: ReviewQueueItemView, decisionLabel: string, result: string) => [
-    `工程：${selector.projectId ?? ""}`,
-    `对象：${REVIEW_TYPE_LABEL[item.reviewTaskRef.reviewType] ?? item.reviewTaskRef.reviewType} ${targetLabel(item)}`,
-    `精确版本：${item.reviewTaskRef.targetRef.reference.versionId}`,
-    `预计结果：${decisionLabel}，${result}`,
-    "副作用：决定写入审计日志且不可撤销；命令携带幂等键，重复提交同一决定不重复生效",
-  ];
+  const decisionPlan = (
+    item: ReviewQueueItemView,
+    option: ReviewDecisionOption,
+    commandId: string,
+    idempotencyKey: string,
+    request: PreparedCommandV1,
+  ): CommandConfirmationPlanV1<PreparedCommandV1> => {
+    if (scope === undefined) throw clientError("CONTRACT_INVALID");
+    return {
+      confirmationId: `confirm-${commandId}`,
+      operationId: "review-audit.decide-review",
+      scope,
+      targets: [asContractReference(item.reviewTaskRef.targetRef)],
+      inputVersions: [
+        {
+          entityId: item.reviewTaskRef.targetRef.reference.entityId,
+          versionId: item.reviewTaskRef.targetRef.reference.versionId,
+        },
+      ],
+      expectedFacts: [`review-decision:${taskEntityId(item)}`],
+      externalEffects: ["决定写入复核审计且不可撤销"],
+      impact: "standard",
+      commandId,
+      idempotencyKey,
+      request,
+    };
+  };
+
+  const recordOutcome = (
+    item: ReviewQueueItemView,
+    option: ReviewDecisionOption,
+    ok: boolean,
+    detail: string,
+  ) =>
+    setOutcomes((prev) => [
+      {
+        entityId: taskEntityId(item),
+        decisionLabel: option.label,
+        ok,
+        ...(ok ? { decisionRefId: detail } : { code: detail }),
+        ...(ok ? { waitingRunId: item.reviewTaskRef.waitingRunRef.reference.entityId } : {}),
+      },
+      ...prev,
+    ]);
 
   const columns: DataTableColumn[] = [
     {
@@ -263,15 +291,87 @@ export default function ReviewQueuePage() {
             {approveOption !== undefined && (
               <ConfirmButton
                 label="通过"
-                summary={confirmSummary(item, "按原样通过", "等待中的运行据此恢复后续流程")}
-                onConfirm={() => submitDecision(item, approveOption)}
+                availability={{ kind: "allowed" }}
+                requiredPermission={{ kind: "business", capability: "review-audit.decide" }}
+                scope={scope}
+                intentRevision={`${taskEntityId(item)}|${approveOption.kind}`}
+                createPlan={() => {
+                  const request = decisionRequest(item, approveOption);
+                  return decisionPlan(
+                    item,
+                    approveOption,
+                    request.envelope.commandId,
+                    request.envelope.idempotencyKey,
+                    request,
+                  );
+                }}
+                submit={async (plan) => {
+                  try {
+                    const submitted = await sendReviewTaskDecision(plan.request);
+                    recordOutcome(
+                      item,
+                      approveOption,
+                      true,
+                      submitted.reviewDecisionRef.reference.entityId,
+                    );
+                    retry();
+                    return {
+                      kind: "reference",
+                      resultRef: asContractReference(submitted.reviewDecisionRef),
+                    };
+                  } catch (error) {
+                    recordOutcome(
+                      item,
+                      approveOption,
+                      false,
+                      error instanceof Error ? error.message : "TERMINAL_FAILURE",
+                    );
+                    throw error;
+                  }
+                }}
               />
             )}
             {rejectOption !== undefined && (
               <ConfirmButton
                 label="拒绝"
-                summary={confirmSummary(item, "拒绝该任务", "目标对象保持待处理状态并记录决定")}
-                onConfirm={() => submitDecision(item, rejectOption)}
+                availability={{ kind: "allowed" }}
+                requiredPermission={{ kind: "business", capability: "review-audit.decide" }}
+                scope={scope}
+                intentRevision={`${taskEntityId(item)}|${rejectOption.kind}`}
+                createPlan={() => {
+                  const request = decisionRequest(item, rejectOption);
+                  return decisionPlan(
+                    item,
+                    rejectOption,
+                    request.envelope.commandId,
+                    request.envelope.idempotencyKey,
+                    request,
+                  );
+                }}
+                submit={async (plan) => {
+                  try {
+                    const submitted = await sendReviewTaskDecision(plan.request);
+                    recordOutcome(
+                      item,
+                      rejectOption,
+                      true,
+                      submitted.reviewDecisionRef.reference.entityId,
+                    );
+                    retry();
+                    return {
+                      kind: "reference",
+                      resultRef: asContractReference(submitted.reviewDecisionRef),
+                    };
+                  } catch (error) {
+                    recordOutcome(
+                      item,
+                      rejectOption,
+                      false,
+                      error instanceof Error ? error.message : "TERMINAL_FAILURE",
+                    );
+                    throw error;
+                  }
+                }}
               />
             )}
             <Link
@@ -356,31 +456,14 @@ export default function ReviewQueuePage() {
               selectedItems.every(
                 (item) => approveOptionOf(item.reviewTaskRef.reviewType) !== undefined,
               );
-            const batchSummary = [
-              `工程：${selector.projectId ?? ""}`,
-              `对象：${selectedItems.length} 项（${selectedItems
-                .map((item) => taskEntityId(item))
-                .join("、")}）`,
-              `精确版本：${selectedItems
-                .map((item) => item.reviewTaskRef.targetRef.reference.versionId)
-                .join("、")}`,
-              "预计结果：所选任务逐项按原样通过，对应等待运行据此恢复后续流程",
-              "副作用：每项决定写入审计日志且不可撤销；各命令携带幂等键，重复提交不重复生效",
-            ];
-            const submitBatch = async () => {
-              let firstError: unknown = null;
-              for (const item of selectedItems) {
-                const option = approveOptionOf(item.reviewTaskRef.reviewType);
-                if (option === undefined) continue;
-                try {
-                  await submitDecision(item, option);
-                } catch (error) {
-                  if (firstError === null) firstError = error;
-                }
-              }
-              setSelected(new Set());
-              if (firstError !== null) throw firstError;
-            };
+            // CH-2 D-10：批量只冻结所选完整命令数组，逐项按原幂等与事务执行；
+            // 部分失败保留逐项结果，重试只重发失败项的原信封。
+            const batchRequests = batchApprovable
+              ? selectedItems.flatMap((item) => {
+                  const option = approveOptionOf(item.reviewTaskRef.reviewType);
+                  return option === undefined ? [] : [decisionRequest(item, option)];
+                })
+              : [];
             return (
               <Card
                 title="复核任务"
@@ -453,8 +536,76 @@ export default function ReviewQueuePage() {
                   ) : batchApprovable ? (
                     <ConfirmButton
                       label="批量通过"
-                      summary={batchSummary}
-                      onConfirm={submitBatch}
+                      availability={{ kind: "allowed" }}
+                      requiredPermission={{ kind: "business", capability: "review-audit.decide" }}
+                      scope={scope}
+                      intentRevision={batchRequests.map((r) => r.envelope.commandId).join(",")}
+                      createPlan={() => {
+                        if (scope === undefined) throw clientError("CONTRACT_INVALID");
+                        const first = batchRequests[0];
+                        if (first === undefined) throw clientError("CONTRACT_INVALID");
+                        return {
+                          confirmationId: `confirm-batch-${first.envelope.commandId}`,
+                          operationId: "review-audit.decide-review",
+                          scope,
+                          targets: selectedItems.map((item) =>
+                            asContractReference(item.reviewTaskRef.targetRef),
+                          ),
+                          inputVersions: selectedItems.map((item) => ({
+                            entityId: item.reviewTaskRef.targetRef.reference.entityId,
+                            versionId: item.reviewTaskRef.targetRef.reference.versionId,
+                          })),
+                          expectedFacts: selectedItems.map(
+                            (item) => `review-decision:${taskEntityId(item)}`,
+                          ),
+                          externalEffects: ["所选决定逐项写入复核审计且不可撤销"],
+                          // 批量复核是既有高影响动作：默认焦点落在取消，提交需额外确认。
+                          impact: "high",
+                          commandId: first.envelope.commandId,
+                          idempotencyKey: first.envelope.idempotencyKey,
+                          request: batchRequests,
+                        };
+                      }}
+                      submit={async (plan) => {
+                        const items = [];
+                        for (const [index, request] of plan.request.entries()) {
+                          const item = selectedItems[index];
+                          if (item === undefined) continue;
+                          const option = approveOptionOf(item.reviewTaskRef.reviewType);
+                          if (option === undefined) continue;
+                          try {
+                            await sendReviewTaskDecision(request);
+                            items.push({
+                              commandId: request.envelope.commandId,
+                              outcome: {
+                                kind: "succeeded" as const,
+                                result: {
+                                  kind: "reference" as const,
+                                  resultRef: asContractReference(item.reviewTaskRef.targetRef),
+                                },
+                              },
+                            });
+                            recordOutcome(item, option, true, taskEntityId(item));
+                          } catch (error) {
+                            items.push({
+                              commandId: request.envelope.commandId,
+                              outcome: {
+                                kind: "failed" as const,
+                                error: safeHttpErrorOf(error),
+                              },
+                            });
+                            recordOutcome(
+                              item,
+                              option,
+                              false,
+                              error instanceof Error ? error.message : "TERMINAL_FAILURE",
+                            );
+                          }
+                        }
+                        setSelected(new Set());
+                        retry();
+                        return { kind: "batch-result", items };
+                      }}
                     />
                   ) : (
                     <button

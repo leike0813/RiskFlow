@@ -4,13 +4,42 @@ import type { SafeHttpErrorV1 } from "../../api/errors.js";
 import type { PageLoadStateV1, SafeReasonV1 } from "../../app/state.js";
 import { actionDisabledReason, invokeWebAction, type WebActionV1 } from "../actions.js";
 
-export type PageFrameVariantV1 = "list" | "detail" | "run" | "governance" | "review";
+export type PageRegionKindV1 =
+  | "list"
+  | "detail"
+  | "form"
+  | "chart"
+  | "timeline"
+  | "matrix-grid"
+  | "tabs"
+  | "run"
+  | "governance"
+  | "review"
+  | "agent"
+  | "action";
+
+export type PageChartVariantV1 = "donut" | "hbars" | "trend" | "graph" | "matrix";
+
+/**
+ * CH-2 D-03：页面区域描述符。
+ *
+ * 只有稳定 `key` 与呈现 kind，没有任何 URL、端口、数据选择器、领域 DTO 或动作配置——
+ * 区域组合是 JSX 结构，不是页面引擎。chart 必带 variant，其它 kind 不带该字段。
+ */
+export type PageRegionDescriptorV1 =
+  | Readonly<{ key: string; kind: Exclude<PageRegionKindV1, "chart"> }>
+  | Readonly<{ key: string; kind: "chart"; variant: PageChartVariantV1 }>;
+
+export type PageRegionV1<T> = Readonly<{
+  descriptor: PageRegionDescriptorV1;
+  content: ReactNode | ((value: T) => ReactNode);
+}>;
 
 export type PageFramePropsV1<T> = Readonly<{
   title: string;
   state: PageLoadStateV1<T>;
-  variant?: PageFrameVariantV1;
-  content?: ReactNode | ((value: T) => ReactNode);
+  /** 有序区域块；页面级失败不显示任何旧区域。 */
+  regions: readonly PageRegionV1<T>[];
   actions?: readonly WebActionV1[];
   emptyMessage?: string;
   className?: string;
@@ -38,6 +67,8 @@ const reasonCodes = (reasons: readonly SafeReasonV1[]): ReactNode => (
 );
 
 const renderAction = (action: WebActionV1, index: number): ReactNode => {
+  // CH-2 D-09：hidden 完全不渲染，不用 disabled 透露目标存在。
+  if (action.availability.kind === "hidden") return null;
   const reason = actionDisabledReason(action.availability);
   const reasonId = `${action.actionId}-reason-${index}`;
   return (
@@ -62,14 +93,41 @@ const renderAction = (action: WebActionV1, index: number): ReactNode => {
   );
 };
 
-const renderContent = <T,>(content: PageFramePropsV1<T>["content"], value: T): ReactNode =>
-  typeof content === "function" ? content(value) : content;
+const renderRegion = <T,>(region: PageRegionV1<T>, value: T): ReactNode => (
+  <div
+    key={region.descriptor.key}
+    className={`page-region page-region-${region.descriptor.kind}`}
+    data-region-kind={region.descriptor.kind}
+    {...("variant" in region.descriptor
+      ? { "data-region-variant": region.descriptor.variant }
+      : {})}
+  >
+    {typeof region.content === "function" ? region.content(value) : region.content}
+  </div>
+);
+
+const renderRegions = <T,>(regions: readonly PageRegionV1<T>[], value: T): ReactNode => (
+  <>{regions.map((region) => renderRegion(region, value))}</>
+);
+
+/**
+ * 自行布局页面的区域渲染出口。
+ *
+ * PageFrame 自己承担 h1 与七态；已经拥有自己的标题与取数状态的业务页只借用区域
+ * 结构与顺序，不套第二层 Frame——那会产生两个 level-1 标题。
+ */
+export const PageRegions = <T,>({
+  regions,
+  value,
+}: {
+  readonly regions: readonly PageRegionV1<T>[];
+  readonly value: T;
+}): ReactNode => renderRegions(regions, value);
 
 export const PageFrame = <T,>({
   title,
   state,
-  variant,
-  content,
+  regions,
   actions = [],
   emptyMessage = "暂无可显示内容",
   className,
@@ -77,19 +135,20 @@ export const PageFrame = <T,>({
   const headingId = useId();
   const stateId = useId();
   const busy = state.kind === "loading";
+  const visible = (action: WebActionV1): boolean => action.availability.kind !== "hidden";
   const visibleActions =
     state.kind === "empty"
-      ? actions.filter((action) => action.availability.kind === "allowed")
+      ? actions.filter((action) => visible(action) && action.availability.kind === "allowed")
       : actions;
-  const headerActions = state.kind === "empty" ? [] : visibleActions;
+  const headerActions = state.kind === "empty" ? [] : visibleActions.filter(visible);
   let body: ReactNode;
-  if (state.kind === "ready") body = renderContent(content, state.value);
+  if (state.kind === "ready") body = renderRegions(regions, state.value);
   else if (state.kind === "loading") {
     body =
       state.previous === null ? (
         <div className="page-skeleton" aria-hidden="true" />
       ) : (
-        renderContent(content, state.previous)
+        renderRegions(regions, state.previous)
       );
   } else if (state.kind === "empty") {
     body = (
@@ -118,13 +177,7 @@ export const PageFrame = <T,>({
   }
   return (
     <section
-      className={[
-        "page-frame",
-        variant === undefined ? "" : `page-frame-${variant}`,
-        className ?? "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
+      className={["page-frame", className ?? ""].filter(Boolean).join(" ")}
       aria-labelledby={headingId}
       aria-busy={busy}
       data-page-state={state.kind}

@@ -1,17 +1,23 @@
 import { useEffect, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 
-import type { ContractReferenceV1, ModuleCapabilityV1 } from "@riskflow/contracts/ports";
+import type { ContractReferenceV1 } from "@riskflow/contracts/ports";
 
 import type { SafeHttpErrorV1 } from "../api/errors.js";
 import { shouldCloseOnEscape, focusElement } from "./focus.js";
-import type { WebActionAvailabilityV1 } from "./actions.js";
+import {
+  permissionLabel,
+  type WebActionAvailabilityV1,
+  type WebActionPermissionV1,
+} from "./actions.js";
 import type { CommandConfirmationPlanV1, ConfirmationStateV1 } from "./confirmation.js";
 import { safeErrorFields } from "./page-shells/PageFrame.js";
+import "./CommandConfirmationDialog.css";
 
 export type CommandConfirmationDialogPropsV1<TRequest> = Readonly<{
   state: ConfirmationStateV1<TRequest>;
   availability?: WebActionAvailabilityV1;
-  requiredCapability: ModuleCapabilityV1;
+  /** 唯一权限描述：业务 capability 或系统管理动作，两者不在界面混同。 */
+  requiredPermission: WebActionPermissionV1;
   openerRef?: RefObject<HTMLElement | null>;
   onAcknowledge?: () => void;
   onConfirm?: (plan: CommandConfirmationPlanV1<TRequest>) => void | Promise<void>;
@@ -32,7 +38,7 @@ const SafeError = ({ error }: { error: SafeHttpErrorV1 }): ReactNode => (
 export const CommandConfirmationDialog = <TRequest,>({
   state,
   availability,
-  requiredCapability,
+  requiredPermission,
   openerRef,
   onAcknowledge,
   onConfirm,
@@ -50,11 +56,8 @@ export const CommandConfirmationDialog = <TRequest,>({
       return;
     }
     if (dialog !== null && !dialog.open) {
-      try {
-        dialog.showModal();
-      } catch {
-        dialog.setAttribute("open", "");
-      }
+      // 真实原生模态：showModal 失败必须暴露，不能降级成非模态而丢掉焦点约束。
+      dialog.showModal();
     }
     cancelRef.current?.focus();
   }, [open, openerRef, state.kind]);
@@ -112,8 +115,9 @@ export const CommandConfirmationDialog = <TRequest,>({
         <div className="confirmation-summary">
           <dl>
             <div>
-              <dt>工程</dt>
-              <dd>{plan.projectId}</dd>
+              <dt>作用域</dt>
+              {/* 系统管理命令没有工程上下文，如实呈现而不伪造工程。 */}
+              <dd>{plan.scope.kind === "project" ? plan.scope.projectId : "系统管理"}</dd>
             </div>
             <div>
               <dt>命令</dt>
@@ -163,7 +167,7 @@ export const CommandConfirmationDialog = <TRequest,>({
             </ul>
           </section>
           <p>
-            所需能力：<code>{requiredCapability}</code>
+            所需权限：<code>{permissionLabel(requiredPermission)}</code>
           </p>
           {plan.impact === "high" && state.kind === "reviewing" ? (
             <label>

@@ -357,11 +357,11 @@ test("确认对话框：焦点移入取消、Tab 环绕、Escape 归还焦点，
   await expect(page.getByRole("button", { name: "取消", exact: true })).toBeFocused();
 
   // Tab 环绕：从最后一个可聚焦元素继续 Tab 回到第一个，Shift+Tab 反向同理。
-  await page.getByRole("button", { name: "确认通过", exact: true }).focus();
+  await dialog.getByRole("button", { name: "确认提交" }).focus();
   await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: "关闭" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "取消", exact: true })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
-  await expect(page.getByRole("button", { name: "确认通过", exact: true })).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "确认提交" })).toBeFocused();
 
   // Escape 关闭并把焦点归还触发按钮；此前后端一个写请求都不该发生。
   await page.keyboard.press("Escape");
@@ -400,7 +400,7 @@ test("识别分组复核：按类型呈现分支、不自造候选，决定经�
   const row = page.locator("tr", { hasText: audit().reviewTask.entityId });
   await expect(row).toBeVisible();
   await row.getByRole("button", { name: "通过", exact: true }).click();
-  await page.getByRole("button", { name: "确认通过", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "确认提交" }).click();
   const outcome = page.locator("li", { hasText: audit().reviewTask.entityId }).first();
   await expect(outcome.getByText(/已登记（决定 review-decision-/)).toBeVisible();
 

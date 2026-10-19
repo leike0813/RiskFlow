@@ -12,8 +12,10 @@
 import type { ReactNode } from "react";
 
 import { Card } from "../components/Card";
-import { ConfirmButton } from "../components/ConfirmButton";
-import { submitCommand } from "../api/client";
+import { ConfirmButton, useProjectConfirmationScope } from "../components/ConfirmButton";
+import { clientError, prepareCommand, sendPreparedCommand, unwrapQueryResult } from "../api/client";
+import { asContractReference } from "../api/operations";
+import type { CommandConfirmationScopeV1 } from "../shared/confirmation.js";
 import type {
   ActionAvailabilityView,
   AgentBudgetView,
@@ -391,22 +393,6 @@ export const agentTaskDetailPath = (taskRef: AgentTaskRefView): string =>
 
 // ------------------------------------------------------------------ 启动上下文
 
-const asText = (value: unknown): string | undefined =>
-  typeof value === "string" && value.length > 0 ? value : undefined;
-
-const asPayloadVersionRef = (value: unknown): VersionRef | undefined => {
-  if (typeof value !== "object" || value === null) return undefined;
-  const record = value as Record<string, unknown>;
-  const entityId = asText(record.entityId);
-  const versionId = asText(record.versionId);
-  return entityId !== undefined && versionId !== undefined ? { entityId, versionId } : undefined;
-};
-
-const asPayloadKind = (value: unknown): string | undefined =>
-  typeof value === "object" && value !== null
-    ? asText((value as Record<string, unknown>).kind)
-    : undefined;
-
 /**
  * 启动上下文：只有服务端确认定义支持交互启动时才给出入口。
  * 载荷逐项按服务端原值呈现，不在页面补模型、工具、提示模板或预算选择。
@@ -434,46 +420,49 @@ export function AgentLaunchPanel({
     );
   }
   const payload = launchContext.payload ?? {};
-  const frozenInputRef = asPayloadVersionRef(payload.frozenInputRef);
-  const frozenInputKind = asPayloadKind(payload.frozenInputRef);
-  const refText = (value: unknown, fallback: VersionRef): string => {
-    const parsed = asPayloadVersionRef(value);
-    return parsed === undefined
-      ? `${fallback.entityId} · ${fallback.versionId}`
-      : `${parsed.entityId} · ${parsed.versionId}`;
-  };
-  const summary = [
-    `工程：${projectId}`,
-    `来源任务：${taskRef.reference.entityId} · ${taskRef.reference.versionId}`,
-    `任务类型：${asText(payload.taskType) ?? taskRef.taskType}`,
-    `触发方式：${asText(payload.triggerMode) ?? "未返回"}`,
-    `冻结输入：${
-      frozenInputRef === undefined
-        ? "未返回"
-        : `${frozenInputKind ?? "引用"} ${frozenInputRef.entityId} · ${frozenInputRef.versionId}`
-    }`,
-    `模型部署：${refText(payload.modelDeploymentRef, taskRef.modelDeploymentRef)}`,
-    `提示模板：${refText(payload.promptTemplateRef, taskRef.promptTemplateRef)}`,
-    `工具策略：${refText(payload.toolPolicyRef, taskRef.toolPolicyRef)}`,
-    `预算策略：${refText(payload.budgetPolicyRef, taskRef.budgetPolicyRef)}`,
-    `增量类型 Schema：${refText(payload.incrementSchemaRef, taskRef.incrementSchemaRef)}`,
-    `校验策略：${refText(payload.validationPolicyRef, taskRef.validationPolicyRef)}`,
-    "资源预算随预算策略版本冻结，本页不放宽任何上限。",
-  ];
+  const scope = useProjectConfirmationScope();
   return (
     <div className="ag-launch">
       <ConfirmButton
         label="启动交互任务"
-        summary={summary}
-        resetKey={`${projectId}|${taskRef.reference.entityId}|${taskRef.reference.versionId}`}
-        onConfirm={async () => {
-          await submitCommand({
-            projectId,
+        availability={{ kind: "allowed" }}
+        requiredPermission={{ kind: "business", capability: "agent-task.start" }}
+        scope={scope}
+        intentRevision={`${projectId}|${taskRef.reference.entityId}|${taskRef.reference.versionId}`}
+        createPlan={() => {
+          // CH-2 D-10：启动载荷在打开确认这一刻定型，确认后由原启动端口复验定义与预算。
+          if (scope === undefined || scope.kind !== "project")
+            throw clientError("CONTRACT_INVALID");
+          const request = prepareCommand({
+            projectId: scope.projectId,
             branch: "agent-task.start-task",
             payload: payload as Record<string, unknown>,
           });
-          onStarted();
+          const plan: CommandConfirmationScopeV1 = scope;
+          return {
+            confirmationId: `confirm-${request.envelope.commandId}`,
+            operationId: "agent-task.start-task",
+            scope: plan,
+            targets: [asContractReference(taskRef)],
+            inputVersions: [
+              {
+                entityId: taskRef.reference.entityId,
+                versionId: taskRef.reference.versionId,
+              },
+            ],
+            expectedFacts: [`agent-task:${taskRef.reference.entityId}`],
+            externalEffects: ["按冻结定义启动一次交互 Agent 任务"],
+            impact: "standard",
+            commandId: request.envelope.commandId,
+            idempotencyKey: request.envelope.idempotencyKey,
+            request,
+          };
         }}
+        submit={async (plan) => {
+          unwrapQueryResult(await sendPreparedCommand(plan.request));
+          return { kind: "command-result", result: { kind: "agent-task-started" } };
+        }}
+        onSucceeded={onStarted}
       />
       <p className="ag-note">
         启动载荷由服务端按已登记定义与来源任务的冻结输入生成，确认后仍由原启动端口复验定义、上下文与预算。

@@ -29,7 +29,31 @@ export type WebPathTemplateV1 =
   | "/review-audit"
   | (string & {});
 
-export type WebShellKindV1 = "list" | "detail" | "run" | "governance" | "review" | "custom";
+/**
+ * CH-2 D-03：区域描述符只表达呈现结构，没有 URL、端口、数据选择器或动作配置。
+ * 路由 contribution 按单区域特例登记，页面自己组合多区域。
+ */
+export type WebRegionKindV1 =
+  | "list"
+  | "detail"
+  | "form"
+  | "chart"
+  | "timeline"
+  | "matrix-grid"
+  | "tabs"
+  | "run"
+  | "governance"
+  | "review"
+  | "agent"
+  | "action";
+
+export type WebRegionDescriptorV1 =
+  | Readonly<{ readonly kind: Exclude<WebRegionKindV1, "chart"> }>
+  | Readonly<{
+      readonly kind: "chart";
+      readonly variant: "donut" | "hbars" | "trend" | "graph" | "matrix";
+    }>;
+
 export type WebContextRequirementV1 = "none" | "project" | "spatial" | "process";
 
 export type WebRouteRenderInputV1 = Readonly<{
@@ -45,7 +69,7 @@ export type WebRouteContributionV1 = Readonly<{
   path: WebPathTemplateV1;
   title: string;
   section: WebNavigationIdV1 | null;
-  shellKind: WebShellKindV1;
+  regions: readonly WebRegionDescriptorV1[];
   contextRequirement: WebContextRequirementV1;
   requiredViewCapability: ModuleCapabilityV1 | null;
   render: WebRouteRendererV1 | null;
@@ -71,7 +95,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/login",
     title: "登录",
     section: null,
-    shellKind: "custom",
+    regions: [{ kind: "form" }],
     contextRequirement: "none",
     requiredViewCapability: null,
     render: null,
@@ -81,7 +105,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/change-password",
     title: "修改密码",
     section: null,
-    shellKind: "custom",
+    regions: [{ kind: "form" }],
     contextRequirement: "none",
     requiredViewCapability: null,
     render: null,
@@ -91,7 +115,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/overview",
     title: "风险态势",
     section: "overview",
-    shellKind: "detail",
+    regions: [{ kind: "detail" }],
     contextRequirement: "project",
     requiredViewCapability: "projection.query",
     render: null,
@@ -101,7 +125,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/projects",
     title: "工程项目",
     section: "projects",
-    shellKind: "list",
+    regions: [{ kind: "list" }],
     contextRequirement: "project",
     requiredViewCapability: "engineering-data.read",
     render: null,
@@ -111,7 +135,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/identification",
     title: "风险识别",
     section: "identification",
-    shellKind: "run",
+    regions: [{ kind: "run" }],
     contextRequirement: "project",
     requiredViewCapability: "risk-identification.read",
     render: null,
@@ -121,7 +145,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/assessment",
     title: "风险评估",
     section: "assessment",
-    shellKind: "list",
+    regions: [{ kind: "list" }],
     contextRequirement: "project",
     requiredViewCapability: "risk-assessment.read",
     render: null,
@@ -131,7 +155,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/warnings",
     title: "预警处置",
     section: "warnings",
-    shellKind: "list",
+    regions: [{ kind: "list" }],
     contextRequirement: "project",
     requiredViewCapability: "warning-response.read",
     render: null,
@@ -141,7 +165,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/knowledge",
     title: "知识与规则",
     section: "knowledge",
-    shellKind: "governance",
+    regions: [{ kind: "governance" }],
     contextRequirement: "project",
     requiredViewCapability: "knowledge-modeling.read",
     render: null,
@@ -151,7 +175,7 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
     path: "/review-audit",
     title: "复核与审计",
     section: "reviews",
-    shellKind: "review",
+    regions: [{ kind: "review" }],
     contextRequirement: "project",
     requiredViewCapability: "review-audit.read",
     render: null,
@@ -192,20 +216,41 @@ const assertContribution = (value: WebRouteContributionV1): void => {
     throw new Error("web route renderer must be a direct function");
 };
 
+export type WebRouteCandidateV1 = Readonly<{
+  route: WebRouteContributionV1;
+  segments: readonly string[];
+}>;
+
 export type WebRouteRegistryV1 = Readonly<{
   routes: readonly WebRouteContributionV1[];
+  /** 注册期算好的段描述；解析只比较实际同时匹配的候选。 */
+  candidates: readonly WebRouteCandidateV1[];
   byId: (routeId: string) => WebRouteContributionV1 | undefined;
   byPath: (path: string) => WebRouteContributionV1 | undefined;
 }>;
+
+/**
+ * 模板的静态形状：参数段一律规范化为同一占位。
+ *
+ * CH-2 D-04：形状相同意味着同一批具体路径都能同时匹配两个模板（只有参数名不同），
+ * 这种注册在注册期就是歧义，必须拒绝而不是靠注册顺序或字典序静默任选目标。
+ */
+const staticShapeOf = (path: string): string =>
+  path
+    .split("/")
+    .map((segment) => (segment.startsWith(":") ? ":" : segment))
+    .join("/");
 
 export const createWebRouteRegistry = (
   contributions: readonly WebRouteContributionV1[] = [],
 ): WebRouteRegistryV1 => {
   const byIdMap = new Map<string, WebRouteContributionV1>();
   const byPathMap = new Map<string, WebRouteContributionV1>();
+  const byShapeMap = new Map<string, WebRouteContributionV1>();
   for (const item of BASE_WEB_ROUTE_CONTRIBUTIONS_V1) {
     byIdMap.set(item.routeId, item);
     byPathMap.set(item.path, item);
+    byShapeMap.set(staticShapeOf(item.path), item);
   }
   for (const item of contributions) {
     assertContribution(item);
@@ -220,14 +265,35 @@ export const createWebRouteRegistry = (
       if (!replacesBase) throw new Error("duplicate web route contribution");
       byIdMap.set(item.routeId, Object.freeze(item));
       byPathMap.set(item.path, Object.freeze(item));
+      byShapeMap.set(staticShapeOf(item.path), Object.freeze(item));
       continue;
+    }
+    const shape = staticShapeOf(item.path);
+    const previousByShape = byShapeMap.get(shape);
+    if (previousByShape !== undefined) {
+      throw new Error(
+        `ambiguous web route shape: ${item.path} conflicts with ${previousByShape.path}`,
+      );
     }
     byIdMap.set(item.routeId, Object.freeze(item));
     byPathMap.set(item.path, Object.freeze(item));
+    byShapeMap.set(shape, Object.freeze(item));
   }
   const routes = Object.freeze(Array.from(byIdMap.values()));
+  // 注册期已把段描述算好：解析只比较候选，不再每次导航重排整个注册表。
+  const candidates = Object.freeze(
+    routes
+      .map((route) =>
+        Object.freeze({
+          route,
+          segments: Object.freeze(route.path.split("/").slice(1)),
+        }),
+      )
+      .filter((candidate) => candidate.segments.length > 0),
+  );
   return Object.freeze({
     routes,
+    candidates,
     byId: (routeId: string) => byIdMap.get(routeId),
     byPath: (path: string) => byPathMap.get(path),
   });
@@ -244,12 +310,51 @@ export const WEB_LEGACY_PATH_ALIASES_V1: Readonly<Record<string, string>> = Obje
   "/assessment/quality-evaluation": "/assessment/quality",
 });
 
-/** 应用别名：保留 path 末尾的 params 与整个 search；未知路径不产生重定向。 */
-export const applyWebPathAliasV1 = (pathname: string, search = ""): string | undefined => {
+const matchCandidate = (
+  candidate: WebRouteCandidateV1,
+  actual: readonly string[],
+): Readonly<Record<string, string>> | undefined => {
+  if (candidate.segments.length !== actual.length) return undefined;
+  const params: Record<string, string> = {};
+  for (let index = 0; index < candidate.segments.length; index += 1) {
+    const expectedSegment = candidate.segments[index]!;
+    const actualSegment = actual[index]!;
+    if (actualSegment === "") return undefined;
+    if (expectedSegment.startsWith(":")) params[expectedSegment.slice(1)] = actualSegment;
+    else if (expectedSegment !== actualSegment) return undefined;
+  }
+  return Object.freeze(params);
+};
+
+/** 只读检查：某条路径是否命中当前注册表中的任一模板。别名重定向据此核对目标。 */
+const registeredTargetMatches = (pathname: string, registry: WebRouteRegistryV1): boolean =>
+  registry.candidates.some(
+    (candidate) => matchCandidate(candidate, pathname.split("/").slice(1)) !== undefined,
+  );
+
+/**
+ * 应用别名：保留 path 末尾的 params 与整个 search；未知路径不产生重定向。
+ *
+ * CH-2 D-04：别名表本身是已知模板清单——只有登记在册的前缀才可能触发，且必须落在
+ * 段边界上；转换后的完整路径还必须在当前注册表里真实命中，因此目标未注入时不会先把
+ * 用户送到一个不存在的页面。`applyWebPathAliasV1` 接收注册表，不保留无验证的旧签名。
+ */
+export const applyWebPathAliasV1 = (
+  pathname: string,
+  search = "",
+  registry: WebRouteRegistryV1 = WEB_ROUTE_REGISTRY_V1,
+): string | undefined => {
   for (const [from, to] of Object.entries(WEB_LEGACY_PATH_ALIASES_V1)) {
-    if (pathname === from) return `${to}${search}`;
-    // 前缀别名必须落在段边界上：`/project/x` 不能误匹配 `/projects`。
-    if (pathname.startsWith(`${from}/`)) return `${to}${pathname.slice(from.length)}${search}`;
+    const candidate =
+      pathname === from
+        ? `${to}`
+        : pathname.startsWith(`${from}/`)
+          ? `${to}${pathname.slice(from.length)}`
+          : undefined;
+    // 未命中当前注册表的目标不重定向：未知旧后缀直接未找到，而不是落到另一个合法对象。
+    if (candidate !== undefined && registeredTargetMatches(candidate, registry)) {
+      return `${candidate}${search}`;
+    }
   }
   return undefined;
 };
@@ -284,26 +389,42 @@ const pathnameFor = (value: unknown): string | undefined => {
   return isSafeConcretePathV1(path) ? path : undefined;
 };
 
-const matchTemplate = (
-  template: string,
-  pathname: string,
-): Readonly<Record<string, string>> | undefined => {
-  const expected = template.split("/").slice(1);
-  const actual = pathname.split("/").slice(1);
-  if (expected.length !== actual.length) return undefined;
-  const params: Record<string, string> = {};
-  for (let index = 0; index < expected.length; index += 1) {
-    const expectedSegment = expected[index];
-    const actualSegment = actual[index];
-    if (expectedSegment === undefined || actualSegment === undefined || actualSegment === "")
-      return undefined;
-    if (expectedSegment.startsWith(":")) {
-      params[expectedSegment.slice(1)] = actualSegment;
-    } else if (expectedSegment !== actualSegment) {
-      return undefined;
+/**
+ * CH-2 D-04：先完整逐段匹配得到真实相交候选，再按首个差异段裁决。
+ *
+ * 静态段在该段与参数段都能匹配同一具体路径时胜出。判定只看两模板是否在该段
+ * 一静一动，不看参数总数、字典序或注册顺序，因此调换注册顺序结果相同。
+ */
+const pickCandidate = (
+  candidates: readonly WebRouteCandidateV1[],
+  actual: readonly string[],
+): { route: WebRouteContributionV1; params: Readonly<Record<string, string>> } | undefined => {
+  let best:
+    { candidate: WebRouteCandidateV1; params: Readonly<Record<string, string>> } | undefined;
+  for (const candidate of candidates) {
+    const params = matchCandidate(candidate, actual);
+    if (params === undefined) continue;
+    if (best === undefined) {
+      best = { candidate, params };
+      continue;
+    }
+    const bestSegments = best.candidate.segments;
+    const decisive = candidate.segments.findIndex(
+      (segment, index) =>
+        segment.startsWith(":") !== bestSegments[index]!.startsWith(":") &&
+        (segment.startsWith(":") || bestSegments[index]!.startsWith(":")),
+    );
+    // 首个差异段上候选是静态、既有是参数时，候选更具体。
+    if (decisive !== -1 && !candidate.segments[decisive]!.startsWith(":")) {
+      best = { candidate, params };
+      continue;
+    }
+    if (decisive === -1 && bestSegments.length !== candidate.segments.length) {
+      // 形状已在注册期保证互斥；这里只兜住外部手工构造的注册表。
+      if (candidate.segments.length > bestSegments.length) best = { candidate, params };
     }
   }
-  return Object.freeze(params);
+  return best === undefined ? undefined : { route: best.candidate.route, params: best.params };
 };
 
 export const resolveWebRoute = (
@@ -314,23 +435,21 @@ export const resolveWebRoute = (
   if (raw === undefined) return { kind: "not-found", pathname: "[invalid]" };
   // 旧前缀先做别名重定向，保留 params 与 search；未命中别名再走正常匹配。
   const search = typeof value === "string" ? (value.split("?")[1] ?? "") : "";
-  const aliased = applyWebPathAliasV1(raw, search === "" ? "" : `?${search}`);
-  const pathname = aliased === undefined ? raw : aliased.split("?")[0]!;
+  const aliased = applyWebPathAliasV1(raw, search === "" ? "" : `?${search}`, registry);
   if (aliased !== undefined) {
     return Object.freeze({ kind: "redirect", from: raw, to: aliased });
   }
-  if (pathname === "/") return { kind: "redirect", from: "/", to: "/overview" };
-  const routes = [...registry.routes].sort((left, right) => {
-    const leftParams = (left.path.match(/:/g) ?? []).length;
-    const rightParams = (right.path.match(/:/g) ?? []).length;
-    return leftParams - rightParams;
-  });
-  for (const item of routes) {
-    const params = matchTemplate(item.path, pathname);
-    if (params !== undefined)
-      return Object.freeze({ kind: "matched", route: item, params, pathname });
+  if (raw === "/") return { kind: "redirect", from: "/", to: "/overview" };
+  const matched = pickCandidate(registry.candidates, raw.split("/").slice(1));
+  if (matched !== undefined) {
+    return Object.freeze({
+      kind: "matched",
+      route: matched.route,
+      params: matched.params,
+      pathname: raw,
+    });
   }
-  return Object.freeze({ kind: "not-found", pathname });
+  return Object.freeze({ kind: "not-found", pathname: raw });
 };
 
 export const routePathFor = (

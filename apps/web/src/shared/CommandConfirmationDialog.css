@@ -1,0 +1,94 @@
+/*
+ * CH-2 D-09：唯一确认对话框的视觉事实源。
+ *
+ * 原生 `<dialog>` 自带模态与 backdrop，这里只承接令牌化的表面、错误色与缩放约束。
+ * 高度受限并内部滚动，因此在 200% 缩放下对话框不会被固定层裁掉焦点或操作。
+ */
+
+dialog {
+  width: min(34rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  padding: 0;
+  overflow-y: auto;
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+}
+
+dialog::backdrop {
+  background: var(--nav-bg);
+}
+
+dialog h2 {
+  padding: var(--space-4) var(--space-5) var(--space-2);
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--text-lg-lh);
+}
+
+.confirmation-summary {
+  padding: 0 var(--space-5) var(--space-4);
+}
+
+.confirmation-summary dl {
+  margin: 0 0 var(--space-3);
+}
+
+.confirmation-summary dl > div {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.confirmation-summary dt {
+  color: var(--text-2);
+}
+
+.confirmation-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.confirmation-summary ul {
+  padding: 0;
+  margin: 0 0 var(--space-3);
+  list-style: none;
+}
+
+.confirmation-summary li {
+  overflow-wrap: anywhere;
+}
+
+.confirmation-summary h3 {
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+
+/* 错误使用独立 --error 令牌并由 role=alert 播报，不复用普通正文色。 */
+dialog [data-confirmation-state="error"] {
+  margin: 0 var(--space-5) var(--space-3);
+  color: var(--error);
+}
+
+dialog [data-confirmation-state="succeeded"] {
+  margin: 0 var(--space-5) var(--space-3);
+  color: var(--success);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5) var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  dialog::backdrop {
+    animation: none;
+  }
+}

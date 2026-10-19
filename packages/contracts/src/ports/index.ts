@@ -559,6 +559,9 @@ export const ModuleCapabilityV1_VALUES = [
   "review-audit.request",
   "review-audit.decide",
   "agent-task.read",
+  // CH-2（design D-05）：聚合入口资格，只决定待办页签是否呈现，
+  // 不是可执行查询能力；真实聚合查询与其来源授权归 CH-9。
+  "review-todo.read",
   "agent-task.start",
   "agent-task.resume",
   "agent-task.cancel",
@@ -653,6 +656,8 @@ export const MODULE_BRANCH_CAPABILITY_V1 = {
   "agent-task.read": "agent-task.read",
   "review-audit.read": "review-audit.read",
   "projection.report-read": "projection.export",
+  // CH-2（design D-05）：同名入口分支，只承载聚合入口资格，不映射到任何查询端口。
+  "review-todo.read": "review-todo.read",
 } as const;
 export type ModuleBranchV1 = keyof typeof MODULE_BRANCH_CAPABILITY_V1;
 
@@ -5626,3 +5631,23 @@ export interface CalibrationGovernancePortV1 {
     command: CalibrationGovernanceCommandV1,
   ): Promise<CalibrationGovernanceDraftResultV1>;
 }
+
+/* ========================================================================
+ * CH-2：当前工程入口能力呈现（design D-07）
+ *
+ * 唯一公共响应契约：只表达当前账号在指定工程的角色级入口资格，
+ * 不含 session token、角色镜像、资料来源授权或任何可授权的上下文，
+ * 因此不能充当业务查询或命令的授权凭证。
+ * ======================================================================== */
+
+export const ProjectAccessPresentationV1Schema = z.strictObject({
+  schemaVersion: z.literal("1"),
+  projectId: IdentifierSchema,
+  /** 角色级入口能力：去重升序，长度不超过当前闭合枚举长度；无入口权时为空集合。 */
+  capabilities: z
+    .array(ModuleCapabilityV1Schema)
+    .max(ModuleCapabilityV1_VALUES.length)
+    .refine((values) => new Set(values).size === values.length),
+  authorizationPolicyRef: VersionReferenceSchema,
+});
+export type ProjectAccessPresentationV1 = z.infer<typeof ProjectAccessPresentationV1Schema>;

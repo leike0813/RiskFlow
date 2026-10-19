@@ -792,6 +792,9 @@ export const startQualityBrowserServer = async () => {
       access,
       ports: {
         qualityProjectionQuery: createPostgresQualityProjectionAdapter({ db: appRuntime.db }),
+        // CH-2 D-07：只读验收壳层同样注入真实入口能力读面，工程切换后的能力
+        // 呈现因此来自当前成员事实。
+        projectAccessPresentation: access.projectAccessPresentation,
       },
       publicOrigin,
       now: () => new Date(),

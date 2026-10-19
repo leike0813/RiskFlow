@@ -52,6 +52,7 @@ import {
   HumanDecisionProofV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleCapabilityV1Schema,
+  ProjectAccessPresentationV1Schema,
   ModuleErrorV1Schema,
   OpenWarningCommandV1Schema,
   ProjectionExportRequestV1Schema,
@@ -3872,5 +3873,57 @@ describe("C19 applicable-rule-set assembly contract", () => {
         },
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("CH-2 入口能力与当前工程能力呈现", () => {
+  it("review-todo.read 是独立入口资格分支且闭合枚举随之扩展", () => {
+    expect(MODULE_BRANCH_CAPABILITY_V1["review-todo.read"]).toBe("review-todo.read");
+    expect(ModuleCapabilityV1Schema.safeParse("review-todo.read").success).toBe(true);
+    expect(ModuleCapabilityV1Schema.safeParse("review-todo.write").success).toBe(false);
+    // 入口资格不得顺带映射到任何已存在的查询或写能力。
+    expect(Object.values(MODULE_BRANCH_CAPABILITY_V1)).toContain("review-todo.read");
+  });
+
+  it("能力呈现响应是严格投影，不接受凭据、角色或来源字段", () => {
+    const presentation = {
+      schemaVersion: "1" as const,
+      projectId: "project-1",
+      capabilities: ["projection.query", "review-todo.read"],
+      authorizationPolicyRef: { entityId: "access-policy", versionId: "v2" },
+    };
+    expect(ProjectAccessPresentationV1Schema.safeParse(presentation).success).toBe(true);
+
+    // 无入口权的工程成员返回空集合，而不是缺字段或省略集合。
+    expect(
+      ProjectAccessPresentationV1Schema.safeParse({ ...presentation, capabilities: [] }).success,
+    ).toBe(true);
+
+    for (const forbidden of [
+      "sessionToken",
+      "roles",
+      "sourceAccessGrantRefs",
+      "authorizationContext",
+      "spatialScopeRefs",
+    ]) {
+      expect(
+        ProjectAccessPresentationV1Schema.safeParse({ ...presentation, [forbidden]: "x" }).success,
+      ).toBe(false);
+    }
+
+    // 能力去重且不得超出闭合枚举长度。
+    expect(
+      ProjectAccessPresentationV1Schema.safeParse({
+        ...presentation,
+        capabilities: ["projection.query", "projection.query"],
+      }).success,
+    ).toBe(false);
+    expect(
+      ProjectAccessPresentationV1Schema.safeParse({ ...presentation, capabilities: ["db.query"] })
+        .success,
+    ).toBe(false);
+    expect(
+      ProjectAccessPresentationV1Schema.safeParse({ ...presentation, schemaVersion: "2" }).success,
+    ).toBe(false);
   });
 });

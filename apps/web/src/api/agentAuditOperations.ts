@@ -1084,9 +1084,41 @@ export const listSystemSpatialScopes = async (
  * 密码只在这一次调用里出现：不写入 store、不进冻结命令表、也不随目录查询回传。
  * commandId 与 idempotencyKey 同时给出，因此网络重放不会重复建号。
  */
-const administrationCommand = async (
+let administrationCommandSequence = 0;
+const nextAdministrationCommandId = (action: string): string => {
+  administrationCommandSequence += 1;
+  return `demo-${action}-${Date.now().toString(36)}-${administrationCommandSequence}`;
+};
+
+/**
+ * CH-2 D-10：管理命令的冻结请求。
+ *
+ * 口令只存在于这份非渲染快照里——不进摘要、目标、inputVersions、日志或任何缓存。
+ * 关闭、失效或成功即释放；重试重发原快照，不要求用户重新输入，也不改写命令身份。
+ */
+export type PreparedAdministrationCommandV1 = Readonly<{
+  readonly action: string;
+  readonly commandId: string;
+  readonly idempotencyKey: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+}>;
+
+export const prepareAdministrationCommand = (
+  action: string,
   payload: Record<string, unknown>,
-  commandId: string,
+  commandId?: string,
+): PreparedAdministrationCommandV1 => {
+  const id = commandId ?? nextAdministrationCommandId(action);
+  return Object.freeze({
+    action,
+    commandId: id,
+    idempotencyKey: id,
+    payload: Object.freeze({ ...payload }),
+  });
+};
+
+export const sendAdministrationCommand = async (
+  prepared: PreparedAdministrationCommandV1,
   signal?: AbortSignal,
 ): Promise<{ readonly resultRef: VersionRef }> => {
   const body = asRecord(
@@ -1094,32 +1126,26 @@ const administrationCommand = async (
       path: "/api/v1/administration/commands",
       body: {
         schemaVersion: "1",
-        commandId,
-        idempotencyKey: commandId,
+        commandId: prepared.commandId,
+        idempotencyKey: prepared.idempotencyKey,
         issuedAt: new Date().toISOString(),
-        payload,
+        payload: prepared.payload,
       },
       ...(signal === undefined ? {} : { signal }),
     }),
   );
   if (body.kind !== "succeeded") throw drift();
-  const result = asRecord(body.result);
-  return { resultRef: asVersionRef(result.resultRef) };
+  return { resultRef: asVersionRef(asRecord(body.result).resultRef) };
 };
 
-let administrationCommandSequence = 0;
-const nextAdministrationCommandId = (action: string): string => {
-  administrationCommandSequence += 1;
-  return `demo-${action}-${Date.now().toString(36)}-${administrationCommandSequence}`;
-};
-
-export const createSystemAccount = async (input: {
+export const prepareCreateSystemAccount = (input: {
   readonly loginName: string;
   readonly displayName: string;
   readonly password: string;
   readonly commandId?: string;
-}): Promise<{ readonly resultRef: VersionRef }> =>
-  administrationCommand(
+}): PreparedAdministrationCommandV1 =>
+  prepareAdministrationCommand(
+    "create-account",
     {
       kind: "create-account",
       expectedVersion: "none",
@@ -1127,70 +1153,74 @@ export const createSystemAccount = async (input: {
       displayName: input.displayName,
       password: input.password,
     },
-    input.commandId ?? nextAdministrationCommandId("create-account"),
+    input.commandId,
   );
 
-export const disableSystemAccount = async (input: {
+export const prepareDisableSystemAccount = (input: {
   readonly accountId: string;
   readonly expectedVersion: VersionRef;
   readonly commandId?: string;
-}): Promise<{ readonly resultRef: VersionRef }> =>
-  administrationCommand(
+}): PreparedAdministrationCommandV1 =>
+  prepareAdministrationCommand(
+    "disable-account",
     {
       kind: "disable-account",
       expectedVersion: input.expectedVersion,
       accountId: input.accountId,
     },
-    input.commandId ?? nextAdministrationCommandId("disable-account"),
+    input.commandId,
   );
 
-/** 重置口令：密码随本次请求一次性提交，服务端不会回传派生值。 */
-export const resetSystemAccountPassword = async (input: {
+/** 重置口令：密码随本次冻结请求一次性提交，服务端不会回传派生值。 */
+export const prepareResetSystemAccountPassword = (input: {
   readonly accountId: string;
   readonly expectedVersion: VersionRef;
   readonly password: string;
   readonly commandId?: string;
-}): Promise<{ readonly resultRef: VersionRef }> =>
-  administrationCommand(
+}): PreparedAdministrationCommandV1 =>
+  prepareAdministrationCommand(
+    "reset-password",
     {
       kind: "reset-password",
       expectedVersion: input.expectedVersion,
       accountId: input.accountId,
       password: input.password,
     },
-    input.commandId ?? nextAdministrationCommandId("reset-password"),
+    input.commandId,
   );
 
-export const openSystemProject = async (input: {
+export const prepareOpenSystemProject = (input: {
   readonly projectId: string;
   readonly initialRiskManagerAccountId: string;
   readonly commandId?: string;
-}): Promise<{ readonly resultRef: VersionRef }> =>
-  administrationCommand(
+}): PreparedAdministrationCommandV1 =>
+  prepareAdministrationCommand(
+    "open-project",
     {
       kind: "open-project",
       expectedVersion: "none",
       projectId: input.projectId,
       initialRiskManagerAccountId: input.initialRiskManagerAccountId,
     },
-    input.commandId ?? nextAdministrationCommandId("open-project"),
+    input.commandId,
   );
 
-export const suspendSystemProject = async (input: {
+export const prepareSuspendSystemProject = (input: {
   readonly projectId: string;
   readonly expectedVersion: VersionRef;
   readonly commandId?: string;
-}): Promise<{ readonly resultRef: VersionRef }> =>
-  administrationCommand(
+}): PreparedAdministrationCommandV1 =>
+  prepareAdministrationCommand(
+    "suspend-project",
     {
       kind: "suspend-project",
       expectedVersion: input.expectedVersion,
       projectId: input.projectId,
     },
-    input.commandId ?? nextAdministrationCommandId("suspend-project"),
+    input.commandId,
   );
 
-export const reviseSystemMembership = async (input: {
+export const prepareReviseSystemMembership = (input: {
   readonly projectId: string;
   readonly membershipId: string;
   readonly expectedVersion: VersionRef;
@@ -1199,8 +1229,9 @@ export const reviseSystemMembership = async (input: {
   readonly spatialScopeRefs: readonly KindRef[];
   readonly status: string;
   readonly commandId?: string;
-}): Promise<{ readonly resultRef: VersionRef }> =>
-  administrationCommand(
+}): PreparedAdministrationCommandV1 =>
+  prepareAdministrationCommand(
+    "revise-membership",
     {
       kind: "revise-membership",
       expectedVersion: input.expectedVersion,
@@ -1211,7 +1242,7 @@ export const reviseSystemMembership = async (input: {
       spatialScopeRefs: input.spatialScopeRefs,
       status: input.status,
     },
-    input.commandId ?? nextAdministrationCommandId("revise-membership"),
+    input.commandId,
   );
 
 // ------------------------------------------------------------------ 运维输出

@@ -32,6 +32,24 @@ export function PageStateView<T>({
         {state.kind === "loading" && <span>加载中…</span>}
         {state.kind === "empty" && <span>{emptyMessage ?? "当前条件下暂无数据"}</span>}
         {state.kind === "forbidden" && <span>{forbiddenHint}</span>}
+        {/* 不可用只披露已脱敏的原因码，不推导目标是否存在，也不回退成空或错误。 */}
+        {state.kind === "unavailable" && (
+          <>
+            <span>所需数据当前不可用</span>
+            {state.reasons.length > 0 && (
+              <ul className="psv-reasons">
+                {state.reasons.map((reason) => (
+                  <li key={reason.code}>{reason.code}</li>
+                ))}
+              </ul>
+            )}
+            {onRetry !== undefined && (
+              <button type="button" className="psv-retry" onClick={onRetry}>
+                重试
+              </button>
+            )}
+          </>
+        )}
         {state.kind === "error" && (
           <>
             <span>内容加载失败（{state.error.code}）</span>

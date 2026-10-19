@@ -41,8 +41,8 @@
 }
 
 .stage-item--failed .stage-marker {
-  border-color: var(--risk-1);
-  background: var(--risk-1);
+  border-color: var(--error);
+  background: var(--error);
   color: #fff;
 }
 

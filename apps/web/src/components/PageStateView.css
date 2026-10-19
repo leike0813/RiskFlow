@@ -16,6 +16,18 @@
   color: var(--bluegray);
 }
 
+.psv-unavailable {
+  color: var(--text-2);
+}
+
+.psv-reasons {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  color: var(--error);
+}
+
 .psv-retry {
   height: 30px;
   padding: 0 14px;

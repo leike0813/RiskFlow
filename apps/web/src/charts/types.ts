@@ -14,8 +14,10 @@ export interface ChartTheme {
   readonly textSecondary: string;
   readonly border: string;
   readonly riskBoundary: string;
-  /** 等级配色由数据驱动：按 ordinal 序取色，不假设等级是 I～IV 四档。 */
+  /** 等级配色由数据驱动：按 ordinal 升序取底色，不假设等级是 I～IV 四档。 */
   readonly levelPalette: readonly string[];
+  /** 与 levelPalette 同序的底色上可读前景色；仅定义到该长度，超出即视为不可映射。 */
+  readonly levelForegroundPalette: readonly string[];
 }
 
 export const DEFAULT_CHART_THEME: ChartTheme = {
@@ -31,6 +33,12 @@ export const DEFAULT_CHART_THEME: ChartTheme = {
     "var(--risk-3-soft)",
     "var(--risk-2-soft)",
     "var(--risk-1-soft)",
+  ],
+  levelForegroundPalette: [
+    "var(--risk-4-text)",
+    "var(--risk-3-text)",
+    "var(--risk-2-text)",
+    "var(--risk-1-dark)",
   ],
 };
 

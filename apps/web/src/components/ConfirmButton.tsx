@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { C09HttpError } from "../api/http";
 import { Icon } from "./icons";
 import "./ConfirmButton.css";
@@ -35,6 +35,7 @@ export function ConfirmButton({
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [failureCode, setFailureCode] = useState<string | null>(null);
+  const failureId = useId();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const cancelRef = useRef<HTMLButtonElement | null>(null);
@@ -141,6 +142,7 @@ export function ConfirmButton({
             role="dialog"
             aria-modal="true"
             aria-label={`确认${label}`}
+            aria-describedby={failureCode === null ? undefined : failureId}
             ref={dialogRef}
             onClick={(event) => event.stopPropagation()}
           >
@@ -164,7 +166,9 @@ export function ConfirmButton({
                 ))}
               </ul>
               {failureCode !== null && (
-                <p className="confirm-dialog-lead">提交失败（{failureCode}），可重试或取消。</p>
+                <p id={failureId} className="confirm-dialog-error" role="alert">
+                  提交失败（{failureCode}），可重试或取消。
+                </p>
               )}
             </div>
             <footer className="confirm-dialog-footer">

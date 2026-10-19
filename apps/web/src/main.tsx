@@ -38,6 +38,7 @@ import {
   QualityPage,
   safeHttpErrorOf,
 } from "./quality/QualityPage.js";
+import { DesignSystemProvider } from "./theme/DesignSystemProvider.js";
 import "./theme/tokens.css";
 import "./theme/global.css";
 import "./shell/AppShell.css";
@@ -373,4 +374,8 @@ if (root === null) {
   throw new Error("Web root element is missing");
 }
 
-createRoot(root).render(<AppRoot />);
+createRoot(root).render(
+  <DesignSystemProvider>
+    <AppRoot />
+  </DesignSystemProvider>,
+);

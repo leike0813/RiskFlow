@@ -69,30 +69,6 @@
   margin-bottom: 16px;
 }
 
-/* 5×5 矩阵 */
-.arp-matrix {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-.arp-matrix .mx-wrap {
-  flex: 1;
-  min-height: 0;
-}
-
-.arp-matrix-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.arp-matrix-note {
-  font-size: 12px;
-  color: var(--text-2);
-}
-
 /* 指标评分明细 */
 .arp .data-table td {
   padding: 8px 10px;

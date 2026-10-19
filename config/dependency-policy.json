@@ -272,6 +272,15 @@
       "exitCondition": "图表实现替换或浏览器验收失败"
     },
     {
+      "name": "antd",
+      "version": "6.6.6",
+      "purpose": "apps/web 生产基础表格及已限定的表单、选择器、日期与对话框；不拥有业务状态",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/antd/6.6.6",
+      "offline": "内网 npm 镜像或 pnpm fetch store，按冻结锁文件离线安装",
+      "exitCondition": "与冻结 React/Node/构建不兼容、漏洞无法在允许版本修复，或同等功能/可访问性所需覆写抵消引入收益"
+    },
+    {
       "name": "electron",
       "version": "44.7.0",
       "purpose": "apps/desktop 加载内网 HTTPS 的桌面壳运行时",

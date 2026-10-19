@@ -1,12 +1,3 @@
-:root {
-  color: #17202a;
-  background: #f7f9fb;
-  font-family: system-ui, sans-serif;
-  line-height: 1.5;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-}
-
 * {
   box-sizing: border-box;
 }
@@ -22,14 +13,7 @@ input {
   font: inherit;
 }
 
-button:focus-visible,
-a:focus-visible,
-select:focus-visible,
-input:focus-visible,
-[tabindex]:focus-visible {
-  outline: 0.2rem solid #1d70b8;
-  outline-offset: 0.15rem;
-}
+/* 焦点样式由 global.css 的 --focus-ring 统一提供，此处不再覆盖颜色。 */
 
 button[disabled] {
   cursor: not-allowed;
@@ -55,7 +39,7 @@ button[disabled] {
   left: 0;
   padding: 0.5rem 0.75rem;
   color: #fff;
-  background: #17324d;
+  background: var(--topbar-bg);
   transform: translateY(-120%);
 }
 
@@ -78,7 +62,7 @@ button[disabled] {
   min-height: 4rem;
   padding: 0.75rem 1rem;
   color: #fff;
-  background: #17324d;
+  background: var(--topbar-bg);
 }
 
 .app-header-title {
@@ -94,8 +78,8 @@ button[disabled] {
 
 .app-nav {
   padding: 1rem 0.75rem;
-  border-right: 1px solid #d9e1e8;
-  background: #fff;
+  border-right: 1px solid var(--border);
+  background: var(--card);
 }
 
 .app-nav ul {
@@ -112,18 +96,18 @@ button[disabled] {
 .app-nav [role="link"] {
   display: block;
   padding: 0.55rem 0.7rem;
-  color: #1e4d73;
-  border-radius: 0.25rem;
+  color: var(--blue);
+  border-radius: var(--radius-sm);
   text-decoration: none;
 }
 
 .app-nav a[aria-current="page"] {
-  color: #fff;
-  background: #1e4d73;
+  color: var(--card);
+  background: var(--blue);
 }
 
 .app-nav [aria-disabled="true"] {
-  color: #687684;
+  color: var(--text-2);
   cursor: not-allowed;
 }
 
@@ -143,8 +127,8 @@ button[disabled] {
   gap: 0.75rem;
   padding: 0.75rem;
   margin-bottom: 1rem;
-  background: #eef3f7;
-  border: 1px solid #d9e1e8;
+  background: var(--bluegray-soft);
+  border: 1px solid var(--border);
   border-radius: 0.25rem;
 }
 
@@ -156,8 +140,9 @@ button[disabled] {
 
 .context-status {
   align-self: end;
-  color: #8a2b2b;
-  font-size: 0.875rem;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
 }
 
 .context-source-form {
@@ -172,8 +157,8 @@ button[disabled] {
 
 .right-dock {
   padding: 1rem;
-  border-left: 1px solid #d9e1e8;
-  background: #fff;
+  border-left: 1px solid var(--border);
+  background: var(--card);
 }
 
 .dock-panel {
@@ -199,7 +184,7 @@ button[disabled] {
 
 .dock-panel section {
   padding: 0.75rem;
-  border: 1px solid #d9e1e8;
+  border: 1px solid var(--border);
   border-radius: 0.25rem;
 }
 
@@ -214,7 +199,7 @@ button[disabled] {
 }
 
 .dock-evidence dt {
-  color: #52606d;
+  color: var(--text-2);
 }
 
 .dock-evidence dd {
@@ -225,8 +210,8 @@ button[disabled] {
 
 .page-frame {
   padding: 1rem;
-  background: #fff;
-  border: 1px solid #d9e1e8;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 0.25rem;
 }
 
@@ -251,7 +236,7 @@ button[disabled] {
 
 .page-skeleton {
   min-height: 6rem;
-  background: linear-gradient(90deg, #f3f5f7 25%, #e7edf2 50%, #f3f5f7 75%);
+  background: linear-gradient(90deg, var(--page-bg) 25%, var(--border) 50%, var(--page-bg) 75%);
   background-size: 200% 100%;
   animation: page-loading 1.2s linear infinite;
   border-radius: 0.25rem;
@@ -262,7 +247,7 @@ button[disabled] {
 [data-page-state="unavailable"],
 [data-page-state="error"] {
   padding: 0.75rem;
-  background: #f8fafb;
+  background: var(--bluegray-soft);
   border-radius: 0.25rem;
 }
 
@@ -290,7 +275,7 @@ button[disabled] {
 
   .right-dock {
     grid-column: 1 / -1;
-    border-top: 1px solid #d9e1e8;
+    border-top: 1px solid var(--border);
     border-left: 0;
   }
 }

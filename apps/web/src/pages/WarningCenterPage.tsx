@@ -6,8 +6,8 @@ import { DataTable, type DataTableColumn } from "../components/DataTable";
 import { KpiCard } from "../components/KpiCard";
 import { PageStateView } from "../components/PageStateView";
 import { SectionTabs } from "../components/SectionTabs";
+import { RiskBadge } from "../components/RiskBadge";
 import { StatusTag } from "../components/StatusTag";
-import { WarningBadge } from "../components/WarningBadge";
 import { useEngineering, usePageQuery, useProjectPath } from "../api/engineering";
 import {
   readWarningCatalog,
@@ -65,7 +65,7 @@ export default function WarningCenterPage() {
             >
               {reference.entityId}
             </Link>
-            <WarningBadge text={String(row.warningLevel)} />
+            <RiskBadge levelId={String(row.warningLevel)} />
           </div>
         );
       },

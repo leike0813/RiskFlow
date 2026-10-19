@@ -17,7 +17,7 @@
 | IP-02 | `theme/tokens.css`、`theme/global.css`；`main.tsx` 的 AppRoot；`charts/types.ts` 的 ChartTheme/DEFAULT_CHART_THEME | 生产令牌唯一；入口接 ConfigProvider，稳定主题供图表共享，SSR 显式注入 | 不复制 demo 运行文件、hex 或根主题；不新增 DOM 轮询、远程字体、暗色开关 |
 | IP-03 | `components/DataTable.tsx` 的 DataTable/DataTableColumn；`components/PageStateView.tsx`；`app/state.ts` 的 PageLoadStateV1 | 原 props 与服务端分页所有权不变，内部接 AntD Table；补原七态的不可用显示 | 不新建表格 API、七态枚举、业务请求或默认分页 |
 | IP-04 | `charts/RiskMatrixChart.tsx` 的 RiskMatrixVersionChart/RiskMatrixLevel；`AssessmentMatrixPage.definitionOf`；`WarningDetailPage` 已有 matrixPlot；TrendLine/GraphView/useChart | 共用 presentRiskLevel，保留精确配置投影和 SVG；Canvas 使用解析主题 | 不复制矩阵、重算 P/C、补读全库/阈值、用类别或标识后缀推断风险 |
-| IP-05 | 无生产消费者的 RiskMatrix5x5、DonutChart、HBars、GraphLegend；`charts/echarts.ts` | 删除死代码与仅由其消费的按需注册 | 不删除在用 components/AppShell、动态矩阵或原生治理矩阵 |
+| IP-05 | 无生产消费者的 RiskMatrix5x5、DonutChart、HBars；在用的 GraphLegend；`charts/echarts.ts` | 删除死代码与仅由其消费的按需注册；保留 GraphLegend 并复用 GraphView 分类样式 | 不删除在用 components/AppShell、GraphLegend、动态矩阵或原生治理矩阵 |
 | IP-06 | `test/ssr-shells.test.tsx`、既有 read-only/assessment-warning-response 浏览器接缝、`playwright.config.ts` | 复用真实 PostgreSQL、生产 HTTP、冻结矩阵和证据权限用例；新增一个聚焦行为测试文件 | 不新增假后端、演示路由、测试框架、源码/CSS 字符串断言或截图快照门禁 |
 
 本表中的生产相对路径均以 `apps/web/src/` 为根；测试路径以 `apps/web/` 为根。下文文件清单给出完整路径。
@@ -39,7 +39,7 @@
 2. **入口主题（IP-02）**：保持 tokens→global→shell 导入顺序 → DesignSystemProvider 包住现有 AppRoot → 挂载一次解析明确令牌集合 → 稳定 ConfigProvider/图表主题就绪 → 呈现原业务宿主。图表不在主题就绪前用 CSS var 字面量初始化 Canvas；SSR 使用 D-03 注入，不在模块加载时访问 document。
 3. **普通读页面（IP-03）**：既有会话/工程/能力检查 → 原有有界读 → 原 PageLoadStateV1 → DataTable 原 rows/列 render → 链接或显式行操作。表格不请求、不裁切成默认十行、不拥有下一页。键盘行操作忽略来自内嵌链接/按钮的重复冒泡；原生链接保留自身导航。
 4. **风险呈现（IP-04）**：已有授权结果/精确发布读取 → definitionOf 保留轴、格子、levelId 并传 ordinal → presentRiskLevel 只做标签/颜色投影 → SVG/徽章/图例一致显示。ordinal 未知或超出已定义四级调色板时保留实际标识和中性安全说明；不重新读取配置、不取模、不夹取、不假装已得最高风险。历史记录不切到当前发布。
-5. **写操作与证据（IP-02、IP-03、IP-06）**：仍由原 ConfirmButton/所属域确认后提交；取消不提交、重试沿原冻结请求，上下文失效行为不变。EvidenceProvider 继续执行原定位、权限和脱敏边界。设计层不产生幂等身份、审计或额外写入。
+5. **写操作与证据（IP-02、IP-03、IP-06）**：仍由原 ConfirmButton/所属域确认后提交；取消不提交、重试沿原冻结请求，上下文失效行为不变。提交失败节点使用独立错误色、alert 播报及对话框说明关联，不改确认状态机。EvidenceProvider 继续执行原定位、权限和脱敏边界。设计层不产生幂等身份、审计或额外写入。
 6. **清理与证据（IP-05、IP-06）**：迁完真实徽章消费者才删除 WarningBadge；确认死图表无消费者后删除，保留动态图及按需 ECharts。运行相关检查一次，修复范围内问题；完成后由 Finalizer 记录实际实现 HEAD 的 verification。不得回滚用户无关改动或自动提交。
 
 没有新增持久化副作用或重试策略。主题、表格或图表异常不得通过零值、静态示例、扩大查询范围或隐藏控件处理。
@@ -101,6 +101,7 @@
 - 新增：`apps/web/src/theme/DesignSystemProvider.tsx`。
 - 修改：`apps/web/src/theme/tokens.css`、`apps/web/src/theme/global.css`、`apps/web/src/main.tsx`、`apps/web/src/charts/types.ts`、`apps/web/src/shell/AppShell.css`。
 - 修改明确的非风险错误/失败或危险操作颜色消费者：`apps/web/src/components/ConfirmButton.css`、`apps/web/src/components/StatusTag.css`、`apps/web/src/components/StageBar.css`、`apps/web/src/agent/AgentDock.css`、`apps/web/src/pages/ops/ops.css`、`apps/web/src/pages/ReviewDetailPage.css`、`apps/web/src/pages/IdentificationRunPage.css`、`apps/web/src/charts/ChartSurface.css`；只替换相应语义，不把业务预警风险色一并改成 error。
+- 修改：`apps/web/src/components/ConfirmButton.tsx`，仅限失败节点语义、说明关联与可访问播报，不改提交、取消、冻结请求、权限或上下文失效逻辑。
 - 修改：`apps/web/src/pages/LoginPage.css` 的普通说明色为中性。
 - shell CSS 只调整根字体/颜色覆盖、焦点、滚动及折行，不切换布局列宽/导航结构。
 
@@ -111,21 +112,24 @@
 ### IP-04：等级与图表实际消费者
 - 新增：`apps/web/src/theme/riskPresentation.ts`、`apps/web/src/components/RiskBadge.tsx`、`apps/web/src/components/RiskBadge.css`。
 - 修改：`apps/web/src/pages/WarningCenterPage.tsx`、`apps/web/src/pages/WarningDetailPage.tsx`、`apps/web/src/pages/AssessmentMatrixPage.tsx`、`apps/web/src/charts/RiskMatrixChart.tsx`、`apps/web/src/charts/TrendLine.tsx`、`apps/web/src/charts/GraphView.tsx`。
+- 修改：`apps/web/src/charts/useChart.ts`，在原生命周期内订阅 reduced-motion，关闭非必要 Canvas 和 force 布局动画，偏好变化时沿原数据重建并清理监听；不新增图表入口。
 - 删除：`apps/web/src/components/WarningBadge.tsx`、`apps/web/src/components/WarningBadge.css`，在真实消费者迁移后删除，不保留导出别名。
 
 ### IP-05：确定过时实现
-- 删除：`apps/web/src/charts/RiskMatrix5x5.tsx`、`apps/web/src/charts/RiskMatrix5x5.css`、`apps/web/src/charts/DonutChart.tsx`、`apps/web/src/charts/HBars.tsx`、`apps/web/src/components/GraphLegend.tsx`、`apps/web/src/components/GraphLegend.css`。
+- 删除：`apps/web/src/charts/RiskMatrix5x5.tsx`、`apps/web/src/charts/RiskMatrix5x5.css`、`apps/web/src/charts/DonutChart.tsx`、`apps/web/src/charts/HBars.tsx`。
+- 保留并修改：`apps/web/src/components/GraphLegend.tsx/.css`，继续服务 AssociationGraphPage，仅复用 GraphView 的分类呈现。
 - 修改：`apps/web/src/pages/AssessmentRecordPage.css`，仅移除旧 `.arp-matrix*` 专属死样式；`apps/web/src/charts/echarts.ts` 移除仅由被删 DonutChart/HBars 使用的 PieChart/BarChart 注册，保留 Line/Graph 与活组件。
 
 ### IP-06：测试与交付记录
 - 新增：`apps/web/test/design-system.test.tsx`。
-- 修改：`apps/web/test/browser/read-only.spec.ts`、`apps/web/test/browser/assessment-warning-response.spec.ts`；`apps/web/test/ssr-shells.test.tsx` 仅在受影响现有断言需要调整时修改，不改七导航基线。
+- 修改：`apps/web/test/browser/read-only.spec.ts`、`apps/web/test/browser/assessment-warning-response.spec.ts`、`apps/web/test/browser/identification-review.spec.ts`，补实控件主题、Canvas 动效、实际滚动、错误可访问性及历史图形不变性；`apps/web/test/ssr-shells.test.tsx` 仅在受影响现有断言需要调整时修改，不改七导航基线。
 - 既有 `business-server.mjs`、`deploymentPolicies.mjs`、`server.mjs` 与 `playwright.config.ts` 只读复用，不为换皮扩张假 fixture/服务或切换测试项目。
 - 实施过程中按证据更新本 change 的 `tasks.md`；实施完成后的 Finalizer 新增同目录 `verification.md`，记录规范实现、命令、真实浏览器和离线证据。说明与变更事实由本 change 工件和后续归档主规格承载，不新建平行设计说明或 changelog。
+- 新增验收工件：`evidence/native-zoom.json` 与 `evidence/native-zoom/*.png`，仅保存实际 Chromium 六组合的窗口、CSS 视口、原生缩放、键盘/滚动/错误/焦点结果及截图；不作像素快照门禁。
 
 ### 受保护边界及升级
 
-- `apps/web/src/components/AppShell.tsx` 不删；`shell/AppShell.tsx`、navigation、routes、app/state、api、EvidenceProvider/EvidenceDrawer、ConfirmButton.tsx、shared/confirmation.ts、CommandConfirmationDialog.tsx 不改行为。
+- `apps/web/src/components/AppShell.tsx` 不删；`shell/AppShell.tsx`、navigation、routes、app/state、api、EvidenceProvider/EvidenceDrawer、shared/confirmation.ts、CommandConfirmationDialog.tsx 不改行为；ConfirmButton.tsx 仅允许 IP-02 明列的错误呈现修复。
 - 原生 `RiskMatrixPage`/MatrixGrid、RiskOverview 的真实预警计数、其他领域页面、后端、contracts、数据库、desktop、worker、demo、原型及编排图均不在修改范围。
 - 以下情形停止相应切片并升级：依赖版本或政策不允许/未获安装授权；需要新增直接依赖或改脚本许可；基线外出现死组件的新消费者；必须修改公共接口、查询范围、确认/权限/状态机、冻结版本或受保护文件；需新增 allowlist 之外文件；现有命令/真实数据接缝不能支撑 §6 证据。
 - 普通样式、类型与已批准行为的实现缺陷在本 change 内修复；不得以静默扩范围、换框架、删关键测试、伪造成功或隐藏操作收口。

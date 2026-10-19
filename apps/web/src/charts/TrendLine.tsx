@@ -1,7 +1,12 @@
 import { useChart } from "./useChart";
+import { useChartTheme } from "../theme/DesignSystemProvider";
 import type { EChartsCoreOption } from "echarts/core";
 
-/** 趋势折线：工程蓝折线 + 可选红色阈值虚线 + 末点红色标注（越限时附"已越限"） */
+/**
+ * 趋势折线：工程蓝折线 + 可选风险红阈值虚线 + 末点标注（越限时附"已越限"）。
+ * 颜色取自入口 Provider 解析出的实际色值——Canvas 不认 var()，不能把 CSS 变量
+ * 字面量交给 ECharts。阈值语义沿用既有正式预警边界，此处不重新判定等级。
+ */
 export function TrendLine({
   points,
   threshold,
@@ -13,6 +18,7 @@ export function TrendLine({
   thresholdLabel?: string;
   height: number;
 }) {
+  const theme = useChartTheme();
   const values = points.map((p) => p.value).filter((value) => Number.isFinite(value));
   const last = [...points].reverse().find((point) => Number.isFinite(point.value));
   const hasThreshold = threshold !== undefined && Number.isFinite(threshold);
@@ -27,16 +33,16 @@ export function TrendLine({
     xAxis: {
       type: "category",
       data: points.map((p) => p.date),
-      axisLine: { lineStyle: { color: "#dce4ee" } },
+      axisLine: { lineStyle: { color: theme.border } },
       axisTick: { show: false },
-      axisLabel: { color: "#63758a", fontSize: 12 },
+      axisLabel: { color: theme.textSecondary, fontSize: 12 },
     },
     yAxis: {
       type: "value",
       min: Math.floor(min * 0.9 * 10) / 10,
       max: Math.ceil(max * 1.08 * 10) / 10,
-      splitLine: { lineStyle: { color: "#edf1f6" } },
-      axisLabel: { color: "#63758a", fontSize: 12 },
+      splitLine: { lineStyle: { color: theme.neutralSoft } },
+      axisLabel: { color: theme.textSecondary, fontSize: 12 },
     },
     series: [
       {
@@ -45,17 +51,17 @@ export function TrendLine({
         smooth: false,
         symbol: "circle",
         symbolSize: 6,
-        lineStyle: { color: "#2166d1", width: 2 },
-        itemStyle: { color: "#2166d1" },
+        lineStyle: { color: theme.primary, width: 2 },
+        itemStyle: { color: theme.primary },
         ...(hasThreshold
           ? {
               markLine: {
                 silent: true,
                 symbol: "none",
-                lineStyle: { color: "#d9363e", type: "dashed", width: 1.5 },
+                lineStyle: { color: theme.riskBoundary, type: "dashed", width: 1.5 },
                 label: {
                   position: "insideEndTop",
-                  color: "#d9363e",
+                  color: theme.riskBoundary,
                   fontSize: 12,
                   formatter: thresholdLabel ?? "",
                 },
@@ -69,10 +75,10 @@ export function TrendLine({
                 silent: true,
                 symbol: "circle",
                 symbolSize: 8,
-                itemStyle: { color: "#d9363e" },
+                itemStyle: { color: theme.riskBoundary },
                 label: {
                   position: "top",
-                  color: "#d9363e",
+                  color: theme.riskBoundary,
                   fontWeight: 600,
                   fontSize: 12,
                   formatter: `${last.value}${exceeded ? " · 已越限" : ""}`,
@@ -85,6 +91,16 @@ export function TrendLine({
     ],
   };
 
-  const ref = useChart(option, [JSON.stringify(points), threshold, thresholdLabel, height]);
+  const ref = useChart(option, [
+    JSON.stringify(points),
+    threshold,
+    thresholdLabel,
+    height,
+    theme.primary,
+    theme.border,
+    theme.neutralSoft,
+    theme.textSecondary,
+    theme.riskBoundary,
+  ]);
   return <div ref={ref} style={{ height, width: "100%" }} />;
 }

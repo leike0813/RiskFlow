@@ -201,11 +201,29 @@ test("无资料授权时证据抽屉呈现固定脱敏提示", async ({ page }) 
   const restrictedSegment = page.getByRole("button", {
     name: new RegExp(`${server.sourceBVersionEntityId ?? ""}-chapter_1-segment_1`),
   });
+  const deniedResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/queries/engineering-data.evidence-access"),
+  );
   await restrictedSegment.first().click();
   await expect(page.locator(".evidence-drawer-title")).toBeVisible();
-  await expect(
-    page.getByText("当前会话无该资料来源版本的访问授权，仅呈现定位摘要，不提供段正文。"),
-  ).toBeVisible();
+  const denied = await deniedResponse;
+  expect(denied.status()).toBe(404);
+  const deniedBody = await denied.json();
+  expect(deniedBody.code).toBe("NOT_FOUND");
+  expect(deniedBody).not.toHaveProperty("result");
+  const drawer = page.locator(".evidence-drawer");
+  await expect(drawer.locator(".evidence-field-label")).toHaveText([
+    "资料段标识",
+    "定位摘要",
+    "引用该证据的业务对象",
+  ]);
+  await expect(drawer.locator(".evidence-field-value").first()).toHaveText(
+    `${server.sourceBVersionEntityId}-chapter_1-segment_1`,
+  );
+  // 无授权响应没有段对象；抽屉只保留定位摘要，不能生成正文或资料跳转。
+  await expect(drawer.getByRole("link")).toHaveCount(0);
+  await expect(drawer.locator(".evidence-field")).toHaveCount(3);
+  await expect(drawer.getByText(/无该资料来源版本的访问授权/)).toBeVisible();
 });
 
 test("检索结果深链呈现关系上下文；viewer 无检索读取权限", async ({ page }) => {
@@ -469,4 +487,254 @@ test("注销进行中不重复提交，延迟成功响应只结束一次会话",
     await page.waitForURL(/\/login\?next=/);
     expect(calls).toBe(1);
   });
+});
+
+/**
+ * CH-1 设计系统在正式生产页面上的真实消费取证（DS-S01 / DS-S09 / DS-S11 / DS-S12 / DS-S13）。
+ * 这些事实只能在真实浏览器里证明：计算后的颜色、实际资源请求、焦点与局部滚动。
+ */
+
+test("生产页面取统一令牌着色，且不请求原型目录或外部 CDN", async ({ page }) => {
+  const foreign = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.origin !== server.origin) foreign.push(request.url());
+  });
+
+  await login(page, server.operatorLogin, `/projects/documents?project=${server.projectId}`);
+  await selectProject(page);
+  await expect(page.getByText("工程资料版本列表")).toBeVisible();
+
+  const theme = await page.evaluate(() => {
+    const styles = getComputedStyle(document.documentElement);
+    const token = (name) => styles.getPropertyValue(name).trim();
+    return {
+      blue: token("--blue"),
+      error: token("--error"),
+      card: token("--card"),
+      navWidth: token("--nav-width"),
+      navWidthCompact: token("--nav-width-compact"),
+      dockWidth: token("--dock-width"),
+    };
+  });
+  // 目标尺寸令牌已发布；壳层本身尚未切换导航结构。
+  expect(theme.navWidth).toBe("152px");
+  expect(theme.navWidthCompact).toBe("48px");
+  expect(theme.dockWidth).toBe("22rem");
+  expect(theme.blue).not.toBe("");
+  expect(theme.error).not.toBe(theme.blue);
+
+  // AntD 默认主蓝不得成为第二套强调色：页面上不应出现该默认色。
+  const antdDefaultBlue = await page.evaluate(() => {
+    const matches = [];
+    for (const element of document.querySelectorAll("*")) {
+      const color = getComputedStyle(element).color;
+      const background = getComputedStyle(element).backgroundColor;
+      if (color === "rgb(22, 119, 255)" || background === "rgb(22, 119, 255)")
+        matches.push(element.tagName);
+    }
+    return matches;
+  });
+  expect(antdDefaultBlue).toEqual([]);
+
+  // 探针只归一化根令牌；所有断言对象都是真实生产控件。
+  const colors = await page.evaluate(() => {
+    const probe = document.createElement("span");
+    document.body.appendChild(probe);
+    const result = {};
+    for (const name of ["--blue", "--text", "--card", "--focus-ring"]) {
+      probe.style.color = `var(${name})`;
+      result[name] = getComputedStyle(probe).color;
+    }
+    probe.remove();
+    return result;
+  });
+  const selectedNav = page.locator('.app-nav a[aria-current="page"]');
+  await expect(selectedNav).toHaveCSS("background-color", colors["--blue"]);
+  const selectedTab = page.locator(".section-tab--active");
+  await expect(selectedTab).toHaveCSS("color", colors["--blue"]);
+  await expect(selectedTab).toHaveCSS("border-bottom-color", colors["--blue"]);
+  const cell = page.locator(".data-table-host .ant-table-tbody td").first();
+  await expect(cell).toHaveCSS("color", colors["--text"]);
+  await expect(page.locator(".data-table-host .ant-table-thead th").first()).toHaveCSS(
+    "background-color",
+    colors["--card"],
+  );
+  await selectedTab.focus();
+  await page.keyboard.press("Tab");
+  const focused = page.locator(":focus-visible");
+  await expect(focused).toHaveCount(1);
+  await expect(focused).toHaveCSS("outline-color", colors["--focus-ring"]);
+  expect(
+    await focused.evaluate((node) => parseFloat(getComputedStyle(node).outlineWidth)),
+  ).toBeGreaterThan(0);
+
+  expect(foreign, `外部或非部署 origin 请求：${foreign.join(", ")}`).toEqual([]);
+});
+
+test("共享表格保留当前页全部行与行身份，且不引入第二套客户端分页", async ({ page }) => {
+  const catalogResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/queries/engineering-data.source-catalog") &&
+      response.ok() &&
+      response.request().postDataJSON().requestedSourceVersionRefs.length === 0,
+  );
+  await login(page, server.operatorLogin, `/projects/documents?project=${server.projectId}`);
+  await selectProject(page);
+  await expect(page.getByText("工程资料版本列表")).toBeVisible();
+
+  const host = page.locator(".data-table-host").first();
+  await expect(host).toBeVisible();
+  // 分页归原查询所有：组件内不得再出现分页器。
+  await expect(page.locator(".ant-pagination")).toHaveCount(0);
+
+  const catalog = (await (await catalogResponse).json()).result;
+  const rows = host.locator("tbody tr.ant-table-row");
+  await expect(rows).toHaveCount(catalog.items.length);
+  expect(
+    await rows.evaluateAll((nodes) => nodes.map((node) => node.children[1].textContent)),
+  ).toEqual(catalog.items.map((item) => item.sourceId));
+  for (const [index, item] of catalog.items.entries()) {
+    const cells = rows.nth(index).locator("td");
+    await expect(cells.nth(0)).toHaveText(item.sourceName ?? item.sourceId);
+    await expect(cells.nth(2)).toHaveText(item.documentType ?? "—");
+    await expect(cells.nth(3)).toHaveText(item.formedAt ?? "—");
+    await expect(cells.nth(4)).toHaveText(item.sourceOrganization ?? "—");
+    await expect(cells.nth(5)).toHaveText(item.externalVersion ?? "—");
+    await rows.nth(index).focus();
+    await page.keyboard.press(index % 2 === 0 ? "Enter" : "Space");
+    await expect(page).toHaveURL(
+      (url) =>
+        url.pathname === `/projects/documents/${item.sourceVersionRef.reference.entityId}` &&
+        url.searchParams.get("version") === item.sourceVersionRef.reference.versionId,
+    );
+    await page.goBack();
+    await expect(rows).toHaveCount(catalog.items.length);
+  }
+});
+
+test("可点击行可用键盘聚焦并触发行操作", async ({ page }) => {
+  await login(page, server.operatorLogin, `/projects/documents?project=${server.projectId}`);
+  await selectProject(page);
+  await expect(page.getByText("工程资料版本列表")).toBeVisible();
+
+  const clickable = page.locator(".data-table-host tbody tr.data-table-row--clickable").first();
+  await expect(clickable).toHaveAttribute("tabindex", "0");
+
+  await clickable.focus();
+  await expect(clickable).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/projects\/documents\/[^/]+/);
+});
+
+test("减弱动态效果时非必要动画停用且状态仍可读", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await login(page, server.operatorLogin, `/projects/monitoring?project=${server.projectId}`);
+  await selectProject(page);
+  await expect(page.getByText("监测序列", { exact: true }).first()).toBeVisible();
+
+  const { promise: requestGate, resolve: releaseRequest } = Promise.withResolvers();
+  let failedDetail = false;
+  await page.route("**/queries/engineering-data.monitoring-catalog", async (route) => {
+    if (failedDetail || route.request().postDataJSON().payload.monitoringSeriesRef === undefined) {
+      await route.fallback();
+      return;
+    }
+    failedDetail = true;
+    await requestGate;
+    await route.abort("failed");
+  });
+  await page.locator("tbody tr.data-table-row--clickable").first().focus();
+  await page.keyboard.press("Enter");
+  const loading = page.locator('[data-page-state="loading"]');
+  try {
+    await expect(loading).toBeVisible();
+    await expect(loading).toContainText(/加载/);
+  } finally {
+    releaseRequest();
+  }
+  const error = page.locator('[data-page-state="error"]');
+  await expect(error).toBeVisible();
+  const retry = error.getByRole("button", { name: "重试", exact: true });
+  await expect(retry).toBeEnabled();
+  await retry.focus();
+  await expect(retry).toBeFocused();
+  expect(failedDetail).toBe(true);
+  await expect(retry).toHaveCSS("scroll-behavior", "auto");
+  expect(
+    await retry.evaluate((node) => parseFloat(getComputedStyle(node).transitionDuration)),
+  ).toBeLessThanOrEqual(0.001);
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("短期斜率")).toBeVisible();
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  expect(
+    await canvas.evaluate((node) => {
+      const pixels = node.getContext("2d").getImageData(0, 0, node.width, node.height).data;
+      let painted = 0;
+      for (let index = 3; index < pixels.length; index += 4) {
+        if (pixels[index] > 0) painted += 1;
+      }
+      return painted;
+    }),
+  ).toBeGreaterThan(50);
+  const stable = await canvas.evaluate(async (node) => {
+    const initial = node.toDataURL();
+    for (let frame = 0; frame < 24; frame += 1) {
+      const { promise, resolve } = Promise.withResolvers();
+      requestAnimationFrame(resolve);
+      await promise;
+      if (node.toDataURL() !== initial) return false;
+    }
+    return true;
+  });
+  expect(stable).toBe(true);
+});
+
+test("缩小视口时二维表格在自身区域滚动，操作控件不被裁掉", async ({ page }) => {
+  await login(page, server.operatorLogin, `/projects/documents?project=${server.projectId}`);
+  await selectProject(page);
+  await expect(page.getByText("工程资料版本列表")).toBeVisible();
+
+  // 仅模拟较窄 CSS 视口；不作为真实浏览器 200% 缩放证据。
+  await page.setViewportSize({ width: 640, height: 360 });
+  await expect(page.getByText("工程资料版本列表")).toBeVisible();
+
+  const host = page.locator(".data-table-host").first();
+  const overflow = await host.evaluate((node) => {
+    const before = node.scrollLeft;
+    node.scrollLeft = node.scrollWidth;
+    return {
+      scrollable: node.scrollWidth > node.clientWidth,
+      moved: node.scrollLeft > before,
+      overflowX: getComputedStyle(node).overflowX,
+    };
+  });
+  expect(["auto", "scroll"]).toContain(overflow.overflowX);
+  // 页面正文不被二维内容撑开：主区宽度不超过视口。
+  const mainWidth = await page
+    .locator("main, .app-main")
+    .first()
+    .evaluate((node) => node.clientWidth);
+  expect(mainWidth).toBeLessThanOrEqual(640);
+  expect(overflow.scrollable).toBe(true);
+  expect(overflow.moved).toBe(true);
+  const row = host.locator("tbody tr.data-table-row--clickable").first();
+  const sourceId = await row.locator("td").nth(1).textContent();
+  await row.focus();
+  await expect(row).toBeFocused();
+  const visible = await row.evaluate((node) => {
+    const bounds = node.getBoundingClientRect();
+    const hostBounds = node.closest(".data-table-host").getBoundingClientRect();
+    const x = Math.max(bounds.left, hostBounds.left, 0) + 8;
+    const y = Math.max(bounds.top, hostBounds.top, 0) + 8;
+    return (
+      y < Math.min(bounds.bottom, hostBounds.bottom, innerHeight) &&
+      node.contains(document.elementFromPoint(x, y))
+    );
+  });
+  expect(visible).toBe(true);
+  await page.keyboard.press("Space");
+  await expect(page).toHaveURL(/\/projects\/documents\/[^/]+/);
+  await expect(page.getByText(sourceId, { exact: false }).first()).toBeVisible();
 });

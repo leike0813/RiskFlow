@@ -2,7 +2,7 @@
  * echarts 按需引入注册（统一入口，避免全量打包）。
  */
 import * as echarts from "echarts/core";
-import { BarChart, GraphChart, LineChart, PieChart } from "echarts/charts";
+import { GraphChart, LineChart } from "echarts/charts";
 import {
   GridComponent,
   LegendComponent,
@@ -14,8 +14,6 @@ import {
 import { CanvasRenderer } from "echarts/renderers";
 
 echarts.use([
-  PieChart,
-  BarChart,
   LineChart,
   GraphChart,
   GridComponent,

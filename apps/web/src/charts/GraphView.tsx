@@ -1,24 +1,36 @@
 import { useChart } from "./useChart";
+import { useChartTheme } from "../theme/DesignSystemProvider";
+import type { ChartTheme } from "./types";
 import type { EChartsCoreOption } from "echarts/core";
 
-/** 图谱节点分类配色：工序=工程蓝、机理=紫灰、风险事件=红描边、资料证据=浅灰、装备构件=蓝灰 */
-const categoryStyles: Record<
-  string,
-  { color: string; borderColor?: string; borderWidth?: number; textColor: string }
-> = {
-  工序: { color: "#2166d1", textColor: "#ffffff" },
-  机理: { color: "#7e7390", textColor: "#ffffff" },
-  风险事件: { color: "#ffffff", borderColor: "#d9363e", borderWidth: 2, textColor: "#d9363e" },
-  资料证据: { color: "#edf1f6", borderColor: "#dce4ee", borderWidth: 1, textColor: "#63758a" },
-  装备构件: { color: "#8fa6c0", textColor: "#ffffff" },
-};
-
-const fallbackStyle: {
+interface NodeStyle {
   color: string;
   textColor: string;
   borderColor?: string;
   borderWidth?: number;
-} = { color: "#8fa6c0", textColor: "#ffffff" };
+}
+
+/**
+ * 图谱节点分类取自入口 Provider 解析出的实际色值——Canvas 不认 var()。
+ * 「风险事件」是对象类别而非风险等级，因此用中性色加粗描边区分，不按等级取红色。
+ */
+export const GRAPH_CATEGORY_STYLES = (theme: ChartTheme): Record<string, NodeStyle> => ({
+  工序: { color: theme.primary, textColor: "#ffffff" },
+  机理: { color: theme.review, textColor: "#ffffff" },
+  风险事件: {
+    color: theme.neutralSoft,
+    borderColor: theme.textSecondary,
+    borderWidth: 2,
+    textColor: theme.textSecondary,
+  },
+  资料证据: {
+    color: theme.neutralSoft,
+    borderColor: theme.border,
+    borderWidth: 1,
+    textColor: theme.textSecondary,
+  },
+  装备构件: { color: theme.border, textColor: theme.text },
+});
 
 /** 工序风险关联图谱视图（echarts graph，力导向布局） */
 export function GraphView({
@@ -30,6 +42,10 @@ export function GraphView({
   edges: { source: string; target: string; label?: string }[];
   height: number;
 }) {
+  const theme = useChartTheme();
+  const styles = GRAPH_CATEGORY_STYLES(theme);
+  const fallbackStyle: NodeStyle = { color: theme.border, textColor: theme.text };
+
   const option: EChartsCoreOption = {
     tooltip: { trigger: "item" },
     series: [
@@ -47,13 +63,13 @@ export function GraphView({
         edgeLabel: {
           show: true,
           fontSize: 10,
-          color: "#63758a",
+          color: theme.textSecondary,
           formatter: (p: { data?: { edgeLabel?: string } }) => p.data?.edgeLabel ?? "",
         },
-        lineStyle: { color: "#c3cfdd", width: 1.2, curveness: 0.08 },
+        lineStyle: { color: theme.border, width: 1.2, curveness: 0.08 },
         emphasis: { disabled: true },
         data: nodes.map((n) => {
-          const st = categoryStyles[n.category] ?? fallbackStyle;
+          const st = styles[n.category] ?? fallbackStyle;
           return {
             id: n.id,
             name: n.name,
@@ -76,6 +92,16 @@ export function GraphView({
     ],
   };
 
-  const ref = useChart(option, [JSON.stringify(nodes), JSON.stringify(edges), height]);
+  const ref = useChart(option, [
+    JSON.stringify(nodes),
+    JSON.stringify(edges),
+    height,
+    theme.primary,
+    theme.review,
+    theme.neutralSoft,
+    theme.text,
+    theme.textSecondary,
+    theme.border,
+  ]);
   return <div ref={ref} style={{ height, width: "100%" }} />;
 }

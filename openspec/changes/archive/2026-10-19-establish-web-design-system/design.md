@@ -43,7 +43,7 @@ RI/RA 为横切呈现：RI-S6 的证据与决定边界、RA-S3～RA-S6 的冻结
 | purpose | 生产基础表格与后续已限定表单、选择器、日期及对话框；不拥有业务状态 |
 | license | MIT |
 | source | https://www.npmjs.com/package/antd/v/6.6.6 ；https://registry.npmjs.org/antd/6.6.6 ；https://github.com/ant-design/ant-design/tree/6.6.6 |
-| offline | 由联网构建方按冻结锁文件准备内网 npm 镜像或 `pnpm fetch` store，连同锁文件交付；隔离环境使用 `pnpm install --offline --frozen-lockfile`，Web 运行不访问 CDN |
+| offline | 联网构建方在不带 node_modules 的干净暂存副本按冻结锁文件执行 `pnpm fetch --frozen-lockfile --force`，取得完整 store；锁文件、workspace 政策与 store 一同交付。另建全新验收副本执行 `pnpm install --offline --frozen-lockfile`，再构建并运行正式浏览器验收；不能以已有 virtual store 的“已是最新”代替材料完整性证明。Web 运行不访问 CDN。 |
 | exitCondition | 与冻结 React/Node/构建不兼容、漏洞无法在允许版本修复，或达到同等功能/可访问性所需覆写抵消引入收益；撤回前重新批准方案，不由实现者另建并行组件体系 |
 
 `apps/web/package.json`、`config/dependency-policy.json` 与 `pnpm-lock.yaml` 必须在主调度获得用户依赖变更授权后串行形成同一机械检查点；Implementation 不运行改锁安装命令。准备材料须覆盖传递依赖及既有构建脚本策略，不放宽 license、release-age 或默认脚本拒绝政策。`@ant-design/icons` 会作为 AntD 内部传递依赖进入锁文件；本项目不增加其直接依赖、不在业务源码导入，继续使用既有 icons.tsx，不承诺“零传递 icons”。
@@ -56,7 +56,7 @@ RI/RA 为横切呈现：RI-S6 的证据与决定边界、RA-S3～RA-S6 的冻结
 
 独立错误色固定 `--error:#b42318`、`--error-soft:#fef3f2`；现有错误/失败/危险操作的视觉消费者改用这两个令牌，不再借用风险色。风险文本采用 `--risk-1-dark`，并采纳/增加 `--risk-2-text:#9a3412`、`--risk-3-text:#8a6604`、`--risk-4-text:#12633d`，与既有 soft 底色配对；色值只在 CSS 声明。`LoginPage.css` 普通说明文字改为中性文字色，不再用 risk-4 装饰。
 
-`global.css` 用成对字号/行高和焦点令牌；`shell/AppShell.css` 移除覆盖颜色/字体的第二套根定义，保留网格与导航行为。reduced-motion 同时影响自有样式与第三方非必要动画，不改业务完成时序。不新增暗色切换或颜色监听器。
+`global.css` 用成对字号/行高和焦点令牌；`shell/AppShell.css` 移除覆盖颜色/字体的第二套根定义，导航强调使用工程蓝，保留网格与导航行为。reduced-motion 同时影响自有样式与第三方非必要动画，不改业务完成时序。Canvas 在 `useChart` 内订阅同一媒体偏好，减少动态效果时禁用 ECharts 动画及力导向布局动画，偏好变化后重建原图并清理订阅；不新增暗色切换或颜色监听器。
 
 新增 `theme/DesignSystemProvider.tsx`：在 main.tsx 唯一入口包住现有 AppRoot，CSS 导入保持 tokens→global→shell 的顺序。挂载时一次读取根元素计算后的明确令牌集合，生成稳定的 AntD ThemeConfig 与复用既有 ChartTheme 的图表主题。SSR 可注入显式主题值；不得在 import 时访问 document，不以另抄一套 hex 作为 SSR 默认值。图表通过同模块的 `useChartTheme` 消费稳定主题；不在轮询、单元格或每次 render 读取 DOM。
 
@@ -74,7 +74,7 @@ ConfigProvider 使用 zh_CN，映射 primary/success/error、字体、字号/行
 
 ### D-05 受控风险呈现与矩阵复用
 
-新增 `theme/riskPresentation.ts`，只接受公开结果的 levelId、可选 ordinal/显示名与生产主题，返回标签、前景、背景和是否可映射。它是前端呈现投影，不是新的领域 Schema。沿当前矩阵约定，已知 ordinal 1→绿色 risk-4、2→黄色 risk-3、3→橙色 risk-2、4→红色 risk-1；不从 levelId 的数字或中文名推断。未知/缺少 ordinal、超出四个已定义语义色时保留实际标签/标识并用中性色和“等级配色未定义”的可访问说明，不取模、截断或重新计算等级。
+新增 `theme/riskPresentation.ts`，只接受公开结果的 levelId、可选 ordinal/显示名与生产主题，返回标签、前景、背景和是否可映射。它是前端呈现投影，不是新的领域 Schema。沿当前矩阵约定，已知 ordinal 1→绿色 risk-4、2→黄色 risk-3、3→橙色 risk-2、4→红色 risk-1；不从 levelId 的数字或中文名推断。未知/缺少 ordinal、超出四个已定义语义色时保留原始标识；已有不同显示名时一并展示。徽章、格子与图例均用中性色和“等级配色未定义”的可访问说明，不取模、截断或重新计算等级。
 
 `components/RiskBadge.tsx/.css` 与矩阵图例/格子共用该函数。WarningCenter 目前只有 warningLevel 标识，不能补默认红色或新增后端查询，显示中性原始标识；WarningDetail 已有 matrixPlot.riskLevelOrdinal 时可使用该元数据。待确认/已确认只用 StatusTag，不混进等级徽章。迁移这两个真实消费者后删除 WarningBadge.tsx/.css，不保留 re-export。
 
@@ -84,11 +84,11 @@ TrendLine/GraphView 仍用现有按需 ECharts；颜色改从稳定主题取得�
 
 GraphView 的 risk-event 是对象类别，不代表风险等级；类别配色采用工程蓝/中性色并保留形状和名称，不因类别名称含 risk 而渲染最高风险红色。TrendLine 已有正式预警边界的语义可以保留，不能把普通序列着色解释为新等级计算。
 
-不新增可接受阈值读取、边界推测或名称编造。删除无消费者的固定 5×5 矩阵、DonutChart、HBars 及 GraphLegend 副本；未来仪表盘按其 change 消费现有 ECharts 接缝，不保留未消费预制页面。具体文件在施工图列明。
+不新增可接受阈值读取、边界推测或名称编造。删除无消费者的固定 5×5 矩阵、DonutChart、HBars。GraphLegend 由 AssociationGraphPage 实际消费，保留该组件及样式，与 GraphView 共用分类样式，去除重复分类色值。未来仪表盘按其 change 消费现有 ECharts 接缝，不保留未消费预制页面。
 
 ### D-06 保留实际确认、容器与安全状态行为
 
-`components/AppShell.tsx` 在用，作为受保护文件保留，不按附件错误前提删除。`shared/confirmation.ts` 和 CommandConfirmationDialog 是既有公开确认机制，而生产 ConfirmButton 当前另有本地状态；两者可用性模型不同。本 change 不宣称该既有 drift 已消除，也不将确认迁移隐藏在换皮任务中；仅改错误色与滚动/焦点样式，ConfirmButton 的请求回调、取消、原载荷重试和上下文失效逻辑保持不变。后续 CH-2 规划须据该事实单独闭合统一确认，不沿用“已经只有一套生产状态机”的前提。
+`components/AppShell.tsx` 在用，作为受保护文件保留，不按附件错误前提删除。`shared/confirmation.ts` 和 CommandConfirmationDialog 是既有公开确认机制，而生产 ConfirmButton 当前另有本地状态；两者可用性模型不同。本 change 不宣称该既有 drift 已消除，也不将确认迁移隐藏在换皮任务中。ConfirmButton 仅调整错误节点的呈现、可访问播报及关联和令牌/滚动/焦点样式；请求回调、取消、原载荷重试和上下文失效逻辑保持不变。后续 CH-2 规划须据该事实单独闭合统一确认。
 
 证据读取仍由 EvidenceProvider/原接口拥有；主题层不创建会话、权限、查询、幂等键、缓存或审计。没有数据与无权继续安全区分，数据过期不能由视觉层填充。
 

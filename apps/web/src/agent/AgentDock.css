@@ -114,8 +114,8 @@
 }
 
 .ag-chip--fail {
-  color: var(--risk-1);
-  background: var(--risk-1-soft);
+  color: var(--error);
+  background: var(--error-soft);
 }
 
 .ag-chip--waiting {

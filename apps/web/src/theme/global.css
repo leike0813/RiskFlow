@@ -13,11 +13,19 @@ body,
 
 body {
   font-family: var(--font);
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
   color: var(--text);
   background: var(--page-bg);
   -webkit-font-smoothing: antialiased;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+/* 焦点可见性统一由令牌提供；浏览器缩放与高对比度下仍需可见，不按分辨率降级。 */
+:focus-visible {
+  outline: 0.2rem solid var(--focus-ring);
+  outline-offset: 0.15rem;
 }
 
 a {
@@ -34,7 +42,7 @@ button {
 
 /* 页面容器与标题区（供全部页面 stub 与正式页面复用） */
 .page {
-  padding: 24px;
+  padding: var(--space-5);
 }
 
 .page-header {
@@ -42,25 +50,25 @@ button {
   align-items: flex-start;
   justify-content: space-between;
   min-height: 40px;
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 
 .page-title {
-  font-size: 24px;
-  line-height: 32px;
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl-lh);
   font-weight: 600;
   color: var(--text);
 }
 
 .page-subtitle {
-  margin-top: 4px;
-  font-size: 14px;
-  line-height: 22px;
+  margin-top: var(--space-1);
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
   color: var(--text-2);
 }
 
 /* 等宽数字：资料段标识等 */
 .mono {
   font-variant-numeric: tabular-nums;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--font-mono);
 }

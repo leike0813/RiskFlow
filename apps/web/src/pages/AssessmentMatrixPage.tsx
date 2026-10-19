@@ -57,6 +57,8 @@ const definitionOf = (
       levels: levels.map((level) => ({
         key: level.levelId,
         label: level.levelId + "（序 " + level.ordinal + "）",
+        // 配色只由发布登记的顺序决定；不在界面重算分带或等级。
+        ordinal: level.ordinal,
       })),
       cellLevels,
     },

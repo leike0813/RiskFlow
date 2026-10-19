@@ -5,7 +5,12 @@
  */
 import { ChartSurface } from "./ChartSurface";
 import {
-  DEFAULT_CHART_THEME,
+  presentRiskLevel,
+  RISK_COLOR_UNDEFINED_MESSAGE,
+  type RiskLevelPresentation,
+} from "../theme/riskPresentation.js";
+import { useChartTheme } from "../theme/DesignSystemProvider.js";
+import {
   resolveChartStatus,
   type ChartLegendItem,
   type ChartStateProps,
@@ -15,6 +20,8 @@ import {
 export interface RiskMatrixLevel {
   readonly key: string;
   readonly label: string;
+  /** 已发布配置给出的等级顺序；配色由它决定，不由数组位置或标识字面量推断。 */
+  readonly ordinal: number;
 }
 
 export interface RiskMatrixAxis {
@@ -52,12 +59,20 @@ interface Segment {
   readonly y2: number;
 }
 
+/** 格子与落点的可读名称：可映射时给显示名，不可映射时保留实际标识并说明原因。 */
+const accessibleLevelName = (presentation: RiskLevelPresentation): string =>
+  presentation.label.length > 0 && presentation.mapped
+    ? presentation.label
+    : presentation.label.length > 0
+      ? `${presentation.label}（${RISK_COLOR_UNDEFINED_MESSAGE}）`
+      : `未标注等级（${RISK_COLOR_UNDEFINED_MESSAGE}）`;
+
 export function RiskMatrixVersionChart({
   definition,
   plots = [],
   cellSize = 44,
   title,
-  theme = DEFAULT_CHART_THEME,
+  theme: themeProp,
   status: statusProp,
   unavailableReasons,
   emptyMessage = "暂无评估记录落点",
@@ -68,6 +83,9 @@ export function RiskMatrixVersionChart({
   title?: string;
   theme?: ChartTheme;
 } & ChartStateProps) {
+  // 显式主题（SSR/隔离测试）优先，否则消费入口 Provider 解析出的稳定主题。
+  const unifiedTheme = useChartTheme();
+  const theme = themeProp ?? unifiedTheme;
   const { probability, consequence, levels, cellLevels, acceptable, thresholdVersion } = definition;
   const pCount = probability.ticks.length;
   const cCount = consequence.ticks.length;
@@ -78,14 +96,18 @@ export function RiskMatrixVersionChart({
   const cellX = (c: number): number => AXIS_LEFT + c * cellSize;
   const cellY = (p: number): number => PAD_TOP + (pCount - 1 - p) * cellSize;
 
-  // 等级配色按 levels 自身顺序取主题调色板，不假设等级数量。
-  const colorOf = (levelKey: string | undefined): string => {
-    if (levelKey === undefined) return theme.neutralSoft;
-    const index = levels.findIndex((level) => level.key === levelKey);
-    if (index < 0) return theme.neutralSoft;
-    // 调色板是固定序列；缺项时退回中性色，不取 undefined。
-    return theme.levelPalette[index % theme.levelPalette.length] ?? theme.neutralSoft;
-  };
+  // 等级配色只由发布配置给出的 ordinal 决定；位置、标识字面量和格子坐标都不参与。
+  const presentationOf = (levelKey: string | undefined): RiskLevelPresentation =>
+    presentRiskLevel(
+      levelKey === undefined
+        ? { levelId: "" }
+        : {
+            levelId: levelKey,
+            ordinal: levels.find((level) => level.key === levelKey)?.ordinal,
+            displayName: levels.find((level) => level.key === levelKey)?.label,
+          },
+      theme,
+    );
 
   const acceptableAt = (p: number, c: number): boolean => acceptable?.[p]?.[c] ?? false;
   const boundarySegments: Segment[] = [];
@@ -156,11 +178,14 @@ export function RiskMatrixVersionChart({
     status === "empty"
       ? []
       : [
-          ...levels.map((level) => ({
-            key: level.key,
-            label: level.label,
-            color: colorOf(level.key),
-          })),
+          ...levels.map((level) => {
+            const presentation = presentationOf(level.key);
+            return {
+              key: level.key,
+              label: accessibleLevelName(presentation),
+              color: presentation.background,
+            };
+          }),
           ...(acceptable === undefined
             ? []
             : [
@@ -238,18 +263,23 @@ export function RiskMatrixVersionChart({
           {consequence.label}
         </text>
         {probability.ticks.map((_, p) =>
-          consequence.ticks.map((_, c) => (
-            <rect
-              key={`${p}-${c}`}
-              x={cellX(c)}
-              y={cellY(p)}
-              width={cellSize}
-              height={cellSize}
-              fill={colorOf(cellLevels[p]?.[c])}
-              stroke={theme.border}
-              strokeWidth={1}
-            />
-          )),
+          consequence.ticks.map((_, c) => {
+            const presentation = presentationOf(cellLevels[p]?.[c]);
+            return (
+              <rect
+                key={`${p}-${c}`}
+                x={cellX(c)}
+                y={cellY(p)}
+                width={cellSize}
+                height={cellSize}
+                fill={presentation.background}
+                stroke={theme.border}
+                strokeWidth={1}
+              >
+                <title>{accessibleLevelName(presentation)}</title>
+              </rect>
+            );
+          }),
         )}
         {boundarySegments.map((segment, index) => (
           <line

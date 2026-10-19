@@ -1,29 +1,31 @@
+/* 原生表格消费者（治理矩阵等）继续使用 table.data-table；以下规则不受迁移影响。 */
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
 }
 
 .data-table th {
   text-align: left;
   font-weight: 600;
   color: var(--text-2);
-  font-size: 13px;
-  padding: 8px 12px;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 
 .data-table td {
-  padding: 10px 12px;
+  padding: 10px var(--space-3);
   border-bottom: 1px solid var(--border);
   color: var(--text);
   vertical-align: middle;
 }
 
 .data-table tbody tr:hover {
-  background: #f7fafd;
+  background: var(--page-bg);
 }
 
 .data-table tbody tr:last-child td {
@@ -32,4 +34,45 @@
 
 .data-table-row--clickable {
   cursor: pointer;
+}
+
+/* 共享 DataTable 的 AntD 呈现：限定在本组件宿主内，横向溢出由表格自身区域滚动，
+   页面正文不因列多而被撑开。 */
+.data-table-host {
+  overflow-x: auto;
+}
+
+.data-table-host .ant-table {
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-md);
+  line-height: var(--text-md-lh);
+}
+
+.data-table-host .ant-table-thead > tr > th {
+  padding: var(--space-2) var(--space-3);
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm-lh);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.data-table-host .ant-table-tbody > tr > td {
+  padding: 10px var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table-host .ant-table-tbody > tr:last-child > td {
+  border-bottom: none;
+}
+
+.data-table-host .ant-table-tbody > tr.data-table-row--clickable {
+  cursor: pointer;
+}
+
+.data-table-host .ant-table-tbody > tr.data-table-row--clickable:hover > td {
+  background: var(--page-bg);
 }

@@ -139,7 +139,7 @@
 }
 
 .rv-fail {
-  color: var(--risk-1);
+  color: var(--error);
 }
 
 .rv-actions {

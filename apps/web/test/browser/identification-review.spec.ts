@@ -271,6 +271,7 @@ test("风险记录详情呈现契约字段与真实定位，受限来源记录�
 });
 
 test("关联图无主体时呈现引导与按工序分组降级视图；带主体时呈现可证明关联边", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await login(page, server.operatorLogin, withProject("/identification/graph"));
   await expect(page.getByText(/在下方「按工序分组的风险记录」中选择一条记录/)).toBeVisible();
   // 降级视图只呈现当前可见记录，受限 B 不进入分组。
@@ -287,8 +288,59 @@ test("关联图无主体时呈现引导与按工序分组降级视图；带主�
   const nodeLinks = page.locator(".graph-node-links");
   await expect(nodeLinks).toContainText(`risk-assessment-record:${ids().completedRunId}:1`);
   await expect(nodeLinks).toContainText(`calibration-suggestion:${ids().completedRunId}:1`);
+  const canvas = page.locator(".page canvas").first();
+  await expect(canvas).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  const expectStableGraph = async () => {
+    const rendered = await canvas.evaluate(async (element) => {
+      const context = element.getContext("2d");
+      const pixels = context.getImageData(0, 0, element.width, element.height).data;
+      // Read the real Canvas fill, not the legend or a forwarded option.
+      const swatch = document.createElement("canvas").getContext("2d");
+      swatch.fillStyle = getComputedStyle(document.documentElement)
+        .getPropertyValue("--bluegray-soft")
+        .trim();
+      swatch.fillRect(0, 0, 1, 1);
+      const expected = swatch.getImageData(0, 0, 1, 1).data;
+      let themedPixels = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (
+          pixels[i] === expected[0] &&
+          pixels[i + 1] === expected[1] &&
+          pixels[i + 2] === expected[2] &&
+          pixels[i + 3] === 255
+        )
+          themedPixels += 1;
+      }
+      const initial = element.toDataURL();
+      for (let frame = 0; frame < 24; frame += 1) {
+        const { promise, resolve } = Promise.withResolvers();
+        requestAnimationFrame(resolve);
+        await promise;
+        if (element.toDataURL() !== initial) return { stable: false, themedPixels };
+      }
+      return { stable: true, themedPixels };
+    });
+    expect(rendered.themedPixels).toBeGreaterThan(50);
+    expect(rendered.stable).toBe(true);
+  };
+  await expectStableGraph();
+  // Switching both ways must replace the renderer, then retain a usable, stable graph.
+  const reducedCanvas = await canvas.elementHandle();
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect.poll(() => reducedCanvas.evaluate((element) => element.isConnected)).toBe(false);
+  await expect(canvas).toBeVisible();
+  const animatedCanvas = await canvas.elementHandle();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect.poll(() => animatedCanvas.evaluate((element) => element.isConnected)).toBe(false);
+  await expect(canvas).toBeVisible();
+  await expectStableGraph();
   // 降级视图不受投影结果影响，仍基于目录事实呈现。
   await expect(page.getByText("按工序分组的风险记录").first()).toBeVisible();
+  await nodeLinks.getByRole("link", { name: ids().recordAutoId, exact: true }).click();
+  await expect(page).toHaveURL(
+    (url) => decodeURIComponent(url.pathname) === `/identification/records/${ids().recordAutoId}`,
+  );
 });
 
 test("复核队列呈现真实任务、过期禁决定与筛选空态", async ({ page }) => {

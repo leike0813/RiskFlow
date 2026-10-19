@@ -5,7 +5,6 @@ import { Card } from "../components/Card";
 import { ConfirmButton } from "../components/ConfirmButton";
 import { PageStateView } from "../components/PageStateView";
 import { StatusTag } from "../components/StatusTag";
-import { WarningBadge } from "../components/WarningBadge";
 import { useEngineering, usePageQuery, useProjectPath } from "../api/engineering";
 import {
   actionAvailability,
@@ -117,10 +116,13 @@ export default function WarningDetailPage() {
             <p className="page-subtitle">登记触发事实、通知意图与确认记录</p>
           </div>
           <div className="wd-header-actions">
+            {/* 确认状态是处置进度，不是风险等级；风险等级另有 matrixPlot 呈现。 */}
             {warning.state.kind === "ready" && (
-              <WarningBadge
-                text={warning.state.value.acknowledgement === undefined ? "待确认" : "已确认"}
-              />
+              <StatusTag
+                tone={warning.state.value.acknowledgement === undefined ? "review" : "success"}
+              >
+                {warning.state.value.acknowledgement === undefined ? "待确认" : "已确认"}
+              </StatusTag>
             )}
             <ConfirmButton
               label="确认预警"

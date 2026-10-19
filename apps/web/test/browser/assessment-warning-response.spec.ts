@@ -654,6 +654,39 @@ test("响应丢失后重试逐字节复用首次冻结的完整信封，服务�
     })
     .toBeTruthy();
 
+  const failure = page.getByRole("dialog").getByRole("alert");
+  await expect(failure).toContainText("TRANSIENT_FAILURE");
+  const failureId = await failure.getAttribute("id");
+  expect(failureId).not.toBeNull();
+  await expect(page.getByRole("dialog")).toHaveAttribute("aria-describedby", failureId!);
+  const failureColors = await failure.evaluate((element) => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--error)";
+    probe.style.backgroundColor = "var(--error-soft)";
+    document.body.appendChild(probe);
+    const expected = getComputedStyle(probe);
+    const actual = getComputedStyle(element);
+    const colors = {
+      actual: [actual.color, actual.backgroundColor],
+      expected: [expected.color, expected.backgroundColor],
+    };
+    probe.remove();
+    return colors;
+  });
+  expect(failureColors.actual).toEqual(failureColors.expected);
+
+  const submit = page.getByRole("dialog").getByRole("button", { name: /^确认/ });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  expect(
+    await submit.evaluate((element) => parseFloat(getComputedStyle(element).transitionDuration)),
+  ).toBeGreaterThan(0.001);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect
+    .poll(() =>
+      submit.evaluate((element) => parseFloat(getComputedStyle(element).transitionDuration)),
+    )
+    .toBeLessThanOrEqual(0.001);
+
   // 响应丢失：用户按同一意图再次确认，必须复用同一冻结信封而不是生成新时间的新命令。
   await confirm();
   await expect.poll(() => envelopes.length, { timeout: 30_000 }).toBe(2);
@@ -1630,6 +1663,30 @@ test("同一定义发布新矩阵后历史落点按两个冻结版本分组", as
   test.setTimeout(180_000);
   await login(page, server.operatorLogin, withProject("/warnings"));
   const real = await startRealAssessmentAndReadWarnings(page, "historical-matrix");
+  const readMatrixGroup = async (group) => {
+    await expect(group).toHaveCount(1);
+    return group.locator("svg[role='img']").evaluate((svg) => ({
+      axes: [...svg.querySelectorAll(":scope > text")].map((node) => node.textContent),
+      cells: [...svg.querySelectorAll(":scope > rect")].map((node) => ({
+        position: [node.getAttribute("x"), node.getAttribute("y")],
+        level: node.querySelector("title")?.textContent,
+        color: getComputedStyle(node).fill,
+      })),
+      plots: [...svg.querySelectorAll(":scope > g")].map((node) => ({
+        position: [
+          node.querySelector("circle")?.getAttribute("cx"),
+          node.querySelector("circle")?.getAttribute("cy"),
+        ],
+        count: node.querySelector("text")?.textContent ?? "1",
+      })),
+    }));
+  };
+  await page.goto(`${server.origin}${withProject("/assessment/matrix")}`);
+  await expect(page.getByRole("img", { name: "P/C 风险矩阵" })).toHaveCount(1);
+  const originalGroup = page
+    .getByRole("img", { name: "P/C 风险矩阵" })
+    .locator("xpath=ancestor::section[1]");
+  const before = await readMatrixGroup(originalGroup);
   const refs = await server.publishNextRiskMatrix();
   await startRealAssessmentAndReadWarnings(page, "historical-matrix-new", {
     startInput: {
@@ -1649,6 +1706,16 @@ test("同一定义发布新矩阵后历史落点按两个冻结版本分组", as
         .first(),
     ).toBeVisible();
   }
+  const groupFor = (releaseRef) =>
+    page.locator("section.ar-card").filter({
+      has: page.getByText(`${releaseRef.reference.entityId} · ${releaseRef.reference.versionId}`, {
+        exact: true,
+      }),
+    });
+  const historical = await readMatrixGroup(groupFor(refs.oldReleaseRef));
+  expect(historical.axes).toEqual(before.axes);
+  expect(historical.cells).toEqual(before.cells);
+  expect(historical.plots).toEqual(before.plots);
   const ids = await page.locator("tbody tr td:first-child a").allTextContents();
   expect(ids.join(" ")).toContain(real.assessmentRecordRef.reference.entityId);
   expect(new Set(ids).size).toBeGreaterThanOrEqual(2);
@@ -1657,4 +1724,105 @@ test("同一定义发布新矩阵后历史落点按两个冻结版本分组", as
     groups: await page.getByRole("img", { name: "P/C 风险矩阵" }).count(),
     domNodes: await page.locator("*").count(),
   });
+});
+
+/**
+ * CH-1 受控风险等级呈现在正式页面上的真实取证（DS-S03 / DS-S04 / DS-S05 / DS-S06）。
+ */
+
+/** 预警中心的等级徽章只有标识没有顺序，必须中性呈现而不是补一个默认红色。 */
+test("预警等级徽章保留实际标识并中性呈现，不冒充风险等级", async ({ page }) => {
+  test.setTimeout(180_000);
+  await login(page, server.operatorLogin, withProject("/warnings"));
+  await startRealAssessmentAndReadWarnings(page, "risk-badge");
+  await expectResolvedState(page);
+  await expect(page.locator(".risk-badge").first()).toBeVisible();
+
+  const badge = page.locator(".risk-badge").first();
+  await expect(badge).toBeVisible();
+  await expect(badge).toHaveAttribute("data-risk-mapped", "false");
+  // 徽章与同一行的「预警等级」列给出同一个实际标识，不按字符串猜等级。
+  const row = page.locator(".data-table-host tbody tr").filter({ has: badge }).first();
+  const levelColumn = row.getByRole("cell").nth(1);
+  const levelText = (await levelColumn.textContent())?.trim() ?? "";
+  expect(levelText.length).toBeGreaterThan(0);
+  const badgeText = (await badge.textContent())?.trim() ?? "";
+  expect(badgeText).toContain(levelText);
+
+  const colors = await badge.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return { color: style.color, background: style.backgroundColor };
+  });
+  const rootStyles = await page.evaluate(() => {
+    const styles = getComputedStyle(document.documentElement);
+    return {
+      text: styles.getPropertyValue("--text").trim(),
+      neutralSoft: styles.getPropertyValue("--bluegray-soft").trim(),
+      // 最高风险红：不可映射等级绝不能借用它。
+      risk1: styles.getPropertyValue("--risk-1").trim(),
+    };
+  });
+  const toRgb = (hex) => {
+    const value = hex.replace("#", "");
+    const full =
+      value.length === 3
+        ? value
+            .split("")
+            .map((c) => c + c)
+            .join("")
+        : value;
+    return `rgb(${parseInt(full.slice(0, 2), 16)}, ${parseInt(full.slice(2, 4), 16)}, ${parseInt(full.slice(4, 6), 16)})`;
+  };
+  expect(colors.background).toBe(toRgb(rootStyles.neutralSoft));
+  expect(colors.color).toBe(toRgb(rootStyles.text));
+  expect(colors.background).not.toBe(toRgb(rootStyles.risk1));
+  // 实际标识照原样显示，并给出不可映射的可读说明。
+  await expect(badge).toContainText("该等级配色未定义");
+});
+
+/** 预警详情的确认状态是处置进度，只用 StatusTag，不混进等级徽章。 */
+test("预警确认状态使用状态标签而不是风险等级徽章", async ({ page }) => {
+  test.setTimeout(180_000);
+  await login(page, server.operatorLogin, withProject("/warnings"));
+  const real = await startRealAssessmentAndReadWarnings(page, "ack-status-tag");
+  const target = withProject(
+    `/warnings/${encodeURIComponent(real.warningRecordRef.reference.entityId)}`,
+    { version: real.warningRecordRef.reference.versionId },
+  );
+  await login(page, server.operatorLogin, target);
+
+  // 页头存在确认状态：它是状态标签，没有被渲染成风险等级徽章。
+  await expect(page.locator(".wd-header-actions .status-tag")).toBeVisible();
+  await expect(page.locator(".wd-header-actions .warning-badge")).toHaveCount(0);
+  await expect(page.locator(".wd-header-actions .status-tag")).toContainText("待确认");
+});
+
+/** 矩阵图例与格子共用同一份受控等级配色，不出现第二套取模结果。 */
+test("矩阵等级图例与格子共用同一受控配色", async ({ page }) => {
+  await login(page, server.operatorLogin, withProject("/assessment/matrix"));
+  await expect(page.locator("h1.page-title")).toHaveText("P/C 风险矩阵视图");
+  await expectResolvedState(page);
+
+  const matrix = page.getByRole("img", { name: "P/C 风险矩阵" }).first();
+  await expect(matrix).toBeVisible();
+
+  const { cells, legend } = await page.evaluate(() => {
+    const svg = document.querySelector("figure.chart-surface svg");
+    const cellFills = [...svg.querySelectorAll("rect > title")].map((title) => {
+      const rect = title.parentElement;
+      return { fill: rect.getAttribute("fill"), level: title.textContent };
+    });
+    const swatches = [...document.querySelectorAll(".chart-legend rect")].map((node) =>
+      node.getAttribute("fill"),
+    );
+    return { cells: cellFills, legend: swatches };
+  });
+
+  expect(cells.length).toBeGreaterThan(0);
+  expect(legend.length).toBeGreaterThan(0);
+  // 每个已映射等级的格子底色都能在图例里找到同一取值。
+  for (const cell of cells) {
+    if (!cell.fill) continue;
+    expect(legend, `格子等级 ${cell.level} 的底色不在图例中`).toContain(cell.fill);
+  }
 });

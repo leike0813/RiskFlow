@@ -1,0 +1,173 @@
+{
+  "change": "establish-web-design-system",
+  "date": "2026-10-19",
+  "baseHead": "4ee7e31920fa58dff56ce25295367899534edcba",
+  "implementation": "当前未提交工作树",
+  "browser": "Chrome for Testing 153.0.8010.12",
+  "source": "合成样本，待甲方复核",
+  "display": "专用 Xvfb 1920×1200，非用户桌面",
+  "method": {
+    "window": "CDP Browser.setWindowBounds 设置真实浏览器外窗口；未设置模拟 viewport",
+    "zoom": "xdotool 向 Chromium 原生窗口发送 Ctrl+0；200% 再发送五次 Ctrl+plus；未使用 CSS zoom、deviceScaleFactor 或 pageScaleFactor 模拟",
+    "checks": "Tab 到列表行，Enter/Space 进入原对象；有横向溢出时实际滚动；确认内经 Tab/Enter 提交，网络传输失败后错误可见/alert/aria-describedby，Escape 返回触发点",
+    "requestBoundary": "每组合拦截一次写请求作为传输失败，不向服务端提交业务命令"
+  },
+  "results": [
+    {
+      "width": 1280,
+      "height": 720,
+      "zoom": 100,
+      "outer": [
+        1280,
+        720
+      ],
+      "inner": [
+        1280,
+        576
+      ],
+      "dpr": 1,
+      "overflow": true,
+      "scrolled": true,
+      "focusedVisible": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "localVerticalScroll": true,
+      "focusRestored": true,
+      "failedRequests": 1,
+      "screenshots": [
+        "native-zoom/ds-1280x720-100-list.png",
+        "native-zoom/ds-1280x720-100-error.png"
+      ]
+    },
+    {
+      "width": 1280,
+      "height": 720,
+      "zoom": 200,
+      "outer": [
+        1280,
+        720
+      ],
+      "inner": [
+        640,
+        288
+      ],
+      "dpr": 2,
+      "overflow": true,
+      "scrolled": true,
+      "focusedVisible": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "localVerticalScroll": true,
+      "focusRestored": true,
+      "failedRequests": 1,
+      "screenshots": [
+        "native-zoom/ds-1280x720-200-list.png",
+        "native-zoom/ds-1280x720-200-error.png"
+      ]
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "zoom": 100,
+      "outer": [
+        1440,
+        900
+      ],
+      "inner": [
+        1440,
+        756
+      ],
+      "dpr": 1,
+      "overflow": true,
+      "scrolled": true,
+      "focusedVisible": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "localVerticalScroll": false,
+      "focusRestored": true,
+      "failedRequests": 1,
+      "screenshots": [
+        "native-zoom/ds-1440x900-100-list.png",
+        "native-zoom/ds-1440x900-100-error.png"
+      ]
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "zoom": 200,
+      "outer": [
+        1440,
+        900
+      ],
+      "inner": [
+        720,
+        378
+      ],
+      "dpr": 2,
+      "overflow": true,
+      "scrolled": true,
+      "focusedVisible": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "localVerticalScroll": true,
+      "focusRestored": true,
+      "failedRequests": 1,
+      "screenshots": [
+        "native-zoom/ds-1440x900-200-list.png",
+        "native-zoom/ds-1440x900-200-error.png"
+      ]
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "zoom": 100,
+      "outer": [
+        1920,
+        1080
+      ],
+      "inner": [
+        1920,
+        936
+      ],
+      "dpr": 1,
+      "overflow": false,
+      "scrolled": false,
+      "focusedVisible": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "localVerticalScroll": false,
+      "focusRestored": true,
+      "failedRequests": 1,
+      "screenshots": [
+        "native-zoom/ds-1920x1080-100-list.png",
+        "native-zoom/ds-1920x1080-100-error.png"
+      ]
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "zoom": 200,
+      "outer": [
+        1920,
+        1080
+      ],
+      "inner": [
+        960,
+        468
+      ],
+      "dpr": 2,
+      "overflow": true,
+      "scrolled": true,
+      "focusedVisible": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "localVerticalScroll": true,
+      "focusRestored": true,
+      "failedRequests": 1,
+      "screenshots": [
+        "native-zoom/ds-1920x1080-200-list.png",
+        "native-zoom/ds-1920x1080-200-error.png"
+      ]
+    }
+  ]
+}

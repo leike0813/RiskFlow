@@ -54,7 +54,7 @@
 
 .login-error {
   font-size: 13px;
-  color: var(--risk-4);
+  color: var(--error);
 }
 
 .login-submit {

@@ -78,6 +78,7 @@ CH-2 同步清理现有 `web/*` 对固定七项导航和旧壳层的重复要求
 - CH-9 的搜索与聚合可以并行实施，最终负责待办／助手与六导航的组合启用，须证明 CH-3…CH-8 的目标承载均已就绪。旧复核入口在此之前继续可用；未完成组合验收不得以隐藏入口包装完工。
 - 历史运行摘要由 CH-3 保留有界读取；CH-6 保留历史矩阵的精确只读入口；CH-7 保住任务与所选子记录的两套版本；CH-9 保住队列外与已决定复核任务的精确读取。具体地址以路由附件为准。
 - **CH-3 已实现**（`deliver-risk-overview-dashboard`）：`/overview` 承载服务端六来源聚合与历史运行，两个旧运行地址永久解析到 `/overview?tab=runs`。验收修复覆盖全部必需来源权限交集、故障隔离、固定上界重试、Unicode 稳定分页及精确历史详情；最终结论与真实运行证据见 [verification](../../../openspec/changes/deliver-risk-overview-dashboard/verification.md)。四来源待办明细、搜索、助手组合与最终六导航仍归 CH-9，本包未提前启用。
+- **CH-4 已规划，尚未实施**：[redesign-engineering-workspace](../../../openspec/changes/redesign-engineering-workspace/proposal.md) 按固定基线闭合五类 apply 前置工件。工程开通复用原系统管理；上下文修订、经理作用域访问维护及接入处理窄读有实际 HTTP 缺口，由本包复用 C06/C11/C12/C15 所属实现补齐，不新建业务事实或任务状态机。无浏览器上传/解析启动扩展；生产实现与 verification 仍待后续任务。
 
 **后端变更归属**：
 

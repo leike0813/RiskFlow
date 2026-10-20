@@ -52,3 +52,5 @@ Blocked by: 05, 06
 **原型采纳边界**：不采纳自绘标题栏拖拽区和 CSS 窗口最小尺寸令牌；左导航 152px／48px、右停靠区 22rem 和桌面缩放用例以设计系统为准。旧地址解析不再绑定 C38 期限，按票 09 长期保留领域身份与版本。
 
 **完成判据分层**：本轮只交付决议与 planning 输入，不宣称九个 change 可直接 apply。后续各 change 必须按项目 workflow 补齐固定基线、文件／符号清单、Requirement／Scenario／IP-ID、依赖和真实验证命令并满足 `applyRequires`；最终发布另须通过新旧入口原子切换与 CH-9 组合验收。原型非空、静态文档齐备或编译成功不等于功能完工。
+
+**CH-4 规划落点**：[redesign-engineering-workspace](../../../openspec/changes/redesign-engineering-workspace/proposal.md)。CH-1～CH-3 已归档后按顺序推进工程域；五类 apply 前置工件包含固定 base commit、四份既有 capability delta、D-ID、IP-ID、文件/符号清单与真实验证命令。切片表“无后端变更”不代表已有 Web 接缝：新增承载所需的上下文/访问维护及接入读取缺口已在本 change 闭合设计；本轮不实施，不预建 verification，也不提前启用六导航。

@@ -1,6 +1,25 @@
 {
-  "change": "prepare-web-shell-route-and-access-seams",
+  "change": "deliver-risk-overview-dashboard",
   "date": "2026-10-19",
+  "qualification": "合成样本，待甲方复核",
+  "projectId": "demo-c32-project",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "demo-c32-project",
+      "versionId": "1"
+    }
+  },
+  "sourceVersionRefs": [
+    {
+      "entityId": "s_8c79d2bf12558fa45b039bb369a6eaf2",
+      "versionId": "1"
+    },
+    {
+      "entityId": "s_9a4f0e0c0545731e69422cc73319f96e",
+      "versionId": "1"
+    }
+  ],
   "browser": "153.0.8010.12",
   "method": {
     "window": "CDP Browser.setWindowBounds 设置真实浏览器外窗口；未设置模拟 viewport",
@@ -81,8 +100,8 @@
       "overviewChartCount": 2,
       "overviewTimelineFocusable": true,
       "overviewOverflow": {
-        "overflow": true,
-        "scrolled": true,
+        "overflow": false,
+        "scrolled": false,
         "localVerticalScroll": true,
         "pageOverflow": false
       },
@@ -163,8 +182,8 @@
       "overviewChartCount": 2,
       "overviewTimelineFocusable": true,
       "overviewOverflow": {
-        "overflow": true,
-        "scrolled": true,
+        "overflow": false,
+        "scrolled": false,
         "localVerticalScroll": true,
         "pageOverflow": false
       },
@@ -245,8 +264,8 @@
       "overviewChartCount": 2,
       "overviewTimelineFocusable": true,
       "overviewOverflow": {
-        "overflow": true,
-        "scrolled": true,
+        "overflow": false,
+        "scrolled": false,
         "localVerticalScroll": true,
         "pageOverflow": false
       },

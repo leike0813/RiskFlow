@@ -283,7 +283,10 @@ const registeredAgentTaskDefinitions = [];
  * 启动真实服务：PostgreSQL + 生产迁移 + C04/C03/C06 组合 + C32 四条只读端口 + demo 生产构建。
  * 环境不可用时抛错，调用方必须让验收失败而不是跳过。
  */
-export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {}) => {
+export const startBusinessBrowserServer = async ({
+  riskLevelOnly = false,
+  dashboardAcceptance = false,
+} = {}) => {
   if (!existsSync(WEB_DIST)) throw new Error(`apps/web production build is missing: ${WEB_DIST}`);
   if (!existsSync(MIGRATION_ROOT)) {
     throw new Error(`migration root is missing: ${MIGRATION_ROOT}`);
@@ -2497,7 +2500,7 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
     const insertRecord = async (suffix, input) => {
       const write = StandardizedRiskRecordWriteV1Schema.parse({
         riskRecordId: input.recordRef.reference.entityId,
-        versionId: "1",
+        versionId: input.recordRef.reference.versionId,
         riskRecordRef: input.recordRef,
         rowId: `row-${suffix}`,
         idempotencyKey: `identification.accept-groups:${suffix}`,
@@ -2551,7 +2554,7 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
         version: {
           reference: {
             entityId: input.recordRef.reference.entityId,
-            versionId: "1",
+            versionId: input.recordRef.reference.versionId,
           },
           effectivePeriod: { validFrom: input.occurredAt },
           systemTime: { recordedAt: input.occurredAt },
@@ -2602,7 +2605,7 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
         },
       );
     };
-    await insertRecord("record-auto", {
+    const acceptedRecordInput = {
       recordRef: recordAutoRef,
       decisionRef: { routeDecisionRef },
       groupId: "group-accepted",
@@ -2622,7 +2625,23 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
       modelConfidence: 0.8,
       compositeValue: 0.8,
       occurredAt: "2030-06-01T08:10:00.000Z",
-    });
+    };
+    await insertRecord("record-auto", acceptedRecordInput);
+    const dashboardRiskRefs = [];
+    if (dashboardAcceptance) {
+      for (let index = 0; index < 55; index += 1) {
+        const suffix = `dashboard-${String(index).padStart(2, "0")}`;
+        const recordRef = kindRef("standardized-risk-record", `risk-record:${suffix}`, "v2");
+        await insertRecord(suffix, {
+          ...acceptedRecordInput,
+          recordRef,
+          occurredAt: new Date(
+            Date.parse("2030-06-01T07:00:00.000Z") + index * 1_000,
+          ).toISOString(),
+        });
+        dashboardRiskRefs.push(recordRef);
+      }
+    }
     // 第二条记录的人工验收路线 + 证据跨共享/受限两资料（A 段 2 可读、B 段 1 仅脱敏定位）。
     await insertRecord("record-review", {
       recordRef: recordReviewRef,
@@ -2761,6 +2780,32 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
       ],
       "demo-c33-register-failed",
     );
+    if (dashboardAcceptance) {
+      const rows = [];
+      for (let index = 0; index < 51; index += 1) {
+        const suffix = `dashboard-run-${String(index).padStart(2, "0")}`;
+        const runId = runIdFor(suffix);
+        const runVersionId = runVersionFor(suffix);
+        const artifactRef = await putGraphBody(
+          `body-${suffix}`,
+          runStateBody(runId, runVersionId, "I9", "completed", workItemRef, {
+            pendingWorkItemRefs: [],
+          }),
+        );
+        rows.push(
+          graphRowFor({
+            kind: "run-state",
+            suffix,
+            runId,
+            runVersionId,
+            artifactRef,
+            validAt: "2030-06-01T07:00:00.000Z",
+            resultId: `result-${suffix}`,
+          }),
+        );
+      }
+      await registerGraphRows(rows, "demo-dashboard-register-runs");
+    }
 
     // ---- HTTP：C32 只读端口 + 既有查询端口 + demo 静态资源同源挂载 ----
     /**
@@ -4915,20 +4960,31 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
      * 故障在组合层之外注入，因此浏览器观察到的是正式 dashboard HTTP 的真实失败闭合，
      * 而不是页面侧的假数据或被拦截的 HTTP 响应。
      */
-    const dashboardSourceFailure = { source: null };
+    const dashboardClock = { value: Math.max(Date.now(), Date.parse(NOW)) };
+    const dashboardSourceFailure = { source: null, denied: false };
     const failingSource = (source) => ({
       ...source,
       readDashboard: async () => ({
         kind: "failed",
         error: {
-          code: "BUSINESS_BLOCKED",
-          category: "business-blocked",
-          retryable: false,
-          blockerKind: "dashboard-source-limit",
-          blockerRef: {
-            kind: "query-result",
-            reference: { entityId: `dashboard-${source}`, versionId: "1" },
-          },
+          ...(dashboardSourceFailure.denied
+            ? {
+                code: "AUTHORIZATION_DENIED",
+                category: "authorization",
+                retryable: false,
+                requiredCapability: "risk-assessment.read",
+                authorizationPolicyRef: baseAuth.authorizationPolicyRef,
+              }
+            : {
+                code: "BUSINESS_BLOCKED",
+                category: "business-blocked",
+                retryable: false,
+                blockerKind: "dashboard-source-limit",
+                blockerRef: {
+                  kind: "query-result",
+                  reference: { entityId: `dashboard-${source}`, versionId: "1" },
+                },
+              }),
           stageCode: "risk-dashboard.source",
           occurredAt: new Date().toISOString(),
           causalRunId: `dashboard-${source}`,
@@ -4999,6 +5055,7 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
             },
           },
           authorizeBusinessAction: (input) => access.authorizeBusinessAction(input),
+          now: () => new Date(dashboardClock.value),
         }),
         /**
          * C34 写命令接缝：HTTP 端口按公开命令联合分派到各领域适配器的真实方法。
@@ -5173,6 +5230,41 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
     return {
       origin: publicOrigin,
       projectId: PROJECT_ID,
+      projectRevisionRef,
+      dashboardRiskRefs,
+      async seedDashboardRisk(suffix) {
+        dashboardClock.value += 1_000;
+        const recordRef = kindRef("standardized-risk-record", `risk-record:${suffix}`, "v2");
+        await insertRecord(suffix, {
+          ...acceptedRecordInput,
+          recordRef,
+          occurredAt: new Date(dashboardClock.value).toISOString(),
+        });
+        return recordRef;
+      },
+      async advanceProjectRevision() {
+        const commandId = "dashboard-next-project-revision";
+        const result = await registry.reviseContext({
+          commandId,
+          idempotencyKey: commandId,
+          projectId: PROJECT_ID,
+          actorId: baseAuth.actorId,
+          issuedAt: NOW,
+          authorization: await writeAuth(commandId),
+          kind: "project",
+          expectedVersion: projectRevisionRef.reference,
+          name: "C32 验收工程修订",
+          lifecycle: "active",
+          applicabilityMetadata: {
+            constructionMethod: "变径盾构法",
+            stratumCondition: "富水软弱地层",
+            engineeringStage: "变径空间扩挖",
+          },
+          effectivePeriod: { validFrom: NOW },
+        });
+        if (result.kind !== "succeeded") throw new Error("dashboard project revision failed");
+        return result.result.revision.projectRevisionRef;
+      },
       operatorLogin: OPERATOR_LOGIN,
       viewerLogin: VIEWER_LOGIN,
       responderLogin: RESPONDER_LOGIN,
@@ -5228,8 +5320,9 @@ export const startBusinessBrowserServer = async ({ riskLevelOnly = false } = {})
        * CH-3 来源故障注入：把指定来源的窄读换成失败分支，其余来源仍真实读。
        * 传 `null` 恢复全部真实读。故障在组合层之外注入，观察走的是正式 dashboard HTTP。
        */
-      setDashboardSourceFailure(source) {
+      setDashboardSourceFailure(source, denied = false) {
         dashboardSourceFailure.source = source;
+        dashboardSourceFailure.denied = denied;
       },
       /**
        * 启动真实 `assess` 评估运行所需的冻结输入：全部是本装配登记的真实事实，

@@ -9,9 +9,20 @@
  * 六个来源各自按自己的业务分支重新取得当前决定；无权来源只产生该来源的失败，
  * 不影响其它来源，也不把入口能力当成来源能力。
  */
+import { z } from "zod";
+
 import {
   ModuleErrorV1Schema,
   RiskDashboardReadResultV1Schema,
+  RiskDashboardAssessmentsSourceResultV1Schema,
+  RiskDashboardDocumentsSourceResultV1Schema,
+  RiskDashboardMonitoringSourceResultV1Schema,
+  RiskDashboardReviewsSourceResultV1Schema,
+  RiskDashboardRiskRecordsSourceResultV1Schema,
+  RiskDashboardWarningsSourceResultV1Schema,
+  RiskDashboardTimelineAfterV1Schema,
+  RiskDashboardTimestampV1Schema,
+  SpatialScopeRefV1Schema,
   type ModuleBranchV1,
   type ModuleCapabilityV1,
   type ModuleErrorV1,
@@ -56,6 +67,23 @@ const SOURCE_CAPABILITIES_V1 = {
 } as const satisfies Record<keyof RiskDashboardSourcesV1, ModuleCapabilityV1>;
 
 type SourceKey = keyof typeof SOURCE_BRANCHES_V1;
+
+const sourceResultSchemas = {
+  riskRecords: RiskDashboardRiskRecordsSourceResultV1Schema,
+  assessments: RiskDashboardAssessmentsSourceResultV1Schema,
+  warnings: RiskDashboardWarningsSourceResultV1Schema,
+  reviews: RiskDashboardReviewsSourceResultV1Schema,
+  documents: RiskDashboardDocumentsSourceResultV1Schema,
+  monitoring: RiskDashboardMonitoringSourceResultV1Schema,
+};
+
+const cursorSchema = z.strictObject({
+  v: z.literal(1),
+  projectId: z.string().trim().min(1),
+  spatialScopeRef: SpatialScopeRefV1Schema.optional(),
+  asOf: RiskDashboardTimestampV1Schema,
+  after: RiskDashboardTimelineAfterV1Schema.optional(),
+});
 
 /** 变化页参与合并的三个来源（design D-06）。 */
 const TIMELINE_SOURCES_V1 = [
@@ -107,8 +135,9 @@ const decodeCursorV1 = (
   } catch {
     return undefined;
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-  const value = parsed as Partial<RiskDashboardCursorV1>;
+  const decoded = cursorSchema.safeParse(parsed);
+  if (!decoded.success) return undefined;
+  const value = decoded.data;
   if (value.v !== 1 || value.projectId !== projectId) return undefined;
   const cursorScope = value.spatialScopeRef;
   if (cursorScope === undefined) {
@@ -135,6 +164,20 @@ const decodeCursorV1 = (
   };
 };
 
+/** 与 PostgreSQL COLLATE "C" 的 UTF-8 字符序一致，不依赖部署 locale。 */
+const compareIdentifiers = (left: string, right: string): number => {
+  let leftIndex = 0;
+  let rightIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    const leftPoint = left.codePointAt(leftIndex)!;
+    const rightPoint = right.codePointAt(rightIndex)!;
+    if (leftPoint !== rightPoint) return leftPoint < rightPoint ? -1 : 1;
+    leftIndex += leftPoint > 0xffff ? 2 : 1;
+    rightIndex += rightPoint > 0xffff ? 2 : 1;
+  }
+  return leftIndex < left.length ? 1 : rightIndex < right.length ? -1 : 0;
+};
+
 /** 事件全序：登记时刻降序，来源、主体与版本升序（design D-06）。 */
 const compareEventsV1 = (
   left: RiskDashboardTimelineEventV1,
@@ -144,10 +187,10 @@ const compareEventsV1 = (
   if (left.source !== right.source) return left.source < right.source ? -1 : 1;
   const leftEntity = left.subjectRef.reference.entityId;
   const rightEntity = right.subjectRef.reference.entityId;
-  if (leftEntity !== rightEntity) return leftEntity < rightEntity ? -1 : 1;
+  if (leftEntity !== rightEntity) return compareIdentifiers(leftEntity, rightEntity);
   const leftVersion = left.subjectRef.reference.versionId;
   const rightVersion = right.subjectRef.reference.versionId;
-  if (leftVersion !== rightVersion) return leftVersion < rightVersion ? -1 : 1;
+  if (leftVersion !== rightVersion) return compareIdentifiers(leftVersion, rightVersion);
   return 0;
 };
 
@@ -291,7 +334,9 @@ export const createRiskDashboardReadService = (
     | { readonly kind: "failed"; readonly error: ModuleErrorV1 }
   > => {
     const requestedSpatialScopeRefs =
-      query.payload.spatialScopeRef === undefined ? [] : [query.payload.spatialScopeRef];
+      source === "reviews" || query.payload.spatialScopeRef === undefined
+        ? []
+        : [query.payload.spatialScopeRef];
     try {
       const decision = await options.authorizeBusinessAction({
         actorId: query.actorId,
@@ -302,12 +347,23 @@ export const createRiskDashboardReadService = (
         requestedSpatialScopeRefs,
         requestedSourceVersionRefs: [],
       });
-      if (!decision.context.grantedCapabilities.includes(SOURCE_CAPABILITIES_V1[source])) {
+      if (
+        decision.redacted ||
+        decision.context.actorId !== query.actorId ||
+        decision.context.projectId !== query.projectId ||
+        !decision.context.grantedCapabilities.includes(SOURCE_CAPABILITIES_V1[source])
+      ) {
         return { kind: "denied" };
       }
       return { kind: "granted", decision };
     } catch (error) {
-      if (error instanceof AccessServiceError) return { kind: "denied" };
+      if (
+        error instanceof AccessServiceError &&
+        error.details.code !== "ACCESS_TRANSIENT_FAILURE" &&
+        error.details.code !== "ACCESS_TERMINAL_FAILURE"
+      ) {
+        return { kind: "denied" };
+      }
       return {
         kind: "failed",
         error: ModuleErrorV1Schema.parse({
@@ -384,7 +440,70 @@ export const createRiskDashboardReadService = (
         if (authorization.kind === "failed") {
           return { kind: "failed", error: authorization.error };
         }
-        return invoke(authorization.decision);
+        try {
+          const reader = options.sources[source];
+          const method =
+            source === "documents"
+              ? "readSourceDashboard"
+              : source === "monitoring"
+                ? "readMonitoringDashboard"
+                : "readDashboard";
+          if (
+            reader === undefined ||
+            reader === null ||
+            typeof Reflect.get(reader, method) !== "function"
+          ) {
+            return {
+              kind: "failed",
+              error: ModuleErrorV1Schema.parse({
+                code: "BUSINESS_BLOCKED",
+                category: "business-blocked",
+                retryable: false,
+                blockerKind: "dashboard-source-not-injected",
+                blockerRef: {
+                  kind: "query-result",
+                  reference: { entityId: query.queryId, versionId: "1" },
+                },
+                stageCode: "risk-dashboard.source-read",
+                occurredAt,
+                causalRunId: query.queryId,
+              }),
+            };
+          }
+          const output = await invoke(authorization.decision);
+          const result = sourceResultSchemas[source].safeParse(output);
+          if (result.success) return output;
+          return {
+            kind: "failed",
+            error: ModuleErrorV1Schema.parse({
+              code: "UNSUPPORTED_CONTRACT",
+              category: "technical",
+              retryable: false,
+              schemaVersion: "1",
+              stageCode: "risk-dashboard.source-result",
+              occurredAt,
+              causalRunId: query.queryId,
+            }),
+          };
+        } catch {
+          return {
+            kind: "failed",
+            error: ModuleErrorV1Schema.parse({
+              code: "TRANSIENT_FAILURE",
+              category: "technical",
+              retryable: true,
+              attempt: 1,
+              retryPolicyRef: { entityId: "read-retry-policy", versionId: "v1" },
+              diagnosticRef: {
+                kind: "diagnostic-artifact",
+                reference: { entityId: "risk-dashboard-source", versionId: "v1" },
+              },
+              stageCode: "risk-dashboard.source-read",
+              occurredAt,
+              causalRunId: query.queryId,
+            }),
+          };
+        }
       };
 
       const [riskRecords, assessments, warnings, reviews, documents, monitoring] =

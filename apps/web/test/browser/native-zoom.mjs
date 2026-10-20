@@ -242,12 +242,20 @@ const checkOverviewAtZoom = async (page, server, capture) => {
   await expect(page.getByText(/已入库风险记录版本/).first()).toBeVisible();
   const chartCount = await page.locator(".chart-surface").count();
   expect(chartCount).toBeGreaterThan(0);
-  // 变化时间线可达：键盘能聚焦到「继续读取更早变化」入口。
   const more = page.getByRole("button", { name: "继续读取更早变化" });
-  if ((await more.count()) > 0) {
-    await more.focus();
-    expect(await focusIsVisible(page)).toBe(true);
-  }
+  await expect(more).toBeVisible();
+  await more.focus();
+  expect(await focusIsVisible(page)).toBe(true);
+  const nextPage = page.waitForResponse((response) =>
+    response.url().endsWith("/queries/projection.dashboard-read"),
+  );
+  await page.keyboard.press("Enter");
+  const next = await (await nextPage).json();
+  expect(next.result.timeline.items).toHaveLength(20);
+  expect(next.result.timeline.nextCursor).toBeDefined();
+  await expect(page.locator(".timeline")).toContainText(
+    next.result.timeline.items[0].subjectRef.reference.entityId,
+  );
   const overviewOverflow = await measureOverflow(page);
   expect(overviewOverflow.pageOverflow).toBe(false);
   if (overviewOverflow.overflow) expect(overviewOverflow.scrolled).toBe(true);
@@ -260,7 +268,7 @@ const checkOverviewAtZoom = async (page, server, capture) => {
 };
 
 export const runNativeZoomEvidence = async () => {
-  const server = await startBusinessBrowserServer();
+  const server = await startBusinessBrowserServer({ dashboardAcceptance: true });
   let browser;
   const results = [];
   try {
@@ -293,8 +301,12 @@ export const runNativeZoomEvidence = async () => {
   }
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   const record = {
-    change: "prepare-web-shell-route-and-access-seams",
+    change: "deliver-risk-overview-dashboard",
     date: new Date().toISOString().slice(0, 10),
+    qualification: "合成样本，待甲方复核",
+    projectId: server.projectId,
+    projectRevisionRef: server.projectRevisionRef,
+    sourceVersionRefs: server.assessmentSourceVersionRefs,
     browser: browser.version(),
     method: {
       window: "CDP Browser.setWindowBounds 设置真实浏览器外窗口；未设置模拟 viewport",

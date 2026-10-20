@@ -285,39 +285,51 @@ export class PostgresReviewQueueReadAdapter implements ReviewQueueReadPortV1 {
       const rows = await this.#db
         .selectFrom(REVIEW_TASKS_TABLE)
         .select(["review_type"])
+        .select((eb) => eb.fn.countAll<string>().as("count"))
         .where("project_id", "=", valid.projectId)
         .where("status", "=", "pending")
+        .groupBy("review_type")
+        .orderBy("review_type", "asc")
+        .limit(DASHBOARD_REVIEW_TYPE_LIMIT_V1 + 1)
         .execute();
-      const counts = new Map<string, number>();
-      for (const row of rows) {
-        counts.set(row.review_type, (counts.get(row.review_type) ?? 0) + 1);
-      }
-      if (counts.size > DASHBOARD_REVIEW_TYPE_LIMIT_V1) {
+      if (rows.length > DASHBOARD_REVIEW_TYPE_LIMIT_V1) {
         return {
           kind: "failed",
           error: dashboardBlocked(valid.queryId, "dashboard-group-limit"),
         };
       }
-      const reviewTypeCounts = [...counts.entries()]
-        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-        .map(([reviewType, count]) => {
-          const parsedType = ReviewTypeV1Schema.safeParse(reviewType);
-          if (!parsedType.success) {
-            throw new Error("review task type is not a known review type");
-          }
-          return { reviewType: parsedType.data, count };
-        });
+      const reviewTypeCounts = rows.map(({ review_type: reviewType, count: rawCount }) => {
+        const count = Number(rawCount);
+        if (!Number.isSafeInteger(count) || count < 0) {
+          throw dashboardBlocked(valid.queryId, "dashboard-count-overflow");
+        }
+        const parsedType = ReviewTypeV1Schema.safeParse(reviewType);
+        if (!parsedType.success) {
+          throw new Error("review task type is not a known review type");
+        }
+        return { reviewType: parsedType.data, count };
+      });
+      const pendingCount = reviewTypeCounts.reduce((total, group) => total + group.count, 0);
+      if (!Number.isSafeInteger(pendingCount)) {
+        throw dashboardBlocked(valid.queryId, "dashboard-count-overflow");
+      }
       return RiskDashboardReviewsSourceResultV1Schema.parse({
         kind: "ready",
         asOf: this.#now().toISOString(),
         data: {
-          pendingCount: rows.length,
+          pendingCount,
           reviewTypeCounts,
         },
       });
     } catch (error) {
+      const blocked = ModuleErrorV1Schema.safeParse(error);
+      if (blocked.success) return { kind: "failed", error: blocked.data };
       // 授权不符按拒权；未知 DB／I/O 异常按 transient 收口，不折算成权限拒绝。
-      if (error instanceof AccessServiceError) {
+      if (
+        error instanceof AccessServiceError &&
+        error.details.code !== "ACCESS_TRANSIENT_FAILURE" &&
+        error.details.code !== "ACCESS_TERMINAL_FAILURE"
+      ) {
         return {
           kind: "failed",
           error: readError({
@@ -355,6 +367,8 @@ export class PostgresReviewQueueReadAdapter implements ReviewQueueReadPortV1 {
       requestedAt: request.authorization.decidedAt,
     });
     if (
+      decision.redacted ||
+      decision.context.projectId !== request.projectId ||
       decision.context.actorId !== request.actorId ||
       !decision.context.grantedCapabilities.includes(CAPABILITY_V1)
     ) {

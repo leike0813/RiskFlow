@@ -188,7 +188,9 @@ export default function RiskOverviewPage() {
     const { entityId, versionId } = event.subjectRef.reference;
     switch (event.source) {
       case "riskRecords":
-        return projectPath(`/identification/records/${encodeURIComponent(entityId)}`);
+        return projectPath(
+          `/identification/records/${encodeURIComponent(entityId)}?version=${encodeURIComponent(versionId)}`,
+        );
       case "assessments":
         return projectPath(
           `/assessment/records/${encodeURIComponent(entityId)}?version=${encodeURIComponent(versionId)}`,
@@ -215,15 +217,19 @@ export default function RiskOverviewPage() {
 
   const regionsFor = (value: RiskDashboardReadSuccessV1): readonly PageRegionV1<null>[] => {
     const { summaries, timeline } = value;
-    const incomplete = TIMELINE_SOURCES.some(
-      (source) => timeline.sources[source].kind === "failed",
-    );
+    const retryPage = () => {
+      if (timeline.retryCursor !== undefined && timeline.retryCursor !== timelineCursor) {
+        setPaging({ key: pageKey, cursor: timeline.retryCursor });
+      } else {
+        dashboard.retry();
+      }
+    };
 
     return [
       {
         descriptor: { key: "assessment-levels", kind: "chart", variant: "donut" },
         content: (
-          <SourceCard title="评估等级分布" summary={summaries.assessments} retry={dashboard.retry}>
+          <SourceCard title="评估等级分布" summary={summaries.assessments} retry={retryPage}>
             {(data: RiskDashboardAssessmentsDataV1) => {
               const groups = matrixGroupsFor(data);
               const selected = groups.find((group) => group.key === matrixChoice) ?? groups[0];
@@ -269,11 +275,7 @@ export default function RiskOverviewPage() {
       {
         descriptor: { key: "process-distribution", kind: "chart", variant: "hbars" },
         content: (
-          <SourceCard
-            title="工序风险记录分布"
-            summary={summaries.riskRecords}
-            retry={dashboard.retry}
-          >
+          <SourceCard title="工序风险记录分布" summary={summaries.riskRecords} retry={retryPage}>
             {(data: RiskDashboardRiskRecordsDataV1) => (
               <>
                 <ProcessDistributionBars
@@ -312,10 +314,10 @@ export default function RiskOverviewPage() {
                 );
               })}
             </ul>
-            {incomplete ? (
+            {timeline.retryCursor !== undefined ? (
               <p className="ov-note">
                 本页来源不完整，重试将从本页起点重新读取。
-                <button type="button" className="ar-chip" onClick={dashboard.retry}>
+                <button type="button" className="ar-chip" onClick={retryPage}>
                   重试本页
                 </button>
               </p>
@@ -345,7 +347,7 @@ export default function RiskOverviewPage() {
               title="待复核"
               note="工程级口径 · 含 stale pending"
               summary={summaries.reviews}
-              retry={dashboard.retry}
+              retry={retryPage}
             >
               {(data: RiskDashboardReviewsDataV1) => (
                 <>
@@ -361,6 +363,7 @@ export default function RiskOverviewPage() {
                   <p className="ov-note">
                     工程级待决定口径，包含已过期但仍待决定的复核；已过期不等于已决定，也不受空间筛选。
                   </p>
+                  <Link to={projectPath("/review-audit")}>查看复核队列</Link>
                 </>
               )}
             </SourceCard>
@@ -368,7 +371,7 @@ export default function RiskOverviewPage() {
               title="未确认预警"
               note="按正式确认事实"
               summary={summaries.warnings}
-              retry={dashboard.retry}
+              retry={retryPage}
             >
               {(data: RiskDashboardWarningsDataV1) => (
                 <>
@@ -388,6 +391,16 @@ export default function RiskOverviewPage() {
                   <p className="ov-note">
                     仅未确认预警参与按等级待决口径；全部预警等级分布不作该分母。
                   </p>
+                  <p className="ov-note">全部已登记预警等级分布（含已确认预警）</p>
+                  <ul className="ov-status-list" aria-label="全部预警等级分布">
+                    {data.warningLevelCounts.map((entry) => (
+                      <li key={entry.warningLevel}>
+                        <span className="mono">{entry.warningLevel}</span>
+                        <span className="mono">{entry.count}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <Link to={projectPath("/warnings")}>查看预警目录</Link>
                 </>
               )}
             </SourceCard>
@@ -395,7 +408,7 @@ export default function RiskOverviewPage() {
               title="开放处置任务"
               note="开放任务口径"
               summary={summaries.warnings}
-              retry={dashboard.retry}
+              retry={retryPage}
             >
               {(data: RiskDashboardWarningsDataV1) => (
                 <>
@@ -409,6 +422,7 @@ export default function RiskOverviewPage() {
                   <p className="ov-note">
                     任务开放不等于预警未确认，也不与复核、预警数量相加成风险事件总数。
                   </p>
+                  <Link to={projectPath("/warnings/tasks")}>查看处置任务</Link>
                 </>
               )}
             </SourceCard>
@@ -419,7 +433,7 @@ export default function RiskOverviewPage() {
         descriptor: { key: "source-access", kind: "detail" },
         content: (
           <div className="ov-source-row">
-            <SourceCard title="资料接入" summary={summaries.documents} retry={dashboard.retry}>
+            <SourceCard title="资料接入" summary={summaries.documents} retry={retryPage}>
               {(data: RiskDashboardDocumentsDataV1) => (
                 <>
                   <MetricLine label="目录可见资料版本" value={data.sourceVersionCount} unit="个" />
@@ -453,7 +467,7 @@ export default function RiskOverviewPage() {
                 </>
               )}
             </SourceCard>
-            <SourceCard title="监测接入" summary={summaries.monitoring} retry={dashboard.retry}>
+            <SourceCard title="监测接入" summary={summaries.monitoring} retry={retryPage}>
               {(data: RiskDashboardMonitoringDataV1) => (
                 <>
                   <MetricLine label="可见监测序列" value={data.seriesCount} unit="条" />
@@ -485,12 +499,26 @@ export default function RiskOverviewPage() {
             <p className="page-subtitle">按已入库记录统计的风险、评估、预警与接入态势</p>
           </div>
           <div className="ov-header-actions">
-            <Link className="ov-action" to={projectPath("/projects/documents")}>
-              资料目录
-            </Link>
-            <Link className="ov-action" to={projectPath("/projects/monitoring")}>
-              监测数据
-            </Link>
+            {dashboard.state.kind === "ready" &&
+            dashboard.state.value.summaries.documents.kind === "ready" ? (
+              <Link className="ov-action" to={projectPath("/projects/documents")}>
+                资料目录
+              </Link>
+            ) : (
+              <button className="ov-action" disabled title="资料来源未就绪或无读取权限">
+                资料目录
+              </button>
+            )}
+            {dashboard.state.kind === "ready" &&
+            dashboard.state.value.summaries.monitoring.kind === "ready" ? (
+              <Link className="ov-action" to={projectPath("/projects/monitoring")}>
+                监测数据
+              </Link>
+            ) : (
+              <button className="ov-action" disabled title="监测来源未就绪或无读取权限">
+                监测数据
+              </button>
+            )}
           </div>
         </header>
 

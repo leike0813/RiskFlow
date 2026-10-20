@@ -3128,7 +3128,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
     });
   };
 
-  it("仪表盘评估来源按冻结矩阵×等级分组，缺矩阵不参与且变化页有界有序", async () => {
+  it("仪表盘评估按冻结矩阵×等级完整分组，缺矩阵失败且变化页有界有序", async () => {
     const pool = fixture.postgres.postgres.adminPool;
     const records = [
       await evaluateThrough({ suffix: "dashboard-matrix-a" }),
@@ -3168,8 +3168,29 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       entityId: "dashboard-matrix-two",
       versionId: "1",
     });
-    // 缺冻结矩阵引用的记录保留在版本计数里，但不伪造任何矩阵分组。
+    const originalMatrix = await pool.query<{
+      matrix: { entityId: string; versionId: string };
+    }>(
+      "SELECT snapshot_payload -> 'riskMatrixRef' AS matrix FROM business.assessment_input_snapshots WHERE project_id = $1 AND input_snapshot_id = $2 AND version_id = $3",
+      [
+        fixture.projectId,
+        records[2]!.inputSnapshotRef.reference.entityId,
+        records[2]!.inputSnapshotRef.reference.versionId,
+      ],
+    );
     await setMatrix(records[2]!.inputSnapshotRef, undefined);
+    try {
+      expect(
+        await fixture.engine.readDashboard(
+          await dashboardRequest({ queryId: "c25-dashboard-matrix-missing" }),
+        ),
+      ).toMatchObject({
+        kind: "failed",
+        error: { code: "BUSINESS_BLOCKED", blockerKind: "dashboard-reference-incomplete" },
+      });
+    } finally {
+      await setMatrix(records[2]!.inputSnapshotRef, originalMatrix.rows[0]!.matrix);
+    }
     await pool.query(
       `UPDATE business.risk_assessment_records
           SET risk_level_id = 'dashboard-shared-level'
@@ -3210,7 +3231,7 @@ describe("C25 PostgreSQL risk assessment engine", () => {
       },
     ]);
     expect(result.data.matrixLevelCounts.reduce((total, entry) => total + entry.count, 0)).toBe(
-      storedRecords - 1,
+      storedRecords,
     );
     // 来源只取 pageSize+1 条候选，多出的一条用于全局合并判定。
     expect(result.events).toHaveLength(2);

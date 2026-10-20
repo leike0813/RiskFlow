@@ -2935,6 +2935,26 @@ describe.sequential("local identity and project authorization", () => {
     await expect(access!.authorizeBusinessAction(currentRequest)).resolves.toMatchObject({
       context: { authorizationPolicyRef: { entityId: "access-policy", versionId: "v3" } },
     });
+    const v2Context = await access!.authorize({
+      invocation: { kind: "human-session", sessionToken: viewerLogin.sessionToken },
+      invocationId: "ch3-legacy-v2-source",
+      projectId: "project-a",
+      branch: "projection.query",
+      requestedSpatialScopeRefs: [rootScopeRef!],
+      requestedSourceVersionRefs: [],
+    });
+    await fixture!.adminPool.query(
+      "UPDATE business.authorization_contexts SET context_json = jsonb_set(context_json, '{authorizationPolicyRef,versionId}', '\"v2\"'::jsonb) WHERE context_id = $1 AND version_id = $2",
+      [v2Context.contextRef.reference.entityId, v2Context.contextRef.reference.versionId],
+    );
+    const v2Request = {
+      ...currentRequest,
+      invocationId: "ch3-current-from-v2",
+      authorizationContextRef: v2Context.contextRef,
+    };
+    await expect(access!.authorizeBusinessAction(v2Request)).resolves.toMatchObject({
+      context: { authorizationPolicyRef: { entityId: "access-policy", versionId: "v3" } },
+    });
     const adminLogin = await access!.login({
       kind: "login",
       loginAttemptId: "ch2-history-admin",
@@ -2969,6 +2989,21 @@ describe.sequential("local identity and project authorization", () => {
       details: { code: "AUTHORIZATION_DENIED" },
     });
     // 撤权只影响当前决定，不删除旧范围或刷新历史快照。
+    await expect(access!.authorizeBusinessAction(v2Request)).rejects.toBeDefined();
+    await expect(
+      access!.readDeploymentAuthorizationSource({
+        authorizationContextRef: v2Context.contextRef,
+        projectId: "project-a",
+        actorId: legacyContext.context.actorId,
+      }),
+    ).resolves.toBeDefined();
+    const unchangedV2 = await fixture!.adminPool.query<{
+      context_json: { authorizationPolicyRef: { versionId: string } };
+    }>(
+      "SELECT context_json FROM business.authorization_contexts WHERE context_id = $1 AND version_id = $2",
+      [v2Context.contextRef.reference.entityId, v2Context.contextRef.reference.versionId],
+    );
+    expect(unchangedV2.rows[0]!.context_json.authorizationPolicyRef.versionId).toBe("v2");
     await expect(
       access!.readDeploymentAuthorizationSource({
         authorizationContextRef: legacyContext.contextRef,

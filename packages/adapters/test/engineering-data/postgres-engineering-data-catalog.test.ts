@@ -1221,7 +1221,25 @@ describe("C32 PostgreSQL engineering data catalog adapter", () => {
       seriesWithBatchCount: 2,
       seriesWithSnapshotCount: 1,
     });
-  });
+    for (let index = 0; index < 254; index += 1) {
+      await reviseSeries(`c32-dashboard-scale-${index}`, "泥水压力");
+    }
+    const largeDashboard = await catalog.readMonitoringDashboard({
+      queryId: "c32-dashboard-monitoring-large",
+      projectId,
+      actorId: managerId,
+      requestedAt: now,
+      authorization: await authorization(
+        "c32-dashboard-monitoring-large",
+        "engineering-data.monitoring-catalog",
+      ),
+      spatialScopeRef,
+    });
+    expect(largeDashboard).toMatchObject({
+      kind: "ready",
+      data: { seriesCount: 257, seriesWithBatchCount: 2, seriesWithSnapshotCount: 1 },
+    });
+  }, 180_000);
 
   it("仪表盘资料与监测概况无权同形失败且不返回计数", async () => {
     const sourceAuthorization = await authorization(

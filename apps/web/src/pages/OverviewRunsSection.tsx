@@ -193,6 +193,7 @@ function ChainRunsSection({
   blocked: ChainBlockedV1;
   onRetryContext: () => void;
 }) {
+  const projectPath = useProjectPath();
   const revisionKey =
     revision === null ? null : `${revision.reference.entityId}@${revision.reference.versionId}`;
   // 投影查询身份与游标绑定精确修订：工程/修订一变即作废，不拿旧投影读新修订。
@@ -275,11 +276,19 @@ function ChainRunsSection({
       key: "workflowRunRef",
       title: "运行标识",
       width: 210,
-      render: (row) => (
-        <span className="mono">
-          {tableRow<RunSummaryItemView>(row).workflowRunRef.reference.entityId}
-        </span>
-      ),
+      render: (row) => {
+        const { entityId, versionId } = tableRow<RunSummaryItemView>(row).workflowRunRef.reference;
+        return (
+          <Link
+            className="mono"
+            to={projectPath(
+              `/assessment/runs/${encodeURIComponent(entityId)}?version=${encodeURIComponent(versionId)}`,
+            )}
+          >
+            {entityId}
+          </Link>
+        );
+      },
     },
     {
       key: "type",

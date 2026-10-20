@@ -1420,6 +1420,7 @@ interface DashboardRecordSpecV1 {
   readonly processNodeId?: string;
   readonly spatialScope?: string;
   readonly sourceVersion?: string;
+  readonly evidenceSourceVersion?: string;
 }
 
 /** 仪表盘夹具：一次命令成批登记同一 occurredAt 的风险记录版本（与生产 insertRecords 同路径）。 */
@@ -1472,7 +1473,8 @@ const seedDashboardRecords = async (
         {
           locator: { sourceSegmentId: `segment-${spec.suffix}` },
           sourceVersion: {
-            entityId: spec.sourceVersion ?? `source-version-${spec.suffix}`,
+            entityId:
+              spec.evidenceSourceVersion ?? spec.sourceVersion ?? `source-version-${spec.suffix}`,
             versionId: "v1",
           },
         },
@@ -2690,6 +2692,42 @@ describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
     expect(result.events).toHaveLength(2);
     expect(result.events.every((event) => event.source === "riskRecords")).toBe(true);
     expect(result.asOf).toBe(TIMESTAMP);
+  });
+
+  it("证据中的额外来源被撤权时，目录与聚合均排除该记录", async () => {
+    const f = requireFixture();
+    await seedDashboardRecords(
+      f,
+      "2033-01-15T00:00:00.000001Z",
+      [
+        {
+          suffix: "dash-evidence-intersection",
+          processNodeId: "node-evidence-intersection",
+          sourceVersion: "source-declared-visible",
+          evidenceSourceVersion: "source-evidence-hidden",
+        },
+      ],
+      "dashboard-evidence-intersection",
+    );
+    f.access.denySource("source-evidence-hidden");
+    try {
+      const expected = await catalogItemsInScopes(f, ["scope-c33"]);
+      const result = await f.reader.readDashboard(dashboardRequest(f, { pageSize: 50 }));
+      if (result.kind !== "ready") throw new TypeError("dashboard read failed");
+      expect(result.data.recordedVersionCount).toBe(expected.length);
+      expect(
+        result.data.processCounts.some(
+          (group) => group.processNodeId === "node-evidence-intersection",
+        ),
+      ).toBe(false);
+      expect(
+        result.events.some((event) =>
+          event.subjectRef.reference.entityId.endsWith("dash-evidence-intersection"),
+        ),
+      ).toBe(false);
+    } finally {
+      f.access.restore();
+    }
   });
 
   it("readDashboard 变化页按登记时间倒序、同刻按主体升序，续页不重不漏且遵守 asOf", async () => {

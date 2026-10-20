@@ -1,5 +1,6 @@
 import { clientError } from "../api/client";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
+import { StandardizedRiskRecordRefV1Schema } from "@riskflow/contracts/ports";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
 import { EvidenceLink } from "../components/EvidenceLink";
@@ -27,15 +28,27 @@ interface RiskDetailPageData {
 export default function RiskDetailPage() {
   const { recordId } = useParams<{ recordId: string }>();
   const projectPath = useProjectPath();
+  const [searchParams] = useSearchParams();
+  const versions = searchParams.getAll("version");
+  const versionKey = JSON.stringify(versions);
   const { state, retry } = usePageQuery<RiskDetailPageData>(
     async (projectId, signal) => {
-      // riskRecordRef 需要精确版本：先经 record-catalog 按实体标识解析出完整引用，再精确读取。
-      const catalog = await listRiskRecords(projectId, {}, signal);
-      const item = catalog.items.find(
-        (entry) => entry.riskRecordRef.reference.entityId === recordId,
-      );
-      if (item === undefined) throw clientError("NOT_FOUND");
-      const detail = await readRiskRecord(projectId, item.riskRecordRef, signal);
+      let riskRecordRef;
+      if (versions.length > 0) {
+        const parsed = StandardizedRiskRecordRefV1Schema.safeParse({
+          kind: "standardized-risk-record",
+          reference: { entityId: recordId, versionId: versions[0] },
+        });
+        if (new Set(versions).size !== 1 || !parsed.success) throw clientError("NOT_FOUND");
+        riskRecordRef = parsed.data;
+      } else {
+        const catalog = await listRiskRecords(projectId, {}, signal);
+        riskRecordRef = catalog.items.find(
+          (entry) => entry.riskRecordRef.reference.entityId === recordId,
+        )?.riskRecordRef;
+        if (riskRecordRef === undefined) throw clientError("NOT_FOUND");
+      }
+      const detail = await readRiskRecord(projectId, riskRecordRef, signal);
       const evidenceSources = await locateSegmentSources(
         projectId,
         detail.sourceSegmentIds,
@@ -43,7 +56,7 @@ export default function RiskDetailPage() {
       );
       return { detail, evidenceSources };
     },
-    [recordId],
+    [recordId, versionKey],
   );
 
   return (

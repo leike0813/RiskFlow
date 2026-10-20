@@ -4160,6 +4160,17 @@ describe("CH-3 风险总览仪表盘契约", () => {
       },
     };
     expect(RiskDashboardReadResultV1Schema.safeParse(result).success).toBe(true);
+    for (const timeline of [
+      { ...result.result.timeline, asOf: "2026-02-30T00:00:00.000000Z" },
+      { ...result.result.timeline, nextCursor: "next", retryCursor: "retry" },
+    ]) {
+      expect(
+        RiskDashboardReadResultV1Schema.safeParse({
+          ...result,
+          result: { ...result.result, timeline },
+        }).success,
+      ).toBe(false);
+    }
     expect(
       RiskDashboardReadResultV1Schema.safeParse({
         ...result,

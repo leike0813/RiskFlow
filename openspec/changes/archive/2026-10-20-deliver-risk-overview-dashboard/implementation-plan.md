@@ -153,6 +153,7 @@ openspec validate deliver-risk-overview-dashboard --strict --no-interactive
 - 修改 `apps/web/src/pages/RiskOverviewPage.tsx`、`apps/web/src/pages/RiskOverviewPage.css`、`apps/web/src/api/operations.ts`、`apps/web/src/app/business-routes.ts`。
 - 新增 `apps/web/src/pages/RiskOverviewCharts.tsx`；修改 `apps/web/src/charts/echarts.ts` 注册两个已装series。
 - 修改 `apps/web/src/components/Timeline.tsx` 的title类型以承载精确链接；现有ChartSurface、useChart、主题、KpiCard、PageRegions仅复用，不另建ChartFrame或通用dashboard组件层。
+- 验收期经用户明确批准扩展：`apps/web/src/pages/RiskDetailPage.tsx` 消费时间线给定的精确版本并直接调用既有 record-read，避免目录首页解析丢失版本；保留未给版本的既有地址行为。对应 OV-S03／OV-S06、IP-04，不改变权限或端口。
 - 既有SSR与API行为测试归IP-06；不为ECharts option形状、图例文字、类名或固定DOM数量新增断言。
 
 ### IP-05：运行迁移和调用方
@@ -160,6 +161,7 @@ openspec validate deliver-risk-overview-dashboard --strict --no-interactive
 - 新增 `apps/web/src/pages/OverviewRunsSection.tsx`；删除 `apps/web/src/pages/RunRecordsPage.tsx` 与 `apps/web/src/pages/RunRecordsPage.css`，必要局部样式并入本页RiskOverviewPage.css，不删除其它业务文件。
 - 修改 `apps/web/src/app/routes.ts`、`apps/web/src/app/business-routes.ts`、`apps/web/src/pages/ReviewDetailPage.tsx` 的reviewTabs旧运行链接，以及 `apps/web/src/components/SectionTabs.tsx` 的pathname/search拆分与目标query优先合并。旧运行精确规则在前缀别名之前执行，不将query目标塞进纯pathname表；六个共享页签消费者直接复用，无需分别编辑。其它旧 `/review`、`/project` 链接不属于本次运行迁移。
 - 修改 `apps/web/src/api/context.ts`、`apps/web/src/api/engineering.ts`，按D-10保全当前工程revision；operations.ts删除迁移后无人调用的readRiskOverviewRuns，保留唯一readRiskOverviewRunPage。
+- 验收期经用户明确批准扩展：`apps/web/src/app/App.tsx` 在唯一工程切换 URL 写入点清除旧工程 revision；同工程导航保留修订。对应 OV-S02／OV-S13、IP-05，以真实浏览器回归验证。
 - 修改 `apps/web/test/routing-context-actions.test.ts`、`apps/web/test/business-routes.test.ts`、`apps/web/test/ssr-shells.test.tsx`、`apps/web/test/api-client-openapi.test.ts` 的受影响契约／可达性；不把旧页面数量或旧路由render实现锁为新期望。
 - 实施前对 `/review-audit/runs`、`/review/runs`、RunRecordsPage、readRiskOverviewRuns 作全仓精确引用检查；已核实生产调用点如上。demo原型页／历史归档中的同名字符串不迁移；活跃HTTP harness保留旧路径作为永久入口验收。
 

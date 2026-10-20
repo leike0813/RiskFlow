@@ -26,9 +26,10 @@ import {
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 import { StandardizedRiskRecordEnvelopeSchema } from "@riskflow/contracts/records";
-import type {
-  AuthorizationDecisionV1,
-  BusinessActionAuthorizationInputV1,
+import {
+  AccessServiceError,
+  type AuthorizationDecisionV1,
+  type BusinessActionAuthorizationInputV1,
 } from "@riskflow/core/access";
 import { StandardizedRiskRecordWriteV1Schema } from "@riskflow/core/identification/candidate-finalization";
 import type { AtomicCommandV1, AtomicCommitV1 } from "@riskflow/core/persistence";
@@ -834,6 +835,11 @@ describe.sequential("CH-3 PostgreSQL risk dashboard aggregate read", () => {
     expect(retried.timeline.items).toEqual(first.timeline.items);
     expect(retried.timeline.nextCursor).toBeUndefined();
     expect(retried.timeline.retryCursor).toBeDefined();
+    const recovered = expectSucceeded(
+      await f.read(f.service, { pageSize, cursor: first.timeline.retryCursor }),
+    );
+    expect(recovered.timeline.asOf).toBe(first.timeline.asOf);
+    expect(recovered.timeline.items.map(positionOf)).toEqual(f.expected.events.slice(0, pageSize));
   });
 
   it("错工程、错空间与非法游标整体拒绝，页大小越界由请求 Schema 拒绝", async () => {
@@ -860,10 +866,27 @@ describe.sequential("CH-3 PostgreSQL risk dashboard aggregate read", () => {
       }),
       "utf8",
     ).toString("base64url");
+    const cursorBase = { v: 1, projectId: f.warning.projectId, asOf: DASHBOARD_AS_OF };
+    const invalidCursors = [
+      { ...cursorBase, extra: true },
+      { ...cursorBase, asOf: "2040-99-01T00:00:00.000000Z" },
+      { ...cursorBase, after: null },
+      { ...cursorBase, after: { source: "riskRecords", recordedAt: DASHBOARD_AS_OF } },
+      {
+        ...cursorBase,
+        after: {
+          source: "riskRecords",
+          recordedAt: DASHBOARD_AS_OF,
+          entityId: "",
+          versionId: "v1",
+        },
+      },
+    ].map((cursor) => Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url"));
 
     for (const result of [
       await f.read(f.service, { cursor: foreignCursor }),
       await f.read(f.service, { cursor: "not-a-dashboard-cursor" }),
+      ...(await Promise.all(invalidCursors.map((cursor) => f.read(f.service, { cursor })))),
       await f.read(f.service, {
         cursor: wrongScopeCursor,
         spatialScopeRef: f.warning.c25.accessRootScopeRef,
@@ -892,6 +915,75 @@ describe.sequential("CH-3 PostgreSQL risk dashboard aggregate read", () => {
         }).success,
       ).toBe(false);
     }
+  });
+
+  it("来源抛错或返回额外字段均局部失败，其余真实来源仍可读取", async () => {
+    const f = requireFixture();
+    for (const invalidResult of [false, true]) {
+      const service = createRiskDashboardReadService({
+        sources: {
+          ...f.sources,
+          warnings: {
+            readDashboard: async (request) => {
+              if (!invalidResult) throw new Error("private database failure");
+              const result = await f.sources.warnings.readDashboard(request);
+              return { ...result, privateData: "must not escape" } as typeof result;
+            },
+          },
+        },
+        authorizeBusinessAction: (input) =>
+          f.warning.c25.postgres.access.authorizeBusinessAction(input),
+        now: () => new Date(DASHBOARD_REQUESTED_AT),
+      });
+      const result = expectSucceeded(await f.read(service, { pageSize: 2 }));
+      expect(result.summaries.warnings).toMatchObject({ kind: "failed" });
+      expect(result.summaries.riskRecords.kind).toBe("ready");
+      expect(result.summaries.documents.kind).toBe("ready");
+      expect(result.timeline.nextCursor).toBeUndefined();
+      expect(result.timeline.retryCursor).toBeDefined();
+      expect(JSON.stringify(result)).not.toContain("private");
+    }
+    const missingService = createRiskDashboardReadService({
+      sources: { ...f.sources, warnings: {} as RiskDashboardWarningsSourceV1 },
+      authorizeBusinessAction: (input) =>
+        f.warning.c25.postgres.access.authorizeBusinessAction(input),
+      now: () => new Date(DASHBOARD_REQUESTED_AT),
+    });
+    const missing = expectSucceeded(await f.read(missingService, { pageSize: 2 }));
+    expect(missing.summaries.warnings).toMatchObject({
+      kind: "failed",
+      error: { code: "BUSINESS_BLOCKED", blockerKind: "dashboard-source-not-injected" },
+    });
+    expect(missing.timeline.retryCursor).toBeDefined();
+  });
+
+  it("来源授权的安全审计技术故障不能伪装拒权或允许时间线推进", async () => {
+    const f = requireFixture();
+    const service = createRiskDashboardReadService({
+      sources: f.sources,
+      authorizeBusinessAction: (input) => {
+        if (input.branch === "warning-response.read") {
+          throw new AccessServiceError({
+            code: "ACCESS_TRANSIENT_FAILURE",
+            retryable: true,
+            attempt: 1,
+            stage: "authorize.audit",
+            occurredAt: DASHBOARD_REQUESTED_AT,
+            diagnosticRef: refOf("diagnostic-artifact", "dashboard-audit-failure"),
+            contextRefs: [],
+          });
+        }
+        return f.warning.c25.postgres.access.authorizeBusinessAction(input);
+      },
+      now: () => new Date(DASHBOARD_REQUESTED_AT),
+    });
+    const result = expectSucceeded(await f.read(service, { pageSize: 1 }));
+    expect(result.timeline.sources.warnings).toMatchObject({
+      kind: "failed",
+      error: { code: "TRANSIENT_FAILURE" },
+    });
+    expect(result.timeline.nextCursor).toBeUndefined();
+    expect(result.timeline.retryCursor).toBeDefined();
   });
 
   it("撤权后来源立即失败闭合且不泄露撤权前的计数", async () => {
@@ -958,8 +1050,28 @@ describe.sequential("CH-3 PostgreSQL risk dashboard aggregate read", () => {
       expect(result.events.length).toBeGreaterThan(50);
       expect(result.data.processCounts.every((entry) => entry.count > 0)).toBe(true);
       console.log(
-        `[scale] records=${count} seedMs=${seedMs.toFixed(0)} readMs=${readMs.toFixed(0)} total=${result.data.recordedVersionCount} events=${result.events.length} processGroups=${result.data.processCounts.length}`,
+        `[scale] records=${count} seedMs=${seedMs.toFixed(0)} readMs=${readMs.toFixed(0)} total=${result.data.recordedVersionCount} events=${result.events.length} processGroups=${result.data.processCounts.length} bytes=${Buffer.byteLength(JSON.stringify(result), "utf8")}`,
       );
     }
+  });
+  it("同刻 Unicode 主体的数据库 keyset 与中央全序一致", async () => {
+    const f = requireFixture();
+    const suffixes = ["dashboard-order-A", "dashboard-order-\uE000", "dashboard-order-\u{10000}"];
+    await f.seedRiskRecordBatch(
+      suffixes.map((suffix) => ({ suffix, processNodeId: "node-order" })),
+      "2039-01-01T00:00:00.000001Z",
+      "dashboard-order",
+    );
+    const collected: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < suffixes.length; page += 1) {
+      const result = expectSucceeded(
+        await f.read(f.service, { pageSize: 1, ...(cursor === undefined ? {} : { cursor }) }),
+      );
+      expect(result.timeline.items).toHaveLength(1);
+      collected.push(result.timeline.items[0]!.subjectRef.reference.entityId);
+      cursor = result.timeline.nextCursor;
+    }
+    expect(collected.map((id) => id.split(":").at(-1))).toEqual(suffixes);
   });
 });

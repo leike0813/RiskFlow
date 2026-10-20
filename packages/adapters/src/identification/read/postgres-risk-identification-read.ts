@@ -564,12 +564,19 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
    * transient／terminal 映射，不 catch 成拒权——两者对调用方的含义完全不同。
    */
   #dashboardError(error: unknown, causalRunId: string, branch: ModuleBranchV1): ModuleErrorV1 {
-    if (error instanceof AccessServiceError) {
+    if (
+      error instanceof AccessServiceError &&
+      error.details.code !== "ACCESS_TRANSIENT_FAILURE" &&
+      error.details.code !== "ACCESS_TERMINAL_FAILURE"
+    ) {
       return this.#denied(causalRunId, branch);
     }
-    const mapped = mapPostgresError(error, `${STAGE_CODE_V1}.dashboard`);
+    const mapped =
+      error instanceof AccessServiceError
+        ? { code: error.details.code, retryable: error.details.retryable }
+        : mapPostgresError(error, `${STAGE_CODE_V1}.dashboard`);
     return readError({
-      code: mapped.code === "IDEMPOTENCY_CONFLICT" ? "TERMINAL_FAILURE" : "TRANSIENT_FAILURE",
+      code: mapped.retryable ? "TRANSIENT_FAILURE" : "TERMINAL_FAILURE",
       causalRunId,
       occurredAt: this.#now().toISOString(),
     });
@@ -1345,10 +1352,7 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
    * 仪表盘风险记录来源（design D-04～D-06）：与目录共享 accepted 候选，按当前授权批量判定
    * 可见来源与空间范围，在 SQL 内聚合计数并输出微秒登记变化页。
    *
-   * 可见性差异：目录的 `#recordVisibility` 逐条请求 C06，并把证据引用里的来源版本也纳入
-   * 请求；本来源按 design D-03 的批量方式只对登记列 `source_version_refs` 做一次
-   * `filterVisibleSources`，再把「全部登记来源可见」下推为 SQL。证据来源不在登记来源集合
-   * 内时目录可能更严；本来源的多出部分是记录已登记来源可见的版本，不披露正文。
+   * 登记来源与证据来源共同参与批量可见性判定，与目录的全部必需来源交集一致。
    */
   async readDashboard(
     request: RiskDashboardRiskRecordsSourceRequestV1,
@@ -1399,8 +1403,11 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       // 先取候选记录的登记来源去重集合（上限+1 检出溢出），再一次性批验当前可见子集。
       const declared = await this.#db
         .selectFrom(RECORDS_TABLE)
-        .select(sql<unknown>`jsonb_array_elements(source_version_refs)`.as("source"))
+        .select(
+          sql<unknown>`jsonb_array_elements(${this.#dashboardRequiredSources()})`.as("source"),
+        )
         .where(this.#candidateRecordPredicate(request.projectId))
+        .where(this.#dashboardSpatialPredicate(scopeEntityIds, spatialScopeRef))
         .distinct()
         .limit(DASHBOARD_SOURCE_LIMIT_V1 + 1)
         .execute();
@@ -1481,14 +1488,14 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
           eventsQuery = eventsQuery.where(
             sql<SqlBool>`(created_at < ${resume.recordedAt}::timestamptz
               OR (created_at = ${resume.recordedAt}::timestamptz
-                AND (risk_record_id, version_id) > (${resume.entityId}, ${resume.versionId})))`,
+                AND (risk_record_id COLLATE "C", version_id COLLATE "C") > (${resume.entityId}, ${resume.versionId})))`,
           );
         }
       }
       const eventRows = await eventsQuery
         .orderBy("created_at", "desc")
-        .orderBy("risk_record_id", "asc")
-        .orderBy("version_id", "asc")
+        .orderBy(sql`risk_record_id COLLATE "C"`, "asc")
+        .orderBy(sql`version_id COLLATE "C"`, "asc")
         .limit(request.timeline.pageSize + 1)
         .execute();
       const events: RiskDashboardTimelineEventV1[] = eventRows.map((row) => ({
@@ -1514,6 +1521,25 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
     }
   }
 
+  #dashboardRequiredSources() {
+    return sql`source_version_refs || COALESCE((
+      SELECT jsonb_agg(jsonb_build_object('kind', 'source-version', 'reference', evidence -> 'sourceVersion'))
+      FROM jsonb_array_elements(evidence_references) AS evidence
+    ), '[]'::jsonb)`;
+  }
+
+  #dashboardSpatialPredicate(scopeEntityIds: readonly string[], scope?: SpatialScopeRefV1) {
+    return sql<SqlBool>`NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(spatial_scope_refs) AS record_scope
+      WHERE record_scope -> 'reference' ->> 'entityId' IS NULL
+         OR NOT (record_scope -> 'reference' ->> 'entityId' = ANY(${scopeEntityIds}))
+    ) AND ${
+      scope === undefined
+        ? sql`true`
+        : sql`spatial_scope_refs @> jsonb_build_array(${JSON.stringify(scope)}::jsonb)`
+    }`;
+  }
+
   /** 仪表盘可见记录关系：共享候选 + 全部登记来源可见 + 全部空间范围在现行授权内。 */
   #dashboardRecordQuery(input: {
     readonly projectId: string;
@@ -1521,27 +1547,16 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
     readonly visibleSources: readonly SourceVersionRefV1[];
     readonly spatialScopeRef?: SpatialScopeRefV1;
   }) {
-    let query = this.#db
+    const query = this.#db
       .selectFrom(RECORDS_TABLE)
       .where(this.#candidateRecordPredicate(input.projectId))
       .where(
         sql<SqlBool>`NOT EXISTS (
-          SELECT 1 FROM jsonb_array_elements(source_version_refs) AS declared
+          SELECT 1 FROM jsonb_array_elements(${this.#dashboardRequiredSources()}) AS declared
           WHERE NOT ${JSON.stringify(input.visibleSources)}::jsonb @> jsonb_build_array(declared)
         )`,
       )
-      .where(
-        sql<SqlBool>`NOT EXISTS (
-          SELECT 1 FROM jsonb_array_elements(spatial_scope_refs) AS scope
-          WHERE scope -> 'reference' ->> 'entityId' IS NULL
-             OR NOT (scope -> 'reference' ->> 'entityId' = ANY(${input.scopeEntityIds}))
-        )`,
-      );
-    if (input.spatialScopeRef !== undefined) {
-      query = query.where(
-        sql<SqlBool>`spatial_scope_refs @> jsonb_build_array(${JSON.stringify(input.spatialScopeRef)}::jsonb)`,
-      );
-    }
+      .where(this.#dashboardSpatialPredicate(input.scopeEntityIds, input.spatialScopeRef));
     return query;
   }
 

@@ -37,4 +37,4 @@
 - [x] 6.2 [IP-06；IP-04～IP-05] 执行 implementation-plan V-04：正式构建后运行四份既有浏览器套件，实际操作总览、真实来源失败、资料／监测入口、两组运行分页、历史旧地址及上下文竞态；证据标明合成样本、待甲方复核，不以测试接线代替生产面 smoke。
 - [x] 6.3 [IP-06] 将 native-zoom.mjs 证据根改为本 change 并覆盖总览操作；执行 `DISPLAY=:109 node apps/web/test/browser/native-zoom.mjs`，记录三窗口×100%／200% 原生缩放及键盘可达，缺显示或工具非零失败，不覆盖 CH-2 归档证据。
 - [x] 6.4 [IP-06] 执行 implementation-plan V-06 的类型、lint、格式、依赖及严格规格门禁；按实际交付更新既有 UI 主文档的 CH-3 引用，证据与最终实现检查点一致，不变更后续工作包责任。
-- [ ] 6.5 [IP-06] 由 Finalizer 核对全部 Requirement/Scenario/IP-ID 和最终运行证据，完成范围内修复／回归及 verification；本轮一次限定审计闭合 DASHBOARD-SOURCE-AUTHZ、POLICY-HISTORY、CURSOR-COMPLETENESS，结论补入同一 verification。完成检查：无未处理范围内缺陷、关键未运行或待审计项，记录实际 HEAD、命令结果及证据路径；规划阶段不创建该工件、不勾选本任务。
+- [x] 6.5 [IP-06] 由 Finalizer 核对全部 Requirement/Scenario/IP-ID 和最终运行证据，完成范围内修复／回归及 verification；本轮一次限定审计闭合 DASHBOARD-SOURCE-AUTHZ、POLICY-HISTORY、CURSOR-COMPLETENESS，结论补入同一 verification。完成检查：无未处理范围内缺陷、关键未运行或待审计项，记录实际 HEAD、命令结果及证据路径；规划阶段不创建该工件、不勾选本任务。

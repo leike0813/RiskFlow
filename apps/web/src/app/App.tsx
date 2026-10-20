@@ -428,6 +428,7 @@ const AppShellBody = ({
     if (projectId === null) params.delete("project");
     else params.set("project", projectId);
     params.delete("assessmentSources");
+    params.delete("revision");
     const query = params.toString();
     const target = `${window.location.pathname}${query === "" ? "" : `?${query}`}`;
     if (inRouter) routerNavigate?.(target, { replace: true });

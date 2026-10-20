@@ -116,6 +116,7 @@ import {
   MODULE_BRANCH_CAPABILITY_V1,
   ModuleErrorV1Schema,
   RISK_DASHBOARD_GROUP_LIMIT_V1,
+  RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1,
   riskDashboardTimelineResumeV1,
   RiskAssessmentReadQueryV1Schema,
   RiskAssessmentReadResultV1Schema,
@@ -437,7 +438,11 @@ const failureToModuleError = (error: unknown, causalRunId: string): ModuleErrorV
   const failure = riskAssessmentFailureFrom(error);
   if (failure !== undefined) return toModuleError(failure, causalRunId);
   // C06 在撤权/会话失效时抛 AccessServiceError：按闭合授权错误表达，不折叠成终止失败。
-  if (error instanceof AccessServiceError) {
+  if (
+    error instanceof AccessServiceError &&
+    error.details.code !== "ACCESS_TRANSIENT_FAILURE" &&
+    error.details.code !== "ACCESS_TERMINAL_FAILURE"
+  ) {
     return moduleError("AUTHORIZATION_DENIED", causalRunId);
   }
   // 已类型化的模块错误（授权/陈旧/业务阻断）原样保留，不被折叠成终止失败。
@@ -448,7 +453,10 @@ const failureToModuleError = (error: unknown, causalRunId: string): ModuleErrorV
   );
   if (typed.success) return typed.data;
   // C03 回执冲突与数据库故障：幂等冲突保持不可重试，其余按可重试性分流。
-  const mapped = mapPostgresError(error, "risk-assessment.engine");
+  const mapped =
+    error instanceof AccessServiceError
+      ? { code: error.details.code, retryable: error.details.retryable }
+      : mapPostgresError(error, "risk-assessment.engine");
   if (mapped.code === "IDEMPOTENCY_CONFLICT") {
     return moduleError("IDEMPOTENCY_CONFLICT", causalRunId);
   }
@@ -2966,9 +2974,9 @@ export class PostgresRiskAssessmentEngine
   async readDashboard(
     request: RiskDashboardAssessmentsSourceRequestV1,
   ): Promise<RiskDashboardAssessmentsSourceResultV1> {
-    const verified = await this.#verifyReadAuthorization(request);
-    if (verified === undefined) return { kind: "failed", error: this.#readDenied(request) };
     try {
+      const verified = await this.#verifyReadAuthorization(request);
+      if (verified === undefined) return { kind: "failed", error: this.#readDenied(request) };
       const query = await this.#authorizedRecordBase(
         request.projectId,
         request.spatialScopeRef === undefined ? {} : { spatialScopeRef: request.spatialScopeRef },
@@ -3009,6 +3017,30 @@ export class PostgresRiskAssessmentEngine
           this.#readBlocked(request.queryId, "dashboard-group-limit"),
         );
       }
+      const recordedAssessmentCount = this.#dashboardCount(total.count, request.queryId);
+      const matrixLevelCounts = groups.map((row) => ({
+        riskMatrixRef: { entityId: row.matrix_entity_id, versionId: row.matrix_version_id },
+        riskLevelId: row.risk_level_id,
+        count: this.#dashboardCount(row.count, request.queryId),
+      }));
+      if (
+        matrixLevelCounts.reduce((sum, group) => sum + group.count, 0) !== recordedAssessmentCount
+      ) {
+        throw new RiskAssessmentReadFailure(
+          this.#readBlocked(request.queryId, "dashboard-reference-incomplete"),
+        );
+      }
+      const levelsPerMatrix = new Map<string, number>();
+      for (const group of matrixLevelCounts) {
+        const key = JSON.stringify(group.riskMatrixRef);
+        const levels = (levelsPerMatrix.get(key) ?? 0) + 1;
+        if (levels > RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1) {
+          throw new RiskAssessmentReadFailure(
+            this.#readBlocked(request.queryId, "dashboard-group-limit"),
+          );
+        }
+        levelsPerMatrix.set(key, levels);
+      }
       const { asOf, pageSize, after } = request.timeline;
       const resume =
         after === undefined ? undefined : riskDashboardTimelineResumeV1("assessments", after);
@@ -3037,32 +3069,25 @@ export class PostgresRiskAssessmentEngine
           eventsQuery = eventsQuery.where(sql<SqlBool>`(
             r.recorded_at < ${resume.recordedAt}::timestamptz
             OR (r.recorded_at = ${resume.recordedAt}::timestamptz
-                AND r.record_id > ${resume.entityId})
+                AND r.record_id COLLATE "C" > ${resume.entityId})
             OR (r.recorded_at = ${resume.recordedAt}::timestamptz
                 AND r.record_id = ${resume.entityId}
-                AND r.version_id > ${resume.versionId})
+                AND r.version_id COLLATE "C" > ${resume.versionId})
           )`);
         }
       }
       const rows = await eventsQuery
         .orderBy("r.recorded_at", "desc")
-        .orderBy("r.record_id", "asc")
-        .orderBy("r.version_id", "asc")
+        .orderBy(sql`r.record_id COLLATE "C"`, "asc")
+        .orderBy(sql`r.version_id COLLATE "C"`, "asc")
         .limit(pageSize + 1)
         .execute();
       return {
         kind: "ready",
-        asOf,
+        asOf: this.#now().toISOString(),
         data: {
-          recordedAssessmentCount: this.#dashboardCount(total.count, request.queryId),
-          matrixLevelCounts: groups.map((row) => ({
-            riskMatrixRef: {
-              entityId: row.matrix_entity_id,
-              versionId: row.matrix_version_id,
-            },
-            riskLevelId: row.risk_level_id,
-            count: this.#dashboardCount(row.count, request.queryId),
-          })),
+          recordedAssessmentCount,
+          matrixLevelCounts,
         },
         events: rows.map((row) => ({
           source: "assessments" as const,
@@ -3127,7 +3152,13 @@ export class PostgresRiskAssessmentEngine
         requestedAt: command.requestedAt,
       })
       .catch((error: unknown) => {
-        if (error instanceof AccessServiceError) return undefined;
+        if (
+          error instanceof AccessServiceError &&
+          error.details.code !== "ACCESS_TRANSIENT_FAILURE" &&
+          error.details.code !== "ACCESS_TERMINAL_FAILURE"
+        ) {
+          return undefined;
+        }
         throw error;
       });
     if (decision === undefined || decision.redacted) return undefined;

@@ -5732,7 +5732,8 @@ export const riskDashboardTimelineResumeV1 = (
  */
 export const RiskDashboardTimestampV1Schema = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/u);
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/u)
+  .pipe(z.iso.datetime({ precision: 6 }));
 export type RiskDashboardTimestampV1 = z.infer<typeof RiskDashboardTimestampV1Schema>;
 
 /** 统计量：非负安全整数。超出安全范围的计数由所属来源整体失败，不溢出也不夹取。 */
@@ -5932,20 +5933,24 @@ export type RiskDashboardTimelineSourceStatusV1 = z.infer<
   typeof RiskDashboardTimelineSourceStatusV1Schema
 >;
 
-export const RiskDashboardTimelineV1Schema = z.strictObject({
-  /** 本次读取的时间上界；续页沿用同一上界。 */
-  asOf: RiskDashboardTimestampV1Schema,
-  items: z.array(RiskDashboardTimelineEventV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1),
-  sources: z.strictObject({
-    riskRecords: RiskDashboardTimelineSourceStatusV1Schema,
-    assessments: RiskDashboardTimelineSourceStatusV1Schema,
-    warnings: RiskDashboardTimelineSourceStatusV1Schema,
-  }),
-  /** 完整后续页游标；仅在全部参与来源成功时给出。 */
-  nextCursor: z.string().min(1).optional(),
-  /** 原位重试游标；仅在不完整时给出，指向本页起点而非下一页。 */
-  retryCursor: z.string().min(1).optional(),
-});
+export const RiskDashboardTimelineV1Schema = z
+  .strictObject({
+    /** 本次读取的时间上界；续页沿用同一上界。 */
+    asOf: RiskDashboardTimestampV1Schema,
+    items: z.array(RiskDashboardTimelineEventV1Schema).max(C32_READ_PAGE_SIZE_MAX_V1),
+    sources: z.strictObject({
+      riskRecords: RiskDashboardTimelineSourceStatusV1Schema,
+      assessments: RiskDashboardTimelineSourceStatusV1Schema,
+      warnings: RiskDashboardTimelineSourceStatusV1Schema,
+    }),
+    /** 完整后续页游标；仅在全部参与来源成功时给出。 */
+    nextCursor: z.string().min(1).optional(),
+    /** 原位重试游标；仅在不完整时给出，指向本页起点而非下一页。 */
+    retryCursor: z.string().min(1).optional(),
+  })
+  .refine((value) => value.nextCursor === undefined || value.retryCursor === undefined, {
+    message: "Timeline continuation and retry cursors are mutually exclusive",
+  });
 export type RiskDashboardTimelineV1 = z.infer<typeof RiskDashboardTimelineV1Schema>;
 
 // ---- 六个来源的摘要条目 ----

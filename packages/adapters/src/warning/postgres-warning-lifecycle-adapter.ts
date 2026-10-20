@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 
 import {
+  ACCESS_POLICY_REF_V1,
   AccessServiceError,
   isAuthorizationSubset,
   type LocalIdentityAccessV1,
@@ -2137,7 +2138,7 @@ export class PostgresWarningLifecycleAdapter
       occurredAt: this.#nowIso(),
       causalRunId: query.queryId,
       requiredCapability: MODULE_BRANCH_CAPABILITY_V1["warning-response.read"],
-      authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      authorizationPolicyRef: ACCESS_POLICY_REF_V1,
     });
   }
 
@@ -2308,7 +2309,13 @@ export class PostgresWarningLifecycleAdapter
           requestedAt: request.requestedAt,
         })
         .catch((error: unknown) => {
-          if (error instanceof AccessServiceError) return undefined;
+          if (
+            error instanceof AccessServiceError &&
+            error.details.code !== "ACCESS_TRANSIENT_FAILURE" &&
+            error.details.code !== "ACCESS_TERMINAL_FAILURE"
+          ) {
+            return undefined;
+          }
           throw error;
         });
       if (decision === undefined || decision.redacted) return denied();
@@ -2325,21 +2332,21 @@ export class PostgresWarningLifecycleAdapter
 
       const summary = (
         await sql<{
-          readonly open_task_count: number;
-          readonly open_task_warning_count: number;
-          readonly level_counts: readonly { warningLevel: string; count: number }[];
-          readonly unacknowledged_count: number;
+          readonly open_task_count: string;
+          readonly open_task_warning_count: string;
+          readonly level_counts: readonly { warningLevel: string; count: string }[];
+          readonly unacknowledged_count: string;
           readonly unacknowledged_level_counts: readonly {
             warningLevel: string;
-            count: number;
+            count: string;
           }[];
         }>`
         SELECT
-          (SELECT count(*)::int FROM business.warning_response_tasks t
+          (SELECT count(*)::text FROM business.warning_response_tasks t
             WHERE t.project_id = ${request.projectId}
               AND t.status = 'open'
               AND t.spatial_scope_entity_id = ANY(${scopeIds})) AS open_task_count,
-          (SELECT count(DISTINCT w.warning_record_id)::int
+          (SELECT count(DISTINCT w.warning_record_id)::text
              FROM business.warning_response_task_warnings w
              JOIN business.warning_response_tasks t
                ON t.project_id = w.project_id AND t.task_id = w.task_id
@@ -2350,14 +2357,14 @@ export class PostgresWarningLifecycleAdapter
             (SELECT jsonb_agg(
                       jsonb_build_object('warningLevel', bounded.risk_level_id, 'count', bounded.count)
                       ORDER BY bounded.risk_level_id)
-               FROM (SELECT r.risk_level_id, count(*)::int AS count
+               FROM (SELECT r.risk_level_id, count(*)::text AS count
                        FROM business.warning_records r
                       WHERE r.project_id = ${request.projectId}
                         AND r.spatial_scope_entity_id = ANY(${scopeIds})
                       GROUP BY r.risk_level_id
                       LIMIT ${RISK_DASHBOARD_MATRIX_LEVEL_LIMIT_V1 + 1}) bounded),
             '[]'::jsonb) AS level_counts,
-          (SELECT count(*)::int FROM business.warning_records r
+          (SELECT count(*)::text FROM business.warning_records r
             WHERE r.project_id = ${request.projectId}
               AND r.spatial_scope_entity_id = ANY(${scopeIds})
               AND NOT EXISTS (SELECT 1 FROM business.warning_acknowledgements a
@@ -2368,7 +2375,7 @@ export class PostgresWarningLifecycleAdapter
             (SELECT jsonb_agg(
                       jsonb_build_object('warningLevel', bounded.risk_level_id, 'count', bounded.count)
                       ORDER BY bounded.risk_level_id)
-               FROM (SELECT r.risk_level_id, count(*)::int AS count
+               FROM (SELECT r.risk_level_id, count(*)::text AS count
                        FROM business.warning_records r
                       WHERE r.project_id = ${request.projectId}
                         AND r.spatial_scope_entity_id = ANY(${scopeIds})
@@ -2406,10 +2413,10 @@ export class PostgresWarningLifecycleAdapter
               : sql`AND (
                   w.recorded_at < ${resume.recordedAt}::timestamptz
                   OR (w.recorded_at = ${resume.recordedAt}::timestamptz
-                      AND w.warning_record_id > ${resume.entityId})
+                      AND w.warning_record_id COLLATE "C" > ${resume.entityId})
                   OR (w.recorded_at = ${resume.recordedAt}::timestamptz
                       AND w.warning_record_id = ${resume.entityId}
-                      AND w.version_id > ${resume.versionId}))`;
+                      AND w.version_id COLLATE "C" > ${resume.versionId}))`;
       const eventRows = await sql<{
         readonly entity_id: string;
         readonly version_id: string;
@@ -2425,7 +2432,7 @@ export class PostgresWarningLifecycleAdapter
            AND w.spatial_scope_entity_id = ANY(${scopeIds})
            AND w.recorded_at <= ${asOf}::timestamptz
            ${resumeClause}
-         ORDER BY w.recorded_at DESC, w.warning_record_id ASC, w.version_id ASC
+         ORDER BY w.recorded_at DESC, w.warning_record_id COLLATE "C" ASC, w.version_id COLLATE "C" ASC
          LIMIT ${pageSize + 1}
       `.execute(this.#db);
       const events: RiskDashboardTimelineEventV1[] = eventRows.rows.map((row) => ({
@@ -2441,7 +2448,7 @@ export class PostgresWarningLifecycleAdapter
 
       return {
         kind: "ready",
-        asOf,
+        asOf: this.#nowIso(),
         data: {
           openTaskCount: this.#dashboardCount(summary.open_task_count, request.queryId),
           openTaskWarningCount: this.#dashboardCount(
@@ -2485,7 +2492,7 @@ export class PostgresWarningLifecycleAdapter
   #dashboardCount(value: number | string, queryId: string): number {
     const count = Number(value);
     if (!Number.isSafeInteger(count) || count < 0) {
-      throw new Error(`dashboard-count-overflow:${queryId}`);
+      throw this.#readBlocked({ queryId }, "dashboard-count-overflow");
     }
     return count;
   }
@@ -3887,7 +3894,11 @@ export class PostgresWarningLifecycleAdapter
   #toModuleError(error: unknown, causalRunId: string): ModuleErrorV1 {
     const failure = warningLifecycleFailureFrom(error);
     if (failure !== undefined) return toWarningModuleError(failure, causalRunId);
-    if (error instanceof AccessServiceError) {
+    if (
+      error instanceof AccessServiceError &&
+      error.details.code !== "ACCESS_TRANSIENT_FAILURE" &&
+      error.details.code !== "ACCESS_TERMINAL_FAILURE"
+    ) {
       return toWarningModuleError(
         {
           code: "AUTHORIZATION_DENIED",
@@ -3900,7 +3911,10 @@ export class PostgresWarningLifecycleAdapter
         causalRunId,
       );
     }
-    const mapped = mapPostgresError(error, "warning-response.adapter");
+    const mapped =
+      error instanceof AccessServiceError
+        ? { code: error.details.code, retryable: error.details.retryable }
+        : mapPostgresError(error, "warning-response.adapter");
     if (mapped.code === "IDEMPOTENCY_CONFLICT") {
       return toWarningModuleError(
         {

@@ -1,0 +1,30 @@
+{
+  "change": "deliver-risk-overview-dashboard",
+  "qualification": "合成样本，待甲方复核",
+  "inputHead": "e3230c9c4950bf87b64b239e39b475913b13859c",
+  "workingTree": "验收修复未提交；无依赖或迁移变更",
+  "command": "pnpm exec vitest run packages/adapters/test/workflow/postgres-risk-dashboard.test.ts --reporter verbose --silent=false",
+  "result": "11 passed",
+  "source": "真实 PostgreSQL，正式 migrationRoot，C22 正式写入，六来源所属 Adapter 与 C06 当前授权",
+  "measurement": "风险来源单次完整摘要加最多51个变化候选；分轮新增记录，累计总数含3条基线及前轮记录。并发验收环境中的样本，不代表生产 SLA。",
+  "samples": [
+    {
+      "insertedRecords": 100,
+      "recordedVersionCount": 103,
+      "seedMs": 55,
+      "readMs": 42,
+      "candidateEvents": 51,
+      "processGroups": 4,
+      "responseBytesUtf8": 12582
+    },
+    {
+      "insertedRecords": 1000,
+      "recordedVersionCount": 1103,
+      "seedMs": 521,
+      "readMs": 193,
+      "candidateEvents": 51,
+      "processGroups": 4,
+      "responseBytesUtf8": 12684
+    }
+  ]
+}

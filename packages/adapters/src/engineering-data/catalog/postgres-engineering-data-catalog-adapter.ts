@@ -1,6 +1,6 @@
 import { TextDecoder } from "node:util";
 
-import type { Kysely } from "kysely";
+import { sql, type Kysely, type SqlBool } from "kysely";
 
 import {
   EngineeringDataCatalogQueryV1Schema,
@@ -32,7 +32,6 @@ import {
   type RiskDashboardMonitoringSourceResultV1,
   type RiskDashboardMonitoringSourceV1,
   type SourceCatalogItemV1,
-  type SourceCatalogParseStatusV1,
   type SourceVersionRefV1,
   SourceVersionRefV1Schema,
   SourceAccessGrantRefV1Schema,
@@ -420,7 +419,7 @@ const dashboardDenied = (queryId: string): ModuleErrorV1 =>
     causalRunId: queryId,
   });
 
-/** 仪表盘资料分组上限：资料版本数超界即整来源失败。 */
+/** 仪表盘来源元数据上限：沿既有 256 项来源边界，超界整来源失败。 */
 const DASHBOARD_SOURCE_GROUP_LIMIT_V1 = 256;
 
 /** 授权不符：C06 的授权失败形状，让调用方能区分拒权与技术故障。 */
@@ -564,17 +563,18 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
     const valid = parsed.data;
     try {
       const decision = await this.#verifyDashboard(valid, "engineering-data.source-catalog");
-      const rows = await this.#db
-        .selectFrom("business.source_versions")
+      const rows = await this.#visibleSourceVersions(valid.projectId, decision)
         .select([
           "source_version_id",
           "version_id",
           "source_access_grant_ref",
           "source_version_ref",
         ])
-        .where("project_id", "=", valid.projectId)
-        .where("access_status", "=", "ready")
+        .limit(DASHBOARD_SOURCE_GROUP_LIMIT_V1 + 1)
         .execute();
+      if (rows.length > DASHBOARD_SOURCE_GROUP_LIMIT_V1) {
+        return { kind: "failed", error: dashboardBlocked(valid.queryId, "dashboard-source-limit") };
+      }
       const grantedSources = new Set(
         decision.context.sourceAccessGrantRefs.map((grant) => grant.reference.entityId),
       );
@@ -595,13 +595,12 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
         seenGrants.add(grant.data.reference.entityId);
         return true;
       });
-      if (visible.length > DASHBOARD_SOURCE_GROUP_LIMIT_V1) {
-        return { kind: "failed", error: dashboardBlocked(valid.queryId, "dashboard-group-limit") };
-      }
-      const sourceRefs = visible.map((row) => ({
-        kind: "source-version" as const,
-        reference: { entityId: row.source_version_id, versionId: row.version_id },
-      }));
+      const sourceRefs = visible.flatMap((row) => {
+        const source = asVersionedRef(row.source_version_ref);
+        return source === undefined
+          ? []
+          : [{ kind: "source-version" as const, reference: source.reference }];
+      });
       const cleaning = await this.#cleaningSummaries(
         {
           queryId: valid.queryId,
@@ -613,74 +612,68 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
         decision,
         sourceRefs,
       );
-      const parseStatusCounts = new Map<SourceCatalogParseStatusV1, number>();
-      const cleaningStatusCounts = new Map<string, number>();
-      // 解析状态与资料目录同一判定：转换结果优先，其次段集，最后登记。
-      // 转换与段集各读一次工程登记行，不按资料版本逐条查询。
-      const conversions = await this.#db
-        .selectFrom("business.structured_document_conversions")
-        .select(["source_version_ref", "status", "completed_at"])
-        .where("project_id", "=", valid.projectId)
-        .execute();
-      const conversionBySource = new Map<string, { status: string; completedAt: string }>();
-      for (const row of conversions) {
-        const sourceRef = asVersionedRef(row.source_version_ref);
-        if (sourceRef === undefined) continue;
-        const key = refKey(sourceRef);
-        const existing = conversionBySource.get(key);
-        const completedAt = asIso(row.completed_at);
-        if (existing === undefined || existing.completedAt < completedAt) {
-          conversionBySource.set(key, { status: row.status, completedAt });
-        }
-      }
-      const segmentSetRows = await this.#db
-        .selectFrom("business.source_segment_sets")
-        .select(["source_version_id"])
-        .where("project_id", "=", valid.projectId)
-        .execute();
-      const sourceVersionIdsWithSegments = new Set(
-        segmentSetRows.map((row) => row.source_version_id),
-      );
-      for (const sourceRef of sourceRefs) {
-        const conversion = conversionBySource.get(refKey(sourceRef));
-        const parseStatus: SourceCatalogParseStatusV1 =
-          conversion === undefined
-            ? sourceVersionIdsWithSegments.has(sourceRef.reference.entityId)
-              ? "parsed"
-              : "registered"
-            : conversion.status === "succeeded"
-              ? "parsed"
-              : "failed";
-        parseStatusCounts.set(parseStatus, (parseStatusCounts.get(parseStatus) ?? 0) + 1);
+      const cleaningMetadata = sourceRefs.flatMap((sourceRef) => {
         const summary = cleaning.get(refKey(sourceRef));
-        const key =
-          summary === undefined ? "not-registered" : `availability:${summary.availability}`;
-        cleaningStatusCounts.set(key, (cleaningStatusCounts.get(key) ?? 0) + 1);
-      }
+        return summary === undefined
+          ? []
+          : [{ source_ref: sourceRef, availability: summary.availability }];
+      });
+      type DashboardData = Extract<RiskDashboardDocumentsSourceResultV1, { kind: "ready" }>["data"];
+      const aggregated = await sql<{ data: DashboardData }>`
+        WITH projected AS (
+          SELECT
+            CASE WHEN conversion.status IS NOT NULL
+              THEN CASE WHEN conversion.status = 'succeeded' THEN 'parsed' ELSE 'failed' END
+              WHEN EXISTS (
+                SELECT 1 FROM business.source_segment_sets segments
+                WHERE segments.project_id = ${valid.projectId}
+                  AND segments.source_version_id = source.ref -> 'reference' ->> 'entityId'
+                  AND jsonb_typeof(segments.source_segment_set_ref -> 'kind') = 'string'
+                  AND length(btrim(segments.source_segment_set_ref -> 'reference' ->> 'entityId')) > 0
+                  AND length(btrim(segments.source_segment_set_ref -> 'reference' ->> 'versionId')) > 0
+              ) THEN 'parsed' ELSE 'registered' END AS parse_status,
+            clean.availability
+          FROM jsonb_array_elements(${JSON.stringify(sourceRefs)}::jsonb) AS source(ref)
+          LEFT JOIN LATERAL (
+            SELECT conversions.status
+            FROM business.structured_document_conversions conversions
+            WHERE conversions.project_id = ${valid.projectId}
+              AND conversions.source_version_ref = source.ref
+            ORDER BY conversions.completed_at DESC
+            LIMIT 1
+          ) conversion ON true
+          LEFT JOIN jsonb_to_recordset(${JSON.stringify(cleaningMetadata)}::jsonb)
+            AS clean(source_ref jsonb, availability text) ON clean.source_ref = source.ref
+        )
+        SELECT jsonb_build_object(
+          'sourceVersionCount', count(*),
+          'parseStatusCounts', COALESCE((
+            SELECT jsonb_agg(jsonb_build_object('parseStatus', parse_status, 'count', count)
+              ORDER BY parse_status)
+            FROM (SELECT parse_status, count(*) AS count FROM projected GROUP BY parse_status) status_counts
+          ), '[]'::jsonb),
+          'cleaningStatusCounts', COALESCE((
+            SELECT jsonb_agg(jsonb_build_object(
+              'status', CASE WHEN availability IS NULL
+                THEN jsonb_build_object('kind', 'not-registered')
+                ELSE jsonb_build_object('kind', 'availability', 'availability', availability) END,
+              'count', count) ORDER BY availability NULLS FIRST)
+            FROM (SELECT availability, count(*) AS count FROM projected GROUP BY availability) status_counts
+          ), '[]'::jsonb)
+        ) AS data FROM projected
+      `.execute(this.#db);
       return RiskDashboardDocumentsSourceResultV1Schema.parse({
         kind: "ready",
         asOf: this.#now().toISOString(),
-        data: {
-          sourceVersionCount: sourceRefs.length,
-          parseStatusCounts: [...parseStatusCounts.entries()].map(([parseStatus, count]) => ({
-            parseStatus,
-            count,
-          })),
-          cleaningStatusCounts: [...cleaningStatusCounts.entries()].map(([key, count]) => ({
-            status:
-              key === "not-registered"
-                ? { kind: "not-registered" as const }
-                : {
-                    kind: "availability" as const,
-                    availability: key.slice("availability:".length) as CleaningAvailabilityV1,
-                  },
-            count,
-          })),
-        },
+        data: aggregated.rows[0]!.data,
       });
     } catch (error) {
       // 授权不符按拒权；未知 DB／I/O 异常按 transient 收口，不折算成权限拒绝（design D-07）。
-      if (error instanceof AccessServiceError) {
+      if (
+        error instanceof AccessServiceError &&
+        error.details.code !== "ACCESS_TRANSIENT_FAILURE" &&
+        error.details.code !== "ACCESS_TERMINAL_FAILURE"
+      ) {
         return { kind: "failed", error: dashboardDenied(valid.queryId) };
       }
       return { kind: "failed", error: dashboardFailed(valid.queryId) };
@@ -704,58 +697,41 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
     try {
       const decision = await this.#verifyDashboard(valid, "engineering-data.monitoring-catalog");
       const covered = await this.#coveredScopeEntityIds(valid.projectId, decision);
-      const seriesRows = await this.#db
-        .selectFrom("business.monitoring_series")
-        .select(["series_id", "current_revision_id"])
-        .where("project_id", "=", valid.projectId)
-        .execute();
-      const revisionRows = await this.#db
-        .selectFrom("business.monitoring_series_revisions")
-        .select(["revision_id", "series_id", "spatial_scope_ref"])
-        .where("project_id", "=", valid.projectId)
-        .execute();
-      const revisionById = new Map(revisionRows.map((row) => [row.revision_id, row] as const));
-      const batchRows = await this.#db
-        .selectFrom("business.monitoring_batches")
-        .select(["series_id"])
-        .where("project_id", "=", valid.projectId)
-        .execute();
-      const snapshotRows = await this.#db
-        .selectFrom("business.monitoring_snapshots")
-        .select(["series_id"])
-        .where("project_id", "=", valid.projectId)
-        .execute();
-      const seriesWithBatch = new Set(batchRows.map((row) => row.series_id));
-      const seriesWithSnapshot = new Set(snapshotRows.map((row) => row.series_id));
-      const visibleSeries: string[] = [];
-      for (const series of seriesRows) {
-        if (series.current_revision_id === null) continue;
-        const revision = revisionById.get(series.current_revision_id);
-        if (revision === undefined) continue;
-        const scopeRef = asVersionedRef(revision.spatial_scope_ref);
-        if (
-          scopeRef !== undefined &&
-          covered !== null &&
-          !covered.has(scopeRef.reference.entityId)
-        ) {
-          continue;
-        }
-        visibleSeries.push(series.series_id);
-      }
-      if (visibleSeries.length > DASHBOARD_SOURCE_GROUP_LIMIT_V1) {
-        return { kind: "failed", error: dashboardBlocked(valid.queryId, "dashboard-group-limit") };
+      const counts = await this.#visibleMonitoringSeries(valid.projectId, covered)
+        .select([
+          sql<string>`count(*)`.as("series_count"),
+          sql<string>`count(*) FILTER (WHERE EXISTS (
+            SELECT 1 FROM business.monitoring_batches b
+            WHERE b.project_id = s.project_id AND b.series_id = s.series_id
+          ))`.as("batch_count"),
+          sql<string>`count(*) FILTER (WHERE EXISTS (
+            SELECT 1 FROM business.monitoring_snapshots snapshot
+            WHERE snapshot.project_id = s.project_id AND snapshot.series_id = s.series_id
+          ))`.as("snapshot_count"),
+        ])
+        .executeTakeFirstOrThrow();
+      const values = [counts.series_count, counts.batch_count, counts.snapshot_count].map(Number);
+      if (values.some((count) => !Number.isSafeInteger(count) || count < 0)) {
+        return {
+          kind: "failed",
+          error: dashboardBlocked(valid.queryId, "dashboard-count-overflow"),
+        };
       }
       return RiskDashboardMonitoringSourceResultV1Schema.parse({
         kind: "ready",
         asOf: this.#now().toISOString(),
         data: {
-          seriesCount: visibleSeries.length,
-          seriesWithBatchCount: visibleSeries.filter((id) => seriesWithBatch.has(id)).length,
-          seriesWithSnapshotCount: visibleSeries.filter((id) => seriesWithSnapshot.has(id)).length,
+          seriesCount: Number(counts.series_count),
+          seriesWithBatchCount: Number(counts.batch_count),
+          seriesWithSnapshotCount: Number(counts.snapshot_count),
         },
       });
     } catch (error) {
-      if (error instanceof AccessServiceError) {
+      if (
+        error instanceof AccessServiceError &&
+        error.details.code !== "ACCESS_TRANSIENT_FAILURE" &&
+        error.details.code !== "ACCESS_TERMINAL_FAILURE"
+      ) {
         return { kind: "failed", error: dashboardDenied(valid.queryId) };
       }
       return { kind: "failed", error: dashboardFailed(valid.queryId) };
@@ -783,10 +759,48 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
       requestedSourceVersionRefs: [],
       requestedAt: request.requestedAt,
     });
-    if (decision.context.actorId !== request.actorId) {
+    if (
+      decision.redacted ||
+      decision.context.projectId !== request.projectId ||
+      decision.context.actorId !== request.actorId ||
+      !decision.context.grantedCapabilities.includes(MODULE_BRANCH_CAPABILITY_V1[branch])
+    ) {
       throw dashboardDeniedError();
     }
     return decision;
+  }
+
+  #visibleSourceVersions(projectId: string, decision: AuthorizationDecisionV1) {
+    const query = this.#db
+      .selectFrom("business.source_versions")
+      .where("project_id", "=", projectId)
+      .where("access_status", "=", "ready");
+    const grants = decision.context.sourceAccessGrantRefs.map((grant) => grant.reference.entityId);
+    return grants.length === 0
+      ? query
+      : query.where(
+          sql<SqlBool>`source_access_grant_ref -> 'reference' ->> 'entityId' = ANY(${grants})`,
+        );
+  }
+
+  #visibleMonitoringSeries(projectId: string, covered: ReadonlySet<string> | null) {
+    const query = this.#db
+      .selectFrom("business.monitoring_series as s")
+      .innerJoin("business.monitoring_series_revisions as r", (join) =>
+        join
+          .onRef("r.project_id", "=", "s.project_id")
+          .onRef("r.series_id", "=", "s.series_id")
+          .onRef("r.revision_id", "=", "s.current_revision_id"),
+      )
+      .where("s.project_id", "=", projectId);
+    return covered === null
+      ? query
+      : query.where(
+          sql<SqlBool>`(
+          r.spatial_scope_ref -> 'reference' ->> 'entityId' IS NULL
+          OR r.spatial_scope_ref -> 'reference' ->> 'entityId' = ANY(${[...covered]})
+        )`,
+        );
   }
 
   /** 授权空间范围的后代闭包；空授权范围表示工程级不受限（与 C09 查询语义一致）。 */
@@ -902,11 +916,8 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
     if (cursor === "invalid") {
       return failed(readDenied(query.queryId, query.kind));
     }
-    const rows = await this.#db
-      .selectFrom("business.source_versions")
+    const rows = await this.#visibleSourceVersions(query.projectId, decision)
       .selectAll()
-      .where("project_id", "=", query.projectId)
-      .where("access_status", "=", "ready")
       .orderBy("recorded_at", "desc")
       .orderBy("source_version_id", "desc")
       .execute();
@@ -1198,11 +1209,9 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
     if (cursor === "invalid") {
       return failed(readDenied(query.queryId, query.kind));
     }
-    const seriesRows = await this.#db
-      .selectFrom("business.monitoring_series")
-      .selectAll()
-      .where("project_id", "=", query.projectId)
-      .orderBy("series_id", "asc")
+    const seriesRows = await this.#visibleMonitoringSeries(query.projectId, covered)
+      .selectAll("s")
+      .orderBy("s.series_id", "asc")
       .execute();
     const revisionRows = await this.#db
       .selectFrom("business.monitoring_series_revisions")

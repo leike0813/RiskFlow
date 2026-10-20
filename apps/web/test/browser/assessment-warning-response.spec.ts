@@ -16,7 +16,7 @@ import { startBusinessBrowserServer } from "./business-server.mjs";
 let server;
 
 test.beforeAll(async () => {
-  server = await startBusinessBrowserServer();
+  server = await startBusinessBrowserServer({ dashboardAcceptance: true });
 }, 600_000);
 
 test.afterAll(async () => {
@@ -1788,6 +1788,27 @@ test("同一定义发布新矩阵后历史落点按两个冻结版本分组", as
     groups: await page.getByRole("img", { name: "P/C 风险矩阵" }).count(),
     domNodes: await page.locator("*").count(),
   });
+  const dashboardResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/queries/projection.dashboard-read"),
+  );
+  await page.goto(`${server.origin}${withProject("/overview")}`);
+  const dashboard = (await (await dashboardResponse).json()).result;
+  const groups = new Map<string, typeof dashboard.summaries.assessments.data.matrixLevelCounts>();
+  for (const entry of dashboard.summaries.assessments.data.matrixLevelCounts) {
+    const key = `${entry.riskMatrixRef.entityId}@${entry.riskMatrixRef.versionId}`;
+    groups.set(key, [...(groups.get(key) ?? []), entry]);
+  }
+  expect(groups.size).toBe(2);
+  for (const [key, levels] of groups) {
+    await page.getByLabel("冻结矩阵版本").selectOption(key);
+    const rows = page.locator(".ov-chart-alt").first().locator("tbody tr");
+    await expect(rows.last()).toContainText(
+      String(levels.reduce((sum, entry) => sum + entry.count, 0)),
+    );
+    for (const entry of levels) {
+      await expect(rows.filter({ hasText: entry.riskLevelId })).toContainText(String(entry.count));
+    }
+  }
 });
 
 /**
@@ -1888,5 +1909,197 @@ test("矩阵等级图例与格子共用同一受控配色", async ({ page }) => 
   for (const cell of cells) {
     if (!cell.fill) continue;
     expect(legend, `格子等级 ${cell.level} 的底色不在图例中`).toContain(cell.fill);
+  }
+});
+
+const nextDashboard = (page) =>
+  page.waitForResponse((response) => response.url().endsWith("/queries/projection.dashboard-read"));
+
+test("总览变化完整续页并直接打开目录首页以外的精确风险版本", async ({ page }) => {
+  await login(page, server.operatorLogin, withProject("/overview"));
+  const firstResponse = nextDashboard(page);
+  await page.reload();
+  let dashboard = (await (await firstResponse).json()).result;
+  const expectedCount = dashboard.summaries.riskRecords.data.recordedVersionCount;
+  const events = [];
+  for (;;) {
+    events.push(...dashboard.timeline.items.filter((event) => event.source === "riskRecords"));
+    if (events.length === expectedCount || dashboard.timeline.nextCursor === undefined) break;
+    const response = nextDashboard(page);
+    await page.getByRole("button", { name: "继续读取更早变化" }).click();
+    dashboard = (await (await response).json()).result;
+  }
+  expect(events).toHaveLength(expectedCount);
+  expect(new Set(events.map((event) => JSON.stringify(event.subjectRef))).size).toBe(expectedCount);
+  const target = server.dashboardRiskRefs[0];
+  const item = page.locator(".timeline li").filter({ hasText: target.reference.entityId });
+  await expect(item).toContainText(target.reference.versionId);
+  let catalogReads = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/queries/risk-identification.record-catalog")) catalogReads += 1;
+  });
+  await item.getByRole("link").click();
+  await expect(page.locator(".rdp-record-id")).toHaveText(target.reference.entityId);
+  await expect(page.locator(".rdp .version-tag").first()).toContainText(target.reference.versionId);
+  expect(catalogReads).toBe(0);
+});
+
+test("总览故障恢复使用原首屏上界，拒权来源不阻断合法续页", async ({ page }) => {
+  server.setDashboardSourceFailure("assessments");
+  try {
+    await login(page, server.operatorLogin, withProject("/overview"));
+    const initial = nextDashboard(page);
+    await page.reload();
+    const partial = (await (await initial).json()).result;
+    expect(partial.timeline.retryCursor).toBeDefined();
+    const late = await server.seedDashboardRisk("after-dashboard-cutoff");
+    server.setDashboardSourceFailure(null);
+    const retried = nextDashboard(page);
+    await page.getByRole("button", { name: "重试本页", exact: true }).click();
+    const response = await retried;
+    expect(response.request().postDataJSON().payload.timelineCursor).toBe(
+      partial.timeline.retryCursor,
+    );
+    const recovered = (await response.json()).result;
+    expect(recovered.timeline.asOf).toBe(partial.timeline.asOf);
+    expect(
+      recovered.timeline.items.map((event) => event.subjectRef.reference.entityId),
+    ).not.toContain(late.reference.entityId);
+    server.setDashboardSourceFailure("assessments", true);
+    const denied = nextDashboard(page);
+    await page.reload();
+    const remaining = (await (await denied).json()).result;
+    expect(remaining.timeline.sources.assessments.error.code).toBe("AUTHORIZATION_DENIED");
+    expect(remaining.timeline.nextCursor).toBeDefined();
+    await expect(page.getByRole("button", { name: "重试本页" })).toHaveCount(0);
+    const continued = nextDashboard(page);
+    await page.getByRole("button", { name: "继续读取更早变化" }).click();
+    const next = (await (await continued).json()).result;
+    expect(next.timeline.items[0]).not.toEqual(remaining.timeline.items[0]);
+  } finally {
+    server.setDashboardSourceFailure(null);
+  }
+});
+
+test("总览接入与待办导航保留工程且零命令，无资料资格时不提供资料入口", async ({ page }) => {
+  await login(page, server.operatorLogin, withProject("/overview"));
+  const commands = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/commands/")) commands.push(request.url());
+  });
+  for (const [name, pathname] of [
+    ["资料目录", "/projects/documents"],
+    ["监测数据", "/projects/monitoring"],
+    ["查看复核队列", "/review-audit"],
+    ["查看预警目录", "/warnings"],
+    ["查看处置任务", "/warnings/tasks"],
+  ]) {
+    await page.getByRole("link", { name, exact: true }).click();
+    await expect.poll(() => new URL(page.url()).pathname).toBe(pathname);
+    expect(new URL(page.url()).searchParams.get("project")).toBe(server.projectId);
+    await page.goBack();
+    await expect(page.locator(".ov-source-grid")).toBeVisible();
+  }
+  expect(commands).toEqual([]);
+  await page.context().clearCookies();
+  await login(page, server.responderLogin, withProject("/overview"));
+  await expect(page.getByRole("button", { name: "资料目录", exact: true })).toBeDisabled();
+  await expect(page.getByRole("link", { name: "资料目录", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "查看处置任务" })).toBeVisible();
+});
+
+test("切工程清除旧修订并丢弃旧总览迟到响应", async ({ page }) => {
+  await login(page, server.operatorLogin, withProject("/overview", { revision: "old-revision" }));
+  let release;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let captured;
+  const capturedResponse = new Promise<void>((resolve) => {
+    captured = resolve;
+  });
+  await page.route("**/queries/projection.dashboard-read", async (route) => {
+    const response = await route.fetch();
+    captured();
+    await gate;
+    await route.fulfill({ response }).catch(() => undefined);
+  });
+  await page.reload();
+  await capturedResponse;
+  await page.getByLabel("工程标识").fill("demo-switched-project");
+  await page.getByRole("button", { name: "确定" }).click();
+  await expectSelectedProject(page, "demo-switched-project");
+  expect(new URL(page.url()).searchParams.has("revision")).toBe(false);
+  release();
+  await expect(page.locator(".ov-event-ref")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "工序风险记录分布" })).toHaveCount(0);
+});
+
+test("两个旧运行地址保全历史修订，独立续页及精确详情不依赖当前上下文", async ({ page }) => {
+  const current = await server.advanceProjectRevision();
+  expect(current.reference.versionId).not.toBe(server.projectRevisionRef.reference.versionId);
+  const history = server.projectRevisionRef.reference;
+  const registered = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/queries/projection.query")) {
+      registered.push(request.postDataJSON().payload.projectRevisionRef);
+    }
+  });
+  await page.route("**/queries/engineering-data.context-read", (route) => route.abort("failed"));
+  server.setDashboardSourceFailure("assessments");
+  try {
+    for (const oldPath of ["/review-audit/runs", "/review/runs"]) {
+      await login(
+        page,
+        server.operatorLogin,
+        withProject(oldPath, {
+          revision: `${server.projectId}@${history.versionId}`,
+        }),
+      );
+      await expect.poll(() => new URL(page.url()).pathname).toBe("/overview");
+      expect(new URL(page.url()).searchParams.get("tab")).toBe("runs");
+      const chainLink = page.locator('a[href*="/assessment/runs/"]').first();
+      await expect(chainLink).toBeVisible();
+      const firstChainHref = await chainLink.getAttribute("href");
+      const firstIdentification = await page
+        .locator('a[href*="/identification/runs/"]')
+        .first()
+        .textContent();
+      const identificationPage = page.waitForResponse((response) =>
+        response.url().endsWith("/queries/risk-identification.run-list"),
+      );
+      await page.getByRole("button", { name: "继续读取识别运行" }).click();
+      const nextIdentification = (await (await identificationPage).json()).result.items[0].runRef;
+      expect(nextIdentification.reference.entityId).not.toBe(firstIdentification);
+      await expect(
+        page.getByRole("link", {
+          name: nextIdentification.reference.entityId,
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expect(chainLink).toHaveAttribute("href", firstChainHref);
+      await page.getByRole("button", { name: "续页", exact: true }).click();
+      await expect(chainLink).not.toHaveAttribute("href", firstChainHref);
+      const nextChainHref = await chainLink.getAttribute("href");
+      const target = new URL(nextChainHref, server.origin);
+      await chainLink.click();
+      await expect(page.locator("h1.page-title")).toHaveText("评估运行");
+      expect(new URL(page.url()).searchParams.get("version")).toBe(
+        target.searchParams.get("version"),
+      );
+      await page.goBack();
+      await expect(chainLink).toHaveAttribute("href", firstChainHref);
+      await page.reload();
+      await expect(chainLink).toHaveAttribute("href", firstChainHref);
+      expect(new URL(page.url()).searchParams.get("revision")).toBe(
+        `${server.projectId}@${history.versionId}`,
+      );
+    }
+    expect(registered.length).toBeGreaterThan(0);
+    expect(
+      registered.every((ref) => JSON.stringify(ref.reference) === JSON.stringify(history)),
+    ).toBe(true);
+  } finally {
+    server.setDashboardSourceFailure(null);
   }
 });

@@ -1574,7 +1574,7 @@ describe("C26 预警与处置任务 PostgreSQL 链", () => {
       expect(result.kind).toBe("ready");
       if (result.kind !== "ready") return;
 
-      expect(result.asOf).toBe("2034-12-31T00:00:00.000000Z");
+      expect(result.asOf).toBe(C26_FIXTURE_TIME);
       expect(result.data).toEqual({
         openTaskCount: facts.openTaskCount,
         openTaskWarningCount: facts.openTaskWarningCount,

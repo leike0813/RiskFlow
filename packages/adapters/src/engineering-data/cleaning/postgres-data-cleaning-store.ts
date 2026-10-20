@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { sql, type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction, type RawBuilder } from "kysely";
 
 import type {
   AgentTaskRefV1,
@@ -71,6 +71,7 @@ import {
   CleaningPreparationManifestV1Schema,
   DataCleaningAvailabilityV1Schema,
   DataCleaningCandidateV1Schema,
+  DataCleaningExclusionDecisionV1Schema,
   DataCleaningFrozenInputV1Schema,
   DataCleaningPolicySchema,
   DataCleaningResultV1Schema,
@@ -109,6 +110,11 @@ import { getPostgresTransaction } from "../../postgres/transaction-unit.js";
 import { makePersistenceError } from "../../postgres/pool.js";
 import type { PostgresDatabase } from "../../postgres/types.js";
 import type { PostgresMonitoringStoreV1 } from "../monitoring/postgres-monitoring-store.js";
+import type {
+  EngineeringWorkspaceReadPositionV1,
+  EngineeringWorkspaceReadSubjectV1,
+} from "@riskflow/contracts/engineering-workspace";
+import type { WorkspaceVisibilityV1 } from "../../auth/postgres-local-identity-access.js";
 
 const SCHEMA_VERSION = "1" as const;
 const RESULT_COMMAND_KIND = "engineering-data.data-cleaning-result.v1";
@@ -522,6 +528,52 @@ export interface DataCleaningResultForSubjectV1 {
   readonly input: DataCleaningInputStatusV1;
 }
 
+export interface DataCleaningPreparationForSubjectV1 {
+  readonly preparationRef: IdentificationPreparationSnapshotRefV1;
+  readonly recordedAt: string;
+}
+
+interface WorkspaceCleaningPageV1 {
+  readonly projectId: string;
+  readonly subject: EngineeringWorkspaceReadSubjectV1;
+  readonly limit: number;
+  readonly after?: EngineeringWorkspaceReadPositionV1;
+  readonly visibility: WorkspaceVisibilityV1;
+}
+
+const cleaningSubjectPredicate = (
+  projectId: string,
+  subject: EngineeringWorkspaceReadSubjectV1,
+  inputs: RawBuilder<unknown>,
+): RawBuilder<boolean> =>
+  subject.kind === "source-version"
+    ? sql<boolean>`EXISTS (SELECT 1 FROM jsonb_array_elements(${inputs}) AS input WHERE input->'sourceVersionRef' = ${JSON.stringify(subject)}::jsonb)`
+    : sql<boolean>`EXISTS (SELECT 1 FROM jsonb_array_elements(${inputs}) AS input
+        JOIN business.monitoring_snapshots AS snapshot ON snapshot.project_id = ${projectId}
+          AND snapshot.monitoring_snapshot_ref = input->'monitoringSnapshotRef'
+        WHERE snapshot.monitoring_series_ref = ${JSON.stringify(subject)}::jsonb)`;
+
+/** 快照的来源和空间由已登记快照恢复；缺失登记不能当作空来源。 */
+const cleaningVisibility = (
+  projectId: string,
+  payload: RawBuilder<unknown>,
+  sources: RawBuilder<unknown>,
+  visibility: WorkspaceVisibilityV1,
+): RawBuilder<boolean> => sql<boolean>`
+  (${payload}->'monitoringSnapshotRef' IS NULL OR EXISTS (
+    SELECT 1 FROM business.monitoring_snapshots AS snapshot WHERE snapshot.project_id = ${projectId}
+      AND snapshot.monitoring_snapshot_ref = ${payload}->'monitoringSnapshotRef'))
+  AND ${visibility(
+    sql`(${sources}) || COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', 'source-version', 'reference', evidence->'sourceVersion'))
+    FROM business.monitoring_snapshots AS snapshot, jsonb_array_elements(snapshot.evidence_references) AS evidence
+    WHERE snapshot.project_id = ${projectId} AND snapshot.monitoring_snapshot_ref = ${payload}->'monitoringSnapshotRef'), '[]'::jsonb)`,
+    sql`(${payload}->'spatialScopeRefs') || COALESCE((SELECT snapshot.authorization_snapshot->'spatialScopeRefs'
+      FROM business.monitoring_snapshots AS snapshot WHERE snapshot.project_id = ${projectId}
+        AND snapshot.monitoring_snapshot_ref = ${payload}->'monitoringSnapshotRef'), '[]'::jsonb)`,
+  )}`;
+
+const cleaningResultSources = sql`COALESCE((SELECT jsonb_agg(input->'sourceVersionRef') FROM jsonb_array_elements(result_payload->'inputs') AS input WHERE input ? 'sourceVersionRef'), '[]'::jsonb)`;
+
 const sameRef = (
   left:
     { readonly reference: { readonly entityId: string; readonly versionId: string } } | undefined,
@@ -530,30 +582,6 @@ const sameRef = (
   left !== undefined &&
   left.reference.entityId === right.reference.entityId &&
   left.reference.versionId === right.reference.versionId;
-
-const inputMatchesSubject = (
-  input: DataCleaningInputStatusV1,
-  subject:
-    | { readonly sourceVersionRef: SourceVersionRefV1 }
-    | { readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[] },
-): boolean => {
-  if ("sourceVersionRef" in subject) {
-    return sameRef(input.sourceVersionRef, subject.sourceVersionRef);
-  }
-  return subject.monitoringSnapshotRefs.some((ref) => sameRef(input.monitoringSnapshotRef, ref));
-};
-
-const exclusionMatchesSubject = (
-  decision: DataCleaningExclusionDecisionV1,
-  subject:
-    | { readonly sourceVersionRef: SourceVersionRefV1 }
-    | { readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[] },
-): boolean => {
-  if ("sourceVersionRef" in subject) {
-    return sameRef(decision.sourceVersionRef, subject.sourceVersionRef);
-  }
-  return subject.monitoringSnapshotRefs.some((ref) => sameRef(decision.monitoringSnapshotRef, ref));
-};
 
 export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
   readonly #db: Kysely<CleaningDatabase>;
@@ -2159,97 +2187,46 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
     return { kind: "ok", result, resultArtifactRef };
   }
 
-  /**
-   * 按来源精确版本筛选正式清洗结果（design D-06）。
-   *
-   * 直接消费 `data_cleaning_results` 已登记结果，不依赖准备快照是否存在；
-   * 多来源派生结果按其全部输入登记的事实返回，披露范围由调用方按当前权限交集决定。
-   */
-  async listResultsForSource(input: {
-    readonly projectId: string;
-    readonly sourceVersionRef: SourceVersionRefV1;
-    readonly limit: number;
-  }): Promise<readonly DataCleaningResultForSubjectV1[]> {
-    return this.#listResultsForSubject(
-      input.projectId,
-      { sourceVersionRef: input.sourceVersionRef },
-      input.limit,
-    );
-  }
-
-  /**
-   * 按监测快照集合筛选正式清洗结果（design D-06）。
-   *
-   * 监测 subject 的清洗关联先由所属 store 列出该序列的有界快照关系，
-   * 再据此匹配原结果；不把来源标识当作快照标识。
-   */
-  async listResultsForMonitoringSnapshots(input: {
-    readonly projectId: string;
-    readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[];
-    readonly limit: number;
-  }): Promise<readonly DataCleaningResultForSubjectV1[]> {
-    if (input.monitoringSnapshotRefs.length === 0) return [];
-    return this.#listResultsForSubject(
-      input.projectId,
-      { monitoringSnapshotRefs: input.monitoringSnapshotRefs },
-      input.limit,
-    );
-  }
-
-  /**
-   * 正式结果的排除项（design D-06）。
-   *
-   * 只返回属于该 subject 的判定，不返回整份结果正文或其它来源的条目。
-   */
-  async readResultExclusions(input: {
-    readonly projectId: string;
-    readonly resultRef: RouteDecisionRefV1;
-    readonly subject:
-      | { readonly sourceVersionRef: SourceVersionRefV1 }
-      | { readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[] };
-  }): Promise<readonly DataCleaningExclusionDecisionV1[]> {
-    const row = await this.#db
+  /** 正式结果按精确 subject 关联；可见性、稳定排序和游标均先于 LIMIT。 */
+  async listResultsForSubject(
+    input: WorkspaceCleaningPageV1,
+  ): Promise<readonly DataCleaningResultForSubjectV1[]> {
+    let query = this.#db
       .selectFrom("business.data_cleaning_results")
       .selectAll()
       .where("project_id", "=", input.projectId)
-      .where("result_id", "=", input.resultRef.reference.entityId)
-      .where("version_id", "=", input.resultRef.reference.versionId)
-      .executeTakeFirst();
-    if (row === undefined) return [];
-    const result = DataCleaningResultV1Schema.parse(row.result_payload);
-    return result.exclusions.filter((decision) => exclusionMatchesSubject(decision, input.subject));
-  }
-
-  async #listResultsForSubject(
-    projectId: string,
-    subject:
-      | { readonly sourceVersionRef: SourceVersionRefV1 }
-      | { readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[] },
-    limit: number,
-  ): Promise<readonly DataCleaningResultForSubjectV1[]> {
-    const probes =
-      "sourceVersionRef" in subject
-        ? [{ sourceVersionRef: subject.sourceVersionRef }]
-        : subject.monitoringSnapshotRefs.map((monitoringSnapshotRef) => ({
-            monitoringSnapshotRef,
-          }));
-    const rows = await this.#db
-      .selectFrom("business.data_cleaning_results")
-      .selectAll()
-      .where("project_id", "=", projectId)
       .where(
-        sql<boolean>`EXISTS (SELECT 1 FROM jsonb_array_elements(result_payload->'inputs') AS input WHERE ${sql.join(
-          probes.map((probe) => sql`input @> ${JSON.stringify(probe)}::jsonb`),
-          sql` OR `,
-        )})`,
+        cleaningSubjectPredicate(input.projectId, input.subject, sql`result_payload->'inputs'`),
       )
-      .limit(limit)
+      .where(
+        cleaningVisibility(
+          input.projectId,
+          sql`result_payload`,
+          cleaningResultSources,
+          input.visibility,
+        ),
+      );
+    const after = input.after;
+    if (after !== undefined)
+      query =
+        query.where(sql<boolean>`(result_payload->>'formedAt')::timestamptz < ${after.recordedAt}::timestamptz OR
+      ((result_payload->>'formedAt')::timestamptz = ${after.recordedAt}::timestamptz AND
+        ((result_id COLLATE "C", version_id COLLATE "C") > (${after.entityId} COLLATE "C", ${after.versionId} COLLATE "C") OR
+          (result_id = ${after.entityId} AND version_id = ${after.versionId} AND ${"cleaning" > after.stage})))`);
+    const rows = await query
+      .orderBy(sql`(result_payload->>'formedAt')::timestamptz`, "desc")
+      .orderBy(sql`result_id COLLATE "C"`)
+      .orderBy(sql`version_id COLLATE "C"`)
+      .limit(input.limit)
       .execute();
     const results: DataCleaningResultForSubjectV1[] = [];
     for (const row of rows) {
       const result = DataCleaningResultV1Schema.parse(row.result_payload);
-      const input = result.inputs.find((item) => inputMatchesSubject(item, subject));
-      if (input === undefined) continue;
+      const selected =
+        input.subject.kind === "source-version"
+          ? result.inputs.find((item) => sameRef(item.sourceVersionRef, input.subject))
+          : result.inputs.find((item) => item.monitoringSnapshotRef !== undefined);
+      if (selected === undefined) continue;
       results.push({
         resultRef: RouteDecisionRefV1Schema.parse({
           kind: "route-decision",
@@ -2257,16 +2234,86 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
         }),
         policyRef: result.policyRef,
         recordedAt: result.formedAt,
-        input,
+        input: selected,
       });
     }
-    return results.sort((left, right) => {
-      const byTime = right.recordedAt.localeCompare(left.recordedAt);
-      if (byTime !== 0) return byTime;
-      return `${left.resultRef.reference.entityId}/${left.resultRef.reference.versionId}`.localeCompare(
-        `${right.resultRef.reference.entityId}/${right.resultRef.reference.versionId}`,
+    return results;
+  }
+
+  /** 已登记识别准备的精确引用，不从正式结果推测准备已发生。 */
+  async listPreparationsForSubject(
+    input: WorkspaceCleaningPageV1,
+  ): Promise<readonly DataCleaningPreparationForSubjectV1[]> {
+    const inputs = sql`COALESCE((SELECT jsonb_agg(jsonb_build_object('sourceVersionRef', source))
+      FROM jsonb_array_elements(snapshot_payload->'sourceVersionRefs') AS source), '[]'::jsonb)
+      || CASE WHEN snapshot_payload ? 'monitoringSnapshotRef' THEN jsonb_build_array(jsonb_build_object('monitoringSnapshotRef', snapshot_payload->'monitoringSnapshotRef')) ELSE '[]'::jsonb END`;
+    let query = this.#db
+      .selectFrom("business.identification_preparation_snapshots")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where(cleaningSubjectPredicate(input.projectId, input.subject, inputs))
+      .where(
+        cleaningVisibility(
+          input.projectId,
+          sql`snapshot_payload`,
+          sql`snapshot_payload->'sourceVersionRefs'`,
+          input.visibility,
+        ),
       );
-    });
+    const after = input.after;
+    if (after !== undefined)
+      query =
+        query.where(sql<boolean>`(snapshot_payload->>'createdAt')::timestamptz < ${after.recordedAt}::timestamptz OR
+      ((snapshot_payload->>'createdAt')::timestamptz = ${after.recordedAt}::timestamptz AND
+        ((snapshot_id COLLATE "C", version_id COLLATE "C") > (${after.entityId} COLLATE "C", ${after.versionId} COLLATE "C") OR
+          (snapshot_id = ${after.entityId} AND version_id = ${after.versionId} AND ${"preparation" > after.stage})))`);
+    const rows = await query
+      .orderBy(sql`(snapshot_payload->>'createdAt')::timestamptz`, "desc")
+      .orderBy(sql`snapshot_id COLLATE "C"`)
+      .orderBy(sql`version_id COLLATE "C"`)
+      .limit(input.limit)
+      .execute();
+    return rows.map((row) => ({
+      preparationRef: IdentificationPreparationSnapshotRefV1Schema.parse(row.snapshot_ref),
+      recordedAt: IdentificationPreparationSnapshotV1Schema.parse(row.snapshot_payload).createdAt,
+    }));
+  }
+
+  /** 单个结果的归属和全部输入权限必须在展开排除项前成立。 */
+  async readResultExclusions(
+    input: Omit<WorkspaceCleaningPageV1, "after"> & {
+      readonly resultRef: RouteDecisionRefV1;
+      readonly afterDecisionId?: string;
+    },
+  ): Promise<readonly DataCleaningExclusionDecisionV1[] | undefined> {
+    const result = await this.#db
+      .selectFrom("business.data_cleaning_results")
+      .select("result_id")
+      .where("project_id", "=", input.projectId)
+      .where("result_id", "=", input.resultRef.reference.entityId)
+      .where("version_id", "=", input.resultRef.reference.versionId)
+      .where(
+        cleaningSubjectPredicate(input.projectId, input.subject, sql`result_payload->'inputs'`),
+      )
+      .where(
+        cleaningVisibility(
+          input.projectId,
+          sql`result_payload`,
+          cleaningResultSources,
+          input.visibility,
+        ),
+      )
+      .executeTakeFirst();
+    if (result === undefined) return undefined;
+    const rows = await sql<{
+      decision: unknown;
+    }>`SELECT decision FROM business.data_cleaning_results,
+      jsonb_array_elements(result_payload->'exclusions') AS decision
+      WHERE project_id = ${input.projectId} AND result_id = ${input.resultRef.reference.entityId} AND version_id = ${input.resultRef.reference.versionId}
+        AND ${cleaningSubjectPredicate(input.projectId, input.subject, sql`jsonb_build_array(decision)`)}
+        ${input.afterDecisionId === undefined ? sql`` : sql`AND decision->>'decisionId' COLLATE "C" > ${input.afterDecisionId} COLLATE "C"`}
+      ORDER BY decision->>'decisionId' COLLATE "C" LIMIT ${input.limit}`.execute(this.#db);
+    return rows.rows.map((row) => DataCleaningExclusionDecisionV1Schema.parse(row.decision));
   }
 
   async #persistResultIndex(

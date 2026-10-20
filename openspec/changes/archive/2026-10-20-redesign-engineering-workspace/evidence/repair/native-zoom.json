@@ -1,0 +1,281 @@
+{
+  "change": "redesign-engineering-workspace",
+  "date": "2026-10-20",
+  "qualification": "合成样本，待甲方复核",
+  "projectId": "demo-c32-project",
+  "projectRevisionRef": {
+    "kind": "project-revision",
+    "reference": {
+      "entityId": "demo-c32-project",
+      "versionId": "1"
+    }
+  },
+  "sourceVersionRefs": [
+    {
+      "entityId": "s_8c79d2bf12558fa45b039bb369a6eaf2",
+      "versionId": "1"
+    },
+    {
+      "entityId": "s_9a4f0e0c0545731e69422cc73319f96e",
+      "versionId": "1"
+    }
+  ],
+  "browser": "153.0.8010.12",
+  "method": {
+    "window": "CDP Browser.setWindowBounds 设置真实浏览器外窗口；未设置模拟 viewport",
+    "zoom": "xdotool 向 Chromium 原生窗口发送 Ctrl+0 与五次 Ctrl+plus；未使用 CSS zoom 或 deviceScaleFactor 模拟",
+    "screenshot": "CDP Page.captureScreenshot 不传 CSS clip，保存真实原生缩放下的完整可视区域",
+    "checks": "实际折叠左栏与右栏、填写工程上下文表单、打开已有确认、取消与焦点恢复；有二维溢出时实际改变 scrollLeft",
+    "requestBoundary": "每组合拦截一次写请求作为传输失败，不向服务端提交业务命令",
+    "transport": "浏览器访问真实 HTTPS loopback（自签证书仅忽略信任）；Secure/SameSite Cookie 与业务请求未经伪 scheme 或忽略语义处理",
+    "display": "需要至少 2560x1440 的专用 Xvfb；外窗口尺寸由 CDP 设置并严格断言，显示不足会失败而不是裁剪后计为通过"
+  },
+  "results": [
+    {
+      "width": 1280,
+      "height": 720,
+      "zoom": 100,
+      "outer": [
+        1280,
+        720
+      ],
+      "inner": [
+        1280,
+        632
+      ],
+      "dpr": 1,
+      "overflow": false,
+      "scrolled": false,
+      "localVerticalScroll": true,
+      "pageOverflow": false,
+      "navCollapsible": true,
+      "navigationSurvivesCollapse": true,
+      "dockOpened": true,
+      "navigationFocus": true,
+      "confirmFocusAtCancel": true,
+      "cancelled": true,
+      "focusRestored": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "failedRequests": 1,
+      "workspaceRegionsVisible": true,
+      "workspaceFocusable": true,
+      "overviewOverflow": {
+        "overflow": false,
+        "scrolled": false,
+        "localVerticalScroll": true,
+        "pageOverflow": false
+      },
+      "screenshots": [
+        "native-zoom/ch4-1280x720-100-layout.png",
+        "native-zoom/ch4-1280x720-100-error.png",
+        "native-zoom/ch4-1280x720-100-overview.png"
+      ]
+    },
+    {
+      "width": 1280,
+      "height": 720,
+      "zoom": 200,
+      "outer": [
+        1280,
+        720
+      ],
+      "inner": [
+        640,
+        316
+      ],
+      "dpr": 2,
+      "overflow": false,
+      "scrolled": false,
+      "localVerticalScroll": true,
+      "pageOverflow": false,
+      "navCollapsible": true,
+      "navigationSurvivesCollapse": true,
+      "dockOpened": true,
+      "navigationFocus": true,
+      "confirmFocusAtCancel": true,
+      "cancelled": true,
+      "focusRestored": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "failedRequests": 1,
+      "workspaceRegionsVisible": true,
+      "workspaceFocusable": true,
+      "overviewOverflow": {
+        "overflow": true,
+        "scrolled": true,
+        "localVerticalScroll": true,
+        "pageOverflow": false
+      },
+      "screenshots": [
+        "native-zoom/ch4-1280x720-200-layout.png",
+        "native-zoom/ch4-1280x720-200-error.png",
+        "native-zoom/ch4-1280x720-200-overview.png"
+      ]
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "zoom": 100,
+      "outer": [
+        1440,
+        900
+      ],
+      "inner": [
+        1440,
+        812
+      ],
+      "dpr": 1,
+      "overflow": false,
+      "scrolled": false,
+      "localVerticalScroll": true,
+      "pageOverflow": false,
+      "navCollapsible": true,
+      "navigationSurvivesCollapse": true,
+      "dockOpened": true,
+      "navigationFocus": true,
+      "confirmFocusAtCancel": true,
+      "cancelled": true,
+      "focusRestored": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "failedRequests": 1,
+      "workspaceRegionsVisible": true,
+      "workspaceFocusable": true,
+      "overviewOverflow": {
+        "overflow": false,
+        "scrolled": false,
+        "localVerticalScroll": true,
+        "pageOverflow": false
+      },
+      "screenshots": [
+        "native-zoom/ch4-1440x900-100-layout.png",
+        "native-zoom/ch4-1440x900-100-error.png",
+        "native-zoom/ch4-1440x900-100-overview.png"
+      ]
+    },
+    {
+      "width": 1440,
+      "height": 900,
+      "zoom": 200,
+      "outer": [
+        1440,
+        900
+      ],
+      "inner": [
+        720,
+        406
+      ],
+      "dpr": 2,
+      "overflow": false,
+      "scrolled": false,
+      "localVerticalScroll": true,
+      "pageOverflow": false,
+      "navCollapsible": true,
+      "navigationSurvivesCollapse": true,
+      "dockOpened": true,
+      "navigationFocus": true,
+      "confirmFocusAtCancel": true,
+      "cancelled": true,
+      "focusRestored": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "failedRequests": 1,
+      "workspaceRegionsVisible": true,
+      "workspaceFocusable": true,
+      "overviewOverflow": {
+        "overflow": true,
+        "scrolled": true,
+        "localVerticalScroll": true,
+        "pageOverflow": false
+      },
+      "screenshots": [
+        "native-zoom/ch4-1440x900-200-layout.png",
+        "native-zoom/ch4-1440x900-200-error.png",
+        "native-zoom/ch4-1440x900-200-overview.png"
+      ]
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "zoom": 100,
+      "outer": [
+        1920,
+        1080
+      ],
+      "inner": [
+        1920,
+        992
+      ],
+      "dpr": 1,
+      "overflow": false,
+      "scrolled": false,
+      "localVerticalScroll": true,
+      "pageOverflow": false,
+      "navCollapsible": true,
+      "navigationSurvivesCollapse": true,
+      "dockOpened": true,
+      "navigationFocus": true,
+      "confirmFocusAtCancel": true,
+      "cancelled": true,
+      "focusRestored": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "failedRequests": 1,
+      "workspaceRegionsVisible": true,
+      "workspaceFocusable": true,
+      "overviewOverflow": {
+        "overflow": false,
+        "scrolled": false,
+        "localVerticalScroll": true,
+        "pageOverflow": false
+      },
+      "screenshots": [
+        "native-zoom/ch4-1920x1080-100-layout.png",
+        "native-zoom/ch4-1920x1080-100-error.png",
+        "native-zoom/ch4-1920x1080-100-overview.png"
+      ]
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "zoom": 200,
+      "outer": [
+        1920,
+        1080
+      ],
+      "inner": [
+        960,
+        496
+      ],
+      "dpr": 2,
+      "overflow": false,
+      "scrolled": false,
+      "localVerticalScroll": true,
+      "pageOverflow": false,
+      "navCollapsible": true,
+      "navigationSurvivesCollapse": true,
+      "dockOpened": true,
+      "navigationFocus": true,
+      "confirmFocusAtCancel": true,
+      "cancelled": true,
+      "focusRestored": true,
+      "errorVisible": true,
+      "errorColor": "rgb(180, 35, 24)",
+      "failedRequests": 1,
+      "workspaceRegionsVisible": true,
+      "workspaceFocusable": true,
+      "overviewOverflow": {
+        "overflow": false,
+        "scrolled": false,
+        "localVerticalScroll": true,
+        "pageOverflow": false
+      },
+      "screenshots": [
+        "native-zoom/ch4-1920x1080-200-layout.png",
+        "native-zoom/ch4-1920x1080-200-error.png",
+        "native-zoom/ch4-1920x1080-200-overview.png"
+      ]
+    }
+  ]
+}

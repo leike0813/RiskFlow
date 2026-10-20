@@ -15,6 +15,8 @@ import {
   SourceVisibilityV1Schema,
 } from "../vocabulary/index.js";
 import {
+  CleaningAvailabilityV1Schema,
+  IdentificationPreparationSnapshotRefV1Schema,
   DiagnosticArtifactRefV1Schema,
   MonitoringBatchCatalogItemV1Schema,
   MonitoringBatchRefV1Schema,
@@ -262,6 +264,7 @@ export const ENGINEERING_WORKSPACE_INGESTION_STAGE_V1_VALUES = [
   "conversion",
   "segments",
   "cleaning",
+  "preparation",
   "monitoring-batch",
   "monitoring-snapshot",
 ] as const;
@@ -271,6 +274,14 @@ export const EngineeringWorkspaceIngestionStageV1Schema = z.enum(
 export type EngineeringWorkspaceIngestionStageV1 = z.infer<
   typeof EngineeringWorkspaceIngestionStageV1Schema
 >;
+
+/** 所属窄读的有界排序位置；浏览器只传输由服务端编码的不透明游标。 */
+export interface EngineeringWorkspaceReadPositionV1 {
+  readonly recordedAt: string;
+  readonly entityId: string;
+  readonly versionId: string;
+  readonly stage: EngineeringWorkspaceIngestionStageV1;
+}
 
 export const EngineeringWorkspaceIngestionItemV1Schema = z.discriminatedUnion("stage", [
   z.strictObject({
@@ -292,13 +303,19 @@ export const EngineeringWorkspaceIngestionItemV1Schema = z.discriminatedUnion("s
     segmentCount: z.number().int().nonnegative(),
   }),
   z.strictObject({
+    stage: z.literal("preparation"),
+    recordRef: IdentificationPreparationSnapshotRefV1Schema,
+    recordedAt: IsoDateTimeSchema,
+    preparationRef: IdentificationPreparationSnapshotRefV1Schema,
+  }),
+  z.strictObject({
     stage: z.literal("cleaning"),
     recordRef: RouteDecisionRefV1Schema,
     recordedAt: IsoDateTimeSchema,
     resultRef: RouteDecisionRefV1Schema,
     policyRef: VersionReferenceSchema,
-    availability: z.enum(["available", "partial", "unavailable"]),
-    baselineAvailability: z.enum(["available", "partial", "unavailable"]),
+    availability: CleaningAvailabilityV1Schema,
+    baselineAvailability: CleaningAvailabilityV1Schema,
     totalCount: z.number().int().nonnegative(),
     retainedCount: z.number().int().nonnegative(),
     retainedRatio: z.number().finite().min(0).max(1),

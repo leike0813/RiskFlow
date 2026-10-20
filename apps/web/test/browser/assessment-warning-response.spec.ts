@@ -9,6 +9,7 @@
  * C27→C28→C29→C41→C26 只读端口启动；任何一步失败都计为失败，不 skip。
  */
 import { expect, test } from "@playwright/test";
+import { RiskDashboardReadSuccessV1Schema } from "@riskflow/contracts/ports";
 
 import { startBusinessBrowserServer } from "./business-server.mjs";
 
@@ -1912,14 +1913,34 @@ test("矩阵等级图例与格子共用同一受控配色", async ({ page }) => 
   }
 });
 
-const nextDashboard = (page) =>
-  page.waitForResponse((response) => response.url().endsWith("/queries/projection.dashboard-read"));
+/**
+ * 捕获下一次总览读响应，并在响应到达时立刻开始读取正文（W-03）。
+ *
+ * 调用方常在等待响应后立刻 `page.reload()`：Chromium 会在导航时释放旧文档的响应正文，
+ * 等导航完成再调 `response.json()` 会得到 Network.getResponseBody 错误。这里在
+ * `waitForResponse` 的谓词里同步启动取正文，返回值同时给出响应与已解析的 result。
+ */
+const dashboardResult = (body: unknown) => {
+  if (typeof body !== "object" || body === null || !("result" in body))
+    throw new Error("dashboard response body has no result");
+  return RiskDashboardReadSuccessV1Schema.parse(body.result);
+};
+const nextDashboard = (page) => {
+  let body: Promise<unknown> | undefined;
+  return page
+    .waitForResponse((response) => {
+      if (!response.url().endsWith("/queries/projection.dashboard-read")) return false;
+      body = response.json();
+      return true;
+    })
+    .then(async (response) => ({ response, result: dashboardResult(await body) }));
+};
 
 test("总览变化完整续页并直接打开目录首页以外的精确风险版本", async ({ page }) => {
   await login(page, server.operatorLogin, withProject("/overview"));
   const firstResponse = nextDashboard(page);
   await page.reload();
-  let dashboard = (await (await firstResponse).json()).result;
+  let dashboard = (await firstResponse).result;
   const expectedCount = dashboard.summaries.riskRecords.data.recordedVersionCount;
   const events = [];
   for (;;) {
@@ -1927,7 +1948,7 @@ test("总览变化完整续页并直接打开目录首页以外的精确风险�
     if (events.length === expectedCount || dashboard.timeline.nextCursor === undefined) break;
     const response = nextDashboard(page);
     await page.getByRole("button", { name: "继续读取更早变化" }).click();
-    dashboard = (await (await response).json()).result;
+    dashboard = (await response).result;
   }
   expect(events).toHaveLength(expectedCount);
   expect(new Set(events.map((event) => JSON.stringify(event.subjectRef))).size).toBe(expectedCount);
@@ -1950,17 +1971,16 @@ test("总览故障恢复使用原首屏上界，拒权来源不阻断合法续�
     await login(page, server.operatorLogin, withProject("/overview"));
     const initial = nextDashboard(page);
     await page.reload();
-    const partial = (await (await initial).json()).result;
+    const partial = (await initial).result;
     expect(partial.timeline.retryCursor).toBeDefined();
     const late = await server.seedDashboardRisk("after-dashboard-cutoff");
     server.setDashboardSourceFailure(null);
     const retried = nextDashboard(page);
     await page.getByRole("button", { name: "重试本页", exact: true }).click();
-    const response = await retried;
+    const { response, result: recovered } = await retried;
     expect(response.request().postDataJSON().payload.timelineCursor).toBe(
       partial.timeline.retryCursor,
     );
-    const recovered = (await response.json()).result;
     expect(recovered.timeline.asOf).toBe(partial.timeline.asOf);
     expect(
       recovered.timeline.items.map((event) => event.subjectRef.reference.entityId),
@@ -1968,13 +1988,13 @@ test("总览故障恢复使用原首屏上界，拒权来源不阻断合法续�
     server.setDashboardSourceFailure("assessments", true);
     const denied = nextDashboard(page);
     await page.reload();
-    const remaining = (await (await denied).json()).result;
+    const remaining = (await denied).result;
     expect(remaining.timeline.sources.assessments.error.code).toBe("AUTHORIZATION_DENIED");
     expect(remaining.timeline.nextCursor).toBeDefined();
     await expect(page.getByRole("button", { name: "重试本页" })).toHaveCount(0);
     const continued = nextDashboard(page);
     await page.getByRole("button", { name: "继续读取更早变化" }).click();
-    const next = (await (await continued).json()).result;
+    const next = (await continued).result;
     expect(next.timeline.items[0]).not.toEqual(remaining.timeline.items[0]);
   } finally {
     server.setDashboardSourceFailure(null);

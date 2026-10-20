@@ -80,8 +80,8 @@ describe("C11/C12 工程工作区窄读适配器", () => {
         readFailureSummary: async () => undefined,
       },
       cleaning: {
-        listResultsForSource: async () => [],
-        listResultsForMonitoringSnapshots: async () => [],
+        listResultsForSubject: async () => [],
+        listPreparationsForSubject: async () => [],
         readResultExclusions: async () => [],
       },
       monitoring: fixture.monitoringStore,
@@ -180,6 +180,96 @@ describe("C11/C12 工程工作区窄读适配器", () => {
     expect(stillCurrent.kind).toBe("succeeded");
     if (stillCurrent.kind !== "succeeded" || stillCurrent.result.kind !== "context") return;
     expect(stillCurrent.result.project?.name).toBe("一号工程（更新）");
+  });
+
+  it.each([
+    {
+      projectRevisionRef: {
+        kind: "project-revision",
+        reference: { entityId: "another-project", versionId: "1" },
+      },
+    },
+    {
+      projectRevisionRef: {
+        kind: "project-revision",
+        reference: { entityId: projectId, versionId: "missing" },
+      },
+    },
+    { scopeId: "another-project-scope" },
+  ])("拒绝不存在或错工程的上下文精确目标 %j", async (payload) => {
+    const result = await readContext(payload);
+    expect(result).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+  });
+
+  it("空间业务版本与授权版本分离后仍可连续追加并读取历史", async () => {
+    const directory = await fixture.access.projectWorkspaceAccess.read({
+      sessionToken: managerSessionToken,
+      payload: {
+        kind: "spatial-scopes",
+        projectId,
+        queryId: "workspace-spatial-directory",
+        requestedAt: now,
+        pageSize: 50,
+      },
+    });
+    if (directory.kind !== "succeeded" || directory.result.kind !== "spatial-scopes")
+      throw new Error("fixture scope unavailable");
+    const scopeId = directory.result.items[0]!.scopeRef.entityId;
+    const project = await readContext({});
+    if (
+      project.kind !== "succeeded" ||
+      project.result.kind !== "context" ||
+      project.result.project === null
+    )
+      throw new Error("fixture project unavailable");
+    const payload = {
+      kind: "spatial" as const,
+      spatialScopeRef: {
+        kind: "spatial-scope" as const,
+        reference: { entityId: scopeId, versionId: "1" },
+      },
+      projectRevisionRef: project.result.project.projectRevisionRef,
+      expectedVersion: "none" as const,
+      name: "一号区段",
+      worksiteLocation: "合成工点",
+      applicabilityOverrides: {},
+      status: "active" as const,
+      effectivePeriod: { validFrom: now },
+    };
+    const first = await workspace.revise({
+      commandId: "workspace-spatial-1",
+      idempotencyKey: "workspace-spatial-1",
+      issuedAt: now,
+      sessionToken: managerSessionToken,
+      projectId,
+      payload,
+    });
+    expect(first.kind).toBe("succeeded");
+    if (first.kind !== "succeeded" || first.result.kind !== "spatial-revision") return;
+    const firstRef = first.result.revision.spatialScopeRef;
+    const second = await workspace.revise({
+      commandId: "workspace-spatial-2",
+      idempotencyKey: "workspace-spatial-2",
+      issuedAt: now,
+      sessionToken: managerSessionToken,
+      projectId,
+      payload: {
+        ...payload,
+        spatialScopeRef: firstRef,
+        expectedVersion: firstRef.reference,
+        name: "一号区段第二修订",
+      },
+    });
+    expect(second.kind).toBe("succeeded");
+    const current = await readContext({ scopeId });
+    expect(current).toMatchObject({
+      kind: "succeeded",
+      result: { spatial: { name: "一号区段第二修订" } },
+    });
+    expect(await readContext({ spatialScopeRef: firstRef })).toMatchObject({
+      kind: "succeeded",
+      result: { spatial: { name: "一号区段" } },
+    });
   });
 
   it("陈旧预期版本不追加新事实", async () => {

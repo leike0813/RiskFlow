@@ -82,10 +82,22 @@ const openWithLogin = async (page, path) => {
   expect(settled(currentPath())).toBe(true);
 };
 
+const closeConfirmationDialog = async (page) => {
+  const dialog = page.getByRole("dialog");
+  await expect(async () => {
+    if (!(await dialog.isVisible().catch(() => false))) return;
+    const cancel = dialog.getByRole("button", { name: "取消", exact: true });
+    if (!(await cancel.isEnabled({ timeout: 1_000 }).catch(() => false))) return;
+    await cancel.click({ timeout: 2_000 });
+    await expect(dialog).toHaveCount(0);
+  }).toPass({ timeout: 30_000 });
+  await expect(dialog).toHaveCount(0);
+};
+
 const localDateTimeNow = (page) =>
   page.evaluate(() => {
     const now = new Date();
-    return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 19);
+    return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
   });
 
 test("单独风险等级预警经三项约束采纳后，经 UI 完成执行/反馈并批准出未发布校准草案", async ({
@@ -205,15 +217,16 @@ test("单独风险等级预警经三项约束采纳后，经 UI 完成执行/反
   await expect(page.getByRole("button", { name: "登记执行", exact: true })).toBeDisabled();
   await page.getByLabel("证据来源版本号").fill(server.sourceA.sourceVersionRef.reference.versionId);
   await page.getByRole("button", { name: "登记执行", exact: true }).click();
-  const executionResponse = page.waitForResponse((response) =>
-    response.url().endsWith("/commands/warning-response.record-execution"),
-  );
-  await page.getByRole("button", { name: "确认登记执行", exact: true }).click();
-  const executionHttp = await executionResponse;
-  const execution = { status: executionHttp.status(), body: await executionHttp.json() };
+  const executionResponse = page
+    .waitForResponse((response) =>
+      response.url().endsWith("/commands/warning-response.record-execution"),
+    )
+    .then(async (response) => ({ status: response.status(), body: await response.json() }));
+  await page.getByRole("dialog").getByRole("button", { name: "确认提交", exact: true }).click();
+  const execution = await executionResponse;
   expect(execution.status, JSON.stringify(execution.body)).toBe(200);
   const executionRef = execution.body.result.executionRecordRef;
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await closeConfirmationDialog(page);
   await expect
     .poll(() => new URL(page.url()).searchParams.get("version"))
     .toBe(executionRef.reference.versionId);
@@ -232,15 +245,19 @@ test("单独风险等级预警经三项约束采纳后，经 UI 完成执行/反
   await expect(page.getByRole("button", { name: "登记反馈", exact: true })).toBeDisabled();
   await page.getByLabel("反馈发生时间").fill(await localDateTimeNow(page));
   await page.getByRole("button", { name: "登记反馈", exact: true }).click();
-  const feedbackResponse = page.waitForResponse((response) =>
-    response.url().endsWith("/commands/warning-response.record-feedback"),
-  );
-  await page.getByRole("button", { name: "确认登记反馈", exact: true }).click();
-  const feedbackHttp = await feedbackResponse;
-  const feedback = { status: feedbackHttp.status(), body: await feedbackHttp.json() };
+  const feedbackResponse = page
+    .waitForResponse((response) =>
+      response.url().endsWith("/commands/warning-response.record-feedback"),
+    )
+    .then(async (response) => ({ status: response.status(), body: await response.json() }));
+  await page.getByRole("dialog").getByRole("button", { name: "确认提交", exact: true }).click();
+  const feedback = await feedbackResponse;
   expect(feedback.status, JSON.stringify(feedback.body)).toBe(200);
   const feedbackRef = feedback.body.result.feedbackRef;
   await expect(page.locator("h1.page-title")).toHaveText("处置反馈");
+  await expect(
+    page.getByText(server.feedbackArtifactRef.reference.entityId, { exact: false }),
+  ).toBeVisible();
 
   // UI 登记的执行与反馈落在同一条处置任务上：关系读回真实成立，不靠页面文案判断。
   const closed = await call("warning-response.read", {
@@ -326,15 +343,16 @@ test("单独风险等级预警经三项约束采纳后，经 UI 完成执行/反
   await page.getByLabel("复核决定标识").fill(reviewDecisionRef.reference.entityId);
   await page.getByLabel("复核决定版本").fill(reviewDecisionRef.reference.versionId);
   await page.getByRole("button", { name: "创建治理草案", exact: true }).click();
-  const draftResponse = page.waitForResponse((response) =>
-    response.url().includes("/commands/warning-response.calibration-governance-draft"),
-  );
-  await page.getByRole("button", { name: "确认创建治理草案", exact: true }).click();
-  const draftHttp = await draftResponse;
-  const draftBody = await draftHttp.json();
-  expect(draftHttp.status(), JSON.stringify(draftBody)).toBe(200);
+  const draftResponse = page
+    .waitForResponse((response) =>
+      response.url().includes("/commands/warning-response.calibration-governance-draft"),
+    )
+    .then(async (response) => ({ status: response.status(), body: await response.json() }));
+  await page.getByRole("dialog").getByRole("button", { name: "确认提交", exact: true }).click();
+  const { status: draftStatus, body: draftBody } = await draftResponse;
+  expect(draftStatus, JSON.stringify(draftBody)).toBe(200);
   expect(draftBody.result.knowledgeRevisionRef).toBeTruthy();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await closeConfirmationDialog(page);
   await expect(
     page.getByText(draftBody.result.knowledgeRevisionRef.reference.entityId, { exact: false }),
   ).toBeVisible();

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
@@ -16,11 +16,16 @@ import {
   readCurrentReleaseSet,
   readMonitoringSeriesDetail,
   readMonitoringSnapshot,
-  type MonitoringSeriesItemView,
   type MonitoringSeriesPageView,
   type MonitoringSnapshotView,
 } from "../api/operations";
-import { resolveEngineeringWorkspaceMonitoringSeries } from "../api/engineeringWorkspace";
+import {
+  readEngineeringWorkspaceSnapshots,
+  resolveEngineeringWorkspaceMonitoringSeries,
+  type EngineeringWorkspaceSnapshotView,
+  type KindRefView,
+  type WorkspacePageView,
+} from "../api/engineeringWorkspace";
 import { PROJECT_NAVIGATION_ITEMS_V1 } from "./project/projectNavigation";
 import "./MonitoringDetailPage.css";
 
@@ -43,6 +48,23 @@ const FEATURE_LABEL: Record<string, string> = {
   anomalyScore: "异常评分",
 };
 
+/**
+ * 目录行来自受控读取，但表格行是 `Record<string, unknown>`；
+ * 这里按运行时形状收窄，不对未校验对象做断言成员访问。
+ */
+const seriesRefOf = (row: Record<string, unknown>): KindRefView | null => {
+  const value = row.monitoringSeriesRef;
+  if (typeof value !== "object" || value === null) return null;
+  const kind = "kind" in value ? value.kind : undefined;
+  const reference = "reference" in value ? value.reference : undefined;
+  if (typeof kind !== "string") return null;
+  if (typeof reference !== "object" || reference === null) return null;
+  const entityId = "entityId" in reference ? reference.entityId : undefined;
+  const versionId = "versionId" in reference ? reference.versionId : undefined;
+  if (typeof entityId !== "string" || typeof versionId !== "string") return null;
+  return { kind, reference: { entityId, versionId } };
+};
+
 const seriesColumns: DataTableColumn[] = [
   {
     key: "monitoringObject",
@@ -50,6 +72,21 @@ const seriesColumns: DataTableColumn[] = [
     render: (row) => row.monitoringObject as string,
   },
   { key: "monitoringIndicator", title: "监测指标" },
+  {
+    key: "monitoringSeriesRef",
+    title: "序列标识",
+    width: 240,
+    render: (row) => {
+      const ref = seriesRefOf(row);
+      return ref === null ? (
+        "—"
+      ) : (
+        <span className="mono">
+          {ref.reference.entityId}@{ref.reference.versionId}
+        </span>
+      );
+    },
+  },
   { key: "canonicalUnit", title: "单位", width: 90 },
   { key: "batchCount", title: "批次数", width: 90, align: "right" },
   {
@@ -69,11 +106,13 @@ const batchColumns: DataTableColumn[] = [
   {
     key: "monitoringBatchRef",
     title: "批次标识",
-    render: (row) => (
-      <span className="mono">
-        {(row.monitoringBatchRef as { reference: { entityId: string } }).reference.entityId}
-      </span>
-    ),
+    render: (row) => {
+      // 行由本页从已解码批次项映射而来；列回调只拿到 Record，这里按其构造约定取精确标识。
+      const batchRef = row.monitoringBatchRef as {
+        readonly reference: { readonly entityId: string };
+      };
+      return <span className="mono">{batchRef.reference.entityId}</span>;
+    },
   },
   {
     key: "relation",
@@ -97,12 +136,14 @@ const batchColumns: DataTableColumn[] = [
   { key: "occurredAt", title: "登记时间", width: 170 },
 ];
 
-interface MonitoringDetailFacts {
-  readonly series: MonitoringSeriesItemView | undefined;
-  readonly detail: Awaited<ReturnType<typeof readMonitoringSeriesDetail>> | null;
-  readonly snapshot: MonitoringSnapshotView | null;
-  readonly thresholdRelease: string | null;
-}
+type MonitoringSnapshotSelection =
+  | { readonly read: false }
+  | {
+      readonly read: true;
+      readonly value: MonitoringSnapshotView;
+      /** 服务端返回的快照/序列引用必须与 URL 成套参数一致；不一致即拒绝呈现。 */
+      readonly matched: boolean;
+    };
 
 export default function MonitoringDetailPage() {
   const { seriesId } = useParams<{ seriesId: string }>();
@@ -111,33 +152,52 @@ export default function MonitoringDetailPage() {
   const { selector } = useEngineering();
   const projectPath = useProjectPath();
 
-  // 精确版本来自 URL；没有版本时由所属目录窄解析该实体的当前可见引用后写回地址。
+  // 精确版本来自 URL；没有版本时由所属实体窄解析后写回地址。
   const seriesVersion = searchParams.get("version");
   const snapshotId = searchParams.get("snapshot");
   const snapshotVersion = searchParams.get("snapshotVersion");
+  // 快照参数必须成套：只出现一半时不读取快照，也不回落成「未选择」。
+  const snapshotMismatch = (snapshotId === null) !== (snapshotVersion === null);
 
-  const list = usePageQuery<MonitoringSeriesPageView>(
-    (projectId, signal) => listMonitoringSeries(projectId, {}, signal),
-    [],
+  const projectKey = selector.projectId ?? "";
+
+  // 列表续页游标绑定当前工程；切工程即失效，不把上一工程的游标带过来。
+  const [listPaging, setListPaging] = useState<{
+    readonly key: string;
+    readonly cursor: string;
+  }>();
+  const listKey = `${projectKey}:monitoring-series`;
+  const listCursor = listPaging?.key === listKey ? listPaging.cursor : undefined;
+
+  // 详情续页游标绑定工程 + 序列精确版本；换版本沿用旧游标会读到另一对象的页。
+  const [detailPaging, setDetailPaging] = useState<{
+    readonly key: string;
+    readonly cursor: string;
+  }>();
+  const detailKey = `${projectKey}:${seriesId ?? ""}:${seriesVersion ?? ""}`;
+  const detailCursor = detailPaging?.key === detailKey ? detailPaging.cursor : undefined;
+
+  const list = usePageQuery<MonitoringSeriesPageView | null>(
+    (projectId, signal) =>
+      seriesId !== undefined
+        ? Promise.resolve(null)
+        : listMonitoringSeries(
+            projectId,
+            listCursor === undefined ? {} : { cursor: listCursor },
+            signal,
+          ),
+    [seriesId, listCursor],
   );
 
-  const resolved = usePageQuery<{
-    readonly monitoringSeriesRef: {
-      readonly kind: string;
-      readonly reference: { readonly entityId: string; readonly versionId: string };
-    };
-    readonly monitoringObject: string;
-    readonly monitoringIndicator: string;
-    readonly canonicalUnit: string;
-  } | null>(
+  // 窄解析只在没有版本时发生：它只用于把旧地址写回精确版本。
+  const resolved = usePageQuery(
     async (projectId, signal) => {
-      if (seriesId === undefined) return null;
+      if (seriesId === undefined || seriesVersion !== null) return null;
       return resolveEngineeringWorkspaceMonitoringSeries(projectId, seriesId, signal);
     },
-    [seriesId],
+    [seriesId, seriesVersion],
   );
 
-  // 窄解析得到当前可见引用后写回地址：刷新与返回都能重建同一精确目标。
   useEffect(() => {
     if (seriesId === undefined || seriesVersion !== null) return;
     if (resolved.state.kind !== "ready") return;
@@ -148,74 +208,120 @@ export default function MonitoringDetailPage() {
     setSearchParams(next, { replace: true });
   }, [seriesId, seriesVersion, resolved.state, searchParams, setSearchParams]);
 
-  const detail = usePageQuery<MonitoringDetailFacts>(
+  // 精确详情：给了版本就直接按该版本读取，不查目录首页、也不依赖窄解析。
+  const detail = usePageQuery(
     async (projectId, signal) => {
-      if (seriesId === undefined) {
-        return { series: undefined, detail: null, snapshot: null, thresholdRelease: null };
-      }
-      const versionId =
-        seriesVersion ??
-        (resolved.state.kind === "ready"
-          ? (resolved.state.value?.monitoringSeriesRef.reference.versionId ?? null)
-          : null);
-      if (versionId === null) {
-        return { series: undefined, detail: null, snapshot: null, thresholdRelease: null };
-      }
-      const seriesRef = {
-        kind: "monitoring-series" as const,
-        reference: { entityId: seriesId, versionId },
-      };
-      const seriesDetail = await readMonitoringSeriesDetail(projectId, seriesRef, signal);
-      // 快照来源由服务端登记恢复：客户端不要求从目录首页组装来源。
-      const snapshotSources = [
-        ...new Map(
-          seriesDetail.snapshots
-            .flatMap((entry) => entry.evidenceSourceVersionRefs)
-            .map((ref) => [`${ref.reference.entityId}@${ref.reference.versionId}`, ref] as const),
-        ).values(),
-      ];
-      const selectedSnapshot =
-        snapshotId !== null && snapshotVersion !== null
-          ? seriesDetail.snapshots.find(
-              (entry) =>
-                entry.monitoringSnapshotRef.reference.entityId === snapshotId &&
-                entry.monitoringSnapshotRef.reference.versionId === snapshotVersion,
-            )
-          : undefined;
-      const snapshot =
-        selectedSnapshot === undefined
-          ? null
-          : await readMonitoringSnapshot(
-              projectId,
-              selectedSnapshot.monitoringSnapshotRef,
-              snapshotSources,
-              signal,
-            );
-      const releaseSet = await readCurrentReleaseSet(projectId, signal);
-      const thresholdRelease =
-        releaseSet.find((member) => member.definitionType === "monitoring-warning-threshold")
-          ?.releaseRef.reference.versionId ?? null;
-      return {
-        series: {
-          monitoringSeriesRef: seriesRef,
-          monitoringIndicator:
-            resolved.state.kind === "ready"
-              ? (resolved.state.value?.monitoringIndicator ?? "")
-              : "",
-          monitoringObject:
-            resolved.state.kind === "ready" ? (resolved.state.value?.monitoringObject ?? "") : "",
-          canonicalUnit:
-            resolved.state.kind === "ready" ? (resolved.state.value?.canonicalUnit ?? "") : "",
-          spatialScopeRef: { kind: "spatial-scope", reference: { entityId: "", versionId: "" } },
-          batchCount: seriesDetail.batches.length,
+      if (seriesId === undefined || seriesVersion === null) return null;
+      return readMonitoringSeriesDetail(
+        projectId,
+        { kind: "monitoring-series", reference: { entityId: seriesId, versionId: seriesVersion } },
+        signal,
+        detailCursor === undefined ? {} : { cursor: detailCursor },
+      );
+    },
+    [seriesId, seriesVersion, detailCursor],
+  );
+
+  // 快照目录走所属精确序列的分页读面：页大小由服务端拥有，页面只显式续页。
+  const [snapshotPaging, setSnapshotPaging] = useState<{
+    readonly key: string;
+    readonly cursor: string;
+  }>();
+  const snapshotCatalogKey = `${detailKey}:snapshots`;
+  const snapshotCatalogCursor =
+    snapshotPaging?.key === snapshotCatalogKey ? snapshotPaging.cursor : undefined;
+  const snapshots = usePageQuery<WorkspacePageView<EngineeringWorkspaceSnapshotView> | null>(
+    async (projectId, signal) => {
+      if (seriesId === undefined || seriesVersion === null) return null;
+      return readEngineeringWorkspaceSnapshots(
+        projectId,
+        { kind: "monitoring-series", reference: { entityId: seriesId, versionId: seriesVersion } },
+        signal,
+        snapshotCatalogCursor === undefined ? {} : { cursor: snapshotCatalogCursor },
+      );
+    },
+    [seriesId, seriesVersion, snapshotCatalogCursor],
+  );
+
+  // 所选快照直接按 URL 引用读取；来源由服务端从目标登记恢复，客户端不从目录页拼装。
+  const snapshot = usePageQuery<MonitoringSnapshotSelection>(
+    async (projectId, signal) => {
+      if (seriesId === undefined || seriesVersion === null) return { read: false };
+      if (snapshotId === null || snapshotVersion === null) return { read: false };
+      const value = await readMonitoringSnapshot(
+        projectId,
+        {
+          kind: "monitoring-snapshot",
+          reference: { entityId: snapshotId, versionId: snapshotVersion },
         },
-        detail: seriesDetail,
-        snapshot,
-        thresholdRelease,
+        [],
+        signal,
+      );
+      const snapshotRef = value.monitoringSnapshotRef.reference;
+      const seriesRef = value.monitoringSeriesRef.reference;
+      return {
+        read: true,
+        value,
+        matched:
+          snapshotRef.entityId === snapshotId &&
+          snapshotRef.versionId === snapshotVersion &&
+          seriesRef.entityId === seriesId &&
+          seriesRef.versionId === seriesVersion,
       };
     },
     [seriesId, seriesVersion, snapshotId, snapshotVersion],
   );
+
+  // 当前知识阈值是独立可读区域：它失败不得抹掉已获准的快照与批次。
+  const threshold = usePageQuery(async (projectId, signal) => {
+    const releases = await readCurrentReleaseSet(projectId, signal);
+    return (
+      releases.find((member) => member.definitionType === "monitoring-warning-threshold")
+        ?.releaseRef ?? null
+    );
+  }, []);
+
+  const renderThreshold = () => {
+    const state = threshold.state;
+    if (state.kind === "ready") {
+      return state.value === null ? (
+        <p className="pjmon-note">当前知识发布未包含监测预警阈值。</p>
+      ) : (
+        <p className="pjmon-note">
+          当前阈值版本 <VersionTag>{state.value.reference.versionId}</VersionTag>
+          ，它只表示当前知识配置；历史快照的判定依据以该快照已保存的冻结事实为准。
+        </p>
+      );
+    }
+    if (state.kind === "forbidden") {
+      return (
+        <p className="pjmon-note">
+          当前会话无权读取当前知识阈值；快照与批次仍按已获准的领域事实呈现。
+        </p>
+      );
+    }
+    if (state.kind === "unavailable") {
+      return (
+        <p className="pjmon-note">
+          当前知识阈值不可用（{state.reasons.map((reason) => reason.code).join("、")}
+          ）；不影响快照读取。
+        </p>
+      );
+    }
+    if (state.kind === "error") {
+      return (
+        <>
+          <p className="pjmon-note">
+            当前知识阈值读取失败（{state.error.code}）；已获准的快照与批次保持呈现。
+          </p>
+          <button type="button" className="pjmon-action" onClick={threshold.retry}>
+            重试读取阈值
+          </button>
+        </>
+      );
+    }
+    return <p className="pjmon-note">正在读取当前知识阈值…</p>;
+  };
 
   return (
     <AppShell
@@ -239,22 +345,62 @@ export default function MonitoringDetailPage() {
             emptyMessage="当前工程尚无登记监测序列"
             onRetry={list.retry}
           >
-            {(page) => (
-              <Card title="监测序列">
-                <DataTable
-                  columns={seriesColumns}
-                  rows={page.items.map((item) => ({ ...item }))}
-                  onRowClick={(row) =>
-                    navigate(
-                      projectPath(
-                        `/projects/monitoring/${encodeURIComponent(
-                          (row.monitoringSeriesRef as { reference: { entityId: string } }).reference
-                            .entityId,
-                        )}`,
-                      ),
-                    )
+            {(page) =>
+              page === null ? null : (
+                <Card
+                  title="监测序列"
+                  extra={
+                    <span className="page-subtitle">
+                      共 {page.totalCount} 条 · 当前页 {page.items.length} 条
+                    </span>
                   }
-                />
+                >
+                  {page.items.length === 0 ? (
+                    <div className="pjmon-empty">当前页无登记监测序列</div>
+                  ) : (
+                    <DataTable
+                      columns={seriesColumns}
+                      rows={page.items.map((item) => ({ ...item }))}
+                      onRowClick={(row) => {
+                        const ref = seriesRefOf(row);
+                        if (ref === null) return;
+                        navigate(
+                          projectPath(
+                            `/projects/monitoring/${encodeURIComponent(
+                              ref.reference.entityId,
+                            )}?version=${encodeURIComponent(ref.reference.versionId)}`,
+                          ),
+                        );
+                      }}
+                    />
+                  )}
+                  {page.nextCursor !== undefined && (
+                    <div className="pjmon-more">
+                      <button
+                        type="button"
+                        className="pjmon-action"
+                        onClick={() => {
+                          setListPaging({ key: listKey, cursor: page.nextCursor! });
+                        }}
+                      >
+                        继续读取后续页
+                      </button>
+                    </div>
+                  )}
+                </Card>
+              )
+            }
+          </PageStateView>
+        ) : seriesVersion === null ? (
+          <PageStateView
+            state={resolved.state}
+            title="监测序列详情"
+            forbiddenHint="该监测序列不存在或当前会话无权访问"
+            onRetry={resolved.retry}
+          >
+            {() => (
+              <Card title="监测序列详情">
+                <div className="pjmon-empty">正在解析该序列的当前可见版本…</div>
               </Card>
             )}
           </PageStateView>
@@ -262,73 +408,124 @@ export default function MonitoringDetailPage() {
           <PageStateView
             state={detail.state}
             title="监测序列详情"
-            emptyMessage="未找到该监测序列"
+            forbiddenHint="该监测序列版本不存在或当前会话无权访问"
             onRetry={detail.retry}
           >
             {(facts) =>
-              facts.series === undefined || facts.detail === null ? (
+              facts === null ? (
                 <Card title="监测序列详情">
-                  <div className="pjmon-empty">未找到该监测序列，或当前会话无权访问</div>
+                  <div className="pjmon-empty">正在读取所选序列版本…</div>
                 </Card>
               ) : (
                 <>
                   <div className="pjmon-head">
-                    <h2 className="pjmon-title">{facts.series.monitoringObject}</h2>
+                    <h2 className="pjmon-title">{facts.monitoringObject}</h2>
                     <span className="page-subtitle">
-                      {facts.series.monitoringIndicator} · 单位 {facts.series.canonicalUnit}
+                      {facts.monitoringIndicator} · 单位 {facts.canonicalUnit} · 版本{" "}
+                      <span className="mono">{facts.monitoringSeriesRef.reference.versionId}</span>
                     </span>
-                    {facts.thresholdRelease !== null && (
-                      <VersionTag>监测预警阈值 {facts.thresholdRelease}</VersionTag>
-                    )}
                   </div>
 
-                  <Card title="快照目录">
-                    {facts.detail.snapshots.length === 0 ? (
-                      <div className="pjmon-empty">
-                        该序列尚无冻结快照，快照产生前不呈现趋势曲线或统计估值
-                      </div>
-                    ) : (
-                      <ul className="pjmon-snapshots">
-                        {facts.detail.snapshots.map((entry) => {
-                          const selected =
-                            entry.monitoringSnapshotRef.reference.entityId === snapshotId &&
-                            entry.monitoringSnapshotRef.reference.versionId === snapshotVersion;
-                          return (
-                            <li key={entry.monitoringSnapshotRef.reference.entityId}>
+                  <Card title="当前知识阈值">{renderThreshold()}</Card>
+
+                  <PageStateView
+                    state={snapshots.state}
+                    title="快照目录"
+                    emptyMessage="该序列尚无冻结快照，快照产生前不呈现趋势曲线或统计估值"
+                    onRetry={snapshots.retry}
+                  >
+                    {(page) =>
+                      page === null ? (
+                        <Card title="快照目录">
+                          <div className="pjmon-empty">正在读取快照目录…</div>
+                        </Card>
+                      ) : (
+                        <Card
+                          title="快照目录"
+                          extra={
+                            <span className="page-subtitle">本页 {page.items.length} 个快照</span>
+                          }
+                        >
+                          {page.items.length === 0 ? (
+                            <div className="pjmon-empty">
+                              该序列尚无冻结快照，快照产生前不呈现趋势曲线或统计估值
+                            </div>
+                          ) : (
+                            <ul className="pjmon-snapshots">
+                              {page.items.map((entry) => {
+                                const selected =
+                                  entry.monitoringSnapshotRef.reference.entityId === snapshotId &&
+                                  entry.monitoringSnapshotRef.reference.versionId ===
+                                    snapshotVersion;
+                                return (
+                                  <li
+                                    key={`${entry.monitoringSnapshotRef.reference.entityId}@${entry.monitoringSnapshotRef.reference.versionId}`}
+                                  >
+                                    <button
+                                      type="button"
+                                      className={
+                                        selected ? "pjmon-snapshot--active" : "pjmon-snapshot"
+                                      }
+                                      onClick={() => {
+                                        const next = new URLSearchParams(searchParams);
+                                        next.set(
+                                          "snapshot",
+                                          entry.monitoringSnapshotRef.reference.entityId,
+                                        );
+                                        next.set(
+                                          "snapshotVersion",
+                                          entry.monitoringSnapshotRef.reference.versionId,
+                                        );
+                                        setSearchParams(next, { replace: true });
+                                      }}
+                                    >
+                                      <span className="mono">
+                                        {entry.monitoringSnapshotRef.reference.entityId}@
+                                        {entry.monitoringSnapshotRef.reference.versionId}
+                                      </span>
+                                      <span>{entry.cutoff.slice(0, 19).replace("T", " ")}</span>
+                                      <span>
+                                        {AVAILABILITY_LABEL[entry.availability] ??
+                                          entry.availability}
+                                      </span>
+                                    </button>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                          {page.nextCursor !== undefined && (
+                            <div className="pjmon-more">
                               <button
                                 type="button"
-                                className={selected ? "pjmon-snapshot--active" : "pjmon-snapshot"}
-                                onClick={() => {
-                                  const next = new URLSearchParams(searchParams);
-                                  next.set(
-                                    "snapshot",
-                                    entry.monitoringSnapshotRef.reference.entityId,
-                                  );
-                                  next.set(
-                                    "snapshotVersion",
-                                    entry.monitoringSnapshotRef.reference.versionId,
-                                  );
-                                  setSearchParams(next, { replace: true });
-                                }}
+                                className="pjmon-action"
+                                onClick={() =>
+                                  setSnapshotPaging({
+                                    key: snapshotCatalogKey,
+                                    cursor: page.nextCursor!,
+                                  })
+                                }
                               >
-                                <span className="mono">
-                                  {entry.monitoringSnapshotRef.reference.entityId}@
-                                  {entry.monitoringSnapshotRef.reference.versionId}
-                                </span>
-                                <span>{entry.cutoff.slice(0, 19).replace("T", " ")}</span>
-                                <span>
-                                  {AVAILABILITY_LABEL[entry.availability] ?? entry.availability}
-                                </span>
+                                继续读取后续快照
                               </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </Card>
+                            </div>
+                          )}
+                        </Card>
+                      )
+                    }
+                  </PageStateView>
 
-                  {facts.snapshot === null ? (
-                    facts.detail.snapshots.length > 0 ? (
+                  {snapshotMismatch ? (
+                    <Card title="监测快照">
+                      <div className="pjmon-empty">
+                        快照参数必须成套给出（snapshot 与
+                        snapshotVersion）；当前不成套，未读取任何快照，也不回落到「未选择」状态。
+                      </div>
+                    </Card>
+                  ) : snapshotId === null ? (
+                    snapshots.state.kind === "ready" &&
+                    snapshots.state.value !== null &&
+                    snapshots.state.value.items.length > 0 ? (
                       <Card title="监测快照">
                         <div className="pjmon-empty">
                           尚未选择快照；选定后按该版本读取冻结统计，不擅自改成最新。
@@ -336,89 +533,161 @@ export default function MonitoringDetailPage() {
                       </Card>
                     ) : null
                   ) : (
-                    <>
-                      <div className="pjmon-chart-row">
-                        <Card
-                          title={`快照对齐点序列（${facts.snapshot.window.from.slice(0, 10)} ~ ${facts.snapshot.window.to.slice(0, 10)}）`}
-                          extra={
-                            <VersionTag>
-                              快照 {facts.snapshot.monitoringSnapshotRef.reference.versionId}
-                            </VersionTag>
-                          }
-                        >
-                          {facts.snapshot.alignedPoints.length === 0 ? (
-                            <div className="pjmon-empty">快照窗口内无对齐点</div>
-                          ) : (
-                            <TrendLine
-                              points={facts.snapshot.alignedPoints.map((point) => ({
-                                date: point.sampledAt.slice(5, 16).replace("T", " "),
-                                value: point.value ?? Number.NaN,
-                              }))}
-                              height={220}
-                            />
-                          )}
-                        </Card>
-                      </div>
+                    <PageStateView
+                      state={snapshot.state}
+                      title="监测快照"
+                      emptyMessage="未读取到该快照"
+                      forbiddenHint="所选快照不存在或当前会话无权访问"
+                      onRetry={snapshot.retry}
+                    >
+                      {(selected) =>
+                        !selected.read ? (
+                          <Card title="监测快照">
+                            <div className="pjmon-empty">正在读取所选快照…</div>
+                          </Card>
+                        ) : !selected.matched ? (
+                          <Card title="监测快照">
+                            <div className="pjmon-empty">
+                              所选快照不属于该序列版本（参数错配）；已拒绝呈现，不回落其它对象或最新快照。
+                            </div>
+                          </Card>
+                        ) : (
+                          (() => {
+                            const value = selected.value;
+                            const unavailableFeatures = (
+                              [
+                                "shortTermSlope",
+                                "acceleration",
+                                "dominantFrequency",
+                                "anomalyScore",
+                              ] as const
+                            )
+                              .map((key) => ({ key, feature: value.features[key] }))
+                              .filter((entry) => entry.feature.status !== "available");
+                            return (
+                              <>
+                                <div className="pjmon-chart-row">
+                                  <Card
+                                    title={`快照对齐点序列（${value.window.from.slice(0, 10)} ~ ${value.window.to.slice(0, 10)}）`}
+                                    extra={
+                                      <VersionTag>
+                                        快照 {value.monitoringSnapshotRef.reference.versionId}
+                                      </VersionTag>
+                                    }
+                                  >
+                                    {value.alignedPoints.length === 0 ? (
+                                      <div className="pjmon-empty">快照窗口内无对齐点</div>
+                                    ) : (
+                                      <TrendLine
+                                        points={value.alignedPoints.map((point) => ({
+                                          date: point.sampledAt.slice(5, 16).replace("T", " "),
+                                          value: point.value ?? Number.NaN,
+                                        }))}
+                                        height={220}
+                                      />
+                                    )}
+                                  </Card>
+                                </div>
 
-                      <div className="pjmon-kpis">
-                        <KpiCard
-                          label="样本覆盖率"
-                          value={(facts.snapshot.coverageRatio * 100).toFixed(1)}
-                          unit="%"
-                          tag={AVAILABILITY_LABEL[facts.snapshot.availability]}
-                          tone={facts.snapshot.availability === "unavailable" ? "risk" : "default"}
-                        />
-                        {(
-                          [
-                            "shortTermSlope",
-                            "acceleration",
-                            "dominantFrequency",
-                            "anomalyScore",
-                          ] as const
-                        ).map((key) => {
-                          const feature = facts.snapshot!.features[key];
-                          return (
-                            <KpiCard
-                              key={key}
-                              label={FEATURE_LABEL[key] ?? key}
-                              value={
-                                feature.status === "available" && feature.value !== undefined
-                                  ? feature.value
-                                  : "—"
-                              }
-                              unit={feature.unit ?? ""}
-                              tag={feature.status === "available" ? "有效" : "不可用"}
-                            />
-                          );
-                        })}
-                      </div>
+                                <div className="pjmon-kpis">
+                                  <KpiCard
+                                    label="样本覆盖率"
+                                    value={(value.coverageRatio * 100).toFixed(1)}
+                                    unit="%"
+                                    tag={AVAILABILITY_LABEL[value.availability]}
+                                    tone={value.availability === "unavailable" ? "risk" : "default"}
+                                  />
+                                  {(
+                                    [
+                                      "shortTermSlope",
+                                      "acceleration",
+                                      "dominantFrequency",
+                                      "anomalyScore",
+                                    ] as const
+                                  ).map((key) => {
+                                    const feature = value.features[key];
+                                    return (
+                                      <KpiCard
+                                        key={key}
+                                        label={FEATURE_LABEL[key] ?? key}
+                                        value={
+                                          feature.status === "available" &&
+                                          feature.value !== undefined
+                                            ? feature.value
+                                            : "—"
+                                        }
+                                        unit={feature.unit ?? ""}
+                                        tag={
+                                          feature.status === "available"
+                                            ? "有效"
+                                            : (feature.reasonCode ?? "不可用")
+                                        }
+                                      />
+                                    );
+                                  })}
+                                </div>
 
-                      {facts.snapshot.evidenceReferences.length > 0 && (
-                        <Card title="快照证据定位">
-                          <div className="pjmon-evidence">
-                            {facts.snapshot.evidenceReferences.map((reference) => (
-                              <EvidenceLink
-                                key={reference.sourceSegmentId}
-                                segmentId={reference.sourceSegmentId}
-                                sourceVersionRef={reference.sourceVersionRef}
-                                referencedBy={
-                                  facts.snapshot!.monitoringSnapshotRef.reference.entityId
-                                }
-                              />
-                            ))}
-                          </div>
-                        </Card>
-                      )}
-                    </>
+                                {value.availabilityReasons.length > 0 && (
+                                  <p className="pjmon-note">
+                                    快照可用性原因：{value.availabilityReasons.join("、")}
+                                  </p>
+                                )}
+                                {unavailableFeatures.length > 0 && (
+                                  <p className="pjmon-note">
+                                    特征不可用原因：
+                                    {unavailableFeatures
+                                      .map(
+                                        (entry) =>
+                                          `${FEATURE_LABEL[entry.key]} ${entry.feature.reasonCode ?? "未说明"}`,
+                                      )
+                                      .join("；")}
+                                  </p>
+                                )}
+
+                                {value.evidenceReferences.length > 0 && (
+                                  <Card title="快照证据定位">
+                                    <div className="pjmon-evidence">
+                                      {value.evidenceReferences.map((reference) => (
+                                        <EvidenceLink
+                                          key={reference.sourceSegmentId}
+                                          segmentId={reference.sourceSegmentId}
+                                          sourceVersionRef={reference.sourceVersionRef}
+                                          referencedBy={
+                                            value.monitoringSnapshotRef.reference.entityId
+                                          }
+                                        />
+                                      ))}
+                                    </div>
+                                  </Card>
+                                )}
+                              </>
+                            );
+                          })()
+                        )
+                      }
+                    </PageStateView>
                   )}
 
                   <Card title="批次与快照登记事实">
                     <DataTable
                       columns={batchColumns}
-                      rows={facts.detail.batches.map((batch) => ({ ...batch }))}
+                      rows={facts.batches.map((batch) => ({ ...batch }))}
                     />
-                    {facts.detail.batches.length === 0 && (
+                    {facts.batches.length === 0 && (
                       <div className="pjmon-empty">该序列尚无登记批次</div>
+                    )}
+                    {facts.nextCursor !== undefined && (
+                      <div className="pjmon-more">
+                        <button
+                          type="button"
+                          className="pjmon-action"
+                          onClick={() =>
+                            setDetailPaging({ key: detailKey, cursor: facts.nextCursor! })
+                          }
+                        >
+                          继续读取后续批次
+                        </button>
+                      </div>
                     )}
                   </Card>
                 </>

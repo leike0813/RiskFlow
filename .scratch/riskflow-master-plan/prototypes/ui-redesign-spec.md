@@ -78,7 +78,7 @@ CH-2 同步清理现有 `web/*` 对固定七项导航和旧壳层的重复要求
 - CH-9 的搜索与聚合可以并行实施，最终负责待办／助手与六导航的组合启用，须证明 CH-3…CH-8 的目标承载均已就绪。旧复核入口在此之前继续可用；未完成组合验收不得以隐藏入口包装完工。
 - 历史运行摘要由 CH-3 保留有界读取；CH-6 保留历史矩阵的精确只读入口；CH-7 保住任务与所选子记录的两套版本；CH-9 保住队列外与已决定复核任务的精确读取。具体地址以路由附件为准。
 - **CH-3 已实现**（`deliver-risk-overview-dashboard`）：`/overview` 承载服务端六来源聚合与历史运行，两个旧运行地址永久解析到 `/overview?tab=runs`。验收修复覆盖全部必需来源权限交集、故障隔离、固定上界重试、Unicode 稳定分页及精确历史详情；最终结论与真实运行证据见 [verification](../../../openspec/changes/deliver-risk-overview-dashboard/verification.md)。四来源待办明细、搜索、助手组合与最终六导航仍归 CH-9，本包未提前启用。
-- **CH-4 已实施**：[redesign-engineering-workspace](../../../openspec/changes/redesign-engineering-workspace/proposal.md) 的工程工作区承载（工程概览的独立来源状态、工程上下文维护、成员与资料访问、工程开通、接入任务）已按 IP-01～IP-07 落地，并接通四条专用 HTTP 接缝（`engineering-workspace.revise`／`engineering-workspace.read`／`project-workspace-access.read`／`project-workspace-access.execute`）。工程开通复用原系统管理表单与命令；经理作用域访问维护复用 C06 原命令与事务；接入读取只组合 C11 修订、C12 转换、C15 清洗结果与监测所属窄读，不新建业务事实或任务状态机。仍无浏览器上传/解析启动扩展，也未提前启用六导航。最终核验结论以该 change 的 verification 为准（由验收 Agent 在归档前生成）。
+- **CH-4 已实施**：[redesign-engineering-workspace](../../../openspec/changes/redesign-engineering-workspace/proposal.md) 按 IP-01～IP-07 承载工程概览、上下文维护、成员与资料访问、工程开通和接入任务，贯通四条专用 HTTP 接缝。修复覆盖多来源清洗结果的当前权限交集、精确版本与目标空间、原预期版本读改闭环、经理仅维护既有成员、有界续页、历史只读、授权空间与来源访问维护、监测与知识故障隔离，以及接入深链、清洗准备、正式排除范围和安全失败定位。开通与访问维护复用原命令和事务；接入仅组合所属窄读，不新增业务事实或状态机。未扩展浏览器上传/解析启动，未提前启用六导航。实际回归、HTTPS Cookie、原生缩放及验收边界见 [verification](../../../openspec/changes/redesign-engineering-workspace/verification.md)。
 
 **后端变更归属**：
 

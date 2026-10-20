@@ -70,3 +70,32 @@
   border-color: var(--accent, #1d4ed8);
   background: var(--accent-soft, #eff6ff);
 }
+
+/* 阈值/原因说明：低强调文本，失败与快照事实同屏并各自独立。 */
+.pjmon-note {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* 服务端分页续页：显式按钮，不做客户端分页或自动遍历。 */
+.pjmon-more {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.pjmon-action {
+  min-height: 30px;
+  padding: 3px 14px;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 4px;
+  background: var(--surface, #ffffff);
+  color: inherit;
+  cursor: pointer;
+}
+
+.pjmon-action:hover {
+  border-color: var(--accent, #1d4ed8);
+  color: var(--accent, #1d4ed8);
+}

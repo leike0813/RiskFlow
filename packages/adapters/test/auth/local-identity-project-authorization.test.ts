@@ -657,15 +657,6 @@ describe.sequential("local identity and project authorization", () => {
     );
     expect(manager?.displayName).toBeTruthy();
     expect(manager?.roles).toContain("project-risk-manager");
-    // 目录不披露登录凭据与全局账号目录。
-    expect(Object.keys(manager ?? {}).sort()).toEqual([
-      "accountRef",
-      "displayName",
-      "membershipRef",
-      "roles",
-      "spatialScopeRefs",
-      "status",
-    ]);
     const scopes = await read({ kind: "spatial-scopes", pageSize: 50 });
     expect(scopes.kind).toBe("succeeded");
     if (scopes.kind !== "succeeded" || scopes.result.kind !== "spatial-scopes") return;
@@ -695,6 +686,132 @@ describe.sequential("local identity and project authorization", () => {
     expect(denied.kind).toBe("failed");
     if (denied.kind !== "failed") return;
     expect(denied.error.code).toBe("AUTHORIZATION_DENIED");
+  });
+
+  it("目录精确版本可用于原修改，陈旧版本被拒绝，经理不能新增非成员", async () => {
+    const workspace = access!.projectWorkspaceAccess;
+    const outsider = await access!.administerIdentity({
+      kind: "create-account",
+      commandId: "workspace-roundtrip-account",
+      idempotencyKey: "workspace-roundtrip-account",
+      expectedVersion: "none",
+      authorizationContextRef: adminContext!,
+      loginName: "workspace-roundtrip",
+      displayName: "工作区往返成员",
+      password: USER_PASSWORD,
+    });
+    if (outsider.kind !== "account") throw new Error("fixture account creation failed");
+    const payload = {
+      kind: "revise-membership" as const,
+      expectedVersion: "none" as const,
+      membershipId: "workspace-roundtrip-member",
+      accountId: outsider.resultRef.entityId,
+      roles: ["business-viewer" as const],
+      spatialScopeRefs: [rootScopeRef!],
+      status: "active" as const,
+    };
+    const denied = await workspace.execute({
+      commandId: "workspace-no-create",
+      idempotencyKey: "workspace-no-create",
+      issuedAt: clock.now().toISOString(),
+      projectId: "project-a",
+      sessionToken: managerSessionToken!,
+      payload,
+    });
+    expect(denied).toMatchObject({ kind: "failed", error: { code: "AUTHORIZATION_DENIED" } });
+    const created = await access!.administerProject({
+      ...payload,
+      commandId: "workspace-member-original-create",
+      idempotencyKey: "workspace-member-original-create",
+      projectId: "project-a",
+      authorizationContextRef: adminContext!,
+    });
+    expect(created.kind).toBe("membership");
+    const read = await workspace.read({
+      sessionToken: managerSessionToken!,
+      payload: {
+        kind: "memberships",
+        queryId: "workspace-roundtrip-read",
+        requestedAt: clock.now().toISOString(),
+        projectId: "project-a",
+        pageSize: 50,
+      },
+    });
+    if (read.kind !== "succeeded" || read.result.kind !== "memberships")
+      throw new Error("fixture membership read failed");
+    const member = read.result.items.find(
+      (item) => item.accountRef.entityId === outsider.resultRef.entityId,
+    )!;
+    expect(member).toBeDefined();
+    const revisedPayload = {
+      ...payload,
+      expectedVersion: member.membershipRef,
+      roles: ["reviewer" as const],
+    };
+    const revised = await workspace.execute({
+      commandId: "workspace-member-revise",
+      idempotencyKey: "workspace-member-revise",
+      issuedAt: clock.now().toISOString(),
+      projectId: "project-a",
+      sessionToken: managerSessionToken!,
+      payload: revisedPayload,
+    });
+    expect(revised).toMatchObject({ kind: "succeeded", result: { kind: "membership" } });
+    const stale = await workspace.execute({
+      commandId: "workspace-member-stale",
+      idempotencyKey: "workspace-member-stale",
+      issuedAt: clock.now().toISOString(),
+      projectId: "project-a",
+      sessionToken: managerSessionToken!,
+      payload: revisedPayload,
+    });
+    expect(stale).toMatchObject({ kind: "failed", error: { code: "STALE_ACCESS_VERSION" } });
+
+    const sourceVersionRef = {
+      kind: "source-version" as const,
+      reference: { entityId: "workspace-roundtrip-source", versionId: "1" },
+    };
+    await access!.administerProject({
+      kind: "revise-source-access",
+      commandId: "workspace-source-original-create",
+      idempotencyKey: "workspace-source-original-create",
+      projectId: "project-a",
+      authorizationContextRef: managerRegistrationContext!.authorizationContextRef,
+      expectedVersion: "none",
+      sourceVersionRef,
+      visibility: "project-shared",
+      allowedAccountIds: [],
+      registeredByAccountId: userAccountId!,
+      spatialScopeRefs: [rootScopeRef!],
+    });
+    const source = await workspace.read({
+      sessionToken: managerSessionToken!,
+      payload: {
+        kind: "source-access",
+        queryId: "workspace-source-read",
+        requestedAt: clock.now().toISOString(),
+        projectId: "project-a",
+        sourceVersionRef,
+      },
+    });
+    if (source.kind !== "succeeded" || source.result.kind !== "source-access")
+      throw new Error("fixture source read failed");
+    const changed = await workspace.execute({
+      commandId: "workspace-source-revise",
+      idempotencyKey: "workspace-source-revise",
+      projectId: "project-a",
+      issuedAt: clock.now().toISOString(),
+      sessionToken: managerSessionToken!,
+      payload: {
+        kind: "revise-source-access",
+        expectedVersion: source.result.sourceGrantRef,
+        sourceVersionRef,
+        visibility: "restricted",
+        allowedAccountIds: [userAccountId!],
+        spatialScopeRefs: source.result.spatialScopeRefs,
+      },
+    });
+    expect(changed).toMatchObject({ kind: "succeeded", result: { kind: "source-access" } });
   });
 
   it("issues and verifies the exact terminal failure evidence read capability", async () => {

@@ -94,11 +94,35 @@ export const REQUIRED_API_PORT_METHODS_V1 = Object.freeze({
 export const REQUIRED_API_PROVIDERS_V1 = Object.freeze({
   db: null,
   // CH-3：仪表盘的六个来源各自按业务分支取当前决定，依赖同一 C06 的业务动作判定。
-  access: ["verify", "authorize", "authorizeBusinessAction"],
+  access: [
+    "verify",
+    "authorize",
+    "authorizeBusinessAction",
+    "readCurrentSpatialScopeRef",
+    "workspaceVisibility",
+  ],
   artifactStore: ["put", "open"],
   // engineeringData 端口与 catalog resolvers 都取自同一真实 context-source registry。
-  contextSource: ["apply", "freeze", "read", "resolveReadQuery"],
-  monitoringStore: ["resolveSnapshotQuery"],
+  contextSource: [
+    "apply",
+    "freeze",
+    "read",
+    "resolveReadQuery",
+    "reviseContext",
+    "readProjectRevision",
+    "readCurrentProjectRevision",
+    "readSpatialRevision",
+    "readCurrentSpatialRevision",
+    "readSourceVersion",
+    "readSegmentSetSummary",
+  ],
+  monitoringStore: [
+    "resolveSnapshotQuery",
+    "listBatchesBySeries",
+    "listSnapshotsBySeries",
+    "readCurrentSeriesCatalogItem",
+    "readSeriesScopeRef",
+  ],
   knowledgeModeling: ["govern", "resolve", "retrieve"],
   applicableRuleSetAssembly: ["assemble"],
   riskIdentification: ["plan", "analyze", "finalize"],
@@ -131,8 +155,8 @@ export const REQUIRED_API_PROVIDERS_V1 = Object.freeze({
   // CH-4 工程工作区：真实组合 C11 修订、C12 转换与 C15 清洗的窄读能力。
   documentConverter: ["listBySourceVersion", "readRecordByRef", "readFailureSummary"],
   dataCleaningStore: [
-    "listResultsForSource",
-    "listResultsForMonitoringSnapshots",
+    "listResultsForSubject",
+    "listPreparationsForSubject",
     "readResultExclusions",
   ],
   riskRecordTrace: ["readBatch"],

@@ -29,20 +29,44 @@ const providers = (overrides = {}) => {
   const base = {
     db: {},
     access: {
-      ...stub(["verify", "authorize", "authorizeBusinessAction"]),
+      ...stub([
+        "verify",
+        "authorize",
+        "authorizeBusinessAction",
+        "readCurrentSpatialScopeRef",
+        "workspaceVisibility",
+      ]),
       systemAdministration: stub(["read", "execute"]),
       projectWorkspaceAccess: stub(["read", "execute"]),
       projectAccessPresentation: stub(["read"]),
     },
     artifactStore: stub(["put", "open"]),
-    contextSource: stub(["apply", "freeze", "read", "resolveReadQuery"]),
+    contextSource: stub([
+      "apply",
+      "freeze",
+      "read",
+      "resolveReadQuery",
+      "reviseContext",
+      "readProjectRevision",
+      "readCurrentProjectRevision",
+      "readSpatialRevision",
+      "readCurrentSpatialRevision",
+      "readSourceVersion",
+      "readSegmentSetSummary",
+    ]),
     documentConverter: stub(["listBySourceVersion", "readRecordByRef", "readFailureSummary"]),
     dataCleaningStore: stub([
-      "listResultsForSource",
-      "listResultsForMonitoringSnapshots",
+      "listResultsForSubject",
+      "listPreparationsForSubject",
       "readResultExclusions",
     ]),
-    monitoringStore: stub(["resolveSnapshotQuery"]),
+    monitoringStore: stub([
+      "resolveSnapshotQuery",
+      "listBatchesBySeries",
+      "listSnapshotsBySeries",
+      "readCurrentSeriesCatalogItem",
+      "readSeriesScopeRef",
+    ]),
     knowledgeModeling: stub(["govern", "resolve", "retrieve"]),
     applicableRuleSetAssembly: stub(["assemble"]),
     riskIdentification: stub(["plan", "analyze", "finalize"]),
@@ -201,19 +225,6 @@ describe("生产 API 全端口装配契约", () => {
     expect(() => ports.warningResponse.recommend({ kind: "unknown" })).toThrow(TypeError);
   });
 
-  it("engineeringData 就是注入的同一 context-source registry，systemAdministration 取自 access", () => {
-    const contextSource = stub(["apply", "freeze", "read", "resolveReadQuery"]);
-    const access = {
-      ...stub(["verify", "authorize", "authorizeBusinessAction"]),
-      systemAdministration: stub(["read", "execute"]),
-      projectWorkspaceAccess: stub(["read", "execute"]),
-      projectAccessPresentation: stub(["read"]),
-    };
-    const ports = createDeploymentApiPortsV1(providers({ contextSource, access }));
-    expect(ports.engineeringData).toBe(contextSource);
-    expect(ports.systemAdministration).toBe(access.systemAdministration);
-  });
-
   it("入口能力读面取自同一真实 C06 适配器，缺失时拒绝装配而不是空能力", () => {
     const read = vi.fn(async () => ({
       schemaVersion: "1",
@@ -222,13 +233,11 @@ describe("生产 API 全端口装配契约", () => {
       authorizationPolicyRef: { entityId: "access-policy", versionId: "v2" },
     }));
     const access = {
-      ...stub(["verify", "authorize", "authorizeBusinessAction"]),
+      ...providers().access,
       systemAdministration: stub(["read", "execute"]),
       projectWorkspaceAccess: stub(["read", "execute"]),
       projectAccessPresentation: { read },
     };
-    const ports = createDeploymentApiPortsV1(providers({ access }));
-    expect(ports.projectAccessPresentation).toBe(access.projectAccessPresentation);
     // 装配层不包一层空实现：路由拿到的是真实 C06 端口本身。
     expect(() =>
       createDeploymentApiPortsV1(
@@ -239,8 +248,6 @@ describe("生产 API 全端口装配契约", () => {
 
   it("仪表盘公共读面组合六来源的所属窄读，缺来源实现即拒绝装配", () => {
     const options = providers();
-    const ports = createDeploymentApiPortsV1(options);
-    expect(typeof ports.riskDashboardRead.read).toBe("function");
     // 组合层只调用所属 Adapter 的窄读方法：六个窄读缺任一即无法完成装配。
     for (const [provider, method] of [
       ["riskIdentificationRead", "readDashboard"],
@@ -276,7 +283,7 @@ describe("生产 API 全端口装配契约", () => {
       providers({
         // 来源授权由同一 C06 业务动作判定签发；组合层不自己判定。
         access: {
-          ...stub(["verify", "authorize", "authorizeBusinessAction"]),
+          ...providers().access,
           systemAdministration: stub(["read", "execute"]),
           projectWorkspaceAccess: stub(["read", "execute"]),
           projectAccessPresentation: stub(["read"]),

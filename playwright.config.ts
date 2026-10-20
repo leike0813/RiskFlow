@@ -18,6 +18,9 @@ export default defineConfig({
   use: {
     ...devices["Desktop Chrome"],
     browserName: "chromium",
+    // 两个 harness 都以真实 HTTPS（自签 loopback 证书 + Node TLS 终止）提供生产构建；
+    // 这里只忽略自签证书的信任失败，不忽略 Secure/SameSite 等 HTTP 语义。
+    ignoreHTTPSErrors: true,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "off",
@@ -25,7 +28,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"], browserName: "chromium" },
+      use: { ...devices["Desktop Chrome"], browserName: "chromium", ignoreHTTPSErrors: true },
     },
     {
       // C32 demo 验收：服务由 demo/test/browser/server.mjs 在测试内启动（生产构建 +

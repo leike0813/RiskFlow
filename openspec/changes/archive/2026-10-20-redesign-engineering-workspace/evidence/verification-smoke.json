@@ -1,0 +1,57 @@
+{
+  "change": "redesign-engineering-workspace",
+  "implementationHead": "92b19272dc6dc90b86d59c7c56f7275227d481fb",
+  "date": "2026-10-20",
+  "qualification": "合成样本，待甲方复核",
+  "environment": "apps/web production dist, real HTTP, Cookie, PostgreSQL, Chromium 153",
+  "observations": [
+    {
+      "scenario": "PJ-S06 cancellation",
+      "result": "PASS",
+      "observed": "Filled the engineering revision form, opened confirmation and cancelled; observed zero command requests."
+    },
+    {
+      "scenario": "PJ-D-S01 engineering revision",
+      "result": "PASS",
+      "observed": "Confirmed the engineering revision form; POST engineering-workspace/commands returned 200 and current project changed from version 1 to version 2."
+    },
+    {
+      "scenario": "PJ-S05 historical context",
+      "result": "FAIL",
+      "path": "/projects/spatial-scopes?project=demo-c32-project&revision=demo-c32-project%401",
+      "observed": "After version 2 existed, the historical version 1 URL still rendered demo-c32-project@2 and retained the engineering revision write form. Browser assertion confirmed both. An explicit HTTP context query with projectRevisionRef version 1 returned 200 and the original version 1, isolating the defect to the page selector."
+    },
+    {
+      "scenario": "PJ-S04 current spatial revision",
+      "result": "FAIL",
+      "observed": "The page had exactly one selected scope; initialization sent an empty scopeId query (400). An explicit HTTP query for the displayed scope returned its existing spatial revision (200). Filling and confirming the spatial form then returned 404 NOT_FOUND."
+    },
+    {
+      "scenario": "PJ-S09 monitoring independent of knowledge",
+      "result": "FAIL",
+      "observed": "The exact series/snapshot URL rendered frozen statistics normally. Aborting only knowledge-modeling.governance-read caused the whole monitoring body to become TRANSIENT_FAILURE; a browser assertion confirmed the previously visible short-term slope was absent."
+    },
+    {
+      "scenario": "D-02 snapshot mismatch rejection",
+      "result": "FAIL",
+      "path": "/projects/monitoring/demo-c32-series-settlement?project=demo-c32-project&version=1&snapshot=wrong-snapshot&snapshotVersion=1",
+      "observed": "The mismatched explicit snapshot was treated as no selection, with the normal snapshot directory and the unselected prompt; no invalid-target state."
+    },
+    {
+      "scenario": "exact monitoring series metadata",
+      "result": "FAIL",
+      "observed": "A direct versioned series URL rendered blank monitoring object, indicator and unit (only the separator and unit label). Frozen snapshot values remained visible on the successful path."
+    },
+    {
+      "scenario": "PJ-S10 formal cleaning exclusions",
+      "result": "FAIL",
+      "observed": "Selecting the C34 cleaning source displayed conversion, segments and its formal cleaning result, then sent an exclusions request returning HTTP 400 and displayed CONTRACT_INVALID. IngestionPage passed the selected source-version as resultRef instead of the cleaning entry route-decision."
+    },
+    {
+      "scenario": "PJ-S11 ingestion deep-link reconstruction",
+      "result": "FAIL",
+      "path": "/projects/ingestion-tasks?project=demo-c32-project&kind=document&source=s_9a4f0e0c0545731e69422cc73319f96e&version=1",
+      "observed": "Opening the explicit source/version URL rendered only the source catalog and did not load ingestion facts until a row was manually clicked. The page stores selection only in local state and does not read or update these URL parameters."
+    }
+  ]
+}

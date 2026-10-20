@@ -162,6 +162,7 @@ interface MonitoringBatchRow {
   batch_id: string;
   project_id: string;
   series_id: string;
+  series_revision_id: string;
   monitoring_batch_ref: unknown;
   window_from: TimestampColumn;
   window_to: TimestampColumn;
@@ -175,6 +176,7 @@ interface MonitoringSnapshotRow {
   snapshot_id: string;
   project_id: string;
   series_id: string;
+  series_revision_id: string;
   monitoring_snapshot_ref: unknown;
   cutoff: TimestampColumn;
   recorded_at: TimestampColumn;
@@ -1266,18 +1268,15 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
     covered: ReadonlySet<string> | null,
   ): Promise<EngineeringDataCatalogResultV1> {
     const seriesRef = query.payload.monitoringSeriesRef!;
-    const revisionRows = await this.#db
+    const offset = decodeCursor(query.payload.cursor);
+    if (offset === "invalid") return failed(readDenied(query.queryId, query.kind));
+    const pageSize = query.payload.pageSize ?? 50;
+    const revision = await this.#db
       .selectFrom("business.monitoring_series_revisions")
       .selectAll()
       .where("project_id", "=", query.projectId)
-      .where("series_id", "=", seriesRef.reference.entityId)
-      .execute();
-    const revision = revisionRows.find((row) => {
-      const candidate = asVersionedRef(row.monitoring_series_ref);
-      return (
-        candidate !== undefined && candidate.reference.versionId === seriesRef.reference.versionId
-      );
-    });
+      .where(sql<boolean>`monitoring_series_ref = ${JSON.stringify(seriesRef)}::jsonb`)
+      .executeTakeFirst();
     if (revision === undefined) return failed(readDenied(query.queryId, query.kind));
     const scopeRef = asVersionedRef(revision.spatial_scope_ref);
     if (scopeRef !== undefined && covered !== null && !covered.has(scopeRef.reference.entityId)) {
@@ -1287,38 +1286,50 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
       .selectFrom("business.monitoring_batches")
       .selectAll()
       .where("project_id", "=", query.projectId)
-      .where("series_id", "=", seriesRef.reference.entityId)
+      .where("series_revision_id", "=", revision.revision_id)
       .orderBy("recorded_at", "desc")
-      .limit(100)
+      .orderBy(sql`batch_id COLLATE "C"`)
+      .offset(offset)
+      .limit(pageSize + 1)
       .execute();
     const snapshotRows = await this.#db
       .selectFrom("business.monitoring_snapshots")
       .selectAll()
       .where("project_id", "=", query.projectId)
-      .where("series_id", "=", seriesRef.reference.entityId)
+      .where("series_revision_id", "=", revision.revision_id)
       .orderBy("cutoff", "desc")
-      .limit(100)
+      .orderBy(sql`snapshot_id COLLATE "C"`)
+      .offset(offset)
+      .limit(pageSize + 1)
       .execute();
-    const batches = batchRows.map((row) => ({
+    const batches = batchRows.slice(0, pageSize).map((row) => ({
       monitoringBatchRef: row.monitoring_batch_ref,
       relation: row.relation_kind,
       window: { from: asIso(row.window_from), to: asIso(row.window_to) },
       sampleCount: row.sample_count,
       occurredAt: asIso(row.occurred_at),
     }));
-    const snapshots: MonitoringSnapshotCatalogItemV1[] = snapshotRows.map((row) => ({
-      monitoringSnapshotRef:
-        row.monitoring_snapshot_ref as MonitoringSnapshotCatalogItemV1["monitoringSnapshotRef"],
-      cutoff: asIso(row.cutoff),
-      availability: row.availability,
-      coverageRatio: row.coverage_ratio,
-      evidenceSourceVersionRefs: monitoringEvidenceSourceVersionRefs(row.evidence_references),
-    }));
+    const snapshots: MonitoringSnapshotCatalogItemV1[] = snapshotRows
+      .slice(0, pageSize)
+      .map((row) => ({
+        monitoringSnapshotRef:
+          row.monitoring_snapshot_ref as MonitoringSnapshotCatalogItemV1["monitoringSnapshotRef"],
+        cutoff: asIso(row.cutoff),
+        availability: row.availability,
+        coverageRatio: row.coverage_ratio,
+        evidenceSourceVersionRefs: monitoringEvidenceSourceVersionRefs(row.evidence_references),
+      }));
     return succeeded({
       kind: "monitoring-series-detail",
       monitoringSeriesRef: revision.monitoring_series_ref,
+      monitoringIndicator: revision.monitoring_indicator,
+      monitoringObject: revision.monitoring_object,
+      canonicalUnit: revision.canonical_unit,
       batches,
       snapshots,
+      ...(batchRows.length > pageSize || snapshotRows.length > pageSize
+        ? { nextCursor: encodeCursor(offset + pageSize) }
+        : {}),
     } as EngineeringDataCatalogSuccessV1);
   }
 

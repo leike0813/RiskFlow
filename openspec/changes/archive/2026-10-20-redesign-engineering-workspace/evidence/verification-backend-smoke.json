@@ -1,0 +1,34 @@
+{
+  "change": "redesign-engineering-workspace",
+  "implementationHead": "92b19272dc6dc90b86d59c7c56f7275227d481fb",
+  "qualification": "合成样本，待甲方复核",
+  "date": "2026-10-20",
+  "transport": "Real Cookie, HTTP and PostgreSQL in the production-dist browser harness",
+  "observations": [
+    {
+      "scenario": "PJ-H-S02 cross-project exact reference",
+      "result": "FAIL",
+      "observed": "POST context on path demo-c32-project with projectRevisionRef other-project@1 returned HTTP 200 and demo-c32-project@1, rather than rejecting the mismatched entity."
+    },
+    {
+      "scenario": "PJ-D-S03 bounded complete ingestion pagination",
+      "result": "FAIL",
+      "observed": "The C34 registered source returned conversion, segments and cleaning at pageSize=50. At pageSize=1 it returned conversion only and no nextCursor. Passing an arbitrary cursor returned the same conversion again with HTTP 200. Assertions verified the missing continuation and identical first/next stages."
+    },
+    {
+      "scenario": "PJ-D-S03/S05 exact monitoring version",
+      "result": "FAIL",
+      "observed": "ingestion for demo-c32-series-settlement@nonexistent-version returned HTTP 200 with the real monitoring batch and snapshot instead of rejecting the invalid exact target. This proves version mismatch; cross-spatial exploitation remains a static audit finding, not a runtime claim."
+    },
+    {
+      "scenario": "PJ-A-S02 current expectedVersion roundtrip",
+      "result": "FAIL",
+      "observed": "memberships query returned HTTP 200 and a membership-revision UUID version. Sending that exact membershipRef as expectedVersion with the unchanged current roles, status and spatial refs returned HTTP 409 STALE_VERSION. There was no intervening membership update."
+    },
+    {
+      "scenario": "PJ-D-S05 restricted source processing facts",
+      "result": "FAIL",
+      "observed": "Using the same operator browser session and restricted source B, a valid evidence-access query returned HTTP 404 NOT_FOUND, while workspace ingestion returned HTTP 200, source-segment-set segment-set-demo-browser-segments-b@1 and segmentCount=2. Assertions verified the differing access decisions. This is processing-reference/count disclosure; no source body disclosure is claimed."
+    }
+  ]
+}

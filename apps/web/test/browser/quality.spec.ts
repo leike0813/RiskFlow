@@ -35,14 +35,22 @@ test.afterAll(async () => {
 
 const origin = (): string => server.origin;
 
+/**
+ * 选择器沿用既有 `revision=<工程>@<版本>` 规范。主工程的修订取自夹具公开的真实
+ * projectRevisionRef；无权工程没有可读修订，按同一版本约定构造（服务端在授权阶段即拒绝，
+ * 不会因修订是否存在而改变 forbidden 结果）。
+ */
+const revisionFor = (projectId: string): string => {
+  const revision =
+    projectId === server.projectId
+      ? server.projectRevisionRef
+      : { entityId: projectId, versionId: server.projectRevisionRef.versionId };
+  return `revision=${encodeURIComponent(`${revision.entityId}@${revision.versionId}`)}`;
+};
+
 const selectionFor = (projectIds: readonly string[]): string =>
   projectIds
-    .map(
-      (projectId) =>
-        `project=${encodeURIComponent(projectId)}&revision=${encodeURIComponent(
-          `${projectId}@r1`,
-        )}`,
-    )
+    .map((projectId) => `project=${encodeURIComponent(projectId)}&${revisionFor(projectId)}`)
     .join("&");
 
 const pathWithSelection = (pathname: string, projectId: string): string =>
@@ -168,8 +176,11 @@ test("真实 Chromium 完成登录、导航、质量查询、刷新与工程切�
     );
     await expectSummary(page);
     expect(await server.revokeSourceAccess()).toBe(true);
-    await page.reload();
+    // 切回工程时宿主按既有约定清掉 revision（新工程不能继承旧修订），所以此刻地址已无可选修订。
+    // 撤权验收必须回到同一精确深链再读取，不能把「未选修订」的空态当成 ready。
+    await page.goto(deepLinkUrl());
     await ensureSession(page);
+    await expect(page).toHaveURL(deepLinkUrl());
     await expect(page.locator('[data-quality-page="1"]')).toHaveAttribute(
       "data-page-state",
       "ready",

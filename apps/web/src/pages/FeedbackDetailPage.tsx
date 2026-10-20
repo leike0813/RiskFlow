@@ -45,7 +45,7 @@ export default function FeedbackDetailPage() {
   const feedbackRef: KindRef | null =
     feedbackId === undefined
       ? null
-      : { kind: "feedback-record", reference: { entityId: feedbackId, versionId: version ?? "" } };
+      : { kind: "feedback", reference: { entityId: feedbackId, versionId: version ?? "" } };
 
   const feedback = usePageQuery<FeedbackView>(
     (projectId, signal) =>

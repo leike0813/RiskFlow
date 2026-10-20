@@ -3589,6 +3589,11 @@ export type MonitoringSnapshotCatalogItemV1 = z.infer<typeof MonitoringSnapshotC
 export const MonitoringCatalogSeriesDetailV1Schema = z.strictObject({
   kind: z.literal("monitoring-series-detail"),
   monitoringSeriesRef: MonitoringSeriesRefV1Schema,
+  ...MonitoringSeriesCatalogItemV1Schema.pick({
+    monitoringIndicator: true,
+    monitoringObject: true,
+    canonicalUnit: true,
+  }).shape,
   batches: z.array(MonitoringBatchCatalogItemV1Schema).max(100),
   snapshots: z.array(MonitoringSnapshotCatalogItemV1Schema).max(100),
   nextCursor: c32ReadCursor.optional(),

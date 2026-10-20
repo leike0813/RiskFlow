@@ -6,12 +6,14 @@
 import { expect, request, test } from "@playwright/test";
 
 import { startBusinessBrowserServer } from "./business-server.mjs";
+import { HTTP_COOKIE_NAME_V1 } from "../../../../apps/api/dist/http.js";
 
 /** @type {Awaited<ReturnType<typeof startBusinessBrowserServer>>} */
 let server;
 
 test.beforeAll(async () => {
-  server = await startBusinessBrowserServer();
+  // 分页验收登记 51 条真实资料与序列（第二页只在显式开启时出现），供消费者续页用例使用。
+  server = await startBusinessBrowserServer({ paginationAcceptance: true });
 }, 600_000);
 
 test.afterAll(async () => {
@@ -87,6 +89,14 @@ const selectProject = async (page) => {
 test("未登录跳转登录页，登录后回到原目标页", async ({ page }) => {
   await login(page, server.operatorLogin, `/projects?project=${server.projectId}`);
   await expect(page.getByRole("heading", { name: "工程概览", level: 1 })).toBeVisible();
+  expect(new URL(page.url()).protocol).toBe("https:");
+  const cookie = (await page.context().cookies()).find((item) => item.name === HTTP_COOKIE_NAME_V1);
+  expect(cookie).toMatchObject({ secure: true, httpOnly: true, sameSite: "Strict", path: "/" });
+  expect(await page.evaluate(() => document.cookie)).not.toContain(HTTP_COOKIE_NAME_V1);
+  const session = await page.request.get(`${server.origin}/api/v1/session`);
+  expect(session.status()).toBe(200);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "工程概览", level: 1 })).toBeVisible();
 });
 
 test("工程概览呈现真实上下文、适用性三维与发布集合", async ({ page }) => {
@@ -128,7 +138,8 @@ test("资料目录与详情呈现登记事实，证据抽屉呈现定位", async
   }, original!);
   expect(authorized.status).toBe(200);
   expect(authorized.byteLength).toBeGreaterThan(0);
-  const anonymousContext = await request.newContext();
+  // 独立 API 上下文不继承浏览器上下文的 ignoreHTTPSErrors；loopback 自签证书需显式允许。
+  const anonymousContext = await request.newContext({ ignoreHTTPSErrors: true });
   try {
     const anonymous = await anonymousContext.get(new URL(original!, page.url()).href);
     expect(anonymous.status()).toBe(401);
@@ -150,8 +161,18 @@ test("资料目录与详情呈现登记事实，证据抽屉呈现定位", async
 });
 
 test("监测序列详情呈现冻结快照统计与批次事实", async ({ page }) => {
+  // 该序列登记了两个真实批次（两个快照各一批），批次标识由服务端生成；按详情读面返回的
+  // 精确批次引用核对表格与统计，既不假设只有一批，也不删掉任何一批。
   await login(page, server.operatorLogin, `/projects/monitoring?project=${server.projectId}`);
   await expect(page.getByText("监测序列", { exact: true }).first()).toBeVisible();
+  const detailResponse = page.waitForResponse((response) => {
+    if (!response.url().endsWith("/queries/engineering-data.monitoring-catalog")) return false;
+    const payload = response.request().postDataJSON().payload;
+    return (
+      payload.monitoringSeriesRef?.reference?.entityId === server.seriesEntityId &&
+      payload.monitoringSeriesRef?.reference?.versionId === server.seriesVersionId
+    );
+  });
   await page.getByText("地表沉降监测点").click();
   await page.waitForURL(new RegExp(`/projects/monitoring/${server.seriesEntityId}`));
   // CH-4：快照必须由用户选定；未选定时不擅自改成最新。
@@ -162,7 +183,31 @@ test("监测序列详情呈现冻结快照统计与批次事实", async ({ page 
   await expect(page).toHaveURL(/snapshot=/);
   await expect(page.getByText("短期斜率")).toBeVisible();
   await expect(page.getByText("批次与快照登记事实")).toBeVisible();
-  await expect(page.getByText("原始批次")).toBeVisible();
+
+  const batches = (await (await detailResponse).json()).result.batches;
+  expect(batches.length).toBeGreaterThan(1);
+  const relationLabel: Record<string, string> = {
+    original: "原始批次",
+    correction: "更正批次",
+    supplement: "补充批次",
+  };
+  const batchCard = page
+    .locator("section.card")
+    .filter({ has: page.getByRole("heading", { name: "批次与快照登记事实" }) });
+  const batchRows = batchCard.locator("tbody tr.ant-table-row");
+  await expect(batchRows).toHaveCount(batches.length);
+  expect(
+    await batchRows.evaluateAll((rows) => rows.map((row) => row.children[0].textContent)),
+  ).toEqual(batches.map((batch) => batch.monitoringBatchRef.reference.entityId));
+  expect(
+    await batchRows.evaluateAll((rows) => rows.map((row) => row.children[1].textContent)),
+  ).toEqual(batches.map((batch) => relationLabel[batch.relation] ?? batch.relation));
+  expect(
+    await batchRows.evaluateAll((rows) => rows.map((row) => Number(row.children[3].textContent))),
+  ).toEqual(batches.map((batch) => batch.sampleCount));
+  expect(
+    await batchRows.evaluateAll((rows) => rows.map((row) => row.children[4].textContent)),
+  ).toEqual(batches.map((batch) => batch.occurredAt));
 });
 
 test("知识治理四页呈现真实发布事实且无写入口", async ({ page }) => {
@@ -553,6 +598,7 @@ test("生产页面取统一令牌着色，且不请求原型目录或外部 CDN"
       result[name] = getComputedStyle(probe).color;
     }
     probe.remove();
+
     return result;
   });
   const selectedNav = page.locator('.app-nav a[aria-current="page"]');
@@ -784,4 +830,272 @@ test("工程入口能力随路由与前台更新，同代在途合并且故障�
   await expect(failure).toHaveCount(0);
   expect(reads).toBe(3);
   await expect(page.locator('[data-navigation="projects"]')).toHaveAttribute("href", "/projects");
+});
+
+/**
+ * CH-4 修复验收（F-05/F-09/F-10/W-01）：监测精确版本与历史快照、阈值独立状态、
+ * 接入 URL 恢复与正式排除范围、服务端续页，以及无 Agent 权时不请求也不呈现。
+ * 夹具引用全部来自 business-server 真实登记；任何一步失败都计为失败。
+ */
+
+const monitoringDetailLink = ({ version = server.seriesVersionId, snapshot, snapshotVersion }) => {
+  const params = new URLSearchParams({
+    project: server.projectId,
+    version,
+  });
+  if (snapshot !== undefined) params.set("snapshot", snapshot);
+  if (snapshotVersion !== undefined) params.set("snapshotVersion", snapshotVersion);
+  return `/projects/monitoring/${encodeURIComponent(server.seriesEntityId)}?${params.toString()}`;
+};
+
+test("监测精确版本直达直接读该版本，非最新历史快照不被改写", async ({ page }) => {
+  const catalogPayloads = [];
+  const workspaceKinds = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    if (!request.url().endsWith("/queries/engineering-data.monitoring-catalog")) return;
+    catalogPayloads.push(request.postDataJSON().payload);
+  });
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    if (!request.url().endsWith("/engineering-workspace/queries")) return;
+    workspaceKinds.push(request.postDataJSON().payload.kind);
+  });
+
+  const prior = server.priorSettlementSnapshotRef;
+  const catalogResponse = page.waitForResponse((response) => {
+    if (!response.url().endsWith("/engineering-workspace/queries")) return false;
+    return response.request().postDataJSON().payload.kind === "monitoring-snapshots";
+  });
+  await login(
+    page,
+    server.operatorLogin,
+    monitoringDetailLink({
+      snapshot: prior.entityId,
+      snapshotVersion: prior.versionId,
+    }),
+  );
+  await selectProject(page);
+  await catalogResponse;
+
+  await expect(page.getByRole("heading", { name: "监测序列详情", level: 1 })).toBeVisible();
+  // 元数据取自该精确版本：不再是空名称/空指标/空单位，也不经窄解析拼装。
+  await expect(page.getByText("地表沉降监测点")).toBeVisible();
+  await expect(page.getByText(/地表沉降 · 单位 mm/)).toBeVisible();
+  // 选择的是历史（非最新）快照：标签与统计都按该快照版本呈现。
+  await expect(page.getByText(`快照 ${prior.versionId}`, { exact: true })).toBeVisible();
+  await expect(page.getByText("短期斜率")).toBeVisible();
+  await expect(page).toHaveURL(
+    (url) =>
+      url.searchParams.get("version") === server.seriesVersionId &&
+      url.searchParams.get("snapshot") === prior.entityId &&
+      url.searchParams.get("snapshotVersion") === prior.versionId,
+  );
+  // 精确详情不读目录列表页、不做无版本窄解析；快照目录走所属序列的精确分页读面。
+  expect(catalogPayloads.length).toBeGreaterThan(0);
+  expect(catalogPayloads.every((payload) => payload.monitoringSeriesRef !== undefined)).toBe(true);
+  expect(workspaceKinds).not.toContain("resolve-monitoring");
+  expect(workspaceKinds).toContain("monitoring-snapshots");
+});
+
+test("快照参数不成套或跨序列错配时保持安全状态", async ({ page }) => {
+  const lone = server.priorSettlementSnapshotRef;
+  await login(page, server.operatorLogin, monitoringDetailLink({ snapshot: lone.entityId }));
+  await selectProject(page);
+  await expect(page.getByText(/快照参数必须成套给出/)).toBeVisible();
+  await expect(page.getByText("短期斜率")).toHaveCount(0);
+  await expect(page).toHaveURL((url) => url.searchParams.get("snapshotVersion") === null);
+
+  const wrong = server.slurryPressureSnapshotRef;
+  await page.goto(
+    `${server.origin}${monitoringDetailLink({
+      snapshot: wrong.entityId,
+      snapshotVersion: wrong.versionId,
+    })}`,
+  );
+  // 另一序列的真实快照不满足所选序列版本：明确拒绝，不回落最新或“未选择”。
+  await expect(page.getByText(/不属于该序列版本|所选快照不存在或当前会话无权访问/)).toBeVisible();
+  await expect(page.getByText("短期斜率")).toHaveCount(0);
+});
+
+test("当前阈值读取失败不抹掉快照统计与批次登记事实", async ({ page }) => {
+  const current = server.settlementSnapshotRef;
+  await login(
+    page,
+    server.operatorLogin,
+    monitoringDetailLink({
+      snapshot: current.entityId,
+      snapshotVersion: current.versionId,
+    }),
+  );
+  await selectProject(page);
+  await expect(page.getByText("短期斜率")).toBeVisible();
+
+  // 阈值读取走独立读面。用传输失败注入技术故障（客户端会把 fetch 失败归为
+  // TRANSIENT_FAILURE），页面必须保留已获准的快照与批次，而不是整页失败。
+  await page.route("**/queries/knowledge-modeling.governance-read", (route) =>
+    route.abort("failed"),
+  );
+  await page.reload();
+  await expect(page.getByText(/当前知识阈值读取失败/)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText("短期斜率")).toBeVisible();
+  await expect(page.getByText("批次与快照登记事实")).toBeVisible();
+  // 批次登记事实仍然可读；该序列有两个真实批次，不能因为在同一页面上而丢失。
+  await expect(page.getByText("原始批次").first()).toBeVisible();
+
+  await page.unroute("**/queries/knowledge-modeling.governance-read");
+  await page.getByRole("button", { name: "重试读取阈值" }).click();
+  await expect(page.getByText(/当前阈值版本/)).toBeVisible();
+});
+
+test("接入任务按 URL 恢复精确来源，排除范围引用正式清洗结果", async ({ page }) => {
+  const c34 = server.c34SourceVersionRef;
+  const queries = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    if (!request.url().endsWith("/engineering-workspace/queries")) return;
+    queries.push(request.postDataJSON().payload);
+  });
+
+  const target = `/projects/ingestion-tasks?project=${server.projectId}&kind=document&source=${encodeURIComponent(c34.reference.entityId)}&version=${encodeURIComponent(c34.reference.versionId)}`;
+  await login(page, server.operatorLogin, target);
+  await expect(page.getByRole("heading", { name: "接入事实", exact: true })).toBeVisible();
+  // 接入事实与 Agent 任务列表是两个独立区域：后者是已登记的清洗任务清单，允许合法出现
+  // 「数据清洗」字样；来源清理事实只以接入事实区的阶段项判断。
+  const factsCard = page
+    .locator("section.card")
+    .filter({ has: page.getByRole("heading", { name: "接入事实", exact: true }) });
+  const agentCard = page
+    .locator("section.card")
+    .filter({ has: page.getByRole("heading", { name: "可选清洗任务（Agent）" }) });
+  await expect(factsCard.locator('li[aria-label="文档转换"]').first()).toBeVisible();
+  await expect(factsCard.locator('li[aria-label="数据清洗"]').first()).toBeVisible();
+  await expect(agentCard.getByRole("link", { name: "打开任务详情" }).first()).toBeVisible();
+
+  // 刷新仍按 URL 的同一来源版本重建，不需要再点列表。
+  await page.reload();
+  await expect(factsCard.locator('li[aria-label="数据清洗"]').first()).toBeVisible();
+  const ingestionQueries = queries.filter((payload) => payload.kind === "ingestion");
+  const ingestion = ingestionQueries.at(-1);
+  expect(ingestion.subject.reference).toEqual({
+    entityId: c34.reference.entityId,
+    versionId: c34.reference.versionId,
+  });
+
+  // 正式结果引用只从 cleaning 条目取得，未展开前不发排除项请求。
+  expect(queries.filter((payload) => payload.kind === "cleaning-exclusions")).toEqual([]);
+  const exclusionResponse = page.waitForResponse((response) => {
+    if (!response.url().endsWith("/engineering-workspace/queries")) return false;
+    return response.request().postDataJSON().payload.kind === "cleaning-exclusions";
+  });
+  await page.getByRole("button", { name: "核对正式排除范围" }).first().click();
+  const response = await exclusionResponse;
+  expect(response.status()).toBe(200);
+  const payload = response.request().postDataJSON().payload;
+  expect(payload.resultRef.kind).toBe("route-decision");
+  expect(payload.subject.reference).toEqual({
+    entityId: c34.reference.entityId,
+    versionId: c34.reference.versionId,
+  });
+  expect(queries.filter((candidate) => candidate.kind === "cleaning-exclusions")).toHaveLength(1);
+
+  // 切到监测来源会清掉 URL 的来源与版本，接入事实区不再保留旧资料 subject；
+  // 已登记的 Agent 清洗任务列表不受来源切换影响，必须仍然可见。
+  const ingestionCount = ingestionQueries.length;
+  await page.getByRole("button", { name: "监测", exact: true }).click();
+  await expect(factsCard.locator('li[aria-label="数据清洗"]')).toHaveCount(0);
+  await expect(factsCard.getByText(/尚未选择来源/)).toBeVisible();
+  await expect(agentCard.getByRole("link", { name: "打开任务详情" }).first()).toBeVisible();
+  await expect(page).toHaveURL(
+    (url) =>
+      url.searchParams.get("kind") === "monitoring" &&
+      url.searchParams.get("source") === null &&
+      url.searchParams.get("version") === null,
+  );
+  // 切换只清空本页 subject，不按旧资料来源补发接入或排除请求。
+  expect(queries.filter((candidate) => candidate.kind === "ingestion")).toHaveLength(
+    ingestionCount,
+  );
+  expect(
+    queries
+      .filter((candidate) => candidate.kind === "ingestion")
+      .every(
+        (candidate) =>
+          candidate.subject.reference.entityId === c34.reference.entityId &&
+          candidate.subject.reference.versionId === c34.reference.versionId,
+      ),
+  ).toBe(true);
+  expect(queries.filter((candidate) => candidate.kind === "cleaning-exclusions")).toHaveLength(1);
+});
+
+test("接入任务监测来源呈现已登记批次与快照阶段", async ({ page }) => {
+  const target = `/projects/ingestion-tasks?project=${server.projectId}&kind=monitoring&source=${encodeURIComponent(server.seriesEntityId)}&version=${encodeURIComponent(server.seriesVersionId)}`;
+  await login(page, server.operatorLogin, target);
+  await expect(page.getByText("监测批次").first()).toBeVisible();
+  await expect(page.getByText("监测快照").first()).toBeVisible();
+});
+
+test("接入来源与监测目录按服务端游标续页，续页行仍按真实标识打开", async ({ page }) => {
+  await login(
+    page,
+    server.operatorLogin,
+    `/projects/ingestion-tasks?project=${server.projectId}&kind=document`,
+  );
+  await expect(page.getByText(/共 \d+ 条 · 当前页 \d+ 条/)).toBeVisible();
+  const sourcePage = page.waitForResponse((response) => {
+    if (!response.url().endsWith("/queries/engineering-data.source-catalog")) return false;
+    return typeof response.request().postDataJSON().payload?.cursor === "string";
+  });
+  await page.getByRole("button", { name: "继续读取后续页" }).click();
+  await sourcePage;
+  await expect(page.getByText(server.secondPageSourceId, { exact: false }).first()).toBeVisible();
+
+  await page.goto(`${server.origin}/projects/monitoring?project=${server.projectId}`);
+  await expect(page.getByRole("heading", { name: "监测数据", level: 1 })).toBeVisible();
+  const seriesPage = page.waitForResponse((response) => {
+    if (!response.url().endsWith("/queries/engineering-data.monitoring-catalog")) return false;
+    return typeof response.request().postDataJSON().payload?.cursor === "string";
+  });
+  await page.getByRole("button", { name: "继续读取后续页" }).click();
+  await seriesPage;
+  const secondPageSeries = page
+    .locator(".data-table-host tbody tr", { hasText: server.secondPageSeriesId })
+    .first();
+  await expect(secondPageSeries).toBeVisible();
+  // 续页行按真实标识打开精确序列版本；合成序列没有批次/快照，呈现真实空态而不是样例。
+  await secondPageSeries.click();
+  await page.waitForURL(new RegExp(`/projects/monitoring/${server.secondPageSeriesId}(\\?|$)`));
+  await expect(page).toHaveURL(
+    (url) => url.searchParams.get("version") === server.secondPageSeriesVersionId,
+  );
+  await expect(page.getByText(/该序列尚无冻结快照/)).toBeVisible();
+});
+
+test("无 Agent 读取权限时不请求也不呈现清洗任务", async ({ page }) => {
+  let agentReads = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/queries/agent-task.read")) agentReads += 1;
+  });
+  await login(
+    page,
+    server.viewerLogin,
+    `/projects/ingestion-tasks?project=${server.projectId}&kind=document`,
+  );
+  await expect(page.getByRole("heading", { name: "接入任务", level: 1 })).toBeVisible();
+  await expect(page.getByText(/共 \d+ 条 · 当前页 \d+ 条/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "可选清洗任务（Agent）" })).toHaveCount(0);
+  expect(agentReads).toBe(0);
+});
+
+test("获准 Agent 读取时独立列出数据清洗任务并给出精确链接", async ({ page }) => {
+  await login(
+    page,
+    server.operatorLogin,
+    `/projects/ingestion-tasks?project=${server.projectId}&kind=document`,
+  );
+  await expect(page.getByRole("heading", { name: "可选清洗任务（Agent）" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "打开任务详情" }).first()).toHaveAttribute(
+    "href",
+    /\/agent\/tasks\/[^?]+\?[^#]*taskVersion=/,
+  );
 });

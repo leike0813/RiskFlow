@@ -1660,9 +1660,9 @@ export const createDeploymentGraphsV1 = async (input) => {
           getTask: (...args) => taskAuthority.useMethod("getTask", ...args),
         }),
       // CH-4：工程工作区只读正式清洗结果与排除项，不经 Agent 任务面。
-      listResultsForSource: (...args) => cleaning.useMethod("listResultsForSource", ...args),
-      listResultsForMonitoringSnapshots: (...args) =>
-        cleaning.useMethod("listResultsForMonitoringSnapshots", ...args),
+      listResultsForSubject: (...args) => cleaning.useMethod("listResultsForSubject", ...args),
+      listPreparationsForSubject: (...args) =>
+        cleaning.useMethod("listPreparationsForSubject", ...args),
       readResultExclusions: (...args) => cleaning.useMethod("readResultExclusions", ...args),
     },
     readPreparationCompletionOrigin: async (request) => {

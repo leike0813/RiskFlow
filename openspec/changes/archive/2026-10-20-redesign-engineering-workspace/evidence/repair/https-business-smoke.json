@@ -1,0 +1,79 @@
+{
+  "change": "redesign-engineering-workspace",
+  "qualification": "合成样本，待甲方复核",
+  "recordedAt": "2026-10-20T05:58:29.417Z",
+  "cookie": [
+    {
+      "name": "__Host-riskflow_session",
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Strict",
+      "path": "/"
+    }
+  ],
+  "workspaceRead": {
+    "transport": "https:",
+    "crossStagePages": [
+      "segments",
+      "preparation",
+      "cleaning",
+      "conversion"
+    ],
+    "formalExclusionsStatus": 200,
+    "wrongProject": 404,
+    "wrongSeries": 404,
+    "invalidCursor": 404,
+    "snapshotPages": [
+      {
+        "kind": "monitoring-snapshot",
+        "reference": {
+          "entityId": "monitoring-snapshot:3d2b9399960254ff835f453ed0a076e2654e9d4e",
+          "versionId": "1"
+        }
+      },
+      {
+        "kind": "monitoring-snapshot",
+        "reference": {
+          "entityId": "monitoring-snapshot:9e5deddde9b10fc7791b87d4010f09af3ce1d36e",
+          "versionId": "1"
+        }
+      }
+    ]
+  },
+  "monitoringIsolation": {
+    "thresholdFailure": true,
+    "snapshotVisible": true,
+    "batchesVisible": true
+  },
+  "spatialRegression": {
+    "beforeFixCommandStatuses": [
+      200,
+      404
+    ],
+    "afterFixCommandStatuses": [
+      200,
+      200
+    ],
+    "revisions": [
+      {
+        "name": "空间连续修订验收一",
+        "version": "scope-c9f04704-62e5-4f85-bdd1-a7a467eb52f3@scope-revision-49eee373-8cbf-4046-87e5-6b69ae7e3efe-next"
+      },
+      {
+        "name": "空间连续修订验收二",
+        "version": "scope-c9f04704-62e5-4f85-bdd1-a7a467eb52f3@scope-revision-49eee373-8cbf-4046-87e5-6b69ae7e3efe-next-next"
+      }
+    ]
+  },
+  "history": {
+    "spatialVersion": "scope-c9f04704-62e5-4f85-bdd1-a7a467eb52f3@scope-revision-49eee373-8cbf-4046-87e5-6b69ae7e3efe-next",
+    "revisionButtons": 0,
+    "sessionStatus": 200,
+    "protocol": "https:"
+  },
+  "artifacts": [
+    "monitoring-threshold-failure.png",
+    "spatial-two-revisions.png"
+  ],
+  "secretsSaved": false
+}

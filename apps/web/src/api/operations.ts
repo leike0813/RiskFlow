@@ -332,6 +332,10 @@ export interface MonitoringSnapshotEntryView {
 
 export interface MonitoringSeriesDetailView {
   readonly monitoringSeriesRef: KindRef;
+  /** 精确版本的登记元数据：详情直接按所给序列版本读取，不依赖目录首页或窄解析。 */
+  readonly monitoringObject: string;
+  readonly monitoringIndicator: string;
+  readonly canonicalUnit: string;
   readonly batches: MonitoringBatchView[];
   readonly snapshots: MonitoringSnapshotEntryView[];
   readonly nextCursor?: string;
@@ -378,18 +382,26 @@ export const readMonitoringSeriesDetail = async (
   projectId: string,
   monitoringSeriesRef: KindRef,
   signal?: AbortSignal,
+  options: { readonly cursor?: string } = {},
 ): Promise<MonitoringSeriesDetailView> => {
   const result = asRecord(
     await submitQuery({
       projectId,
       branch: "engineering-data.monitoring-catalog",
-      payload: { monitoringSeriesRef },
+      payload: {
+        monitoringSeriesRef,
+        pageSize: 50,
+        ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+      },
       ...(signal === undefined ? {} : { signal }),
     }),
   );
   if (result.kind !== "monitoring-series-detail") throw drift();
   return {
     monitoringSeriesRef: asKindRef(result.monitoringSeriesRef),
+    monitoringObject: asString(result.monitoringObject),
+    monitoringIndicator: asString(result.monitoringIndicator),
+    canonicalUnit: asString(result.canonicalUnit),
     batches: asArray(result.batches).map((batch) => {
       const record = asRecord(batch);
       const window = asRecord(record.window);

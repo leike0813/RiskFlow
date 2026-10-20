@@ -62,6 +62,8 @@ import {
   type ResolveMonitoringSnapshotQueryV1,
   type ReviseMonitoringSeriesCommandV1,
 } from "@riskflow/core/engineering-data/monitoring";
+import type { EngineeringWorkspaceReadPositionV1 } from "@riskflow/contracts/engineering-workspace";
+import type { WorkspaceVisibilityV1 } from "../../auth/postgres-local-identity-access.js";
 import {
   EngineeringDataCommandV1Schema,
   EngineeringDataQueryV1Schema,
@@ -1149,13 +1151,36 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
     readonly projectId: string;
     readonly monitoringSeriesRef: MonitoringSeriesRefV1;
     readonly limit: number;
+    readonly after?: EngineeringWorkspaceReadPositionV1;
+    readonly visibility: WorkspaceVisibilityV1;
   }): Promise<readonly MonitoringBatchCatalogItemV1[]> {
-    const rows = await this.#db
+    let query = this.#db
       .selectFrom("business.monitoring_batches")
       .selectAll()
       .where("project_id", "=", input.projectId)
-      .where("series_id", "=", input.monitoringSeriesRef.reference.entityId)
-      .orderBy("recorded_at", "desc")
+      .where(
+        "series_revision_id",
+        "=",
+        `${input.monitoringSeriesRef.reference.entityId}:${input.monitoringSeriesRef.reference.versionId}`,
+      )
+      .where(
+        input.visibility(
+          sql`jsonb_build_array(source_version_ref)`,
+          sql`jsonb_build_array(spatial_scope_ref)`,
+        ),
+      );
+    if (input.after !== undefined) {
+      const after = input.after;
+      query = query.where(sql<boolean>`occurred_at < ${after.recordedAt}::timestamptz OR
+        (occurred_at = ${after.recordedAt}::timestamptz AND
+          ((batch_id COLLATE "C", version_id COLLATE "C") >
+            (${after.entityId} COLLATE "C", ${after.versionId} COLLATE "C") OR
+            (batch_id = ${after.entityId} AND version_id = ${after.versionId} AND ${"monitoring-batch" > after.stage})))`);
+    }
+    const rows = await query
+      .orderBy("occurred_at", "desc")
+      .orderBy(sql`batch_id COLLATE "C"`)
+      .orderBy(sql`version_id COLLATE "C"`)
       .limit(input.limit)
       .execute();
     return rows.map((row) =>
@@ -1178,13 +1203,33 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
     readonly projectId: string;
     readonly monitoringSeriesRef: MonitoringSeriesRefV1;
     readonly limit: number;
+    readonly after?: EngineeringWorkspaceReadPositionV1;
+    readonly visibility: WorkspaceVisibilityV1;
   }): Promise<readonly MonitoringSnapshotCatalogItemV1[]> {
-    const rows = await this.#db
+    let query = this.#db
       .selectFrom("business.monitoring_snapshots")
       .selectAll()
       .where("project_id", "=", input.projectId)
-      .where("series_id", "=", input.monitoringSeriesRef.reference.entityId)
+      .where("monitoring_series_ref", "=", jsonValue(input.monitoringSeriesRef))
+      .where(
+        input.visibility(
+          sql`COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', 'source-version', 'reference', evidence->'sourceVersion'))
+        FROM jsonb_array_elements(evidence_references) AS evidence), '[]'::jsonb)`,
+          sql`authorization_snapshot->'spatialScopeRefs'`,
+        ),
+      );
+    if (input.after !== undefined) {
+      const after = input.after;
+      query = query.where(sql<boolean>`cutoff < ${after.recordedAt}::timestamptz OR
+        (cutoff = ${after.recordedAt}::timestamptz AND
+          ((snapshot_id COLLATE "C", version_id COLLATE "C") >
+            (${after.entityId} COLLATE "C", ${after.versionId} COLLATE "C") OR
+            (snapshot_id = ${after.entityId} AND version_id = ${after.versionId} AND ${"monitoring-snapshot" > after.stage})))`);
+    }
+    const rows = await query
       .orderBy("cutoff", "desc")
+      .orderBy(sql`snapshot_id COLLATE "C"`)
+      .orderBy(sql`version_id COLLATE "C"`)
       .limit(input.limit)
       .execute();
     return rows.map((row) =>

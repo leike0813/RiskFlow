@@ -32,7 +32,10 @@ import {
   ResolveSourceProcessingInputQueryV1Schema,
   ResolveSourceVersionForReadQueryV1Schema,
 } from "@riskflow/core/engineering-data/context-source";
-import { SourceSegmentIdV1Schema } from "@riskflow/contracts/engineering-workspace";
+import {
+  SourceSegmentIdV1Schema,
+  type EngineeringWorkspaceReadPositionV1,
+} from "@riskflow/contracts/engineering-workspace";
 import {
   AtomicCommandV1Schema,
   type AtomicCommitV1,
@@ -1469,6 +1472,7 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     readonly projectId: string;
     readonly sourceVersionRef: SourceVersionRefV1;
     readonly limit: number;
+    readonly after?: EngineeringWorkspaceReadPositionV1;
   }): Promise<readonly StructuredDocumentConversionRecordV1[]> {
     const ordered = (
       left: StructuredDocumentConversionRecordV1,
@@ -1476,28 +1480,55 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
     ): number => {
       const byTime = right.completedAt.localeCompare(left.completedAt);
       if (byTime !== 0) return byTime;
-      return referenceKey(left.conversionRef).localeCompare(referenceKey(right.conversionRef));
+      return (
+        compareKeys(
+          left.conversionRef.reference.entityId,
+          right.conversionRef.reference.entityId,
+        ) ||
+        compareKeys(left.conversionRef.reference.versionId, right.conversionRef.reference.versionId)
+      );
     };
     if (this.#db === undefined) {
+      const after = input.after;
+      const afterTime = after === undefined ? undefined : new Date(after.recordedAt).toISOString();
       return [...this.#memoryRecords.values()]
         .map((item) => item.record)
-        .filter(
-          (record) =>
-            record.projectId === input.projectId &&
-            referenceKey(record.sourceVersionRef) === referenceKey(input.sourceVersionRef),
-        )
+        .filter((record) => {
+          if (
+            record.projectId !== input.projectId ||
+            referenceKey(record.sourceVersionRef) !== referenceKey(input.sourceVersionRef)
+          )
+            return false;
+          if (after === undefined) return true;
+          if (record.completedAt !== afterTime) return record.completedAt < afterTime!;
+          const byRef =
+            compareKeys(record.conversionRef.reference.entityId, after.entityId) ||
+            compareKeys(record.conversionRef.reference.versionId, after.versionId);
+          return byRef > 0 || (byRef === 0 && "conversion" > after.stage);
+        })
         .sort(ordered)
         .slice(0, input.limit);
     }
-    const rows = await this.#db
+    let query = this.#db
       .selectFrom("business.structured_document_conversions")
       .selectAll()
       .where("project_id", "=", input.projectId)
-      .where(sql<boolean>`source_version_ref = ${JSON.stringify(input.sourceVersionRef)}::jsonb`)
+      .where(sql<boolean>`source_version_ref = ${JSON.stringify(input.sourceVersionRef)}::jsonb`);
+    if (input.after !== undefined) {
+      const after = input.after;
+      query = query.where(sql<boolean>`completed_at < ${after.recordedAt}::timestamptz OR
+        (completed_at = ${after.recordedAt}::timestamptz AND
+          ((conversion_id COLLATE "C", version_id COLLATE "C") >
+            (${after.entityId} COLLATE "C", ${after.versionId} COLLATE "C") OR
+            (conversion_id = ${after.entityId} AND version_id = ${after.versionId} AND ${"conversion" > after.stage})))`);
+    }
+    const rows = await query
       .orderBy("completed_at", "desc")
+      .orderBy(sql`conversion_id COLLATE "C"`)
+      .orderBy(sql`version_id COLLATE "C"`)
       .limit(input.limit)
       .execute();
-    return rows.map(rowToRecord).sort(ordered);
+    return rows.map(rowToRecord);
   }
 
   /**

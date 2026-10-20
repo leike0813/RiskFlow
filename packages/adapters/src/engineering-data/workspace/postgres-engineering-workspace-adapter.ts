@@ -1,3 +1,7 @@
+import { Buffer } from "node:buffer";
+import type { WorkspaceVisibilityV1 } from "../../auth/postgres-local-identity-access.js";
+import { z } from "zod";
+import { IdentifierSchema, IsoDateTimeSchema } from "@riskflow/contracts/common";
 import {
   AccessServiceError,
   type AuthorizationDecisionV1,
@@ -11,23 +15,24 @@ import {
   type MonitoringSeriesCatalogItemV1,
   type MonitoringSeriesRefV1,
   type MonitoringSnapshotCatalogItemV1,
-  type MonitoringSnapshotRefV1,
   type RouteDecisionRefV1,
   type SourceVersionRefV1,
   type SourceSegmentSetRefV1,
   type SpatialScopeRefV1,
   type StructuredDocumentConversionRecordV1,
 } from "@riskflow/contracts/ports";
+import type { DataCleaningExclusionDecisionV1 } from "@riskflow/core/engineering-data/cleaning";
 import type {
-  DataCleaningExclusionDecisionV1,
-  DataCleaningInputStatusV1,
-} from "@riskflow/core/engineering-data/cleaning";
-import type { VersionReference } from "@riskflow/contracts/common";
+  DataCleaningResultForSubjectV1,
+  DataCleaningPreparationForSubjectV1,
+} from "../cleaning/index.js";
 import type { AuthorizationContextV1 } from "@riskflow/contracts/ports";
 import {
   ENGINEERING_WORKSPACE_PAGE_SIZE_DEFAULT_V1,
-  ENGINEERING_WORKSPACE_PAGE_SIZE_MAX_V1,
   SourceSegmentIdV1Schema,
+  EngineeringWorkspaceIngestionStageV1Schema,
+  EngineeringWorkspaceReadSubjectV1Schema,
+  type EngineeringWorkspaceReadPositionV1,
   type EngineeringWorkspaceIngestionItemV1,
   type EngineeringWorkspaceReadSuccessV1,
 } from "@riskflow/contracts/engineering-workspace";
@@ -86,7 +91,11 @@ export interface WorkspaceContextSourceReaderV1 {
     projectId: string,
     sourceVersionRef: SourceVersionRefV1,
   ): Promise<
-    | { readonly sourceSegmentSetRef: SourceSegmentSetRefV1; readonly segmentCount: number }
+    | {
+        readonly sourceSegmentSetRef: SourceSegmentSetRefV1;
+        readonly segmentCount: number;
+        readonly recordedAt: string;
+      }
     | undefined
   >;
 }
@@ -96,6 +105,7 @@ export interface WorkspaceConversionReaderV1 {
     readonly projectId: string;
     readonly sourceVersionRef: SourceVersionRefV1;
     readonly limit: number;
+    readonly after?: EngineeringWorkspaceReadPositionV1;
   }): Promise<readonly StructuredDocumentConversionRecordV1[]>;
   readRecordByRef(
     projectId: string,
@@ -111,23 +121,28 @@ export interface WorkspaceConversionReaderV1 {
 }
 
 export interface WorkspaceCleaningReaderV1 {
-  listResultsForSource(input: {
+  listResultsForSubject(input: {
     readonly projectId: string;
-    readonly sourceVersionRef: SourceVersionRefV1;
+    readonly subject: WorkspaceSubjectV1;
     readonly limit: number;
+    readonly after?: EngineeringWorkspaceReadPositionV1;
+    readonly visibility: WorkspaceVisibilityV1;
   }): Promise<readonly DataCleaningResultForSubjectV1[]>;
-  listResultsForMonitoringSnapshots(input: {
+  listPreparationsForSubject(input: {
     readonly projectId: string;
-    readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[];
+    readonly subject: WorkspaceSubjectV1;
     readonly limit: number;
-  }): Promise<readonly DataCleaningResultForSubjectV1[]>;
+    readonly after?: EngineeringWorkspaceReadPositionV1;
+    readonly visibility: WorkspaceVisibilityV1;
+  }): Promise<readonly DataCleaningPreparationForSubjectV1[]>;
   readResultExclusions(input: {
     readonly projectId: string;
     readonly resultRef: RouteDecisionRefV1;
-    readonly subject:
-      | { readonly sourceVersionRef: SourceVersionRefV1 }
-      | { readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[] };
-  }): Promise<readonly DataCleaningExclusionDecisionV1[]>;
+    readonly subject: WorkspaceSubjectV1;
+    readonly limit: number;
+    readonly afterDecisionId?: string;
+    readonly visibility: WorkspaceVisibilityV1;
+  }): Promise<readonly DataCleaningExclusionDecisionV1[] | undefined>;
 }
 
 export interface WorkspaceMonitoringReaderV1 {
@@ -135,11 +150,15 @@ export interface WorkspaceMonitoringReaderV1 {
     readonly projectId: string;
     readonly monitoringSeriesRef: MonitoringSeriesRefV1;
     readonly limit: number;
+    readonly after?: EngineeringWorkspaceReadPositionV1;
+    readonly visibility: WorkspaceVisibilityV1;
   }): Promise<readonly MonitoringBatchCatalogItemV1[]>;
   listSnapshotsBySeries(input: {
     readonly projectId: string;
     readonly monitoringSeriesRef: MonitoringSeriesRefV1;
     readonly limit: number;
+    readonly after?: EngineeringWorkspaceReadPositionV1;
+    readonly visibility: WorkspaceVisibilityV1;
   }): Promise<readonly MonitoringSnapshotCatalogItemV1[]>;
   readCurrentSeriesCatalogItem(input: {
     readonly projectId: string;
@@ -151,8 +170,19 @@ export interface WorkspaceMonitoringReaderV1 {
   }): Promise<SpatialScopeRefV1 | undefined>;
 }
 
+interface WorkspaceAccessV1 extends LocalIdentityAccessV1 {
+  readCurrentSpatialScopeRef(
+    projectId: string,
+    scopeId: string,
+  ): Promise<SpatialScopeRefV1 | undefined>;
+  workspaceVisibility(
+    authorization: AuthorizationContextV1,
+    branch: ModuleBranchV1,
+  ): Promise<WorkspaceVisibilityV1>;
+}
+
 export interface PostgresEngineeringWorkspaceAdapterOptionsV1 {
-  readonly access: LocalIdentityAccessV1;
+  readonly access: WorkspaceAccessV1;
   readonly contextSource: WorkspaceContextSourceReaderV1;
   readonly conversions: WorkspaceConversionReaderV1;
   readonly cleaning: WorkspaceCleaningReaderV1;
@@ -160,18 +190,6 @@ export interface PostgresEngineeringWorkspaceAdapterOptionsV1 {
 }
 
 type WorkspaceSubjectV1 = SourceVersionRefV1 | MonitoringSeriesRefV1;
-
-/**
- * 与某 subject 相关的正式清洗结果投影（design D-06）。
- *
- * 只含所选输入的可用性事实与结果引用；不复制清洗模型，也不展开整体结果正文。
- */
-export interface DataCleaningResultForSubjectV1 {
-  readonly resultRef: RouteDecisionRefV1;
-  readonly policyRef: VersionReference;
-  readonly recordedAt: string;
-  readonly input: DataCleaningInputStatusV1;
-}
 
 /** 目标不可见：按安全边界拒绝，不区分“存在但无权”与“不存在”。 */
 class WorkspaceTargetDeniedError extends Error {}
@@ -271,8 +289,106 @@ const branchFor = (payload: {
   return "engineering-data.source-catalog";
 };
 
+const positionSchema = z.strictObject({
+  recordedAt: IsoDateTimeSchema,
+  entityId: IdentifierSchema,
+  versionId: IdentifierSchema,
+  stage: EngineeringWorkspaceIngestionStageV1Schema,
+});
+const cursorSchema = z.strictObject({
+  kind: z.enum(["ingestion", "monitoring-snapshots", "cleaning-exclusions"]),
+  projectId: IdentifierSchema,
+  subject: EngineeringWorkspaceReadSubjectV1Schema,
+  position: positionSchema.optional(),
+  resultRef: z
+    .strictObject({
+      kind: z.literal("route-decision"),
+      reference: z.strictObject({ entityId: IdentifierSchema, versionId: IdentifierSchema }),
+    })
+    .optional(),
+  decisionId: IdentifierSchema.optional(),
+});
+type WorkspaceCursor = z.infer<typeof cursorSchema>;
+const sameReference = (left: WorkspaceSubjectV1, right: WorkspaceSubjectV1): boolean =>
+  left.kind === right.kind &&
+  left.reference.entityId === right.reference.entityId &&
+  left.reference.versionId === right.reference.versionId;
+const cursorFor = (request: EngineeringWorkspaceReadRequestV1): WorkspaceCursor | undefined => {
+  const payload = request.payload;
+  if (!("cursor" in payload) || payload.cursor === undefined) return undefined;
+  let decoded: WorkspaceCursor;
+  try {
+    decoded = cursorSchema.parse(
+      JSON.parse(Buffer.from(payload.cursor, "base64url").toString("utf8")),
+    );
+  } catch {
+    throw new WorkspaceTargetDeniedError("invalid workspace cursor");
+  }
+  const subject =
+    payload.kind === "monitoring-snapshots" ? payload.monitoringSeriesRef : payload.subject;
+  if (
+    decoded.kind !== payload.kind ||
+    decoded.projectId !== request.projectId ||
+    !sameReference(decoded.subject, subject)
+  ) {
+    throw new WorkspaceTargetDeniedError("workspace cursor target mismatch");
+  }
+  if (payload.kind === "cleaning-exclusions") {
+    if (
+      decoded.decisionId === undefined ||
+      decoded.position !== undefined ||
+      decoded.resultRef?.reference.entityId !== payload.resultRef.reference.entityId ||
+      decoded.resultRef.reference.versionId !== payload.resultRef.reference.versionId
+    ) {
+      throw new WorkspaceTargetDeniedError("workspace exclusion cursor mismatch");
+    }
+  } else if (
+    decoded.position === undefined ||
+    decoded.resultRef !== undefined ||
+    decoded.decisionId !== undefined
+  ) {
+    throw new WorkspaceTargetDeniedError("workspace cursor position missing");
+  }
+  return decoded;
+};
+const encodeCursor = (cursor: WorkspaceCursor): string =>
+  Buffer.from(JSON.stringify(cursor)).toString("base64url");
+const compareText = (left: string, right: string): number => {
+  for (let a = 0, b = 0; a < left.length && b < right.length;) {
+    const x = left.codePointAt(a)!;
+    const y = right.codePointAt(b)!;
+    if (x !== y) return x < y ? -1 : 1;
+    a += x > 0xffff ? 2 : 1;
+    b += y > 0xffff ? 2 : 1;
+  }
+  return left.length === right.length ? 0 : left.length < right.length ? -1 : 1;
+};
+const sortableTime = (value: string): string =>
+  `${value.slice(0, 19)}.${value.slice(19, -1).replace(".", "").padEnd(6, "0")}Z`;
+const positionOf = (
+  recordedAt: string,
+  reference: { readonly reference: { readonly entityId: string; readonly versionId: string } },
+  stage: EngineeringWorkspaceReadPositionV1["stage"],
+): EngineeringWorkspaceReadPositionV1 => ({
+  recordedAt: sortableTime(recordedAt),
+  ...reference.reference,
+  stage,
+});
+const comparePosition = (
+  left: EngineeringWorkspaceReadPositionV1,
+  right: EngineeringWorkspaceReadPositionV1,
+): number =>
+  compareText(right.recordedAt, left.recordedAt) ||
+  compareText(left.entityId, right.entityId) ||
+  compareText(left.versionId, right.versionId) ||
+  compareText(left.stage, right.stage);
+interface WorkspaceCandidate {
+  readonly position: EngineeringWorkspaceReadPositionV1;
+  readonly item: EngineeringWorkspaceIngestionItemV1;
+}
+
 export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspacePortV1 {
-  readonly #access: LocalIdentityAccessV1;
+  readonly #access: WorkspaceAccessV1;
   readonly #contextSource: WorkspaceContextSourceReaderV1;
   readonly #conversions: WorkspaceConversionReaderV1;
   readonly #cleaning: WorkspaceCleaningReaderV1;
@@ -302,12 +418,20 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
     }
     const valid = parsed.data;
     try {
+      const scope =
+        valid.payload.kind === "spatial"
+          ? await this.#access.readCurrentSpatialScopeRef(
+              valid.projectId,
+              valid.payload.spatialScopeRef.reference.entityId,
+            )
+          : undefined;
+      if (valid.payload.kind === "spatial" && scope === undefined)
+        throw new WorkspaceTargetDeniedError("workspace scope unavailable");
       const decision = await this.#access.authorize({
         invocationId: valid.commandId,
         projectId: valid.projectId,
         branch: "engineering-data.register-source-delivery",
-        requestedSpatialScopeRefs:
-          valid.payload.kind === "spatial" ? [valid.payload.spatialScopeRef] : [],
+        requestedSpatialScopeRefs: scope === undefined ? [] : [scope],
         requestedSourceVersionRefs: [],
         requestedAt: valid.issuedAt,
         invocation: { kind: "human-session", sessionToken: valid.sessionToken },
@@ -347,7 +471,7 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
       });
       switch (valid.payload.kind) {
         case "context":
-          return await this.#readContext(valid);
+          return await this.#readContext(valid, decision);
         case "ingestion":
           return await this.#readIngestion(valid, decision);
         case "resolve-monitoring":
@@ -371,10 +495,32 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
    */
   async #readContext(
     request: EngineeringWorkspaceReadRequestV1,
+    decision: AuthorizationDecisionV1,
   ): Promise<EngineeringWorkspaceReadResultV1> {
     const payload = request.payload;
     if (payload.kind !== "context") {
       return failed(workspaceError("TERMINAL_FAILURE", request.queryId));
+    }
+    if (
+      payload.projectRevisionRef !== undefined &&
+      payload.projectRevisionRef.reference.entityId !== request.projectId
+    ) {
+      throw new WorkspaceTargetDeniedError("workspace project reference mismatch");
+    }
+    const scopeId = payload.spatialScopeRef?.reference.entityId ?? payload.scopeId;
+    if (scopeId !== undefined) {
+      const scopeRef = await this.#access.readCurrentSpatialScopeRef(request.projectId, scopeId);
+      if (scopeRef === undefined)
+        throw new WorkspaceTargetDeniedError("workspace scope unavailable");
+      await this.#access.verify({
+        authorizationContextRef: decision.context.authorizationContextRef,
+        invocationId: request.queryId,
+        projectId: request.projectId,
+        branch: "engineering-data.context-read",
+        requestedSpatialScopeRefs: [scopeRef],
+        requestedSourceVersionRefs: [],
+        requestedAt: decision.context.decidedAt,
+      });
     }
     const project =
       payload.projectRevisionRef === undefined
@@ -393,6 +539,12 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
         : payload.scopeId !== undefined
           ? await this.#contextSource.readCurrentSpatialRevision(request.projectId, payload.scopeId)
           : undefined;
+    if (
+      (payload.projectRevisionRef !== undefined && project === undefined) ||
+      (payload.spatialScopeRef !== undefined && spatial === undefined)
+    ) {
+      throw new WorkspaceTargetDeniedError("workspace revision unavailable");
+    }
     return succeeded({
       kind: "context",
       projectId: request.projectId,
@@ -412,21 +564,28 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
     decision: AuthorizationDecisionV1,
   ): Promise<EngineeringWorkspaceReadResultV1> {
     const payload = request.payload;
-    if (payload.kind !== "ingestion") {
+    if (payload.kind !== "ingestion")
       return failed(workspaceError("TERMINAL_FAILURE", request.queryId));
-    }
-    const limit = Math.min(pageSizeOf(payload.pageSize), ENGINEERING_WORKSPACE_PAGE_SIZE_MAX_V1);
+    const limit = pageSizeOf(payload.pageSize);
+    const after = cursorFor(request)?.position;
     const subject = payload.subject;
+    const visibility = await this.#access.workspaceVisibility(decision.context, branchFor(payload));
+    const candidates: WorkspaceCandidate[] = [];
+    const add = (item: EngineeringWorkspaceIngestionItemV1) => {
+      const position = positionOf(item.recordedAt, item.recordRef, item.stage);
+      if (after === undefined || comparePosition(position, after) > 0)
+        candidates.push({ position, item });
+    };
     if (subject.kind === "source-version") {
       await this.#verifySource(request, decision, subject);
-      const items: EngineeringWorkspaceIngestionItemV1[] = [];
       const conversions = await this.#conversions.listBySourceVersion({
         projectId: request.projectId,
         sourceVersionRef: subject,
-        limit,
+        limit: limit + 1,
+        ...(after === undefined ? {} : { after }),
       });
-      for (const record of conversions) {
-        items.push({
+      for (const record of conversions)
+        add({
           stage: "conversion",
           recordRef: record.conversionRef,
           recordedAt: record.completedAt,
@@ -439,87 +598,56 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
           ...(record.diagnosticRef === undefined ? {} : { diagnosticRef: record.diagnosticRef }),
           completedAt: record.completedAt,
         });
-      }
-      const segmentSet = await this.#contextSource.readSegmentSetSummary(
-        request.projectId,
-        subject,
-      );
-      if (segmentSet !== undefined) {
-        items.push({
+      const segments = await this.#contextSource.readSegmentSetSummary(request.projectId, subject);
+      if (segments !== undefined)
+        add({
           stage: "segments",
-          recordRef: segmentSet.sourceSegmentSetRef,
-          recordedAt: decision.context.decidedAt,
-          sourceSegmentSetRef: segmentSet.sourceSegmentSetRef,
-          segmentCount: segmentSet.segmentCount,
+          recordRef: segments.sourceSegmentSetRef,
+          recordedAt: segments.recordedAt,
+          sourceSegmentSetRef: segments.sourceSegmentSetRef,
+          segmentCount: segments.segmentCount,
         });
-      }
-      const results = await this.#cleaning.listResultsForSource({
+    } else {
+      await this.#verifySeries(request, decision, subject);
+      const batches = await this.#monitoring.listBatchesBySeries({
         projectId: request.projectId,
-        sourceVersionRef: subject,
-        limit,
+        monitoringSeriesRef: subject,
+        limit: limit + 1,
+        visibility,
+        ...(after === undefined ? {} : { after }),
       });
-      for (const result of results) {
-        items.push({
-          stage: "cleaning",
-          recordRef: result.resultRef,
-          recordedAt: result.recordedAt,
-          resultRef: result.resultRef,
-          policyRef: result.policyRef,
-          availability: result.input.availability,
-          baselineAvailability: result.input.baselineAvailability,
-          totalCount: result.input.totalCount,
-          retainedCount: result.input.retainedCount,
-          retainedRatio: result.input.retainedRatio,
-          reasonCodes: result.input.reasonCodes,
+      for (const batch of batches)
+        add({
+          stage: "monitoring-batch",
+          recordRef: batch.monitoringBatchRef,
+          recordedAt: batch.occurredAt,
+          batch,
         });
-      }
-      return succeeded({
-        kind: "ingestion",
+      const snapshots = await this.#monitoring.listSnapshotsBySeries({
         projectId: request.projectId,
-        subject,
-        items: items.slice(0, limit),
+        monitoringSeriesRef: subject,
+        limit: limit + 1,
+        visibility,
+        ...(after === undefined ? {} : { after }),
       });
+      for (const snapshot of snapshots)
+        add({
+          stage: "monitoring-snapshot",
+          recordRef: snapshot.monitoringSnapshotRef,
+          recordedAt: snapshot.cutoff,
+          snapshot,
+        });
     }
-    await this.#verifySeries(request, decision, subject);
-    const items: EngineeringWorkspaceIngestionItemV1[] = [];
-    const batches = await this.#monitoring.listBatchesBySeries({
+    const ownedPage = {
       projectId: request.projectId,
-      monitoringSeriesRef: subject,
-      limit,
-    });
-    for (const batch of batches) {
-      items.push({
-        stage: "monitoring-batch",
-        recordRef: batch.monitoringBatchRef,
-        recordedAt: batch.occurredAt,
-        batch,
-      });
-    }
-    const snapshots = await this.#monitoring.listSnapshotsBySeries({
-      projectId: request.projectId,
-      monitoringSeriesRef: subject,
-      limit,
-    });
-    for (const snapshot of snapshots) {
-      items.push({
-        stage: "monitoring-snapshot",
-        recordRef: snapshot.monitoringSnapshotRef,
-        recordedAt: snapshot.cutoff,
-        snapshot,
-      });
-    }
-    const seriesSnapshots = await this.#monitoring.listSnapshotsBySeries({
-      projectId: request.projectId,
-      monitoringSeriesRef: subject,
-      limit: ENGINEERING_WORKSPACE_PAGE_SIZE_MAX_V1,
-    });
-    const cleaningResults = await this.#cleaning.listResultsForMonitoringSnapshots({
-      projectId: request.projectId,
-      monitoringSnapshotRefs: seriesSnapshots.map((snapshot) => snapshot.monitoringSnapshotRef),
-      limit,
-    });
-    for (const result of cleaningResults) {
-      items.push({
+      subject,
+      limit: limit + 1,
+      visibility,
+      ...(after === undefined ? {} : { after }),
+    };
+    const results = await this.#cleaning.listResultsForSubject(ownedPage);
+    for (const result of results)
+      add({
         stage: "cleaning",
         recordRef: result.resultRef,
         recordedAt: result.recordedAt,
@@ -532,12 +660,32 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
         retainedRatio: result.input.retainedRatio,
         reasonCodes: result.input.reasonCodes,
       });
-    }
+    const preparations = await this.#cleaning.listPreparationsForSubject(ownedPage);
+    for (const preparation of preparations)
+      add({
+        stage: "preparation",
+        recordRef: preparation.preparationRef,
+        recordedAt: preparation.recordedAt,
+        preparationRef: preparation.preparationRef,
+      });
+    candidates.sort((left, right) => comparePosition(left.position, right.position));
+    const page = candidates.slice(0, limit);
+    const last = page.at(-1);
     return succeeded({
       kind: "ingestion",
       projectId: request.projectId,
       subject,
-      items: items.slice(0, limit),
+      items: page.map((candidate) => candidate.item),
+      ...(candidates.length > limit && last !== undefined
+        ? {
+            nextCursor: encodeCursor({
+              kind: "ingestion",
+              projectId: request.projectId,
+              subject,
+              position: last.position,
+            }),
+          }
+        : {}),
     });
   }
 
@@ -582,23 +730,33 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
     if (payload.kind !== "monitoring-snapshots") {
       return failed(workspaceError("TERMINAL_FAILURE", request.queryId));
     }
-    const scopeRef = await this.#monitoring.readSeriesScopeRef({
-      projectId: request.projectId,
-      monitoringSeriesRef: payload.monitoringSeriesRef,
-    });
-    await this.#verifySeries(
-      request,
-      decision,
-      payload.monitoringSeriesRef,
-      scopeRef === undefined ? [] : [scopeRef],
-    );
-    const limit = Math.min(pageSizeOf(payload.pageSize), ENGINEERING_WORKSPACE_PAGE_SIZE_MAX_V1);
+    await this.#verifySeries(request, decision, payload.monitoringSeriesRef);
+    const limit = pageSizeOf(payload.pageSize);
+    const after = cursorFor(request)?.position;
+    const visibility = await this.#access.workspaceVisibility(decision.context, branchFor(payload));
     const items = await this.#monitoring.listSnapshotsBySeries({
       projectId: request.projectId,
       monitoringSeriesRef: payload.monitoringSeriesRef,
-      limit,
+      limit: limit + 1,
+      visibility,
+      ...(after === undefined ? {} : { after }),
     });
-    return succeeded({ kind: "monitoring-snapshots", items: [...items] });
+    const page = items.slice(0, limit);
+    const last = page.at(-1);
+    return succeeded({
+      kind: "monitoring-snapshots",
+      items: page,
+      ...(items.length > limit && last !== undefined
+        ? {
+            nextCursor: encodeCursor({
+              kind: "monitoring-snapshots",
+              projectId: request.projectId,
+              subject: payload.monitoringSeriesRef,
+              position: positionOf(last.cutoff, last.monitoringSnapshotRef, "monitoring-snapshot"),
+            }),
+          }
+        : {}),
+    });
   }
 
   /**
@@ -614,32 +772,27 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
     if (payload.kind !== "cleaning-exclusions") {
       return failed(workspaceError("TERMINAL_FAILURE", request.queryId));
     }
-    const limit = Math.min(pageSizeOf(payload.pageSize), ENGINEERING_WORKSPACE_PAGE_SIZE_MAX_V1);
-    let subject:
-      | { readonly sourceVersionRef: SourceVersionRefV1 }
-      | { readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[] };
-    if (payload.subject.kind === "source-version") {
+    const limit = pageSizeOf(payload.pageSize);
+    const cursor = cursorFor(request);
+    if (payload.subject.kind === "source-version")
       await this.#verifySource(request, decision, payload.subject);
-      subject = { sourceVersionRef: payload.subject };
-    } else {
-      await this.#verifySeries(request, decision, payload.subject);
-      const snapshots = await this.#monitoring.listSnapshotsBySeries({
-        projectId: request.projectId,
-        monitoringSeriesRef: payload.subject,
-        limit: ENGINEERING_WORKSPACE_PAGE_SIZE_MAX_V1,
-      });
-      subject = {
-        monitoringSnapshotRefs: snapshots.map((snapshot) => snapshot.monitoringSnapshotRef),
-      };
-    }
+    else await this.#verifySeries(request, decision, payload.subject);
+    const visibility = await this.#access.workspaceVisibility(decision.context, branchFor(payload));
     const exclusions = await this.#cleaning.readResultExclusions({
       projectId: request.projectId,
       resultRef: payload.resultRef,
-      subject,
+      subject: payload.subject,
+      limit: limit + 1,
+      visibility,
+      ...(cursor?.decisionId === undefined ? {} : { afterDecisionId: cursor.decisionId }),
     });
+    if (exclusions === undefined)
+      throw new WorkspaceTargetDeniedError("workspace cleaning result unavailable");
+    const page = exclusions.slice(0, limit);
+    const last = page.at(-1);
     return succeeded({
       kind: "cleaning-exclusions",
-      items: exclusions.slice(0, limit).map((item) => ({
+      items: page.map((item) => ({
         decisionId: item.decisionId,
         targetKind: item.targetKind,
         reasonCode: item.reasonCode,
@@ -649,6 +802,17 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
         ...(item.sampleVersionRef === undefined ? {} : { sampleVersionRef: item.sampleVersionRef }),
         evidenceReferences: item.evidenceReferences,
       })),
+      ...(exclusions.length > limit && last !== undefined
+        ? {
+            nextCursor: encodeCursor({
+              kind: "cleaning-exclusions",
+              projectId: request.projectId,
+              subject: payload.subject,
+              resultRef: payload.resultRef,
+              decisionId: last.decisionId,
+            }),
+          }
+        : {}),
     });
   }
 
@@ -700,10 +864,10 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
     sourceVersionRef: SourceVersionRefV1,
   ): Promise<void> {
     const source = await this.#contextSource.readSourceVersion(request.projectId, sourceVersionRef);
-    if (source === undefined) {
+    if (source === undefined || source.accessStatus !== "ready") {
       throw new WorkspaceTargetDeniedError("workspace source target is not visible");
     }
-    await this.#access.verify({
+    const current = await this.#access.verify({
       authorizationContextRef: decision.context.authorizationContextRef,
       invocationId: request.queryId,
       projectId: request.projectId,
@@ -712,6 +876,7 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
       requestedSourceVersionRefs: [sourceVersionRef],
       requestedAt: decision.context.decidedAt,
     });
+    if (current.redacted) throw new WorkspaceTargetDeniedError("workspace source unavailable");
   }
 
   /** 目标监测序列的当前权限复验：按序列登记的空间范围收窄。 */
@@ -725,14 +890,14 @@ export class PostgresEngineeringWorkspaceAdapter implements EngineeringWorkspace
       projectId: request.projectId,
       monitoringSeriesRef: seriesRef,
     });
-    const resolved: SpatialScopeRefV1[] =
-      scopeRefs.length > 0 ? [...scopeRefs] : fallback === undefined ? [] : [fallback];
+    if (fallback === undefined)
+      throw new WorkspaceTargetDeniedError("workspace series unavailable");
     await this.#access.verify({
       authorizationContextRef: decision.context.authorizationContextRef,
       invocationId: request.queryId,
       projectId: request.projectId,
       branch: "engineering-data.monitoring-catalog",
-      requestedSpatialScopeRefs: resolved,
+      requestedSpatialScopeRefs: scopeRefs.length > 0 ? [...scopeRefs] : [fallback],
       requestedSourceVersionRefs: [],
       requestedAt: decision.context.decidedAt,
     });

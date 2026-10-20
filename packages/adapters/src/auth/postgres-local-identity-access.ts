@@ -1,6 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
-import { sql, type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction, type RawBuilder } from "kysely";
 import { z } from "zod";
 import type { AgentTaskSnapshotV1 } from "@riskflow/core/agent-runtime";
 
@@ -26,6 +26,7 @@ import {
   AccessServiceError,
   allSpatialScopesCovered,
   assertSpatialScopeTree,
+  spatialScopeClosure,
   AuthorizationDecisionV1Schema,
   AuthorizationRequestV1Schema,
   AuthorizationVerificationRequestV1Schema,
@@ -208,10 +209,25 @@ const deploymentProjectAccessCommandSchema = z.discriminatedUnion("kind", [
  * 系统管理面由同一个适配器实现，因此共用同一连接、同一时钟与同一 C06 事务语义；
  * 它不改变 LocalIdentityAccessV1 的任何方法语义，上层 mock 也无需实现它。
  */
+/** C06 生成的当前可见性谓词；领域查询必须在排序和 LIMIT 前应用。 */
+export type WorkspaceVisibilityV1 = (
+  sourceVersionRefs: RawBuilder<unknown>,
+  spatialScopeRefs: RawBuilder<unknown>,
+) => RawBuilder<boolean>;
+
 export interface PostgresLocalIdentityAccess extends LocalIdentityAccessV1 {
   authorizeBusinessAction(
     input: BusinessActionAuthorizationInputV1,
   ): Promise<AuthorizationDecisionV1>;
+  /** 可信业务入口定位当前空间身份；返回值不代表调用者获准读取该空间。 */
+  readCurrentSpatialScopeRef(
+    projectId: string,
+    scopeId: string,
+  ): Promise<SpatialScopeRefV1 | undefined>;
+  workspaceVisibility(
+    authorization: AuthorizationContextV1,
+    branch: ModuleBranchV1,
+  ): Promise<WorkspaceVisibilityV1>;
   close(): Promise<void>;
   executeDeploymentProjectAccess(input: {
     readonly sessionToken: string;
@@ -3455,6 +3471,53 @@ export const createPostgresLocalIdentityAccess = (
     });
   };
 
+  const workspaceVisibility: PostgresLocalIdentityAccess["workspaceVisibility"] = async (
+    authorization,
+    branch,
+  ) => {
+    const verified = await verify({
+      authorizationContextRef: authorization.authorizationContextRef,
+      invocationId: authorization.authorizationContextRef.reference.entityId,
+      projectId: authorization.projectId,
+      branch,
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+      requestedAt: authorization.decidedAt,
+    });
+    const current = await evaluateCurrentAccess(
+      db,
+      authorization.actorId,
+      authorization.projectId,
+      branch,
+      [],
+      [],
+      "workspace.visibility",
+    );
+    const covered = spatialScopeClosure(current.spatialScopeRefs, current.scopeNodes).filter(
+      (ref) =>
+        allSpatialScopesCovered(verified.context.spatialScopeRefs, [ref], current.scopeNodes),
+    );
+    const scopeIds = covered.map((ref) => ref.reference.entityId);
+    return (sources, spatial) => sql<boolean>`
+      NOT EXISTS (SELECT 1 FROM jsonb_array_elements(${spatial}) AS target
+        WHERE NOT ((target->'reference'->>'entityId') = ANY(${scopeIds}::text[])))
+      AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(${sources}) AS source
+        WHERE NOT EXISTS (
+          SELECT 1 FROM business.source_access_policies AS policy
+          JOIN business.source_access_policy_revisions AS revision ON revision.revision_id = policy.current_revision_id
+          WHERE policy.project_id = ${authorization.projectId}
+            AND policy.source_entity_id = source->'reference'->>'entityId'
+            AND policy.source_version_id = source->'reference'->>'versionId'
+            AND (revision.visibility = 'project-shared' OR EXISTS (
+              SELECT 1 FROM business.source_access_policy_revision_accounts AS account
+              WHERE account.revision_id = revision.revision_id AND account.account_id = ${authorization.actorId}))
+            AND NOT EXISTS (SELECT 1 FROM business.source_access_policy_revision_scopes AS scope
+              WHERE scope.revision_id = revision.revision_id AND NOT (scope.scope_id = ANY(${scopeIds}::text[])))
+            AND (EXISTS (SELECT 1 FROM business.source_access_policy_revision_scopes AS scope WHERE scope.revision_id = revision.revision_id)
+              OR ${scopeIds.includes(current.project.root_scope_id)})
+        ))`;
+  };
+
   const verify: PostgresLocalIdentityAccess["verify"] = async (request) => {
     const valid = AuthorizationVerificationRequestV1Schema.parse(request);
     const stored = await loadStoredContext(db, valid.authorizationContextRef);
@@ -4289,6 +4352,52 @@ export const createPostgresLocalIdentityAccess = (
         stage,
       );
       const payload = valid.payload;
+      if (payload.kind === "revise-membership") {
+        const membership = await db
+          .selectFrom("business.project_memberships")
+          .select("membership_id")
+          .where("project_id", "=", valid.projectId)
+          .where("membership_id", "=", payload.membershipId)
+          .where("account_id", "=", payload.accountId)
+          .executeTakeFirst();
+        if (membership === undefined || payload.expectedVersion === "none") {
+          throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
+        }
+      }
+      let expectedVersion = payload.expectedVersion;
+      if (expectedVersion !== "none" && expectedVersionNumber(expectedVersion) === undefined) {
+        // 目录的精确修订身份在边界转为原命令版本号；陈旧修订仍由原事务拒绝。
+        const revision =
+          payload.kind === "revise-membership"
+            ? await db
+                .selectFrom("business.project_membership_revisions")
+                .select("revision_no")
+                .where("project_id", "=", valid.projectId)
+                .where("membership_id", "=", expectedVersion.entityId)
+                .where("revision_id", "=", expectedVersion.versionId)
+                .executeTakeFirst()
+            : payload.kind === "revise-spatial-scope"
+              ? await db
+                  .selectFrom("business.access_spatial_scope_revisions")
+                  .select("revision_no")
+                  .where("project_id", "=", valid.projectId)
+                  .where("scope_id", "=", expectedVersion.entityId)
+                  .where("revision_id", "=", expectedVersion.versionId)
+                  .executeTakeFirst()
+              : payload.kind === "revise-source-access"
+                ? await db
+                    .selectFrom("business.source_access_policy_revisions")
+                    .select("revision_no")
+                    .where("project_id", "=", valid.projectId)
+                    .where("source_access_grant_id", "=", expectedVersion.entityId)
+                    .where("revision_id", "=", expectedVersion.versionId)
+                    .executeTakeFirst()
+                : undefined;
+        if (revision === undefined) {
+          throw makeAccessError("STALE_ACCESS_VERSION", stage, clock);
+        }
+        expectedVersion = { ...expectedVersion, versionId: String(revision.revision_no) };
+      }
       const registeredByAccountId =
         payload.kind === "revise-source-access"
           ? await registeredByForSource(db, valid.projectId, payload.sourceVersionRef)
@@ -4299,6 +4408,7 @@ export const createPostgresLocalIdentityAccess = (
       }
       const result = await projectCommand({
         ...payload,
+        expectedVersion,
         ...(registeredByAccountId === undefined ? {} : { registeredByAccountId }),
         projectId: valid.projectId,
         commandId: valid.commandId,
@@ -4499,47 +4609,35 @@ export const createPostgresLocalIdentityAccess = (
     pageSize: number,
   ): Promise<ProjectWorkspaceAccessReadSuccessV1> => {
     const rows = await database
-      .selectFrom("business.project_memberships")
-      .select(["membership_id", "account_id", "current_revision_id"])
-      .where("project_id", "=", projectId)
-      .where("membership_id", ">", cursor ?? "")
-      .orderBy("membership_id")
+      .selectFrom("business.project_memberships as membership")
+      .innerJoin(
+        "business.project_membership_revisions as revision",
+        "revision.revision_id",
+        "membership.current_revision_id",
+      )
+      .innerJoin(
+        "business.local_accounts as account",
+        "account.account_id",
+        "membership.account_id",
+      )
+      .select([
+        "membership.membership_id",
+        "account.account_id",
+        "account.display_name",
+        "account.security_version",
+      ])
+      .where("membership.project_id", "=", projectId)
+      .where("revision.status", "=", "active")
+      .where("account.status", "=", "active")
+      .where("membership.membership_id", ">", cursor ?? "")
+      .orderBy("membership.membership_id")
       .limit(pageSize + 1)
       .execute();
     const page = rows.slice(0, pageSize);
-    const revisionIds = page.map((row) => row.current_revision_id);
-    if (revisionIds.length === 0) return { kind: "member-options", items: [] };
-    const [revisions, accounts] = await Promise.all([
-      database
-        .selectFrom("business.project_membership_revisions")
-        .select(["revision_id", "status"])
-        .where("revision_id", "in", revisionIds)
-        .execute(),
-      database
-        .selectFrom("business.local_accounts")
-        .select(["account_id", "display_name", "security_version"])
-        .where(
-          "account_id",
-          "in",
-          page.map((row) => row.account_id),
-        )
-        .execute(),
-    ]);
-    const statusByRevision = new Map(
-      revisions.map((revision) => [revision.revision_id, revision.status]),
-    );
-    const accountById = new Map(accounts.map((account) => [account.account_id, account]));
-    const items = page.flatMap((row) => {
-      if (statusByRevision.get(row.current_revision_id) !== "active") return [];
-      const account = accountById.get(row.account_id);
-      if (account === undefined) return [];
-      return [
-        {
-          accountRef: accountRevisionRef(account.account_id, account.security_version),
-          displayName: account.display_name,
-        },
-      ];
-    });
+    const items = page.map((row) => ({
+      accountRef: accountRevisionRef(row.account_id, row.security_version),
+      displayName: row.display_name,
+    }));
     return {
       kind: "member-options",
       items,
@@ -4646,6 +4744,22 @@ export const createPostgresLocalIdentityAccess = (
     authorizeBusinessAction,
     filterVisibleSources,
     verify,
+    workspaceVisibility,
+    readCurrentSpatialScopeRef: async (projectId, scopeId) => {
+      const row = await db
+        .selectFrom("business.access_spatial_scopes")
+        .innerJoin(
+          "business.access_spatial_scope_revisions as revision",
+          "revision.revision_id",
+          "business.access_spatial_scopes.current_revision_id",
+        )
+        .select(["revision.scope_id", "revision.revision_id"])
+        .where("business.access_spatial_scopes.project_id", "=", projectId)
+        .where("revision.scope_id", "=", scopeId)
+        .where("revision.status", "=", "active")
+        .executeTakeFirst();
+      return row === undefined ? undefined : scopeRef(row.scope_id, row.revision_id);
+    },
     readIssuedContext,
     readDeploymentAuthorizationSource,
     verifyDeploymentContext,

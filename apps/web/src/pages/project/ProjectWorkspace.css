@@ -6,6 +6,52 @@
   gap: 16px;
 }
 
+.pjwf-region {
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border, #e5e7eb);
+}
+
+.pjwf-field-error {
+  color: var(--danger, #b91c1c);
+  font-size: 12px;
+}
+
+.pjwf-error {
+  color: var(--danger, #b91c1c);
+  margin: 8px 0 0;
+}
+
+.pjwf-error-summary {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: var(--danger, #b91c1c);
+  font-size: 13px;
+}
+
+.pjwf-more {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.pjwf-secondary {
+  min-height: 30px;
+  padding: 3px 14px;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 4px;
+  background: var(--surface, #ffffff);
+  color: inherit;
+  cursor: pointer;
+}
+
+.pjwf-secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .pjwf-context {
   color: var(--muted, #6b7280);
   margin: 0 0 12px;
@@ -137,4 +183,26 @@
   background: var(--accent, #1d4ed8);
   border-color: transparent;
   color: #ffffff;
+}
+
+/* 接入事实：阶段字段按联合分支并列呈现，长内容折行而不是横向撑开正文。 */
+.pjwf-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 320px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pjwf-exclusions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pjwf-stage .pjwf-secondary,
+.pjwf-exclusions > .pjwf-secondary {
+  align-self: flex-start;
 }

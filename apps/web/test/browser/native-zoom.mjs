@@ -120,9 +120,9 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
   // 工程上下文页：真实业务表单 + 唯一确认，缩放下可达、可取消、可报错。
   await page.goto(`${server.origin}/projects/spatial-scopes?project=${server.projectId}`);
   await page.getByLabel("工程名称").fill("原生缩放取证工程");
-  await page.getByLabel("施工方法").fill("变径盾构法");
-  await page.getByLabel("地层条件").fill("富水软弱地层");
-  await page.getByLabel("工序阶段").fill("变径空间扩挖");
+  await page.getByLabel("施工方法", { exact: true }).fill("变径盾构法");
+  await page.getByLabel("地层条件", { exact: true }).fill("富水软弱地层");
+  await page.getByLabel("工序阶段", { exact: true }).fill("变径空间扩挖");
   const trigger = page.getByRole("button", { name: "确认追加工程业务修订", exact: true });
   await expect(trigger).toBeEnabled({ timeout: 60_000 });
   const metrics = await page.evaluate(() => ({
@@ -278,7 +278,8 @@ export const runNativeZoomEvidence = async () => {
       headless: false,
       args: ["--class=riskflow-native-zoom"],
     });
-    const context = await browser.newContext({ viewport: null });
+    // 服务是真实 HTTPS（自签 loopback 证书）；只忽略证书信任，不模拟页面或降低 Secure Cookie 语义。
+    const context = await browser.newContext({ viewport: null, ignoreHTTPSErrors: true });
     const page = await context.newPage();
     const cdp = await context.newCDPSession(page);
     // 每组合拦截一次写请求作为传输失败，不向服务端提交业务命令。
@@ -320,6 +321,10 @@ export const runNativeZoomEvidence = async () => {
       checks:
         "实际折叠左栏与右栏、填写工程上下文表单、打开已有确认、取消与焦点恢复；有二维溢出时实际改变 scrollLeft",
       requestBoundary: "每组合拦截一次写请求作为传输失败，不向服务端提交业务命令",
+      transport:
+        "浏览器访问真实 HTTPS loopback（自签证书仅忽略信任）；Secure/SameSite Cookie 与业务请求未经伪 scheme 或忽略语义处理",
+      display:
+        "需要至少 2560x1440 的专用 Xvfb；外窗口尺寸由 CDP 设置并严格断言，显示不足会失败而不是裁剪后计为通过",
     },
     results,
   };

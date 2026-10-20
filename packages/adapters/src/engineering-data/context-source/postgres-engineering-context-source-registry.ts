@@ -1195,7 +1195,11 @@ export class PostgresEngineeringContextSourceRegistry
     projectId: string,
     sourceVersionRef: SourceVersionRefV1,
   ): Promise<
-    | { readonly sourceSegmentSetRef: SourceSegmentSetRefV1; readonly segmentCount: number }
+    | {
+        readonly sourceSegmentSetRef: SourceSegmentSetRefV1;
+        readonly segmentCount: number;
+        readonly recordedAt: string;
+      }
     | undefined
   > {
     const row = await this.#db
@@ -1213,6 +1217,7 @@ export class PostgresEngineeringContextSourceRegistry
     return {
       sourceSegmentSetRef: SourceSegmentSetRefV1Schema.parse(row.source_segment_set_ref),
       segmentCount: Number(count?.count ?? 0),
+      recordedAt: asIso(row.recorded_at),
     };
   }
 

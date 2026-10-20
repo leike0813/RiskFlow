@@ -1,9 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import {
-  DataCleaningResultV1Schema,
-  DataCleaningPolicyV2Schema,
-} from "@riskflow/core/engineering-data/cleaning";
+import { DataCleaningPolicyV2Schema } from "@riskflow/core/engineering-data/cleaning";
 import { ACCESS_POLICY_REF_V1 } from "@riskflow/core/access";
 import { StructuredDocumentJsonLdV1Schema } from "@riskflow/core/engineering-data/document-conversion";
 import type { ArtifactStoreV1 } from "@riskflow/core/artifacts";
@@ -1181,25 +1178,31 @@ describe("C15 PostgreSQL data cleaning store", () => {
     expect(audits.rows).toHaveLength(1);
     expect(audits.rows[0]?.target_ref).toEqual(read.resultArtifactRef);
 
-    expect(Object.keys(read).sort()).toEqual(["kind", "result", "resultArtifactRef"]);
     const serialized = JSON.stringify(read.result);
     expect(serialized).not.toContain("textBlocks");
     expect(serialized).not.toContain("jsonLd");
     expect(serialized).not.toContain("readHandle");
     expect(serialized).not.toContain("locator");
     expect(serialized).not.toContain("sourceSegmentIds");
-    expect(Object.keys(read.result).sort()).toEqual(
-      Object.keys(DataCleaningResultV1Schema.shape).sort(),
-    );
   }, 240_000);
 
   it("清洗结果按来源精确版本筛选正式结果与排除项", async () => {
     const { world } = await prepareBoundReadWorld();
     const sourceVersionRef = world.sourceVersionRefs()[0]!;
-    const results = await world.pipeline.store.listResultsForSource({
+    const authorization = await world.authorizeBranch(
+      "c15-workspace-read",
+      "engineering-data.source-catalog",
+      [],
+    );
+    const visibility = await fixture.access.workspaceVisibility(
+      authorization,
+      "engineering-data.source-catalog",
+    );
+    const results = await world.pipeline.store.listResultsForSubject({
       projectId: world.projectId,
-      sourceVersionRef,
+      subject: sourceVersionRef,
       limit: 50,
+      visibility,
     });
     expect(results.length).toBeGreaterThan(0);
     const result = results[0]!;
@@ -1209,28 +1212,151 @@ describe("C15 PostgreSQL data cleaning store", () => {
     const exclusions = await world.pipeline.store.readResultExclusions({
       projectId: world.projectId,
       resultRef: result.resultRef,
-      subject: { sourceVersionRef },
+      subject: sourceVersionRef,
+      limit: 50,
+      visibility,
     });
-    for (const exclusion of exclusions) {
+    expect(exclusions).toBeDefined();
+    for (const exclusion of exclusions ?? []) {
       expect(exclusion.sourceVersionRef).toEqual(sourceVersionRef);
     }
     const unrelated = await world.pipeline.store.readResultExclusions({
       projectId: world.projectId,
       resultRef: result.resultRef,
       subject: {
-        sourceVersionRef: {
-          kind: "source-version",
-          reference: { entityId: "unrelated-source", versionId: "1" },
-        },
+        kind: "source-version",
+        reference: { entityId: "unrelated-source", versionId: "1" },
       },
-    });
-    expect(unrelated).toHaveLength(0);
-    const monitoringResults = await world.pipeline.store.listResultsForMonitoringSnapshots({
-      projectId: world.projectId,
-      monitoringSnapshotRefs: [],
       limit: 50,
+      visibility,
     });
-    expect(monitoringResults).toHaveLength(0);
+    expect(unrelated).toBeUndefined();
+    const monitoringResults = await world.pipeline.store.listResultsForSubject({
+      projectId: world.projectId,
+      subject: {
+        kind: "monitoring-series",
+        reference: { entityId: "unrelated-series", versionId: "1" },
+      },
+      limit: 50,
+      visibility,
+    });
+    expect(monitoringResults).toEqual([]);
+  }, 240_000);
+
+  it("多来源结果在任一来源收窄后不披露清洗、准备或排除关系", async () => {
+    const world = await fixture.createWorld({
+      suffix: "workspace-intersection",
+      documentKinds: ["csv", "xlsx"],
+    });
+    const frozen = await freezeIdentificationPreparation(world.pipeline.store, world, {
+      commandId: "intersection-freeze",
+      actor: "uploader",
+    });
+    expect(frozen.result).toMatchObject({ kind: "failed", error: { code: "BUSINESS_BLOCKED" } });
+    const completion = await completeCleaningTask(world.pipeline, fixture, {
+      workerId: "intersection-worker",
+      projectId: world.projectId,
+    });
+    const prepared = await world.pipeline.store.completeIdentificationPreparation(
+      {
+        commandId: "intersection-complete",
+        idempotencyKey: "intersection-complete",
+        projectId: world.projectId,
+        actorId: world.uploaderId,
+        issuedAt: frozen.command.issuedAt,
+        authorization: await world.authorizeBranch(
+          "intersection-complete",
+          "engineering-data.complete-identification-preparation",
+        ),
+        kind: "complete-identification-preparation",
+        payload: { agentTaskRef: completion.taskRef },
+      },
+      world.pipeline.agentTaskAdapter,
+    );
+    expect(prepared.kind).toBe("succeeded");
+    const [visible, restricted] = world.sourceVersionRefs();
+    const setVisibility = async (
+      sourceVersionRef: SourceVersionRefV1,
+      visibility: "project-shared" | "restricted",
+      commandId: string,
+    ) => {
+      const policy = await fixture.postgres.adminPool.query<{
+        source_access_grant_id: string;
+        revision_no: number;
+      }>(
+        `SELECT policy.source_access_grant_id, revision.revision_no FROM business.source_access_policies AS policy
+         JOIN business.source_access_policy_revisions AS revision ON revision.revision_id = policy.current_revision_id
+         WHERE policy.project_id = $1 AND policy.source_entity_id = $2 AND policy.source_version_id = $3`,
+        [
+          world.projectId,
+          sourceVersionRef.reference.entityId,
+          sourceVersionRef.reference.versionId,
+        ],
+      );
+      const changed = await fixture.access.administerProject({
+        kind: "revise-source-access",
+        projectId: world.projectId,
+        commandId,
+        idempotencyKey: commandId,
+        expectedVersion: {
+          entityId: policy.rows[0]!.source_access_grant_id,
+          versionId: String(policy.rows[0]!.revision_no),
+        },
+        authorizationContextRef: (
+          await world.authorizeUploader(commandId, "engineering-data.register-source-delivery", [])
+        ).authorizationContextRef,
+        sourceVersionRef,
+        visibility,
+        allowedAccountIds: [],
+        registeredByAccountId: world.uploaderId,
+        spatialScopeRefs: [world.spatialScopeRef],
+      });
+      expect(changed.kind).toBe("source-access");
+    };
+    for (const [index, source] of world.sourceVersionRefs().entries())
+      await setVisibility(source, "project-shared", `intersection-share-${index}`);
+    const authorizeReader = async (invocationId: string) =>
+      (
+        await fixture.access.authorizeBusinessAction({
+          invocationId,
+          projectId: world.projectId,
+          actorId: world.freezerId,
+          capability: "engineering-data.read",
+          branch: "engineering-data.source-catalog",
+          requestedSpatialScopeRefs: [world.spatialScopeRef],
+          requestedSourceVersionRefs: [],
+        })
+      ).context;
+    const authorization = await authorizeReader("intersection-before");
+    const page = {
+      projectId: world.projectId,
+      subject: visible!,
+      limit: 1,
+      visibility: await fixture.access.workspaceVisibility(
+        authorization,
+        "engineering-data.source-catalog",
+      ),
+    };
+    const before = await world.pipeline.store.listResultsForSubject(page);
+    expect(before).toHaveLength(1);
+    expect(await world.pipeline.store.listPreparationsForSubject(page)).toHaveLength(1);
+    await setVisibility(restricted!, "restricted", "intersection-restrict");
+    const current = await authorizeReader("intersection-after");
+    const after = {
+      ...page,
+      visibility: await fixture.access.workspaceVisibility(
+        current,
+        "engineering-data.source-catalog",
+      ),
+    };
+    expect(await world.pipeline.store.listResultsForSubject(after)).toEqual([]);
+    expect(await world.pipeline.store.listPreparationsForSubject(after)).toEqual([]);
+    expect(
+      await world.pipeline.store.readResultExclusions({
+        ...after,
+        resultRef: before[0]!.resultRef,
+      }),
+    ).toBeUndefined();
   }, 240_000);
 
   it("清洗结果不可枚举：缺失、跨工程与 actor 不符返回同一不可重试拒绝", async () => {

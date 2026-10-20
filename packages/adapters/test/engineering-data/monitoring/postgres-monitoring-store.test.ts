@@ -1983,10 +1983,15 @@ describe("C14 PostgreSQL monitoring store", () => {
       kind: "monitoring-series" as const,
       reference: { entityId: "c14-series", versionId: "1" },
     };
+    const visibility = await fixture.access.workspaceVisibility(
+      seriesReadAuthorization,
+      "engineering-data.monitoring-catalog",
+    );
     const batches = await fixture.monitoringStore.listBatchesBySeries({
       projectId,
       monitoringSeriesRef: seriesRef,
       limit: 50,
+      visibility,
     });
     expect(batches.length).toBeGreaterThan(0);
     expect(batches[0]).toMatchObject({ relation: "original" });
@@ -1994,6 +1999,7 @@ describe("C14 PostgreSQL monitoring store", () => {
       projectId,
       monitoringSeriesRef: seriesRef,
       limit: 50,
+      visibility,
     });
     expect(snapshots.length).toBeGreaterThan(0);
     const registered = await fixture.postgres.adminPool.query<{ snapshot_id: string }>(
@@ -2009,6 +2015,54 @@ describe("C14 PostgreSQL monitoring store", () => {
       monitoringSeriesRef: seriesRef,
     });
     expect(scopeRef).toEqual(spatialScopeRef);
+    const missingVersion = {
+      ...seriesRef,
+      reference: { ...seriesRef.reference, versionId: "nonexistent" },
+    };
+    expect(
+      await fixture.monitoringStore.readSeriesScopeRef({
+        projectId,
+        monitoringSeriesRef: missingVersion,
+      }),
+    ).toBeUndefined();
+    expect(
+      await fixture.monitoringStore.listBatchesBySeries({
+        projectId,
+        monitoringSeriesRef: missingVersion,
+        limit: 1,
+        visibility,
+      }),
+    ).toEqual([]);
+    expect(
+      await fixture.monitoringStore.listSnapshotsBySeries({
+        projectId,
+        monitoringSeriesRef: missingVersion,
+        limit: 1,
+        visibility,
+      }),
+    ).toEqual([]);
+    const first = (
+      await fixture.monitoringStore.listSnapshotsBySeries({
+        projectId,
+        monitoringSeriesRef: seriesRef,
+        limit: 1,
+        visibility,
+      })
+    )[0]!;
+    const later = await fixture.monitoringStore.listSnapshotsBySeries({
+      projectId,
+      monitoringSeriesRef: seriesRef,
+      limit: 50,
+      visibility,
+      after: {
+        recordedAt: first.cutoff,
+        ...first.monitoringSnapshotRef.reference,
+        stage: "monitoring-snapshot",
+      },
+    });
+    expect(later.map((item) => item.monitoringSnapshotRef)).toEqual(
+      snapshots.slice(1).map((item) => item.monitoringSnapshotRef),
+    );
     const catalogItem = await fixture.monitoringStore.readCurrentSeriesCatalogItem({
       projectId,
       seriesId: "c14-series",

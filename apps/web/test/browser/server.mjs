@@ -1,16 +1,18 @@
 /**
- * C36 跨页面验收的真实服务夹具（D-07）：生产 Web 构建 + 真实 HTTP/授权/投影接缝 +
+ * C36 跨页面验收的真实服务夹具（D-07）：生产 Web 构建 + 真实 HTTPS/授权/投影接缝 +
  * 真实 PostgreSQL/C04/C03/C36，不引入开发服务器、Mock 后端或 Mock 浏览器。
  */
 import { Buffer } from "node:buffer";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { createServer } from "node:net";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { TextEncoder } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, URL } from "node:url";
 
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { chromium } from "@playwright/test";
@@ -73,6 +75,96 @@ const CONTENT_TYPES = {
   ".ico": "image/x-icon",
   ".png": "image/png",
   ".woff2": "font/woff2",
+};
+
+/**
+ * 真实 TLS 终止：自签 loopback 证书 + Node HTTPS 监听，业务请求原样转发到真实 HTTP 应用。
+ *
+ * D-09 要求 HTTPS Cookie 证据。应用自身仍按原端口提供真实业务/原件/SSE，TLS 只在这一层
+ * 终止；`Secure`/`SameSite=Strict` 由生产响应原样保留，浏览器侧只忽略自签证书的信任，
+ * 不忽略 HTTP 语义。证书、私钥只落在临时目录，close 时与目录一起删除，不写日志。
+ */
+export const startLoopbackTlsTermination = async (upstreamOrigin) => {
+  const directory = await mkdtemp(join(tmpdir(), "riskflow-loopback-tls-"));
+  const keyPath = join(directory, "key.pem");
+  const certPath = join(directory, "cert.pem");
+  try {
+    execFileSync(
+      "openssl",
+      [
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-days",
+        "1",
+        "-keyout",
+        keyPath,
+        "-out",
+        certPath,
+        "-subj",
+        "/CN=127.0.0.1",
+        "-addext",
+        "subjectAltName=IP:127.0.0.1",
+      ],
+      { stdio: "ignore" },
+    );
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    throw new Error("loopback TLS certificate generation requires the openssl binary", {
+      cause: error,
+    });
+  }
+  const [key, cert] = await Promise.all([readFile(keyPath), readFile(certPath)]);
+  const upstream = new URL(upstreamOrigin);
+  const server = createHttpsServer({ key, cert }, (request, response) => {
+    const forwarded = httpRequest(
+      {
+        hostname: upstream.hostname,
+        port: upstream.port,
+        method: request.method,
+        path: request.url,
+        headers: request.headers,
+      },
+      (upstreamResponse) => {
+        response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+        upstreamResponse.pipe(response);
+      },
+    );
+    forwarded.on("error", () => {
+      if (response.headersSent || response.destroyed) return;
+      response.writeHead(502);
+      response.end();
+    });
+    request.on("aborted", () => forwarded.destroy());
+    response.on("close", () => {
+      if (!response.writableFinished) forwarded.destroy();
+    });
+    request.pipe(forwarded);
+  });
+  try {
+    await new Promise((done, fail) => {
+      server.once("error", fail);
+      server.listen(0, "127.0.0.1", done);
+    });
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    server.close();
+    throw new Error("loopback TLS listener has no port");
+  }
+  return {
+    origin: `https://127.0.0.1:${address.port}`,
+    close: async () => {
+      server.closeAllConnections();
+      await new Promise((done) => server.close(() => done()));
+      await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+    },
+  };
 };
 
 const versionRef = (entityId) => ({ entityId, versionId: "1" });
@@ -787,7 +879,10 @@ export const startQualityBrowserServer = async () => {
         probe.close(() => resolved(address.port));
       });
     });
-    const publicOrigin = `http://127.0.0.1:${freePort}`;
+    // 浏览器只访问真实 HTTPS；Fastify 仍在 loopback HTTP 上接收原样转发的请求。
+    const tls = await startLoopbackTlsTermination(`http://127.0.0.1:${freePort}`);
+    closeables.push(tls.close);
+    const publicOrigin = tls.origin;
     const api = buildApi({
       access,
       ports: {

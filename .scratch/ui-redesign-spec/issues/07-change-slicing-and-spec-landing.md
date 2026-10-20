@@ -53,4 +53,4 @@ Blocked by: 05, 06
 
 **完成判据分层**：本轮只交付决议与 planning 输入，不宣称九个 change 可直接 apply。后续各 change 必须按项目 workflow 补齐固定基线、文件／符号清单、Requirement／Scenario／IP-ID、依赖和真实验证命令并满足 `applyRequires`；最终发布另须通过新旧入口原子切换与 CH-9 组合验收。原型非空、静态文档齐备或编译成功不等于功能完工。
 
-**CH-4 实施落点**：[redesign-engineering-workspace](../../../openspec/changes/redesign-engineering-workspace/proposal.md)。CH-1～CH-3 已归档后按顺序推进工程域；五类 apply 前置工件包含固定 base commit、四份既有 capability delta、D-ID、IP-ID、文件/符号清单与真实验证命令。切片表“无后端变更”不代表已有 Web 接缝：新增承载所需的上下文/访问维护及接入读取缺口已在本 change 闭合设计并随 IP-01～IP-07 实施。工程开通复用原系统管理表单，经理作用域访问维护复用 C06 原命令，接入读取只组合所属窄读；未提前启用六导航。最终核验结论以该 change 的 verification 为准。
+**CH-4 实施落点**：[redesign-engineering-workspace](../../../openspec/changes/redesign-engineering-workspace/proposal.md)。工程承载与四条专用 HTTP 接缝按 IP-01～IP-07 实施；验收修复闭合权限交集、精确引用、读改版本、完整续页、历史只读、空间和资料访问维护、独立故障及接入深链。工程开通与访问维护复用原命令和事务，接入仅组合所属窄读，不扩展上传/解析启动，不提前启用六导航。实际行为、HTTPS Cookie 与原生缩放证据及未覆盖范围见 [verification](../../../openspec/changes/redesign-engineering-workspace/verification.md)。

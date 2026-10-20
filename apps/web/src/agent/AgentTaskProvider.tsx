@@ -58,6 +58,7 @@ export interface AgentTaskSnapshot {
 }
 
 export interface AgentTaskContextValue extends AgentTaskSnapshot {
+  readonly allowed: boolean;
   setFilters: (next: AgentTaskFilters) => void;
   openTask: (taskRef: Pick<AgentTaskRefView, "kind" | "reference">) => void;
   closeTask: () => void;
@@ -252,6 +253,7 @@ export function AgentTaskProvider(props: {
   const value = useMemo<AgentTaskContextValue>(
     () => ({
       ...snapshot,
+      allowed,
       setFilters: (next) => setFiltersState(next),
       openTask: (next) => setTaskRef(next),
       closeTask: () => setTaskRef(undefined),
@@ -259,7 +261,7 @@ export function AgentTaskProvider(props: {
         void load(generationRef.current);
       },
     }),
-    [snapshot, load],
+    [allowed, snapshot, load],
   );
 
   return <AgentTaskContext.Provider value={value}>{props.children}</AgentTaskContext.Provider>;

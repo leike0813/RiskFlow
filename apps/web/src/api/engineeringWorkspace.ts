@@ -1,231 +1,98 @@
+import {
+  AccessCommandResultV1Schema,
+  EngineeringWorkspaceCommandPayloadV1Schema,
+  EngineeringWorkspaceReadSuccessV1Schema,
+  ProjectWorkspaceAccessCommandPayloadV1Schema,
+  ProjectWorkspaceAccessReadSuccessV1Schema,
+  type EngineeringWorkspaceIngestionItemV1,
+  type EngineeringWorkspaceReadSuccessV1,
+  type ProjectBusinessRevisionV1,
+  type ProjectWorkspaceAccessReadSuccessV1,
+  type SpatialBusinessRevisionV1,
+} from "@riskflow/contracts/engineering-workspace";
 import { clientError, postRaw, unwrapQueryResult } from "./client.js";
-
-/**
- * 工程工作区的浏览器接缝（design D-05）。
- *
- * 四条固定路径只在这里拼装；页面不构造 HTTP，也不进入任何 branch 对应的强制操作注册表。
- * 请求体只有业务载荷与调用标识：会话 token 由同源安全 Cookie 承担，工程标识来自路径。
- * 解码只提取契约内页面所需字段，形状漂移统一收敛为 TERMINAL_FAILURE。
- */
-
-const drift = () => clientError("TERMINAL_FAILURE");
-const asRecord = (value: unknown): Record<string, unknown> => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw drift();
-  return value as Record<string, unknown>;
-};
-const asArray = (value: unknown): unknown[] => {
-  if (!Array.isArray(value)) throw drift();
-  return value;
-};
-const asString = (value: unknown): string => {
-  if (typeof value !== "string" || value.length === 0) throw drift();
-  return value;
-};
-const asOptionalString = (value: unknown): string | undefined =>
-  value === undefined ? undefined : asString(value);
-const asNumber = (value: unknown): number => {
-  if (typeof value !== "number" || !Number.isFinite(value)) throw drift();
-  return value;
-};
-const asKindRef = (
-  value: unknown,
-): {
-  readonly kind: string;
-  readonly reference: { readonly entityId: string; readonly versionId: string };
-} => {
-  const record = asRecord(value);
-  return {
-    kind: asString(record.kind),
-    reference: {
-      entityId: asString(asRecord(record.reference).entityId),
-      versionId: asString(asRecord(record.reference).versionId),
-    },
-  };
-};
-const asVersionRef = (
-  value: unknown,
-): { readonly entityId: string; readonly versionId: string } => {
-  const record = asRecord(value);
-  return {
-    entityId: asString(record.entityId),
-    versionId: asString(record.versionId),
-  };
-};
 
 export interface KindRefView {
   readonly kind: string;
-  readonly reference: { readonly entityId: string; readonly versionId: string };
+  readonly reference: VersionRefView;
 }
-
 export interface VersionRefView {
   readonly entityId: string;
   readonly versionId: string;
 }
-
-export interface ProjectBusinessRevisionView {
-  readonly projectRevisionRef: KindRefView;
-  readonly name: string;
-  readonly lifecycle: string;
-  readonly applicabilityMetadata: {
-    readonly constructionMethod: string;
-    readonly stratumCondition: string;
-    readonly engineeringStage: string;
-  };
-  readonly effectivePeriod: { readonly validFrom: string; readonly validTo?: string };
+export interface WorkspacePageView<T> {
+  readonly items: readonly T[];
+  readonly nextCursor?: string | undefined;
+}
+type PageOptions = { readonly cursor?: string };
+type WorkspaceResult<K extends EngineeringWorkspaceReadSuccessV1["kind"]> = Extract<
+  EngineeringWorkspaceReadSuccessV1,
+  { kind: K }
+>;
+type AccessResult<K extends ProjectWorkspaceAccessReadSuccessV1["kind"]> = Extract<
+  ProjectWorkspaceAccessReadSuccessV1,
+  { kind: K }
+>;
+export type ProjectBusinessRevisionView = ProjectBusinessRevisionV1 & {
   readonly recordedAt: string;
-}
-
-export interface SpatialBusinessRevisionView {
-  readonly spatialScopeRef: KindRefView;
-  readonly name: string;
-  readonly worksiteLocation: string;
-  readonly status: string;
-  readonly parentScopeRef?: KindRefView;
-  readonly chainage?: { readonly start: number; readonly end: number };
-}
-
+};
+export type SpatialBusinessRevisionView = SpatialBusinessRevisionV1 & {
+  readonly recordedAt: string;
+};
 export interface EngineeringWorkspaceContextView {
   readonly projectId: string;
   readonly project: ProjectBusinessRevisionView | null;
   readonly spatial: SpatialBusinessRevisionView | null;
 }
-
-export interface EngineeringWorkspaceIngestionItemView {
-  readonly stage: string;
-  readonly recordRef: KindRefView;
-  readonly recordedAt: string;
+export type EngineeringWorkspaceIngestionItemView = EngineeringWorkspaceIngestionItemV1 & {
   readonly detail: string;
-}
-
-export interface EngineeringWorkspaceIngestionView {
+};
+export interface EngineeringWorkspaceIngestionView extends WorkspacePageView<EngineeringWorkspaceIngestionItemView> {
   readonly projectId: string;
   readonly subject: KindRefView;
-  readonly items: readonly EngineeringWorkspaceIngestionItemView[];
 }
-
-export interface EngineeringWorkspaceSnapshotView {
-  readonly monitoringSnapshotRef: KindRefView;
-  readonly cutoff: string;
-  readonly availability: string;
-  readonly coverageRatio: number;
-}
-
-export interface EngineeringWorkspaceCleaningExclusionView {
-  readonly decisionId: string;
-  readonly targetKind: string;
-  readonly reasonCode: string;
-  readonly disposition: string;
-  readonly rejectionClass?: string;
-  readonly sourceSegmentId?: string;
-}
-
-export interface WorkspaceMembershipView {
-  readonly membershipRef: VersionRefView;
-  readonly accountRef: VersionRefView;
-  readonly displayName: string;
-  readonly roles: readonly string[];
-  readonly status: string;
-}
-
-export interface WorkspaceSpatialScopeView {
-  readonly scopeRef: VersionRefView;
-  readonly parentScopeRef?: VersionRefView;
-  readonly status: string;
-}
-
-export interface WorkspaceMemberOptionView {
-  readonly accountRef: VersionRefView;
-  readonly displayName: string;
-}
-
-export interface WorkspaceSourceAccessView {
-  readonly sourceGrantRef: VersionRefView;
-  readonly visibility: string;
-  readonly allowedAccountIds: readonly string[];
-  readonly registeredByAccountId: string;
-}
+export type EngineeringWorkspaceSnapshotView =
+  WorkspaceResult<"monitoring-snapshots">["items"][number];
+export type EngineeringWorkspaceCleaningExclusionView =
+  WorkspaceResult<"cleaning-exclusions">["items"][number];
+export type WorkspaceMembershipView = AccessResult<"memberships">["items"][number];
+export type WorkspaceSpatialScopeView = AccessResult<"spatial-scopes">["items"][number];
+export type WorkspaceMemberOptionView = AccessResult<"member-options">["items"][number];
+export type WorkspaceSourceAccessView = Omit<AccessResult<"source-access">, "kind">;
 
 const workspacePath = (projectId: string, suffix: string): string =>
   `/api/v1/projects/${encodeURIComponent(projectId)}/${suffix}`;
+const drift = () => clientError("TERMINAL_FAILURE");
+const succeededResult = (body: unknown): unknown => {
+  if (
+    typeof body !== "object" ||
+    body === null ||
+    !("kind" in body) ||
+    body.kind !== "succeeded" ||
+    !("result" in body)
+  )
+    throw drift();
+  return body.result;
+};
+let sequence = 0;
+const nextId = (action: string): string => `ws-${action}-${Date.now().toString(36)}-${++sequence}`;
 
-const succeededResult = (body: unknown): Record<string, unknown> => {
-  const record = asRecord(body);
-  if (record.kind !== "succeeded" || !("result" in record)) throw drift();
-  return asRecord(record.result);
+/** 四条固定接缝共用既有 Cookie 传输；页面不组装 HTTP 或授权。 */
+const workspaceQuery = async (
+  projectId: string,
+  payload: unknown,
+  signal?: AbortSignal,
+): Promise<EngineeringWorkspaceReadSuccessV1> => {
+  const body = await postRaw({
+    path: workspacePath(projectId, "engineering-workspace/queries"),
+    body: { queryId: nextId("read"), requestedAt: new Date().toISOString(), payload },
+    ...(signal === undefined ? {} : { signal }),
+  });
+  const parsed = EngineeringWorkspaceReadSuccessV1Schema.safeParse(succeededResult(body));
+  if (!parsed.success) throw drift();
+  return parsed.data;
 };
 
-const readProjectRevision = (value: unknown): ProjectBusinessRevisionView => {
-  const record = asRecord(value);
-  const applicability = asRecord(record.applicabilityMetadata);
-  const effectivePeriod = asRecord(record.effectivePeriod);
-  const systemTime = asRecord(record.systemTime);
-  return {
-    projectRevisionRef: asKindRef(record.projectRevisionRef),
-    name: asString(record.name),
-    lifecycle: asString(record.lifecycle),
-    applicabilityMetadata: {
-      constructionMethod: asString(applicability.constructionMethod),
-      stratumCondition: asString(applicability.stratumCondition),
-      engineeringStage: asString(applicability.engineeringStage),
-    },
-    effectivePeriod: {
-      validFrom: asString(effectivePeriod.validFrom),
-      ...(effectivePeriod.validTo === undefined
-        ? {}
-        : { validTo: asString(effectivePeriod.validTo) }),
-    },
-    recordedAt: asString(systemTime.recordedAt),
-  };
-};
-
-const readSpatialRevision = (value: unknown): SpatialBusinessRevisionView => {
-  const record = asRecord(value);
-  return {
-    spatialScopeRef: asKindRef(record.spatialScopeRef),
-    name: asString(record.name),
-    worksiteLocation: asString(record.worksiteLocation),
-    status: asString(record.status),
-    ...(record.parentScopeRef === undefined
-      ? {}
-      : { parentScopeRef: asKindRef(record.parentScopeRef) }),
-    ...(record.chainage === undefined
-      ? {}
-      : {
-          chainage: {
-            start: asNumber(asRecord(record.chainage).start),
-            end: asNumber(asRecord(record.chainage).end),
-          },
-        }),
-  };
-};
-
-const ingestionDetail = (record: Record<string, unknown>): string => {
-  const stage = asString(record.stage);
-  if (stage === "conversion") {
-    const status = asString(record.status);
-    const set = asOptionalString(
-      record.sourceSegmentSetRef === undefined
-        ? undefined
-        : asKindRef(record.sourceSegmentSetRef).reference.entityId,
-    );
-    return `转换${status === "succeeded" ? "完成" : "失败"}${set === undefined ? "" : `（资料段 ${set}）`}`;
-  }
-  if (stage === "segments") {
-    return `资料段 ${asNumber(record.segmentCount)} 段`;
-  }
-  if (stage === "cleaning") {
-    return `清洗可用性 ${asString(record.availability)}（保留 ${asNumber(record.retainedCount)}/${asNumber(record.totalCount)}）`;
-  }
-  if (stage === "monitoring-batch") {
-    return `监测批次 ${asString(record.recordedAt)}`;
-  }
-  if (stage === "monitoring-snapshot") {
-    return `监测快照 ${asString(record.recordedAt)}`;
-  }
-  return stage;
-};
-
-/** 工程上下文精确读：当前或历史修订，缺失即为 null。 */
 export const readEngineeringWorkspaceContext = async (
   projectId: string,
   payload: {
@@ -235,321 +102,231 @@ export const readEngineeringWorkspaceContext = async (
   },
   signal?: AbortSignal,
 ): Promise<EngineeringWorkspaceContextView> => {
-  const body = await postRaw({
-    path: workspacePath(projectId, "engineering-workspace/queries"),
-    body: {
-      queryId: `ws-context-${Date.now().toString(36)}`,
-      requestedAt: new Date().toISOString(),
-      payload: {
-        kind: "context",
-        ...(payload.projectRevisionRef === undefined
-          ? {}
-          : { projectRevisionRef: payload.projectRevisionRef }),
-        ...(payload.scopeId === undefined ? {} : { scopeId: payload.scopeId }),
-        ...(payload.spatialScopeRef === undefined
-          ? {}
-          : { spatialScopeRef: payload.spatialScopeRef }),
-      },
-    },
-    ...(signal === undefined ? {} : { signal }),
-  });
-  const result = succeededResult(body);
+  const result = await workspaceQuery(projectId, { kind: "context", ...payload }, signal);
+  if (result.kind !== "context") throw drift();
   return {
-    projectId: asString(result.projectId),
-    project: result.project === null ? null : readProjectRevision(result.project),
-    spatial: result.spatial === null ? null : readSpatialRevision(result.spatial),
+    projectId: result.projectId,
+    project:
+      result.project === null
+        ? null
+        : { ...result.project, recordedAt: result.project.systemTime.recordedAt },
+    spatial:
+      result.spatial === null
+        ? null
+        : { ...result.spatial, recordedAt: result.spatial.systemTime.recordedAt },
   };
 };
 
-/** 接入关系目录：来源或监测序列的已登记处理关系。 */
+const ingestionDetail = (item: EngineeringWorkspaceIngestionItemV1): string => {
+  switch (item.stage) {
+    case "conversion":
+      return `转换${item.status === "succeeded" ? "完成" : "失败"}`;
+    case "segments":
+      return `资料段 ${item.segmentCount} 段`;
+    case "preparation":
+      return "已登记识别准备";
+    case "cleaning":
+      return `清洗可用性 ${item.availability}（保留 ${item.retainedCount}/${item.totalCount}）`;
+    case "monitoring-batch":
+      return `监测批次 ${item.recordedAt}`;
+    case "monitoring-snapshot":
+      return `监测快照 ${item.recordedAt}`;
+  }
+};
 export const readEngineeringWorkspaceIngestion = async (
   projectId: string,
   subject: KindRefView,
   signal?: AbortSignal,
+  options: PageOptions = {},
 ): Promise<EngineeringWorkspaceIngestionView> => {
-  const body = await postRaw({
-    path: workspacePath(projectId, "engineering-workspace/queries"),
-    body: {
-      queryId: `ws-ingestion-${Date.now().toString(36)}`,
-      requestedAt: new Date().toISOString(),
-      payload: { kind: "ingestion", subject, pageSize: 50 },
-    },
-    ...(signal === undefined ? {} : { signal }),
-  });
-  const result = succeededResult(body);
+  const result = await workspaceQuery(
+    projectId,
+    { kind: "ingestion", subject, pageSize: 50, ...options },
+    signal,
+  );
+  if (result.kind !== "ingestion") throw drift();
   return {
-    projectId: asString(result.projectId),
-    subject: asKindRef(result.subject),
-    items: asArray(result.items).map((item) => {
-      const record = asRecord(item);
-      return {
-        stage: asString(record.stage),
-        recordRef: asKindRef(record.recordRef),
-        recordedAt: asString(record.recordedAt),
-        detail: ingestionDetail(record),
-      };
-    }),
+    ...result,
+    items: result.items.map((item) => ({ ...item, detail: ingestionDetail(item) })),
   };
 };
-
-/**
- * 无版本旧序列地址的窄解析：按稳定序列身份解析当前可见引用。
- *
- * 只调用所属目录的窄读，不扫描目录页；解析不到即失败，不回落首条。
- */
 export const resolveEngineeringWorkspaceMonitoringSeries = async (
   projectId: string,
   seriesId: string,
   signal?: AbortSignal,
-): Promise<{
-  readonly monitoringSeriesRef: KindRefView;
-  readonly monitoringObject: string;
-  readonly monitoringIndicator: string;
-  readonly canonicalUnit: string;
-}> => {
-  const body = await postRaw({
-    path: workspacePath(projectId, "engineering-workspace/queries"),
-    body: {
-      queryId: `ws-resolve-${Date.now().toString(36)}`,
-      requestedAt: new Date().toISOString(),
-      payload: { kind: "resolve-monitoring", seriesId },
-    },
-    ...(signal === undefined ? {} : { signal }),
-  });
-  const result = succeededResult(body);
-  const series = asRecord(result.series);
-  return {
-    monitoringSeriesRef: asKindRef(series.monitoringSeriesRef),
-    monitoringObject: asString(series.monitoringObject),
-    monitoringIndicator: asString(series.monitoringIndicator),
-    canonicalUnit: asString(series.canonicalUnit),
-  };
+): Promise<WorkspaceResult<"resolve-monitoring">["series"]> => {
+  const result = await workspaceQuery(projectId, { kind: "resolve-monitoring", seriesId }, signal);
+  if (result.kind !== "resolve-monitoring") throw drift();
+  return result.series;
 };
-
-/** 精确序列的快照目录。 */
 export const readEngineeringWorkspaceSnapshots = async (
   projectId: string,
   monitoringSeriesRef: KindRefView,
   signal?: AbortSignal,
-): Promise<readonly EngineeringWorkspaceSnapshotView[]> => {
-  const body = await postRaw({
-    path: workspacePath(projectId, "engineering-workspace/queries"),
-    body: {
-      queryId: `ws-snapshots-${Date.now().toString(36)}`,
-      requestedAt: new Date().toISOString(),
-      payload: { kind: "monitoring-snapshots", monitoringSeriesRef, pageSize: 50 },
-    },
-    ...(signal === undefined ? {} : { signal }),
-  });
-  const result = succeededResult(body);
-  return asArray(result.items).map((item) => {
-    const record = asRecord(item);
-    return {
-      monitoringSnapshotRef: asKindRef(record.monitoringSnapshotRef),
-      cutoff: asString(record.cutoff),
-      availability: asString(record.availability),
-      coverageRatio: asNumber(record.coverageRatio),
-    };
-  });
+  options: PageOptions = {},
+): Promise<WorkspacePageView<EngineeringWorkspaceSnapshotView>> => {
+  const result = await workspaceQuery(
+    projectId,
+    { kind: "monitoring-snapshots", monitoringSeriesRef, pageSize: 50, ...options },
+    signal,
+  );
+  if (result.kind !== "monitoring-snapshots") throw drift();
+  return result;
 };
-
-/** 正式清洗结果的排除项。 */
 export const readEngineeringWorkspaceCleaningExclusions = async (
   projectId: string,
   resultRef: KindRefView,
   subject: KindRefView,
   signal?: AbortSignal,
-): Promise<readonly EngineeringWorkspaceCleaningExclusionView[]> => {
-  const body = await postRaw({
-    path: workspacePath(projectId, "engineering-workspace/queries"),
-    body: {
-      queryId: `ws-exclusions-${Date.now().toString(36)}`,
-      requestedAt: new Date().toISOString(),
-      payload: { kind: "cleaning-exclusions", resultRef, subject, pageSize: 50 },
-    },
-    ...(signal === undefined ? {} : { signal }),
-  });
-  const result = succeededResult(body);
-  return asArray(result.items).map((item) => {
-    const record = asRecord(item);
-    return {
-      decisionId: asString(record.decisionId),
-      targetKind: asString(record.targetKind),
-      reasonCode: asString(record.reasonCode),
-      disposition: asString(record.disposition),
-      ...(record.rejectionClass === undefined
-        ? {}
-        : { rejectionClass: asString(record.rejectionClass) }),
-      ...(record.sourceSegmentId === undefined
-        ? {}
-        : { sourceSegmentId: asString(record.sourceSegmentId) }),
-    };
-  });
+  options: PageOptions = {},
+): Promise<WorkspacePageView<EngineeringWorkspaceCleaningExclusionView>> => {
+  const result = await workspaceQuery(
+    projectId,
+    { kind: "cleaning-exclusions", resultRef, subject, pageSize: 50, ...options },
+    signal,
+  );
+  if (result.kind !== "cleaning-exclusions") throw drift();
+  return result;
+};
+export const readEngineeringWorkspaceConversionFailure = async (
+  projectId: string,
+  conversionRef: KindRefView,
+  signal?: AbortSignal,
+): Promise<WorkspaceResult<"conversion-failure">> => {
+  const result = await workspaceQuery(
+    projectId,
+    { kind: "conversion-failure", conversionRef },
+    signal,
+  );
+  if (result.kind !== "conversion-failure") throw drift();
+  return result;
 };
 
-/**
- * 工程工作区修订的冻结请求。
- *
- * 命令身份、幂等键与签发时间在打开确认前冻结；重试重发同一份快照，不改写命令身份。
- */
 export type PreparedEngineeringWorkspaceRevisionV1 = Readonly<{
-  readonly projectId: string;
-  readonly commandId: string;
-  readonly idempotencyKey: string;
-  readonly issuedAt: string;
-  readonly payload: Readonly<Record<string, unknown>>;
+  projectId: string;
+  commandId: string;
+  idempotencyKey: string;
+  issuedAt: string;
+  payload: Readonly<Record<string, unknown>>;
 }>;
-
-let workspaceCommandSequence = 0;
-const nextWorkspaceCommandId = (action: string): string => {
-  workspaceCommandSequence += 1;
-  return `ws-${action}-${Date.now().toString(36)}-${workspaceCommandSequence}`;
-};
-
 export const prepareEngineeringWorkspaceRevision = (
   projectId: string,
   payload: Record<string, unknown>,
   commandId?: string,
 ): PreparedEngineeringWorkspaceRevisionV1 => {
-  const id = commandId ?? nextWorkspaceCommandId("revision");
+  const parsed = EngineeringWorkspaceCommandPayloadV1Schema.safeParse(payload);
+  if (!parsed.success) throw clientError("CONTRACT_INVALID");
+  const id = commandId ?? nextId("revision");
   return Object.freeze({
     projectId,
     commandId: id,
     idempotencyKey: id,
     issuedAt: new Date().toISOString(),
-    payload: Object.freeze({ ...payload }),
+    payload: Object.freeze(parsed.data),
   });
 };
-
 export const sendEngineeringWorkspaceRevision = async (
   prepared: PreparedEngineeringWorkspaceRevisionV1,
   signal?: AbortSignal,
 ): Promise<void> => {
-  const body = await postRaw({
-    path: workspacePath(prepared.projectId, "engineering-workspace/commands"),
-    body: {
-      commandId: prepared.commandId,
-      idempotencyKey: prepared.idempotencyKey,
-      issuedAt: prepared.issuedAt,
-      payload: prepared.payload,
-    },
-    ...(signal === undefined ? {} : { signal }),
-  });
-  const result = asRecord(body);
-  if (result.kind === "failed") {
-    // 领域失败以安全 HTTP 错误表达；这里只把失败信封原样抛给页面状态机。
-    throw clientError("BUSINESS_BLOCKED");
-  }
-  unwrapQueryResult(body);
+  unwrapQueryResult(
+    await postRaw({
+      path: workspacePath(prepared.projectId, "engineering-workspace/commands"),
+      body: {
+        commandId: prepared.commandId,
+        idempotencyKey: prepared.idempotencyKey,
+        issuedAt: prepared.issuedAt,
+        payload: prepared.payload,
+      },
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  );
 };
-
-/* -------------------------------------------------------------------------- */
-/* 工程访问维护                                                                */
-/* -------------------------------------------------------------------------- */
 
 const accessQuery = async (
   projectId: string,
   payload: Record<string, unknown>,
   signal?: AbortSignal,
-): Promise<Record<string, unknown>> => {
+): Promise<ProjectWorkspaceAccessReadSuccessV1> => {
   const body = await postRaw({
     path: workspacePath(projectId, "access/queries"),
     body: {
       ...payload,
-      queryId: `ws-access-${Date.now().toString(36)}`,
+      queryId: nextId("access-read"),
       requestedAt: new Date().toISOString(),
       projectId,
     },
     ...(signal === undefined ? {} : { signal }),
   });
-  return succeededResult(body);
+  const parsed = ProjectWorkspaceAccessReadSuccessV1Schema.safeParse(succeededResult(body));
+  if (!parsed.success) throw drift();
+  return parsed.data;
 };
-
 export const listWorkspaceMemberships = async (
   projectId: string,
   signal?: AbortSignal,
-): Promise<readonly WorkspaceMembershipView[]> => {
-  const result = await accessQuery(projectId, { kind: "memberships", pageSize: 50 }, signal);
-  return asArray(result.items).map((item) => {
-    const record = asRecord(item);
-    return {
-      membershipRef: asVersionRef(record.membershipRef),
-      accountRef: asVersionRef(record.accountRef),
-      displayName: asString(record.displayName),
-      roles: asArray(record.roles).map(asString),
-      status: asString(record.status),
-    };
-  });
+  options: PageOptions = {},
+): Promise<WorkspacePageView<WorkspaceMembershipView>> => {
+  const result = await accessQuery(
+    projectId,
+    { kind: "memberships", pageSize: 50, ...options },
+    signal,
+  );
+  if (result.kind !== "memberships") throw drift();
+  return result;
 };
-
 export const listWorkspaceSpatialScopes = async (
   projectId: string,
   signal?: AbortSignal,
-): Promise<readonly WorkspaceSpatialScopeView[]> => {
-  const result = await accessQuery(projectId, { kind: "spatial-scopes", pageSize: 50 }, signal);
-  return asArray(result.items).map((item) => {
-    const record = asRecord(item);
-    return {
-      scopeRef: asVersionRef(record.scopeRef),
-      ...(record.parentScopeRef === undefined
-        ? {}
-        : { parentScopeRef: asVersionRef(record.parentScopeRef) }),
-      status: asString(record.status),
-    };
-  });
+  options: PageOptions = {},
+): Promise<WorkspacePageView<WorkspaceSpatialScopeView>> => {
+  const result = await accessQuery(
+    projectId,
+    { kind: "spatial-scopes", pageSize: 50, ...options },
+    signal,
+  );
+  if (result.kind !== "spatial-scopes") throw drift();
+  return result;
 };
-
 export const listWorkspaceMemberOptions = async (
   projectId: string,
   signal?: AbortSignal,
-): Promise<readonly WorkspaceMemberOptionView[]> => {
-  const result = await accessQuery(projectId, { kind: "member-options", pageSize: 50 }, signal);
-  return asArray(result.items).map((item) => {
-    const record = asRecord(item);
-    return {
-      accountRef: asVersionRef(record.accountRef),
-      displayName: asString(record.displayName),
-    };
-  });
+  options: PageOptions = {},
+): Promise<WorkspacePageView<WorkspaceMemberOptionView>> => {
+  const result = await accessQuery(
+    projectId,
+    { kind: "member-options", pageSize: 50, ...options },
+    signal,
+  );
+  if (result.kind !== "member-options") throw drift();
+  return result;
 };
-
 export const readWorkspaceSourceAccess = async (
   projectId: string,
   sourceVersionRef: KindRefView,
   signal?: AbortSignal,
 ): Promise<WorkspaceSourceAccessView> => {
   const result = await accessQuery(projectId, { kind: "source-access", sourceVersionRef }, signal);
-  return {
-    sourceGrantRef: asVersionRef(result.sourceGrantRef),
-    visibility: asString(result.visibility),
-    allowedAccountIds: asArray(result.allowedAccountIds).map(asString),
-    registeredByAccountId: asString(result.registeredByAccountId),
-  };
+  if (result.kind !== "source-access") throw drift();
+  return result;
 };
-
-export type PreparedWorkspaceAccessCommandV1 = Readonly<{
-  readonly projectId: string;
-  readonly commandId: string;
-  readonly idempotencyKey: string;
-  readonly issuedAt: string;
-  readonly payload: Readonly<Record<string, unknown>>;
-}>;
-
+export type PreparedWorkspaceAccessCommandV1 = PreparedEngineeringWorkspaceRevisionV1;
 export const prepareWorkspaceAccessCommand = (
   projectId: string,
   payload: Record<string, unknown>,
   commandId?: string,
 ): PreparedWorkspaceAccessCommandV1 => {
-  const id = commandId ?? nextWorkspaceCommandId("access");
+  const parsed = ProjectWorkspaceAccessCommandPayloadV1Schema.safeParse(payload);
+  if (!parsed.success) throw clientError("CONTRACT_INVALID");
+  const id = commandId ?? nextId("access");
   return Object.freeze({
     projectId,
     commandId: id,
     idempotencyKey: id,
     issuedAt: new Date().toISOString(),
-    payload: Object.freeze({ ...payload }),
+    payload: Object.freeze(parsed.data),
   });
 };
-
 export const sendWorkspaceAccessCommand = async (
   prepared: PreparedWorkspaceAccessCommandV1,
   signal?: AbortSignal,
@@ -564,6 +341,7 @@ export const sendWorkspaceAccessCommand = async (
     },
     ...(signal === undefined ? {} : { signal }),
   });
-  const result = succeededResult(body);
-  return asVersionRef(result.resultRef);
+  const parsed = AccessCommandResultV1Schema.safeParse(succeededResult(body));
+  if (!parsed.success) throw drift();
+  return parsed.data.resultRef;
 };

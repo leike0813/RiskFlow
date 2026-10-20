@@ -1,5 +1,5 @@
 /**
- * C32 demo 浏览器验收的真实服务夹具（D12）：demo 生产构建 + 真实 HTTP/授权/投影接缝 +
+ * C32 demo 浏览器验收的真实服务夹具（D12）：demo 生产构建 + 真实 HTTPS/授权/投影接缝 +
  * 真实 PostgreSQL/C03/C04/C06，不引入开发服务器、Mock 后端或 Mock 浏览器。
  * C33 扩展：注入识别只读（run-list/run-read/record-catalog/record-read）、复核队列只读与
  * decide-review 命令端口，并播种完成态/等待/可重试失败识别运行、两条标准化风险记录
@@ -172,6 +172,8 @@ import { createRiskDashboardReadService } from "../../../../packages/core/dist/r
 import { StandardizedRiskRecordEnvelopeSchema } from "../../../../packages/contracts/dist/records/index.js";
 import { IdentificationInputSnapshotV1Schema } from "../../../../packages/contracts/dist/workflows/index.js";
 
+import { startLoopbackTlsTermination } from "./server.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(HERE, "../../../..");
 const WEB_DIST = resolve(REPOSITORY_ROOT, "apps/web/dist");
@@ -287,6 +289,8 @@ const registeredAgentTaskDefinitions = [];
 export const startBusinessBrowserServer = async ({
   riskLevelOnly = false,
   dashboardAcceptance = false,
+  // 只在需要 >50 行分页证据的页面用例里播种，默认启动不承担 51×2 条登记成本。
+  paginationAcceptance = false,
 } = {}) => {
   if (!existsSync(WEB_DIST)) throw new Error(`apps/web production build is missing: ${WEB_DIST}`);
   if (!existsSync(MIGRATION_ROOT)) {
@@ -825,7 +829,7 @@ export const startBusinessBrowserServer = async ({
     const applicabilitySnapshotRef = applicabilitySnapshot.result.snapshot.snapshotRef;
 
     // ---- 资料交付 A（工程内共享）与 B（仅系统管理员可见） ----
-    const registerSource = async (suffix, name) => {
+    const registerSource = async (suffix, name, issuedAt = NOW) => {
       const authorization = await writeAuth(`demo-browser-source-${suffix}`);
       const sourceArtifactRef = await putJson(
         `demo-browser-source-${suffix}-body`,
@@ -861,7 +865,7 @@ export const startBusinessBrowserServer = async ({
         idempotencyKey: `demo-browser-delivery-${suffix}`,
         projectId: PROJECT_ID,
         actorId: authorization.actorId,
-        issuedAt: NOW,
+        issuedAt,
         authorization: await writeAuth(`demo-browser-delivery-${suffix}`),
         kind: "register-source-delivery",
         payload: {
@@ -1413,130 +1417,238 @@ export const startBusinessBrowserServer = async ({
       });
       if (policy.kind !== "succeeded")
         throw new Error(`demo fixture availability policy failed ${input.seriesId}`);
-      const sampleLines = [
-        JSON.stringify({
-          schemaVersion: "1",
-          mediaType: "application/x-ndjson",
-          monitoringSeriesRef: seriesRef,
-          projectRevisionRef,
-          spatialScopeRef: businessSpatialScopeRef,
-          sourceVersionRef: sourceA.sourceVersionRef,
-          sourceSegmentSetRef: sourceA.sourceSegmentSetRef,
-          productionStrategyRef: versionRef("monitoring-production"),
-          sampleCount: 5,
-        }),
-        ...[6, 7, 8, 9, 10].map((second) =>
+      /**
+       * 同一序列可以冻结多个真实快照：`label` 区分命令身份，`seconds` 给出该批样本秒点。
+       * 首批沿用原身份，追加批次才带后缀，既有 fixture 引用不变。
+       */
+      const registerSeriesSnapshot = async ({ label, seconds, window, cutoff }) => {
+        const snapshotIdentity = (purpose) => `demo-browser-${input.seriesId}${label}-${purpose}`;
+        const sampleLines = [
           JSON.stringify({
-            sourceSampleKey: `s-${second}`,
-            sampledAt: `2030-01-01T00:00:${String(second).padStart(2, "0")}.000Z`,
-            value: input.sampleAt(second),
-            unit: input.canonicalUnit,
-            evidenceReferences: [sampleEvidence],
+            schemaVersion: "1",
+            mediaType: "application/x-ndjson",
+            monitoringSeriesRef: seriesRef,
+            projectRevisionRef,
+            spatialScopeRef: businessSpatialScopeRef,
+            sourceVersionRef: sourceA.sourceVersionRef,
+            sourceSegmentSetRef: sourceA.sourceSegmentSetRef,
+            productionStrategyRef: versionRef("monitoring-production"),
+            sampleCount: seconds.length,
           }),
-        ),
-      ].join("\n");
-      const sampleAuth = await monitoringAuth(
-        identity("samples"),
-        "engineering-data.register-monitoring-batch",
-      );
-      const sampleArtifact = await artifactStore.put(
-        ArtifactPutCommandV1Schema.parse({
-          schemaVersion: "1",
-          commandId: identity("samples"),
-          idempotencyKey: identity("samples"),
+          ...seconds.map((second) =>
+            JSON.stringify({
+              sourceSampleKey: `s-${second}`,
+              sampledAt: `2030-01-01T00:00:${String(second).padStart(2, "0")}.000Z`,
+              value: input.sampleAt(second),
+              unit: input.canonicalUnit,
+              evidenceReferences: [sampleEvidence],
+            }),
+          ),
+        ].join("\n");
+        const sampleAuth = await monitoringAuth(
+          snapshotIdentity("samples"),
+          "engineering-data.register-monitoring-batch",
+        );
+        const sampleArtifact = await artifactStore.put(
+          ArtifactPutCommandV1Schema.parse({
+            schemaVersion: "1",
+            commandId: snapshotIdentity("samples"),
+            idempotencyKey: snapshotIdentity("samples"),
+            projectId: PROJECT_ID,
+            actorId: sampleAuth.actorId,
+            issuedAt: NOW,
+            authorization: sampleAuth,
+            requiredCapability: "engineering-data.write",
+            artifactId: `demo-browser-samples-${input.seriesId}${label}`,
+            artifactKind: "content",
+            purposeCode: "engineering-data.register-monitoring-batch",
+            mediaType: "application/x-ndjson",
+            parentArtifactRefs: [],
+            evidenceReferences: [sampleEvidence],
+            additionalSpatialScopeRefs: [],
+            additionalSourceAccessGrantRefs: [],
+          }),
+          (async function* () {
+            yield new TextEncoder().encode(sampleLines);
+          })(),
+        );
+        const batch = await registry.apply({
+          commandId: snapshotIdentity("batch"),
+          idempotencyKey: snapshotIdentity("batch"),
           projectId: PROJECT_ID,
           actorId: sampleAuth.actorId,
           issuedAt: NOW,
-          authorization: sampleAuth,
-          requiredCapability: "engineering-data.write",
-          artifactId: `demo-browser-samples-${input.seriesId}`,
-          artifactKind: "content",
-          purposeCode: "engineering-data.register-monitoring-batch",
-          mediaType: "application/x-ndjson",
-          parentArtifactRefs: [],
-          evidenceReferences: [sampleEvidence],
-          additionalSpatialScopeRefs: [],
-          additionalSourceAccessGrantRefs: [],
-        }),
-        (async function* () {
-          yield new TextEncoder().encode(sampleLines);
-        })(),
-      );
-      const batch = await registry.apply({
-        commandId: identity("batch"),
-        idempotencyKey: identity("batch"),
-        projectId: PROJECT_ID,
-        actorId: sampleAuth.actorId,
-        issuedAt: NOW,
-        authorization: await monitoringAuth(
-          identity("batch"),
-          "engineering-data.register-monitoring-batch",
-        ),
-        kind: "register-monitoring-batch",
-        payload: {
-          monitoringSeriesRef: seriesRef,
-          deliveryKey: identity("batch"),
-          sampleArtifactRef: sampleArtifact.artifactRef,
-          window: { from: "2030-01-01T00:00:05.000Z", to: "2030-01-01T00:00:11.000Z" },
-          relation: { kind: "original" },
-        },
+          authorization: await monitoringAuth(
+            snapshotIdentity("batch"),
+            "engineering-data.register-monitoring-batch",
+          ),
+          kind: "register-monitoring-batch",
+          payload: {
+            monitoringSeriesRef: seriesRef,
+            deliveryKey: snapshotIdentity("batch"),
+            sampleArtifactRef: sampleArtifact.artifactRef,
+            window,
+            relation: { kind: "original" },
+          },
+        });
+        if (batch.kind !== "succeeded") {
+          throw new Error(
+            `demo fixture monitoring batch failed ${input.seriesId}: ${JSON.stringify(batch)}`,
+          );
+        }
+        const snapshot = await registry.freeze({
+          commandId: snapshotIdentity("freeze"),
+          idempotencyKey: snapshotIdentity("freeze"),
+          projectId: PROJECT_ID,
+          actorId: sampleAuth.actorId,
+          issuedAt: NOW,
+          authorization: await monitoringAuth(
+            snapshotIdentity("freeze"),
+            "engineering-data.monitoring-snapshot",
+          ),
+          kind: "monitoring-snapshot",
+          payload: {
+            monitoringSeriesRef: seriesRef,
+            cutoff,
+            availabilityPolicyRef: policyRef,
+          },
+        });
+        if (snapshot.kind !== "succeeded") {
+          throw new Error(`demo fixture monitoring snapshot failed ${input.seriesId}`);
+        }
+        return snapshot.result.monitoringSnapshotRef;
+      };
+      const snapshotRef = await registerSeriesSnapshot({
+        label: "",
+        seconds: [6, 7, 8, 9, 10],
+        window: { from: "2030-01-01T00:00:05.000Z", to: "2030-01-01T00:00:11.000Z" },
+        cutoff: "2030-01-01T00:00:10.000Z",
       });
-      if (batch.kind !== "succeeded") {
-        throw new Error(
-          `demo fixture monitoring batch failed ${input.seriesId}: ${JSON.stringify(batch)}`,
-        );
-      }
-      const snapshot = await registry.freeze({
-        commandId: identity("freeze"),
-        idempotencyKey: identity("freeze"),
-        projectId: PROJECT_ID,
-        actorId: sampleAuth.actorId,
-        issuedAt: NOW,
-        authorization: await monitoringAuth(
-          identity("freeze"),
-          "engineering-data.monitoring-snapshot",
-        ),
-        kind: "monitoring-snapshot",
-        payload: {
-          monitoringSeriesRef: seriesRef,
-          cutoff: "2030-01-01T00:00:10.000Z",
-          availabilityPolicyRef: policyRef,
-        },
-      });
-      if (snapshot.kind !== "succeeded") {
-        throw new Error(`demo fixture monitoring snapshot failed ${input.seriesId}`);
-      }
-      return snapshot.result.monitoringSnapshotRef;
+      const laterSnapshotRef =
+        input.laterSnapshot === undefined
+          ? undefined
+          : await registerSeriesSnapshot({ label: "-later", ...input.laterSnapshot });
+      return {
+        snapshotRef,
+        laterSnapshotRef,
+        seriesRef,
+        policyRef,
+        seriesVersionId: revised.result.revision.monitoringSeriesRef.reference.versionId,
+      };
     };
 
     // 后果侧：地表沉降累计值（演示数据 2 mm/s 线性上升，cutoff 处 20 mm）。
-    const settlementMonitoringSnapshotRef = await registerMonitoringSeries({
+    // 追加后一批样本与更晚 cutoff：首个快照因此成为真实的历史快照，原评估/响应 fixture
+    // 仍固定引用它，历史输入不变；当前最新快照另名，不顶替原引用。
+    const settlementSeries = await registerMonitoringSeries({
       seriesId: "demo-c32-series-settlement",
       monitoringObject: "地表沉降监测点",
       monitoringIndicator: "地表沉降",
       parameterCode: "settlement",
       canonicalUnit: "mm",
       sampleAt: (second) => second * 2,
+      laterSnapshot: {
+        seconds: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+        window: { from: "2030-01-01T00:00:11.000Z", to: "2030-01-01T00:00:21.000Z" },
+        cutoff: "2030-01-01T00:00:20.000Z",
+      },
     });
+    const settlementMonitoringSnapshotRef = settlementSeries.snapshotRef;
+    const latestSettlementMonitoringSnapshotRef = settlementSeries.laterSnapshotRef;
     // 可能性侧：泥水压力（演示数据 220 kPa 起，每秒 +20 kPa，cutoff 处 320 kPa）。
     // 监测指标名取自封闭词表 `MONITORING_INDICATOR_VALUES`，不能用词表外的自造名称。
-    const slurryPressureMonitoringSnapshotRef = await registerMonitoringSeries({
-      seriesId: "demo-c32-series-slurry-pressure",
-      monitoringObject: "泥水压力监测点",
-      monitoringIndicator: "泥水压力",
-      parameterCode: "slurry-pressure",
-      canonicalUnit: "kPa",
-      sampleAt: (second) => 120 + second * 20,
-    });
+    const slurryPressureMonitoringSnapshotRef = (
+      await registerMonitoringSeries({
+        seriesId: "demo-c32-series-slurry-pressure",
+        monitoringObject: "泥水压力监测点",
+        monitoringIndicator: "泥水压力",
+        parameterCode: "slurry-pressure",
+        canonicalUnit: "kPa",
+        sampleAt: (second) => 120 + second * 20,
+      })
+    ).snapshotRef;
     // 合成重评输入：保持两项指标完整，以另一个真实登记快照表达沉降变化。
-    const reassessmentSettlementMonitoringSnapshotRef = await registerMonitoringSeries({
-      seriesId: "demo-c32-series-settlement-reassessment",
-      monitoringObject: "地表沉降复测点",
-      monitoringIndicator: "地表沉降",
-      parameterCode: "settlement",
-      canonicalUnit: "mm",
-      sampleAt: (second) => second * 2 + 1,
-    });
+    const reassessmentSettlementMonitoringSnapshotRef = (
+      await registerMonitoringSeries({
+        seriesId: "demo-c32-series-settlement-reassessment",
+        monitoringObject: "地表沉降复测点",
+        monitoringIndicator: "地表沉降",
+        parameterCode: "settlement",
+        canonicalUnit: "mm",
+        sampleAt: (second) => second * 2 + 1,
+      })
+    ).snapshotRef;
+
+    /**
+     * 分页验收（W-02）：真实登记 51 条资料与 51 条监测序列，使两个目录都超过单页 50 行。
+     *
+     * 只在页面用例显式开启时播种，默认启动保持有界。合成资料登记在更早的 recorded_at，
+     * 目录仍按 `recorded_at desc, source_version_id desc` 排序，因此资料 A/B/C34 的原精确定位
+     * 留在首页，分页新增行只落在后续页；监测序列按标识升序，合成序列取 `z-page-` 前缀排在
+     * 原三条真实序列之后。正文是小 JSON，不复制任何原件文件。
+     */
+    const paginationFixtures = { sourceRefs: [], seriesRefs: [] };
+    if (paginationAcceptance) {
+      const syntheticRecordedAt = "2030-06-01T00:00:00.000Z";
+      for (let index = 1; index <= 51; index += 1) {
+        const suffix = `page-${String(index).padStart(2, "0")}`;
+        const source = await registerSource(
+          suffix,
+          `分页合成资料 ${String(index).padStart(2, "0")}（合成分页样本）`,
+          syntheticRecordedAt,
+        );
+        await reviseSourceAccess(source.sourceVersionRef, suffix, "project-shared", []);
+        paginationFixtures.sourceRefs.push(source.sourceVersionRef);
+      }
+      for (let index = 1; index <= 51; index += 1) {
+        const seriesId = `demo-c32-series-z-page-${String(index).padStart(2, "0")}`;
+        const identity = `demo-browser-${seriesId}`;
+        const revised = await monitoringStore.reviseSeries({
+          commandId: identity,
+          idempotencyKey: identity,
+          projectId: PROJECT_ID,
+          actorId: baseAuth.actorId,
+          issuedAt: NOW,
+          authorization: await operatorAuth(
+            identity,
+            "engineering-data.register-monitoring-batch",
+            [sourceA.sourceVersionRef],
+          ),
+          monitoringSeriesRef: kindRef("monitoring-series", seriesId),
+          expectedVersion: "none",
+          projectRevisionRef,
+          spatialScopeRef: businessSpatialScopeRef,
+          monitoringObject: `分页合成监测点 ${String(index).padStart(2, "0")}`,
+          monitoringIndicator: "地表沉降",
+          parameterCode: "settlement",
+          canonicalUnit: "mm",
+          unitConversions: [],
+          effectivePeriod: { validFrom: NOW },
+        });
+        if (revised.kind !== "succeeded") {
+          throw new Error(`demo fixture pagination series failed ${seriesId}`);
+        }
+        paginationFixtures.seriesRefs.push(revised.result.revision.monitoringSeriesRef);
+      }
+    }
+    // 目录按 `recorded_at desc, source_version_id desc` 排序；合成资料整批更早，页 2 只会有
+    // 合成行。直接按目录同一排序取最后一行，不猜客户端排序规则。
+    const secondPageSourceRow = paginationAcceptance
+      ? await appRuntime.db
+          .selectFrom("business.source_versions")
+          .select("source_version_id")
+          .where("project_id", "=", PROJECT_ID)
+          .where("recorded_at", "<", NOW)
+          .orderBy("recorded_at", "desc")
+          .orderBy("source_version_id", "desc")
+          .execute()
+          .then((rows) => rows.at(-1))
+      : undefined;
+    const secondPageSourceRef = paginationFixtures.sourceRefs.find(
+      (ref) => ref.reference.entityId === secondPageSourceRow?.source_version_id,
+    );
+    // 序列目录按 `series_id asc`；合成序列取 `z-page-` 前缀，`z-page-51` 是最后一页的行。
+    const secondPageSeriesRef = paginationFixtures.seriesRefs.at(-1);
 
     // ---- 治理发布播种（SQL 行 + C04 正文工件；合成样本、待甲方复核） ----
     const governanceAuth = await operatorAuth(
@@ -3166,7 +3278,10 @@ export const startBusinessBrowserServer = async ({
         probe.close(() => resolved(address.port));
       });
     });
-    const publicOrigin = `http://127.0.0.1:${freePort}`;
+    // 浏览器只访问真实 HTTPS；Fastify 仍在 loopback HTTP 上接收原样转发的请求。
+    const tls = await startLoopbackTlsTermination(`http://127.0.0.1:${freePort}`);
+    closeables.push(tls.close);
+    const publicOrigin = tls.origin;
 
     // ---- C16 → C18 → C19 正式依据链（design D-11）----
     //
@@ -5308,6 +5423,61 @@ export const startBusinessBrowserServer = async ({
       settlementMonitoringSnapshotRef,
       slurryPressureMonitoringSnapshotRef,
       reassessmentSettlementMonitoringSnapshotRef,
+      /**
+       * 页面消费句柄：`{entityId, versionId}` 与本装配登记的精确引用一致。
+       * `settlementSnapshotRef` 是原评估/响应 fixture 冻结的历史快照；
+       * `priorSettlementSnapshotRef` 同为该旧引用，`latestSettlementSnapshotRef` 是追加批次
+       * 冻结的更晚快照，因此「当前最新」与「历史选择」在真实数据上不同。
+       */
+      seriesVersionId: settlementSeries.seriesVersionId,
+      settlementSnapshotRef: {
+        kind: "monitoring-snapshot",
+        entityId: settlementMonitoringSnapshotRef.reference.entityId,
+        versionId: settlementMonitoringSnapshotRef.reference.versionId,
+      },
+      priorSettlementSnapshotRef: {
+        kind: "monitoring-snapshot",
+        entityId: settlementMonitoringSnapshotRef.reference.entityId,
+        versionId: settlementMonitoringSnapshotRef.reference.versionId,
+      },
+      /** 同义命名：契约里同时使用 previousSettlementSnapshotRef 指代这条旧快照引用。 */
+      previousSettlementSnapshotRef: {
+        kind: "monitoring-snapshot",
+        entityId: settlementMonitoringSnapshotRef.reference.entityId,
+        versionId: settlementMonitoringSnapshotRef.reference.versionId,
+      },
+      latestSettlementSnapshotRef: {
+        kind: "monitoring-snapshot",
+        entityId: latestSettlementMonitoringSnapshotRef.reference.entityId,
+        versionId: latestSettlementMonitoringSnapshotRef.reference.versionId,
+      },
+      slurryPressureSnapshotRef: {
+        kind: "monitoring-snapshot",
+        entityId: slurryPressureMonitoringSnapshotRef.reference.entityId,
+        versionId: slurryPressureMonitoringSnapshotRef.reference.versionId,
+      },
+      reassessmentSnapshotRef: {
+        kind: "monitoring-snapshot",
+        entityId: reassessmentSettlementMonitoringSnapshotRef.reference.entityId,
+        versionId: reassessmentSettlementMonitoringSnapshotRef.reference.versionId,
+      },
+      /** C34 清洗来源的精确来源版本引用（转换/清洗链的上游）。 */
+      c34SourceVersionRef: convertibleSourceVersionRef,
+      /** 资料 A 的完整来源版本引用。 */
+      sourceAVersionRef: sourceA.sourceVersionRef,
+      /**
+       * 分页验收句柄（仅 `paginationAcceptance` 开启时存在）：51 条资料与 51 条监测序列
+       * 都已经真实登记，第二页只包含后续页才出现的合成行。
+       */
+      ...(secondPageSourceRef === undefined
+        ? {}
+        : {
+            secondPageSourceRef,
+            secondPageSourceId: secondPageSourceRef.reference.entityId,
+            secondPageSeriesRef,
+            secondPageSeriesId: secondPageSeriesRef.reference.entityId,
+            secondPageSeriesVersionId: secondPageSeriesRef.reference.versionId,
+          }),
       /**
        * 资料 A 的真实来源版本与资料段标识：登记执行的 `evidenceReferences` 按真实来源段
        * 登记，C08/C29 的证据完整性与来源段一致性校验才会成立。

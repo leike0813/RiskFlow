@@ -210,7 +210,7 @@ export default function DocumentDetailPage() {
                         <dt>清洗可用性</dt>
                         <dd>
                           {item.cleaningAvailability === undefined ? (
-                            <StatusTag tone="neutral">未清洗</StatusTag>
+                            <StatusTag tone="neutral">未登记清洗摘要</StatusTag>
                           ) : (
                             <StatusTag
                               tone={

@@ -425,6 +425,150 @@ describe("structured document format adapters", () => {
     ).toBe("EMBEDDED_OBJECT_UNSUPPORTED");
   });
 
+  it("lists the conversions of one exact source and projects only the safe failure summary", async () => {
+    const authorization = AuthorizationContextV1Schema.parse({
+      schemaVersion: "1",
+      authorizationContextRef: {
+        kind: "authorization-context",
+        reference: { entityId: "auth_1", versionId: "v1" },
+      },
+      actorId: "actor_1",
+      projectId: "project_1",
+      grantedCapabilities: ["engineering-data.read", "engineering-data.write"],
+      spatialScopeRefs: source.spatialScopeRefs,
+      sourceAccessGrantRefs: [source.sourceAccessGrantRef],
+      authorizationPolicyRef: { entityId: "access-policy", versionId: "v1" },
+      decidedAt: "2030-01-01T00:00:00.000Z",
+      invocation: { kind: "human" },
+    });
+    const bytes = new TextEncoder().encode("指标,备注\n盾构,稳定\n");
+    let diagnosticBytes: Uint8Array | undefined;
+    const contextSource = {
+      resolveSourceProcessingInput: async (): Promise<ContextSourceResultV1> => ({
+        kind: "succeeded",
+        result: { kind: "source-processing-input", input: source },
+      }),
+      resolveSourceVersionForRead: async (): Promise<ContextSourceResultV1> => ({
+        kind: "succeeded",
+        result: { kind: "source-processing-input", input: source },
+      }),
+      registerSegments: async (): Promise<ContextSourceResultV1> =>
+        ({
+          kind: "succeeded",
+          result: {
+            kind: "source-segment-set",
+            segmentSet: {
+              sourceSegmentSetRef: {
+                kind: "source-segment-set",
+                reference: { entityId: "segments_1", versionId: "v1" },
+              },
+            },
+          },
+        }) as unknown as ContextSourceResultV1,
+    } as unknown as EngineeringContextSourceRegistryV1;
+    const artifactStore: ArtifactStoreV1 = {
+      async open(): Promise<ArtifactReadHandleV1> {
+        const content = diagnosticBytes ?? bytes;
+        return {
+          manifest: {
+            artifactRef: source.sourceArtifactRef,
+            mediaType: "text/csv",
+          },
+          content: (async function* () {
+            yield content;
+          })(),
+          completed: Promise.resolve({} as never),
+        } as unknown as ArtifactReadHandleV1;
+      },
+      async put(
+        command: ArtifactPutCommandV1,
+        content: AsyncIterable<Uint8Array>,
+      ): Promise<ArtifactPutResultV1> {
+        if (command.artifactKind === "diagnostic") {
+          const chunks: Uint8Array[] = [];
+          for await (const chunk of content) chunks.push(chunk);
+          const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+          const merged = new Uint8Array(size);
+          let offset = 0;
+          for (const chunk of chunks) {
+            merged.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+          diagnosticBytes = merged;
+        }
+        return {
+          artifactRef: {
+            kind:
+              command.artifactKind === "diagnostic"
+                ? ("diagnostic-artifact" as const)
+                : ("content-artifact" as const),
+            reference: {
+              entityId: command.artifactId,
+              versionId: `sha256:${"c".repeat(64)}`,
+            },
+          },
+          manifest: {} as never,
+          manifestSha256: "a".repeat(64),
+          replayed: false,
+          deduplicated: false,
+        };
+      },
+    };
+    const adapter = new StructuredDocumentConversionAdapter({
+      contextSource,
+      artifactStore,
+      qualityPolicyRef: { entityId: "quality-policy", versionId: "v1" },
+      converterDeploymentRef: { entityId: "converter", versionId: "v1" },
+    });
+    const failed = await adapter.convert(
+      StructuredDocumentConversionCommandV1Schema.parse({
+        schemaVersion: "1",
+        conversionId: "conversion_fail_1",
+        idempotencyKey: "conversion_fail_1",
+        runId: "run_1",
+        threadId: "thread_1",
+        issuedAt: "2030-01-01T00:00:00.000Z",
+        deadlineAt: "2030-01-01T01:00:00.000Z",
+        projectId: "project_1",
+        actorId: "actor_1",
+        authorization,
+        sourceVersionRef: source.sourceVersionRef,
+        sourceArtifactRef: source.sourceArtifactRef,
+        mediaType: "text/csv",
+        input: { kind: "text-pdf" },
+        conversionPolicyRef: { entityId: "document-conversion-policy", versionId: "1" },
+        qualityPolicyRef: { entityId: "quality-policy", versionId: "v1" },
+        converterDeploymentRef: { entityId: "converter", versionId: "v1" },
+      }),
+    );
+    expect(failed).toMatchObject({ kind: "failed", error: { code: "TERMINAL_FAILURE" } });
+    const listed = await adapter.listBySourceVersion({
+      projectId: "project_1",
+      sourceVersionRef: source.sourceVersionRef,
+      limit: 10,
+    });
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.status).toBe("failed");
+    const summary = await adapter.readFailureSummary({
+      projectId: "project_1",
+      conversionRef: listed[0]!.conversionRef,
+      actorId: "actor_1",
+      requestedAt: "2030-01-01T01:00:00.000Z",
+      authorization,
+    });
+    expect(summary?.reasonCode).toBe("MINERU_DEPLOYMENT_NOT_FOUND");
+    expect(summary).not.toHaveProperty("sourceSegmentId");
+    const otherSource = await adapter.listBySourceVersion({
+      projectId: "project_1",
+      sourceVersionRef: {
+        kind: "source-version",
+        reference: { entityId: "other_source", versionId: "v1" },
+      },
+      limit: 10,
+    });
+    expect(otherSource).toHaveLength(0);
+  });
+
   it("converts through the C11/C04 seam and replays the same in-memory result", async () => {
     const authorization = AuthorizationContextV1Schema.parse({
       schemaVersion: "1",

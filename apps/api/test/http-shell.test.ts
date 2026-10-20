@@ -3333,3 +3333,246 @@ describe("CH-2 当前工程入口能力呈现路由", () => {
     await app.close();
   });
 });
+
+describe("CH-4 工程工作区专用接缝", () => {
+  const jsonHeaders = { "content-type": "application/json", origin: ORIGIN };
+  const cookieHeaders = {
+    ...jsonHeaders,
+    cookie: `${HTTP_COOKIE_NAME_V1}=opaque-token`,
+  };
+  const buildWithPorts = (ports: ApiPortsV1) =>
+    buildApi({
+      access: accessStub(),
+      ports,
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+  const workspacePorts = (seen: Record<string, unknown>[]): ApiPortsV1 => ({
+    engineeringWorkspace: {
+      revise: async (request) => {
+        seen.push({ kind: "revise", request });
+        return {
+          kind: "succeeded",
+          result: {
+            kind: "project-revision",
+            revision: {
+              projectRevisionRef: {
+                kind: "project-revision",
+                reference: { entityId: "project", versionId: "1" },
+              },
+              name: "一号工程",
+              lifecycle: "preparing",
+              applicabilityMetadata: {
+                constructionMethod: "method-1",
+                stratumCondition: "stratum-1",
+                engineeringStage: "stage-1",
+              },
+              effectivePeriod: { validFrom: NOW },
+              systemTime: { recordedAt: NOW },
+              audit: { actorId: "actor", action: "test", recordedAt: NOW },
+            },
+          },
+        };
+      },
+      read: async (request) => {
+        seen.push({ kind: "read", request });
+        return {
+          kind: "succeeded",
+          result: { kind: "context", projectId: "project", project: null, spatial: null },
+        };
+      },
+    },
+    projectWorkspaceAccess: {
+      read: async (request) => {
+        seen.push({ kind: "access-read", request });
+        return {
+          kind: "succeeded",
+          result: { kind: "memberships", items: [] },
+        };
+      },
+      execute: async (request) => {
+        seen.push({ kind: "access-execute", request });
+        return {
+          kind: "succeeded",
+          result: {
+            kind: "membership",
+            resultRef: { entityId: "membership", versionId: "1" },
+            references: [],
+          },
+        };
+      },
+    },
+  });
+
+  it("四条固定路径把 Cookie 会话与路径工程注入端口，请求体不含授权", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const app = buildWithPorts(workspacePorts(seen));
+
+    const read = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/project/engineering-workspace/queries",
+      headers: cookieHeaders,
+      payload: {
+        queryId: "query-1",
+        requestedAt: NOW,
+        payload: { kind: "context" },
+      },
+    });
+    expect(read.statusCode).toBe(200);
+    const readRequest = seen[0]?.request as Record<string, unknown>;
+    expect(readRequest.sessionToken).toBe("opaque-token");
+    expect(readRequest.projectId).toBe("project");
+    expect(readRequest).not.toHaveProperty("authorization");
+    expect(readRequest).not.toHaveProperty("actorId");
+
+    const revise = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/project/engineering-workspace/commands",
+      headers: cookieHeaders,
+      payload: {
+        commandId: "command-1",
+        idempotencyKey: "idempotency-1",
+        issuedAt: NOW,
+        payload: {
+          kind: "project",
+          expectedVersion: "none",
+          name: "一号工程",
+          lifecycle: "preparing",
+          applicabilityMetadata: {
+            constructionMethod: "method-1",
+            stratumCondition: "stratum-1",
+            engineeringStage: "stage-1",
+          },
+          effectivePeriod: { validFrom: NOW },
+        },
+      },
+    });
+    expect(revise.statusCode).toBe(200);
+
+    const accessRead = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/project/access/queries",
+      headers: cookieHeaders,
+      payload: {
+        kind: "memberships",
+        queryId: "query-2",
+        requestedAt: NOW,
+        projectId: "project",
+        pageSize: 25,
+      },
+    });
+    expect(accessRead.statusCode).toBe(200);
+    expect((seen[2]?.request as Record<string, unknown>).sessionToken).toBe("opaque-token");
+
+    const accessCommand = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/project/access/commands",
+      headers: cookieHeaders,
+      payload: {
+        commandId: "command-2",
+        idempotencyKey: "idempotency-2",
+        issuedAt: NOW,
+        payload: {
+          kind: "revise-membership",
+          expectedVersion: { entityId: "membership", versionId: "1" },
+          membershipId: "membership",
+          accountId: "account",
+          roles: ["reviewer"],
+          spatialScopeRefs: [scope],
+          status: "active",
+        },
+      },
+    });
+    expect(accessCommand.statusCode).toBe(200);
+  });
+
+  it("非法载荷与跨工程引用被拒绝且不触达端口", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const app = buildWithPorts(workspacePorts(seen));
+
+    const extra = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/project/engineering-workspace/queries",
+      headers: cookieHeaders,
+      payload: {
+        queryId: "query-1",
+        requestedAt: NOW,
+        payload: { kind: "context", actorId: "actor" },
+      },
+    });
+    expect(extra.statusCode).toBe(400);
+
+    const unknownKind = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/project/engineering-workspace/queries",
+      headers: cookieHeaders,
+      payload: {
+        queryId: "query-1",
+        requestedAt: NOW,
+        payload: { kind: "unknown" },
+      },
+    });
+    expect(unknownKind.statusCode).toBe(400);
+
+    const crossProject = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/project/access/queries",
+      headers: cookieHeaders,
+      payload: {
+        kind: "memberships",
+        queryId: "query-1",
+        requestedAt: NOW,
+        projectId: "other-project",
+      },
+    });
+    expect(crossProject.statusCode).toBe(400);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("缺端口时路由不激活，OpenAPI 也不出现该操作", async () => {
+    const app = buildWithPorts({});
+    const missing = await app.inject({
+      method: "POST",
+      url: "/api/v1/projects/project/engineering-workspace/queries",
+      headers: cookieHeaders,
+      payload: {
+        queryId: "query-1",
+        requestedAt: NOW,
+        payload: { kind: "context" },
+      },
+    });
+    expect(missing.statusCode).toBe(404);
+    const document = await app.inject({
+      method: "GET",
+      url: "/api/v1/openapi.json",
+      headers: jsonHeaders,
+    });
+    const paths = document.json().paths as Record<string, unknown>;
+    expect(paths["/api/v1/projects/{projectId}/engineering-workspace/queries"]).toBeUndefined();
+
+    const active = buildWithPorts(workspacePorts([]));
+    const activeDocument = await active.inject({
+      method: "GET",
+      url: "/api/v1/openapi.json",
+      headers: jsonHeaders,
+    });
+    const activePaths = activeDocument.json().paths as Record<
+      string,
+      Record<string, { operationId: string }>
+    >;
+    expect(
+      activePaths["/api/v1/projects/{projectId}/engineering-workspace/queries"]?.post?.operationId,
+    ).toBe("engineering-workspace.read");
+    expect(
+      activePaths["/api/v1/projects/{projectId}/engineering-workspace/commands"]?.post?.operationId,
+    ).toBe("engineering-workspace.revise");
+    expect(activePaths["/api/v1/projects/{projectId}/access/queries"]?.post?.operationId).toBe(
+      "project-workspace-access.read",
+    );
+    expect(activePaths["/api/v1/projects/{projectId}/access/commands"]?.post?.operationId).toBe(
+      "project-workspace-access.execute",
+    );
+  });
+});

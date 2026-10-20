@@ -5,8 +5,23 @@ import { z } from "zod";
 import type { AgentTaskSnapshotV1 } from "@riskflow/core/agent-runtime";
 
 import {
-  ACCESS_POLICY_REF_V1,
   AccessCommandResultV1Schema,
+  type AccessCommandResultV1,
+} from "@riskflow/contracts/engineering-workspace";
+import {
+  ProjectWorkspaceAccessCommandRequestV1Schema,
+  ProjectWorkspaceAccessExecuteResultV1Schema,
+  ProjectWorkspaceAccessReadRequestV1Schema,
+  ProjectWorkspaceAccessReadResultV1Schema,
+  type ProjectWorkspaceAccessCommandRequestV1,
+  type ProjectWorkspaceAccessExecuteResultV1,
+  type ProjectWorkspaceAccessReadRequestV1,
+  type ProjectWorkspaceAccessReadResultV1,
+} from "@riskflow/core/access";
+import type { ProjectWorkspaceAccessReadSuccessV1 } from "@riskflow/contracts/engineering-workspace";
+import { PresetRoleV1Schema } from "@riskflow/contracts/vocabulary";
+import {
+  ACCESS_POLICY_REF_V1,
   AccessErrorV1Schema,
   AccessServiceError,
   allSpatialScopesCovered,
@@ -41,7 +56,6 @@ import {
   SystemAdministrationExecuteResultV1Schema,
   SystemAdministrationReadQueryV1Schema,
   SystemAdministrationReadResultV1Schema,
-  type AccessCommandResultV1,
   type AccessErrorCodeV1,
   type AuthorizationDecisionV1,
   type AuthorizationRequestV1,
@@ -60,6 +74,7 @@ import {
   type SourceAccessPolicyV1,
   type SystemAdministrationCommandV1,
   type SystemAdministrationExecuteResultV1,
+  type ProjectWorkspaceAccessPortV1,
   type SystemAdministrationPortV1,
   type SystemAdministrationReadQueryV1,
   type SystemAdministrationReadResultPayloadV1,
@@ -224,6 +239,8 @@ export interface PostgresLocalIdentityAccess extends LocalIdentityAccessV1 {
     readonly requestedAt: string;
   }): Promise<AuthorizationDecisionV1>;
   readonly systemAdministration: SystemAdministrationPortV1;
+  /** 工程工作区访问维护端口：经理作用域的目录与四类修改动作（design D-04）。 */
+  readonly projectWorkspaceAccess: ProjectWorkspaceAccessPortV1;
   /**
    * CH-2（design D-07）：当前工程入口能力读取的独立注入位。
    *
@@ -528,7 +545,7 @@ interface MembershipSnapshot {
   readonly projectId: string;
   readonly revisionNo: number;
   readonly status: "active" | "removed";
-  readonly roles: readonly import("@riskflow/core/access").PresetRoleV1[];
+  readonly roles: readonly import("@riskflow/contracts/vocabulary").PresetRoleV1[];
   readonly scopeIds: readonly string[];
 }
 
@@ -4181,8 +4198,442 @@ export const createPostgresLocalIdentityAccess = (
     },
   };
 
+  /**
+   * 工程工作区访问目录（design D-04）。
+   *
+   * 只向当前工程风险管理员披露本工程的成员、空间、来源授权与成员选项；
+   * 不开放全局账号目录，也不因开通工程取得业务读权。目录每页至多 50 项，
+   * 读取不产生业务收据，当前身份与会话限制逐请求生效。
+   */
+  const workspaceAccessRead = async (
+    request: ProjectWorkspaceAccessReadRequestV1,
+  ): Promise<ProjectWorkspaceAccessReadResultV1> => {
+    const parsed = ProjectWorkspaceAccessReadRequestV1Schema.safeParse(request);
+    if (!parsed.success) {
+      return {
+        kind: "failed",
+        error: makeAccessError("ACCESS_CONTRACT_INVALID", "workspace.access.read", clock).details,
+      };
+    }
+    const valid = parsed.data;
+    const payload = valid.payload;
+    const stage = `workspace.access.${payload.kind}`;
+    try {
+      return await db.transaction().execute(async (transaction) => {
+        const tx = transaction as unknown as AccessDb;
+        await workspaceManagerContext(
+          tx,
+          valid.sessionToken,
+          payload.projectId,
+          payload.queryId,
+          stage,
+        );
+        const result =
+          payload.kind === "source-access"
+            ? await readWorkspaceSourceAccess(tx, payload.projectId, payload.sourceVersionRef)
+            : payload.kind === "memberships"
+              ? await readWorkspaceMemberships(
+                  tx,
+                  payload.projectId,
+                  payload.cursor,
+                  directoryPageSize(payload.pageSize),
+                )
+              : payload.kind === "spatial-scopes"
+                ? await readWorkspaceSpatialScopes(
+                    tx,
+                    payload.projectId,
+                    payload.cursor,
+                    directoryPageSize(payload.pageSize),
+                  )
+                : await readWorkspaceMemberOptions(
+                    tx,
+                    payload.projectId,
+                    payload.cursor,
+                    directoryPageSize(payload.pageSize),
+                  );
+        return ProjectWorkspaceAccessReadResultV1Schema.parse({ kind: "succeeded", result });
+      });
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: asAccessError(error, stage, clock).details,
+      };
+    }
+  };
+
+  /**
+   * 工程工作区访问维护（design D-04）。
+   *
+   * 四类动作复用原 C06 命令与其原子事务、幂等收据与安全审计；这里只把
+   * 经理作用域的载荷包进服务端签发的 C02 上下文，不另造权限或事务。
+   */
+  const workspaceAccessExecute = async (
+    command: ProjectWorkspaceAccessCommandRequestV1,
+  ): Promise<ProjectWorkspaceAccessExecuteResultV1> => {
+    const parsed = ProjectWorkspaceAccessCommandRequestV1Schema.safeParse(command);
+    if (!parsed.success) {
+      return {
+        kind: "failed",
+        error: makeAccessError("ACCESS_CONTRACT_INVALID", "workspace.access.execute", clock)
+          .details,
+      };
+    }
+    const valid = parsed.data;
+    const stage = "workspace.access.execute";
+    try {
+      const context = await workspaceManagerContext(
+        db,
+        valid.sessionToken,
+        valid.projectId,
+        valid.commandId,
+        stage,
+      );
+      const payload = valid.payload;
+      const registeredByAccountId =
+        payload.kind === "revise-source-access"
+          ? await registeredByForSource(db, valid.projectId, payload.sourceVersionRef)
+          : undefined;
+      if (payload.kind === "revise-source-access" && registeredByAccountId === undefined) {
+        // 该来源尚未完成访问绑定：按原领域不可用状态拒绝，不伪共享给任何账号。
+        throw makeAccessError("AUTHORIZATION_DENIED", stage, clock);
+      }
+      const result = await projectCommand({
+        ...payload,
+        ...(registeredByAccountId === undefined ? {} : { registeredByAccountId }),
+        projectId: valid.projectId,
+        commandId: valid.commandId,
+        idempotencyKey: valid.idempotencyKey,
+        authorizationContextRef: context.authorizationContextRef,
+      } as ProjectAccessCommandV1);
+      return ProjectWorkspaceAccessExecuteResultV1Schema.parse({ kind: "succeeded", result });
+    } catch (error) {
+      return {
+        kind: "failed",
+        error: asAccessError(error, stage, clock).details,
+      };
+    }
+  };
+
+  /**
+   * 经理作用域的身份判定：先按既有 C02 分支签发上下文，再复验当前成员角色。
+   *
+   * 只承认工程风险管理员；系统管理员的工程业务读权不因此成立。
+   */
+  const workspaceManagerContext = async (
+    database: AccessDb,
+    sessionToken: string,
+    projectId: string,
+    invocationId: string,
+    stage: string,
+  ): Promise<AuthorizationContextV1> => {
+    const decision = await authorize({
+      invocation: { kind: "human-session", sessionToken },
+      invocationId,
+      projectId,
+      branch: "engineering-data.register-source-delivery",
+      requestedSpatialScopeRefs: [],
+      requestedSourceVersionRefs: [],
+    });
+    await currentProjectManagerActor(
+      database,
+      decision.context.authorizationContextRef,
+      projectId,
+      "engineering-data.register-source-delivery",
+      stage,
+      clock,
+    );
+    return decision.context;
+  };
+
+  /** 成员目录：本工程成员的显示身份、角色、空间范围与当前状态。 */
+  const readWorkspaceMemberships = async (
+    database: AccessDb,
+    projectId: string,
+    cursor: string | undefined,
+    pageSize: number,
+  ): Promise<ProjectWorkspaceAccessReadSuccessV1> => {
+    const rows = await database
+      .selectFrom("business.project_memberships")
+      .select(["membership_id", "account_id", "current_revision_id"])
+      .where("project_id", "=", projectId)
+      .where("membership_id", ">", cursor ?? "")
+      .orderBy("membership_id")
+      .limit(pageSize + 1)
+      .execute();
+    const page = rows.slice(0, pageSize);
+    const revisionIds = page.map((row) => row.current_revision_id);
+    if (revisionIds.length === 0) return { kind: "memberships", items: [] };
+    const [revisions, roles, scopes, accounts, currentScopes] = await Promise.all([
+      database
+        .selectFrom("business.project_membership_revisions")
+        .select(["revision_id", "account_id", "status"])
+        .where("revision_id", "in", revisionIds)
+        .execute(),
+      database
+        .selectFrom("business.project_membership_revision_roles")
+        .select(["revision_id", "role"])
+        .where("revision_id", "in", revisionIds)
+        .execute(),
+      database
+        .selectFrom("business.project_membership_revision_scopes")
+        .select(["revision_id", "scope_id"])
+        .where("revision_id", "in", revisionIds)
+        .execute(),
+      database
+        .selectFrom("business.local_accounts")
+        .select(["account_id", "display_name", "security_version"])
+        .where(
+          "account_id",
+          "in",
+          page.map((row) => row.account_id),
+        )
+        .execute(),
+      queryCurrentScopeRevisions(database, projectId),
+    ]);
+    const revisionById = new Map(revisions.map((revision) => [revision.revision_id, revision]));
+    const accountById = new Map(accounts.map((account) => [account.account_id, account]));
+    const scopeRevisionById = new Map(
+      currentScopes.map((scope) => [scope.scope_id, scope.revision_id]),
+    );
+    const items = page.flatMap((row) => {
+      const revision = revisionById.get(row.current_revision_id);
+      const account = accountById.get(row.account_id);
+      if (revision === undefined || account === undefined) return [];
+      return [
+        {
+          membershipRef: { entityId: row.membership_id, versionId: row.current_revision_id },
+          accountRef: accountRevisionRef(account.account_id, account.security_version),
+          displayName: account.display_name,
+          roles: roles
+            .filter((role) => role.revision_id === row.current_revision_id)
+            .map((role) => PresetRoleV1Schema.parse(role.role)),
+          spatialScopeRefs: scopes
+            .filter((scope) => scope.revision_id === row.current_revision_id)
+            .flatMap((scope) => {
+              const versionId = scopeRevisionById.get(scope.scope_id);
+              return versionId === undefined ? [] : [scopeRef(scope.scope_id, versionId)];
+            }),
+          status: revision.status,
+        },
+      ];
+    });
+    return {
+      kind: "memberships",
+      items,
+      ...(rows.length > pageSize && page.length > 0
+        ? { nextCursor: page[page.length - 1]!.membership_id }
+        : {}),
+    };
+  };
+
+  /** 空间目录：本工程授权树的当前范围与父子关系。 */
+  const readWorkspaceSpatialScopes = async (
+    database: AccessDb,
+    projectId: string,
+    cursor: string | undefined,
+    pageSize: number,
+  ): Promise<ProjectWorkspaceAccessReadSuccessV1> => {
+    const rows = await database
+      .selectFrom("business.access_spatial_scopes")
+      .select(["scope_id", "current_revision_id"])
+      .where("project_id", "=", projectId)
+      .where("scope_id", ">", cursor ?? "")
+      .orderBy("scope_id")
+      .limit(pageSize + 1)
+      .execute();
+    const page = rows.slice(0, pageSize);
+    const revisionIds = page.map((row) => row.current_revision_id);
+    if (revisionIds.length === 0) return { kind: "spatial-scopes", items: [] };
+    const [revisions, parents] = await Promise.all([
+      database
+        .selectFrom("business.access_spatial_scope_revisions")
+        .select(["revision_id", "scope_id", "parent_scope_id", "status"])
+        .where("revision_id", "in", revisionIds)
+        .execute(),
+      database
+        .selectFrom("business.access_spatial_scopes")
+        .select(["scope_id", "current_revision_id"])
+        .where("project_id", "=", projectId)
+        .execute(),
+    ]);
+    const revisionById = new Map(revisions.map((revision) => [revision.revision_id, revision]));
+    const parentRevisionById = new Map(
+      parents.map((parent) => [parent.scope_id, parent.current_revision_id]),
+    );
+    const items = page.flatMap((row) => {
+      const revision = revisionById.get(row.current_revision_id);
+      if (revision === undefined) return [];
+      const parentVersionId =
+        revision.parent_scope_id === null
+          ? undefined
+          : parentRevisionById.get(revision.parent_scope_id);
+      return [
+        {
+          scopeRef: { entityId: row.scope_id, versionId: row.current_revision_id },
+          ...(revision.parent_scope_id === null || parentVersionId === undefined
+            ? {}
+            : {
+                parentScopeRef: {
+                  entityId: revision.parent_scope_id,
+                  versionId: parentVersionId,
+                },
+              }),
+          status: revision.status,
+        },
+      ];
+    });
+    return {
+      kind: "spatial-scopes",
+      items,
+      ...(rows.length > pageSize && page.length > 0
+        ? { nextCursor: page[page.length - 1]!.scope_id }
+        : {}),
+    };
+  };
+
+  /** 成员选项：只列本工程有效成员的显示身份，供资料指定账号选择。 */
+  const readWorkspaceMemberOptions = async (
+    database: AccessDb,
+    projectId: string,
+    cursor: string | undefined,
+    pageSize: number,
+  ): Promise<ProjectWorkspaceAccessReadSuccessV1> => {
+    const rows = await database
+      .selectFrom("business.project_memberships")
+      .select(["membership_id", "account_id", "current_revision_id"])
+      .where("project_id", "=", projectId)
+      .where("membership_id", ">", cursor ?? "")
+      .orderBy("membership_id")
+      .limit(pageSize + 1)
+      .execute();
+    const page = rows.slice(0, pageSize);
+    const revisionIds = page.map((row) => row.current_revision_id);
+    if (revisionIds.length === 0) return { kind: "member-options", items: [] };
+    const [revisions, accounts] = await Promise.all([
+      database
+        .selectFrom("business.project_membership_revisions")
+        .select(["revision_id", "status"])
+        .where("revision_id", "in", revisionIds)
+        .execute(),
+      database
+        .selectFrom("business.local_accounts")
+        .select(["account_id", "display_name", "security_version"])
+        .where(
+          "account_id",
+          "in",
+          page.map((row) => row.account_id),
+        )
+        .execute(),
+    ]);
+    const statusByRevision = new Map(
+      revisions.map((revision) => [revision.revision_id, revision.status]),
+    );
+    const accountById = new Map(accounts.map((account) => [account.account_id, account]));
+    const items = page.flatMap((row) => {
+      if (statusByRevision.get(row.current_revision_id) !== "active") return [];
+      const account = accountById.get(row.account_id);
+      if (account === undefined) return [];
+      return [
+        {
+          accountRef: accountRevisionRef(account.account_id, account.security_version),
+          displayName: account.display_name,
+        },
+      ];
+    });
+    return {
+      kind: "member-options",
+      items,
+      ...(rows.length > pageSize && page.length > 0
+        ? { nextCursor: page[page.length - 1]!.membership_id }
+        : {}),
+    };
+  };
+
+  /**
+   * 单来源访问授权：按精确来源版本读取当前授权修订。
+   *
+   * 该来源尚未完成访问绑定时按原领域不可用状态拒绝，不伪共享。
+   */
+  const readWorkspaceSourceAccess = async (
+    database: AccessDb,
+    projectId: string,
+    sourceVersionRef: SourceVersionRefV1,
+  ): Promise<ProjectWorkspaceAccessReadSuccessV1> => {
+    const source = await database
+      .selectFrom("business.source_access_policies")
+      .select(["source_access_grant_id", "current_revision_id"])
+      .where("project_id", "=", projectId)
+      .where("source_entity_id", "=", sourceVersionRef.reference.entityId)
+      .where("source_version_id", "=", sourceVersionRef.reference.versionId)
+      .executeTakeFirst();
+    if (source === undefined) {
+      throw makeAccessError("AUTHORIZATION_DENIED", "workspace.access.source-access", clock);
+    }
+    const [revision, accounts, scopes, currentScopes] = await Promise.all([
+      database
+        .selectFrom("business.source_access_policy_revisions")
+        .select(["revision_id", "visibility", "registered_by"])
+        .where("revision_id", "=", source.current_revision_id)
+        .executeTakeFirst(),
+      database
+        .selectFrom("business.source_access_policy_revision_accounts")
+        .select(["revision_id", "account_id"])
+        .where("revision_id", "=", source.current_revision_id)
+        .execute(),
+      database
+        .selectFrom("business.source_access_policy_revision_scopes")
+        .select(["revision_id", "scope_id"])
+        .where("revision_id", "=", source.current_revision_id)
+        .execute(),
+      queryCurrentScopeRevisions(database, projectId),
+    ]);
+    if (revision === undefined) {
+      throw makeAccessError("AUTHORIZATION_DENIED", "workspace.access.source-access", clock);
+    }
+    const scopeRevisionById = new Map(
+      currentScopes.map((scope) => [scope.scope_id, scope.revision_id]),
+    );
+    return {
+      kind: "source-access",
+      sourceGrantRef: {
+        entityId: source.source_access_grant_id,
+        versionId: revision.revision_id,
+      },
+      visibility: revision.visibility,
+      allowedAccountIds: accounts.map((account) => account.account_id),
+      spatialScopeRefs: scopes.flatMap((scope) => {
+        const versionId = scopeRevisionById.get(scope.scope_id);
+        return versionId === undefined ? [] : [scopeRef(scope.scope_id, versionId)];
+      }),
+      registeredByAccountId: revision.registered_by,
+    };
+  };
+
+  /** 来源登记事实：已登记来源的访问绑定由原登记人持有，不接受调用方指定。 */
+  const registeredByForSource = async (
+    database: AccessDb,
+    projectId: string,
+    sourceVersionRef: SourceVersionRefV1,
+  ): Promise<string | undefined> => {
+    const source = await database
+      .selectFrom("business.source_access_policies")
+      .select(["current_revision_id"])
+      .where("project_id", "=", projectId)
+      .where("source_entity_id", "=", sourceVersionRef.reference.entityId)
+      .where("source_version_id", "=", sourceVersionRef.reference.versionId)
+      .executeTakeFirst();
+    if (source === undefined) return undefined;
+    const revision = await database
+      .selectFrom("business.source_access_policy_revisions")
+      .select("registered_by")
+      .where("revision_id", "=", source.current_revision_id)
+      .executeTakeFirst();
+    return revision?.registered_by;
+  };
+
   return {
     systemAdministration,
+    projectWorkspaceAccess: { read: workspaceAccessRead, execute: workspaceAccessExecute },
     projectAccessPresentation,
     executeDeploymentProjectAccess,
     administerIdentity: identityCommand,

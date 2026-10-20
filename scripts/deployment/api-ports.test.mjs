@@ -31,10 +31,17 @@ const providers = (overrides = {}) => {
     access: {
       ...stub(["verify", "authorize", "authorizeBusinessAction"]),
       systemAdministration: stub(["read", "execute"]),
+      projectWorkspaceAccess: stub(["read", "execute"]),
       projectAccessPresentation: stub(["read"]),
     },
     artifactStore: stub(["put", "open"]),
     contextSource: stub(["apply", "freeze", "read", "resolveReadQuery"]),
+    documentConverter: stub(["listBySourceVersion", "readRecordByRef", "readFailureSummary"]),
+    dataCleaningStore: stub([
+      "listResultsForSource",
+      "listResultsForMonitoringSnapshots",
+      "readResultExclusions",
+    ]),
     monitoringStore: stub(["resolveSnapshotQuery"]),
     knowledgeModeling: stub(["govern", "resolve", "retrieve"]),
     applicableRuleSetAssembly: stub(["assemble"]),
@@ -199,6 +206,7 @@ describe("生产 API 全端口装配契约", () => {
     const access = {
       ...stub(["verify", "authorize", "authorizeBusinessAction"]),
       systemAdministration: stub(["read", "execute"]),
+      projectWorkspaceAccess: stub(["read", "execute"]),
       projectAccessPresentation: stub(["read"]),
     };
     const ports = createDeploymentApiPortsV1(providers({ contextSource, access }));
@@ -216,6 +224,7 @@ describe("生产 API 全端口装配契约", () => {
     const access = {
       ...stub(["verify", "authorize", "authorizeBusinessAction"]),
       systemAdministration: stub(["read", "execute"]),
+      projectWorkspaceAccess: stub(["read", "execute"]),
       projectAccessPresentation: { read },
     };
     const ports = createDeploymentApiPortsV1(providers({ access }));
@@ -268,6 +277,9 @@ describe("生产 API 全端口装配契约", () => {
         // 来源授权由同一 C06 业务动作判定签发；组合层不自己判定。
         access: {
           ...stub(["verify", "authorize", "authorizeBusinessAction"]),
+          systemAdministration: stub(["read", "execute"]),
+          projectWorkspaceAccess: stub(["read", "execute"]),
+          projectAccessPresentation: stub(["read"]),
           authorizeBusinessAction: async (input) => ({
             context: {
               schemaVersion: "1",
@@ -290,8 +302,6 @@ describe("生产 API 全端口装配契约", () => {
             },
             redacted: false,
           }),
-          systemAdministration: stub(["read", "execute"]),
-          projectAccessPresentation: stub(["read"]),
         },
         riskIdentificationRead: tracking("riskRecords"),
         riskAssessmentRead: tracking("assessments"),

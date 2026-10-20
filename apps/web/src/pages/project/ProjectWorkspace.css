@@ -1,0 +1,140 @@
+/* 工程工作区页面样式：沿用生产令牌与既有区域节奏，不引入新组件库。 */
+
+.pjwf-regions {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pjwf-context {
+  color: var(--muted, #6b7280);
+  margin: 0 0 12px;
+}
+
+.pjwf-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-end;
+}
+
+.pjwf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 200px;
+}
+
+.pjwf-field label {
+  font-size: 13px;
+  color: var(--muted, #6b7280);
+}
+
+.pjwf-field input,
+.pjwf-field select {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 4px;
+  background: var(--surface, #ffffff);
+  color: inherit;
+}
+
+.pjwf-field select[multiple] {
+  min-height: 96px;
+}
+
+.pjwf-primary {
+  min-height: 32px;
+  padding: 4px 16px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--accent, #1d4ed8);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.pjwf-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pjwf-note {
+  color: var(--muted, #6b7280);
+  font-size: 13px;
+  margin: 8px 0 0;
+}
+
+.pjwf-subtitle {
+  font-size: 14px;
+  margin: 16px 0 8px;
+}
+
+.pjwf-facts {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 6px 16px;
+  margin: 0;
+}
+
+.pjwf-facts dt {
+  color: var(--muted, #6b7280);
+  font-size: 13px;
+}
+
+.pjwf-facts dd {
+  margin: 0;
+}
+
+.pjwf-facts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pjwf-facts-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.pjwf-fact-stage {
+  min-width: 96px;
+}
+
+.pjwf-fact-detail {
+  flex: 1 1 240px;
+}
+
+.pjwf-fact-ref {
+  color: var(--muted, #6b7280);
+  font-size: 12px;
+}
+
+.pjwf-switch {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.pjwf-switch,
+.pjwf-switch-active {
+  min-height: 30px;
+  padding: 3px 14px;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--surface, #ffffff);
+  color: inherit;
+  cursor: pointer;
+}
+
+.pjwf-switch-active {
+  background: var(--accent, #1d4ed8);
+  border-color: transparent;
+  color: #ffffff;
+}

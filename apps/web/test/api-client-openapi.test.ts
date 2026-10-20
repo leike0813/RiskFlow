@@ -22,6 +22,11 @@ import {
   prepareCreateSystemAccount,
   sendAdministrationCommand,
 } from "../src/api/agentAuditOperations.js";
+import {
+  prepareEngineeringWorkspaceRevision,
+  readEngineeringWorkspaceContext,
+  sendEngineeringWorkspaceRevision,
+} from "../src/api/engineeringWorkspace.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const resultRef: ContractReferenceV1 = {
@@ -384,6 +389,53 @@ describe("C37 闭合 system operation", () => {
     expect(isC37SystemOperationIdV1("administration.read")).toBe(true);
     expect(isC37SystemOperationIdV1("administration.delete")).toBe(false);
     expect(isC37SystemOperationIdV1("https://evil.example/steal")).toBe(false);
+  });
+
+  it("工程工作区请求只走四条固定路径，重试发送同一份冻结信封", async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      calls.push({ url: String(input), body: init?.body });
+      return new Response(
+        JSON.stringify({
+          kind: "succeeded",
+          result: {
+            kind: "context",
+            projectId: "project-1",
+            project: null,
+            spatial: null,
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    try {
+      const context = await readEngineeringWorkspaceContext("project-1", {});
+      expect(context.project).toBeNull();
+      expect(calls[0]?.url).toContain("/api/v1/projects/project-1/engineering-workspace/queries");
+      const body = JSON.parse(String(calls[0]?.body)) as Record<string, unknown>;
+      expect(body).not.toHaveProperty("sessionToken");
+      expect(body).not.toHaveProperty("authorization");
+      expect(body.payload).toMatchObject({ kind: "context" });
+
+      const prepared = prepareEngineeringWorkspaceRevision("project-1", {
+        kind: "project",
+        expectedVersion: "none",
+        name: "一号工程",
+        lifecycle: "preparing",
+        applicabilityMetadata: {
+          constructionMethod: "method-1",
+          stratumCondition: "stratum-1",
+          engineeringStage: "stage-1",
+        },
+        effectivePeriod: { validFrom: NOW },
+      });
+      await sendEngineeringWorkspaceRevision(prepared);
+      await sendEngineeringWorkspaceRevision(prepared);
+      expect(calls[1]?.url).toContain("/api/v1/projects/project-1/engineering-workspace/commands");
+      expect(calls[1]?.body).toBe(calls[2]?.body);
+    } finally {
+      fetcher.mockRestore();
+    }
   });
 
   it("系统操作一律要求会话", () => {

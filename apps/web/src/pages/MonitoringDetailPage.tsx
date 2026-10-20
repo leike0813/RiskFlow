@@ -1,4 +1,5 @@
-import { useNavigate, useParams } from "react-router-dom";
+import { useEffect } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
 import { DataTable, type DataTableColumn } from "../components/DataTable";
@@ -19,13 +20,9 @@ import {
   type MonitoringSeriesPageView,
   type MonitoringSnapshotView,
 } from "../api/operations";
+import { resolveEngineeringWorkspaceMonitoringSeries } from "../api/engineeringWorkspace";
+import { PROJECT_NAVIGATION_ITEMS_V1 } from "./project/projectNavigation";
 import "./MonitoringDetailPage.css";
-
-const sectionTabs = [
-  { to: "/project", label: "工程概览" },
-  { to: "/projects/documents", label: "资料目录" },
-  { to: "/projects/monitoring", label: "监测数据" },
-];
 
 const RELATION_LABEL: Record<string, string> = {
   original: "原始批次",
@@ -110,31 +107,66 @@ interface MonitoringDetailFacts {
 export default function MonitoringDetailPage() {
   const { seriesId } = useParams<{ seriesId: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { selector } = useEngineering();
   const projectPath = useProjectPath();
+
+  // 精确版本来自 URL；没有版本时由所属目录窄解析该实体的当前可见引用后写回地址。
+  const seriesVersion = searchParams.get("version");
+  const snapshotId = searchParams.get("snapshot");
+  const snapshotVersion = searchParams.get("snapshotVersion");
 
   const list = usePageQuery<MonitoringSeriesPageView>(
     (projectId, signal) => listMonitoringSeries(projectId, {}, signal),
     [],
   );
 
+  const resolved = usePageQuery<{
+    readonly monitoringSeriesRef: {
+      readonly kind: string;
+      readonly reference: { readonly entityId: string; readonly versionId: string };
+    };
+    readonly monitoringObject: string;
+    readonly monitoringIndicator: string;
+    readonly canonicalUnit: string;
+  } | null>(
+    async (projectId, signal) => {
+      if (seriesId === undefined) return null;
+      return resolveEngineeringWorkspaceMonitoringSeries(projectId, seriesId, signal);
+    },
+    [seriesId],
+  );
+
+  // 窄解析得到当前可见引用后写回地址：刷新与返回都能重建同一精确目标。
+  useEffect(() => {
+    if (seriesId === undefined || seriesVersion !== null) return;
+    if (resolved.state.kind !== "ready") return;
+    const versionId = resolved.state.value?.monitoringSeriesRef.reference.versionId;
+    if (versionId === undefined) return;
+    const next = new URLSearchParams(searchParams);
+    next.set("version", versionId);
+    setSearchParams(next, { replace: true });
+  }, [seriesId, seriesVersion, resolved.state, searchParams, setSearchParams]);
+
   const detail = usePageQuery<MonitoringDetailFacts>(
     async (projectId, signal) => {
-      const catalog = await listMonitoringSeries(projectId, {}, signal);
-      const series = catalog.items.find(
-        (item) => item.monitoringSeriesRef.reference.entityId === seriesId,
-      );
-      if (series === undefined) {
+      if (seriesId === undefined) {
         return { series: undefined, detail: null, snapshot: null, thresholdRelease: null };
       }
-      const seriesDetail = await readMonitoringSeriesDetail(
-        projectId,
-        series.monitoringSeriesRef,
-        signal,
-      );
-      const snapshotRef =
-        series.latestSnapshotRef ?? seriesDetail.snapshots[0]?.monitoringSnapshotRef;
-      // 快照正文继承其证据来源的访问边界：按目录暴露的快照证据来源版本声明授权。
+      const versionId =
+        seriesVersion ??
+        (resolved.state.kind === "ready"
+          ? (resolved.state.value?.monitoringSeriesRef.reference.versionId ?? null)
+          : null);
+      if (versionId === null) {
+        return { series: undefined, detail: null, snapshot: null, thresholdRelease: null };
+      }
+      const seriesRef = {
+        kind: "monitoring-series" as const,
+        reference: { entityId: seriesId, versionId },
+      };
+      const seriesDetail = await readMonitoringSeriesDetail(projectId, seriesRef, signal);
+      // 快照来源由服务端登记恢复：客户端不要求从目录首页组装来源。
       const snapshotSources = [
         ...new Map(
           seriesDetail.snapshots
@@ -142,17 +174,47 @@ export default function MonitoringDetailPage() {
             .map((ref) => [`${ref.reference.entityId}@${ref.reference.versionId}`, ref] as const),
         ).values(),
       ];
+      const selectedSnapshot =
+        snapshotId !== null && snapshotVersion !== null
+          ? seriesDetail.snapshots.find(
+              (entry) =>
+                entry.monitoringSnapshotRef.reference.entityId === snapshotId &&
+                entry.monitoringSnapshotRef.reference.versionId === snapshotVersion,
+            )
+          : undefined;
       const snapshot =
-        snapshotRef === undefined
+        selectedSnapshot === undefined
           ? null
-          : await readMonitoringSnapshot(projectId, snapshotRef, snapshotSources, signal);
+          : await readMonitoringSnapshot(
+              projectId,
+              selectedSnapshot.monitoringSnapshotRef,
+              snapshotSources,
+              signal,
+            );
       const releaseSet = await readCurrentReleaseSet(projectId, signal);
       const thresholdRelease =
         releaseSet.find((member) => member.definitionType === "monitoring-warning-threshold")
           ?.releaseRef.reference.versionId ?? null;
-      return { series, detail: seriesDetail, snapshot, thresholdRelease };
+      return {
+        series: {
+          monitoringSeriesRef: seriesRef,
+          monitoringIndicator:
+            resolved.state.kind === "ready"
+              ? (resolved.state.value?.monitoringIndicator ?? "")
+              : "",
+          monitoringObject:
+            resolved.state.kind === "ready" ? (resolved.state.value?.monitoringObject ?? "") : "",
+          canonicalUnit:
+            resolved.state.kind === "ready" ? (resolved.state.value?.canonicalUnit ?? "") : "",
+          spatialScopeRef: { kind: "spatial-scope", reference: { entityId: "", versionId: "" } },
+          batchCount: seriesDetail.batches.length,
+        },
+        detail: seriesDetail,
+        snapshot,
+        thresholdRelease,
+      };
     },
-    [seriesId],
+    [seriesId, seriesVersion, snapshotId, snapshotVersion],
   );
 
   return (
@@ -163,12 +225,12 @@ export default function MonitoringDetailPage() {
       <div className="page">
         <header className="page-header">
           <div>
-            <h1 className="page-title">监测数据</h1>
+            <h1 className="page-title">{seriesId === undefined ? "监测数据" : "监测序列详情"}</h1>
             <p className="page-subtitle">监测序列、批次与冻结快照的统计事实</p>
           </div>
         </header>
 
-        <SectionTabs items={sectionTabs} />
+        <SectionTabs items={[...PROJECT_NAVIGATION_ITEMS_V1]} />
 
         {seriesId === undefined ? (
           <PageStateView
@@ -220,12 +282,59 @@ export default function MonitoringDetailPage() {
                     )}
                   </div>
 
-                  {facts.snapshot === null ? (
-                    <Card title="监测快照">
+                  <Card title="快照目录">
+                    {facts.detail.snapshots.length === 0 ? (
                       <div className="pjmon-empty">
                         该序列尚无冻结快照，快照产生前不呈现趋势曲线或统计估值
                       </div>
-                    </Card>
+                    ) : (
+                      <ul className="pjmon-snapshots">
+                        {facts.detail.snapshots.map((entry) => {
+                          const selected =
+                            entry.monitoringSnapshotRef.reference.entityId === snapshotId &&
+                            entry.monitoringSnapshotRef.reference.versionId === snapshotVersion;
+                          return (
+                            <li key={entry.monitoringSnapshotRef.reference.entityId}>
+                              <button
+                                type="button"
+                                className={selected ? "pjmon-snapshot--active" : "pjmon-snapshot"}
+                                onClick={() => {
+                                  const next = new URLSearchParams(searchParams);
+                                  next.set(
+                                    "snapshot",
+                                    entry.monitoringSnapshotRef.reference.entityId,
+                                  );
+                                  next.set(
+                                    "snapshotVersion",
+                                    entry.monitoringSnapshotRef.reference.versionId,
+                                  );
+                                  setSearchParams(next, { replace: true });
+                                }}
+                              >
+                                <span className="mono">
+                                  {entry.monitoringSnapshotRef.reference.entityId}@
+                                  {entry.monitoringSnapshotRef.reference.versionId}
+                                </span>
+                                <span>{entry.cutoff.slice(0, 19).replace("T", " ")}</span>
+                                <span>
+                                  {AVAILABILITY_LABEL[entry.availability] ?? entry.availability}
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </Card>
+
+                  {facts.snapshot === null ? (
+                    facts.detail.snapshots.length > 0 ? (
+                      <Card title="监测快照">
+                        <div className="pjmon-empty">
+                          尚未选择快照；选定后按该版本读取冻结统计，不擅自改成最新。
+                        </div>
+                      </Card>
+                    ) : null
                   ) : (
                     <>
                       <div className="pjmon-chart-row">

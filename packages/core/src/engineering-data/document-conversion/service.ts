@@ -1,10 +1,7 @@
 import { sha256CanonicalJson } from "../../persistence/canonical-json.js";
 
-import {
-  makeSourceSegmentId,
-  parseSourceSegmentId,
-  SourceSegmentIdV1Schema,
-} from "../context-source/schema.js";
+import { makeSourceSegmentId, parseSourceSegmentId } from "../context-source/schema.js";
+import { SourceSegmentIdV1Schema } from "@riskflow/contracts/engineering-workspace";
 import {
   CONTROLLED_JSON_LD_CONTEXT_V1,
   DOCUMENT_CONVERSION_SCHEMA_VERSION_V1,

@@ -1193,6 +1193,46 @@ describe("C15 PostgreSQL data cleaning store", () => {
     );
   }, 240_000);
 
+  it("清洗结果按来源精确版本筛选正式结果与排除项", async () => {
+    const { world } = await prepareBoundReadWorld();
+    const sourceVersionRef = world.sourceVersionRefs()[0]!;
+    const results = await world.pipeline.store.listResultsForSource({
+      projectId: world.projectId,
+      sourceVersionRef,
+      limit: 50,
+    });
+    expect(results.length).toBeGreaterThan(0);
+    const result = results[0]!;
+    expect(result.resultRef.kind).toBe("route-decision");
+    expect(result.input.sourceVersionRef).toEqual(sourceVersionRef);
+    expect(result.input.availability).toBeDefined();
+    const exclusions = await world.pipeline.store.readResultExclusions({
+      projectId: world.projectId,
+      resultRef: result.resultRef,
+      subject: { sourceVersionRef },
+    });
+    for (const exclusion of exclusions) {
+      expect(exclusion.sourceVersionRef).toEqual(sourceVersionRef);
+    }
+    const unrelated = await world.pipeline.store.readResultExclusions({
+      projectId: world.projectId,
+      resultRef: result.resultRef,
+      subject: {
+        sourceVersionRef: {
+          kind: "source-version",
+          reference: { entityId: "unrelated-source", versionId: "1" },
+        },
+      },
+    });
+    expect(unrelated).toHaveLength(0);
+    const monitoringResults = await world.pipeline.store.listResultsForMonitoringSnapshots({
+      projectId: world.projectId,
+      monitoringSnapshotRefs: [],
+      limit: 50,
+    });
+    expect(monitoringResults).toHaveLength(0);
+  }, 240_000);
+
   it("清洗结果不可枚举：缺失、跨工程与 actor 不符返回同一不可重试拒绝", async () => {
     const { world, taskRef } = await prepareBoundReadWorld();
     const other = await fixture.createWorld({ suffix: "read-other", documentKinds: ["csv"] });

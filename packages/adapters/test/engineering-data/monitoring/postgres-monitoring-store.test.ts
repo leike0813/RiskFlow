@@ -1977,4 +1977,52 @@ describe("C14 PostgreSQL monitoring store", () => {
       );
     }
   });
+
+  it("lists the exact series batches and snapshots without scanning the catalog", async () => {
+    const seriesRef = {
+      kind: "monitoring-series" as const,
+      reference: { entityId: "c14-series", versionId: "1" },
+    };
+    const batches = await fixture.monitoringStore.listBatchesBySeries({
+      projectId,
+      monitoringSeriesRef: seriesRef,
+      limit: 50,
+    });
+    expect(batches.length).toBeGreaterThan(0);
+    expect(batches[0]).toMatchObject({ relation: "original" });
+    const snapshots = await fixture.monitoringStore.listSnapshotsBySeries({
+      projectId,
+      monitoringSeriesRef: seriesRef,
+      limit: 50,
+    });
+    expect(snapshots.length).toBeGreaterThan(0);
+    const registered = await fixture.postgres.adminPool.query<{ snapshot_id: string }>(
+      "SELECT snapshot_id FROM business.monitoring_snapshots WHERE project_id = $1 AND series_id = $2 ORDER BY cutoff DESC LIMIT 1",
+      [projectId, "c14-series"],
+    );
+    expect(snapshots[0]?.monitoringSnapshotRef.reference.entityId).toBe(
+      registered.rows[0]?.snapshot_id,
+    );
+    expect(["available", "partial", "unavailable"]).toContain(snapshots[0]?.availability);
+    const scopeRef = await fixture.monitoringStore.readSeriesScopeRef({
+      projectId,
+      monitoringSeriesRef: seriesRef,
+    });
+    expect(scopeRef).toEqual(spatialScopeRef);
+    const catalogItem = await fixture.monitoringStore.readCurrentSeriesCatalogItem({
+      projectId,
+      seriesId: "c14-series",
+    });
+    expect(catalogItem?.monitoringSeriesRef.reference.entityId).toBe("c14-series");
+    expect(catalogItem?.monitoringObject).toBe("settlement sensor");
+    expect(catalogItem?.spatialScopeRef.reference.entityId).toBe(
+      spatialScopeRef.reference.entityId,
+    );
+    expect(catalogItem?.batchCount).toBeGreaterThan(0);
+    const missing = await fixture.monitoringStore.readCurrentSeriesCatalogItem({
+      projectId,
+      seriesId: "c14-missing-series",
+    });
+    expect(missing).toBeUndefined();
+  });
 });

@@ -24,6 +24,7 @@ import {
   IdentificationPreparationSnapshotRefV1Schema,
   MonitoringSeriesRefV1Schema,
   RouteDecisionRefV1Schema,
+  type RouteDecisionRefV1,
   SourceSegmentSetRefV1Schema,
   SourceVersionRefV1Schema,
   StartAgentTaskResultV1Schema,
@@ -78,7 +79,9 @@ import {
   type DataCleaningCandidateV1,
   type DataCleaningDocumentSliceRequestV1,
   type DataCleaningFrozenDocumentV1,
+  type DataCleaningExclusionDecisionV1,
   type DataCleaningFrozenInputV1,
+  type DataCleaningInputStatusV1,
   type DataCleaningFrozenMonitoringV1,
   type DataCleaningFrozenSegmentV1,
   type DataCleaningMonitoringSliceRequestV1,
@@ -89,9 +92,11 @@ import {
   type DataCleaningTaskPortV1,
   type DataCleaningValidationViewV1,
 } from "@riskflow/core/engineering-data/cleaning";
-import { MonitoringSampleVersionRefV1Schema } from "@riskflow/core/engineering-data/monitoring";
 import {
+  MonitoringSampleVersionRefV1Schema,
   SourceSegmentIdV1Schema,
+} from "@riskflow/contracts/engineering-workspace";
+import {
   SourceSegmentKindV1Schema,
   SourceSegmentLocatorV1Schema,
 } from "@riskflow/core/engineering-data/context-source";
@@ -505,6 +510,51 @@ function boundResultDenied(causalRunId: string): never {
  * C15 数据清洗与识别准备收口的事实存储：组合 C03 事务、C04 工件、C08 任务、
  * C11 资料授权、C12/C13 转换记录与 C14 冻结快照，只在 C15 自有文件内实现。
  */
+/**
+ * 与某 subject 相关的正式清洗结果投影（design D-06）。
+ *
+ * 只含所选输入的可用性事实与结果引用；不复制清洗模型，也不展开整体结果正文。
+ */
+export interface DataCleaningResultForSubjectV1 {
+  readonly resultRef: RouteDecisionRefV1;
+  readonly policyRef: VersionReference;
+  readonly recordedAt: string;
+  readonly input: DataCleaningInputStatusV1;
+}
+
+const sameRef = (
+  left:
+    { readonly reference: { readonly entityId: string; readonly versionId: string } } | undefined,
+  right: { readonly reference: { readonly entityId: string; readonly versionId: string } },
+): boolean =>
+  left !== undefined &&
+  left.reference.entityId === right.reference.entityId &&
+  left.reference.versionId === right.reference.versionId;
+
+const inputMatchesSubject = (
+  input: DataCleaningInputStatusV1,
+  subject:
+    | { readonly sourceVersionRef: SourceVersionRefV1 }
+    | { readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[] },
+): boolean => {
+  if ("sourceVersionRef" in subject) {
+    return sameRef(input.sourceVersionRef, subject.sourceVersionRef);
+  }
+  return subject.monitoringSnapshotRefs.some((ref) => sameRef(input.monitoringSnapshotRef, ref));
+};
+
+const exclusionMatchesSubject = (
+  decision: DataCleaningExclusionDecisionV1,
+  subject:
+    | { readonly sourceVersionRef: SourceVersionRefV1 }
+    | { readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[] },
+): boolean => {
+  if ("sourceVersionRef" in subject) {
+    return sameRef(decision.sourceVersionRef, subject.sourceVersionRef);
+  }
+  return subject.monitoringSnapshotRefs.some((ref) => sameRef(decision.monitoringSnapshotRef, ref));
+};
+
 export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
   readonly #db: Kysely<CleaningDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
@@ -2107,6 +2157,116 @@ export class PostgresDataCleaningStore implements DataCleaningTaskPortV1 {
       };
     }
     return { kind: "ok", result, resultArtifactRef };
+  }
+
+  /**
+   * 按来源精确版本筛选正式清洗结果（design D-06）。
+   *
+   * 直接消费 `data_cleaning_results` 已登记结果，不依赖准备快照是否存在；
+   * 多来源派生结果按其全部输入登记的事实返回，披露范围由调用方按当前权限交集决定。
+   */
+  async listResultsForSource(input: {
+    readonly projectId: string;
+    readonly sourceVersionRef: SourceVersionRefV1;
+    readonly limit: number;
+  }): Promise<readonly DataCleaningResultForSubjectV1[]> {
+    return this.#listResultsForSubject(
+      input.projectId,
+      { sourceVersionRef: input.sourceVersionRef },
+      input.limit,
+    );
+  }
+
+  /**
+   * 按监测快照集合筛选正式清洗结果（design D-06）。
+   *
+   * 监测 subject 的清洗关联先由所属 store 列出该序列的有界快照关系，
+   * 再据此匹配原结果；不把来源标识当作快照标识。
+   */
+  async listResultsForMonitoringSnapshots(input: {
+    readonly projectId: string;
+    readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[];
+    readonly limit: number;
+  }): Promise<readonly DataCleaningResultForSubjectV1[]> {
+    if (input.monitoringSnapshotRefs.length === 0) return [];
+    return this.#listResultsForSubject(
+      input.projectId,
+      { monitoringSnapshotRefs: input.monitoringSnapshotRefs },
+      input.limit,
+    );
+  }
+
+  /**
+   * 正式结果的排除项（design D-06）。
+   *
+   * 只返回属于该 subject 的判定，不返回整份结果正文或其它来源的条目。
+   */
+  async readResultExclusions(input: {
+    readonly projectId: string;
+    readonly resultRef: RouteDecisionRefV1;
+    readonly subject:
+      | { readonly sourceVersionRef: SourceVersionRefV1 }
+      | { readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[] };
+  }): Promise<readonly DataCleaningExclusionDecisionV1[]> {
+    const row = await this.#db
+      .selectFrom("business.data_cleaning_results")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("result_id", "=", input.resultRef.reference.entityId)
+      .where("version_id", "=", input.resultRef.reference.versionId)
+      .executeTakeFirst();
+    if (row === undefined) return [];
+    const result = DataCleaningResultV1Schema.parse(row.result_payload);
+    return result.exclusions.filter((decision) => exclusionMatchesSubject(decision, input.subject));
+  }
+
+  async #listResultsForSubject(
+    projectId: string,
+    subject:
+      | { readonly sourceVersionRef: SourceVersionRefV1 }
+      | { readonly monitoringSnapshotRefs: readonly MonitoringSnapshotRefV1[] },
+    limit: number,
+  ): Promise<readonly DataCleaningResultForSubjectV1[]> {
+    const probes =
+      "sourceVersionRef" in subject
+        ? [{ sourceVersionRef: subject.sourceVersionRef }]
+        : subject.monitoringSnapshotRefs.map((monitoringSnapshotRef) => ({
+            monitoringSnapshotRef,
+          }));
+    const rows = await this.#db
+      .selectFrom("business.data_cleaning_results")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where(
+        sql<boolean>`EXISTS (SELECT 1 FROM jsonb_array_elements(result_payload->'inputs') AS input WHERE ${sql.join(
+          probes.map((probe) => sql`input @> ${JSON.stringify(probe)}::jsonb`),
+          sql` OR `,
+        )})`,
+      )
+      .limit(limit)
+      .execute();
+    const results: DataCleaningResultForSubjectV1[] = [];
+    for (const row of rows) {
+      const result = DataCleaningResultV1Schema.parse(row.result_payload);
+      const input = result.inputs.find((item) => inputMatchesSubject(item, subject));
+      if (input === undefined) continue;
+      results.push({
+        resultRef: RouteDecisionRefV1Schema.parse({
+          kind: "route-decision",
+          reference: { entityId: row.result_id, versionId: row.version_id },
+        }),
+        policyRef: result.policyRef,
+        recordedAt: result.formedAt,
+        input,
+      });
+    }
+    return results.sort((left, right) => {
+      const byTime = right.recordedAt.localeCompare(left.recordedAt);
+      if (byTime !== 0) return byTime;
+      return `${left.resultRef.reference.entityId}/${left.resultRef.reference.versionId}`.localeCompare(
+        `${right.resultRef.reference.entityId}/${right.resultRef.reference.versionId}`,
+      );
+    });
   }
 
   async #persistResultIndex(

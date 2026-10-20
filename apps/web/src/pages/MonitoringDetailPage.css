@@ -39,3 +39,34 @@
   flex-wrap: wrap;
   gap: 8px;
 }
+
+/* 快照目录：按登记顺序列出已冻结快照，选中项由 URL 成套参数决定。 */
+.pjmon-snapshots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pjmon-snapshots button {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 4px;
+  background: var(--surface, #ffffff);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.pjmon-snapshot--active {
+  border-color: var(--accent, #1d4ed8);
+  background: var(--accent-soft, #eff6ff);
+}

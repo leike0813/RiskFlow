@@ -5,11 +5,17 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { z } from "zod";
 
 import {
-  AccessCommandResultV1Schema,
   ProjectAccessPresentationRequestV1Schema,
   type LocalIdentityAccessV1,
   type SystemAdministrationPortV1,
 } from "@riskflow/core/access";
+import {
+  AccessCommandResultV1Schema,
+  EngineeringWorkspaceCommandRequestV1Schema,
+  EngineeringWorkspaceReadRequestV1Schema,
+  ProjectWorkspaceAccessCommandRequestV1Schema,
+  ProjectWorkspaceAccessReadPayloadV1Schema,
+} from "@riskflow/contracts/engineering-workspace";
 import {
   ProjectionQueryV1Schema,
   ProjectAccessPresentationV1Schema,
@@ -544,11 +550,84 @@ const runSystem = async (input: {
   const token = cookieToken(input.request);
   const sessionError = sessionFailure(input.reply, token, input.requestId, input.now);
   if (sessionError !== undefined) return sessionError;
-  const administration = input.ports.systemAdministration;
-  if (administration === undefined)
-    throw new HttpTransportError(notFound(input.requestId, input.now));
   input.reply.header("cache-control", "no-store");
   try {
+    if (input.entry.kind === "engineering-workspace-commands") {
+      const workspace = input.ports.engineeringWorkspace;
+      if (workspace === undefined)
+        throw new HttpTransportError(notFound(input.requestId, input.now));
+      const body = EngineeringWorkspaceCommandRequestV1Schema.parse(input.request.body);
+      const result = await workspace.revise({
+        commandId: body.commandId,
+        idempotencyKey: body.idempotencyKey,
+        issuedAt: body.issuedAt,
+        sessionToken: token as string,
+        projectId: pathProjectId(input.request),
+        payload: body.payload,
+      });
+      if (result.kind === "failed")
+        return responseFailure(
+          input.reply,
+          mapHttpError({ error: result.error, requestId: input.requestId, now: input.now }),
+        );
+      return input.reply.code(200).type(HTTP_JSON_MEDIA_TYPE_V1).send(result);
+    }
+    if (input.entry.kind === "engineering-workspace-queries") {
+      const workspace = input.ports.engineeringWorkspace;
+      if (workspace === undefined)
+        throw new HttpTransportError(notFound(input.requestId, input.now));
+      const body = EngineeringWorkspaceReadRequestV1Schema.parse(input.request.body);
+      const result = await workspace.read({
+        queryId: body.queryId,
+        requestedAt: body.requestedAt,
+        sessionToken: token as string,
+        projectId: pathProjectId(input.request),
+        payload: body.payload,
+      });
+      if (result.kind === "failed")
+        return responseFailure(
+          input.reply,
+          mapHttpError({ error: result.error, requestId: input.requestId, now: input.now }),
+        );
+      return input.reply.code(200).type(HTTP_JSON_MEDIA_TYPE_V1).send(result);
+    }
+    if (input.entry.kind === "project-workspace-access-queries") {
+      const access = input.ports.projectWorkspaceAccess;
+      if (access === undefined) throw new HttpTransportError(notFound(input.requestId, input.now));
+      const body = ProjectWorkspaceAccessReadPayloadV1Schema.parse(input.request.body);
+      // 路径上的工程标识是唯一权威：载荷里的工程必须与路径一致。
+      if (body.projectId !== pathProjectId(input.request))
+        throw new HttpTransportError(invalidRequest(input.requestId, input.now));
+      const result = await access.read({ sessionToken: token as string, payload: body });
+      if (result.kind === "failed")
+        return responseFailure(
+          input.reply,
+          mapHttpError({ error: result.error, requestId: input.requestId, now: input.now }),
+        );
+      return input.reply.code(200).type(HTTP_JSON_MEDIA_TYPE_V1).send(result);
+    }
+    if (input.entry.kind === "project-workspace-access-commands") {
+      const access = input.ports.projectWorkspaceAccess;
+      if (access === undefined) throw new HttpTransportError(notFound(input.requestId, input.now));
+      const body = ProjectWorkspaceAccessCommandRequestV1Schema.parse(input.request.body);
+      const result = await access.execute({
+        sessionToken: token as string,
+        projectId: pathProjectId(input.request),
+        commandId: body.commandId,
+        idempotencyKey: body.idempotencyKey,
+        issuedAt: body.issuedAt,
+        payload: body.payload,
+      });
+      if (result.kind === "failed")
+        return responseFailure(
+          input.reply,
+          mapHttpError({ error: result.error, requestId: input.requestId, now: input.now }),
+        );
+      return input.reply.code(200).type(HTTP_JSON_MEDIA_TYPE_V1).send(result);
+    }
+    const administration = input.ports.systemAdministration;
+    if (administration === undefined)
+      throw new HttpTransportError(notFound(input.requestId, input.now));
     if (input.entry.kind === "administration-identity") {
       // 无请求体：身份查询只需要 Cookie 会话与这次调用的标识。
       const identity = await administration.read({

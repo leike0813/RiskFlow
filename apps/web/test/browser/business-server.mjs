@@ -58,6 +58,7 @@ import { createAssessmentGraphComposition } from "../../../../apps/worker/dist/a
 import { createRiskFlowGraphComposition } from "../../../../apps/worker/dist/risk-flow/index.js";
 import { createPostgresDataCleaningComposition } from "../../../../apps/worker/dist/engineering-data/cleaning/index.js";
 import { createStructuredDocumentConversionAdapter } from "../../../../packages/adapters/dist/engineering-data/document-conversion/index.js";
+import { createPostgresEngineeringWorkspaceAdapter } from "../../../../packages/adapters/dist/engineering-data/workspace/index.js";
 import {
   bootstrapPostgresFoundation,
   createPostgresTransactionUnit,
@@ -5016,6 +5017,16 @@ export const startBusinessBrowserServer = async ({
     const api = buildApi({
       access,
       ports: {
+        // CH-4 工程工作区：只组合所属领域的真实窄读，不在夹具里另造接入关系。
+        engineeringWorkspace: createPostgresEngineeringWorkspaceAdapter({
+          access,
+          contextSource: registry,
+          conversions: documentConversion,
+          cleaning: cleaning.store,
+          monitoring: monitoringStore,
+        }),
+        // CH-4 工程访问维护：经理作用域目录与四类动作来自 C06 真实实现。
+        projectWorkspaceAccess: access.projectWorkspaceAccess,
         sourceOriginal: new SourceOriginalReaderV1({
           access,
           source: registry,

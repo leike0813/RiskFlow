@@ -6,6 +6,11 @@
   align-items: start;
 }
 
+/* 接入事实横跨整行：它与资料元数据不是并列的两块内容。 */
+.pjdd-span {
+  grid-column: 1 / -1;
+}
+
 .pjdd-meta {
   display: flex;
   flex-direction: column;

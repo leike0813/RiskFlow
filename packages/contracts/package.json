@@ -27,6 +27,10 @@
       "types": "./dist/ports/index.d.ts",
       "import": "./dist/ports/index.js"
     },
+    "./engineering-workspace": {
+      "types": "./dist/engineering-workspace/index.d.ts",
+      "import": "./dist/engineering-workspace/index.js"
+    },
     "./events": {
       "types": "./dist/events/index.d.ts",
       "import": "./dist/events/index.js"

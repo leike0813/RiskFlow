@@ -121,6 +121,48 @@ const BUSINESS_ROUTE_SEEDS_V1 = Object.freeze<BusinessRouteSeedV1[]>([
     requiredViewCapability: null,
     load: () => import("../pages/MonitoringDetailPage.js"),
   },
+  // CH-4 工程工作区新增承载：上下文维护、成员与资料访问、开通与接入任务。
+  {
+    routeId: "projects.spatial-scopes",
+    path: "/projects/spatial-scopes",
+    title: "工程上下文",
+    section: "projects",
+    regions: [{ key: "main", kind: "detail" }],
+    contextRequirement: "project",
+    requiredViewCapability: null,
+    load: () => import("../pages/project/ProjectContextPage.js"),
+  },
+  {
+    routeId: "projects.members",
+    path: "/projects/members",
+    title: "成员与资料访问",
+    section: "projects",
+    regions: [{ key: "main", kind: "detail" }],
+    contextRequirement: "project",
+    requiredViewCapability: null,
+    load: () => import("../pages/project/ProjectMembersPage.js"),
+  },
+  {
+    routeId: "projects.opening",
+    path: "/projects/opening",
+    title: "工程开通",
+    section: "projects",
+    regions: [{ key: "main", kind: "form" }],
+    // 开通按系统管理身份决定，不要求当前工程。
+    contextRequirement: "none",
+    requiredViewCapability: null,
+    load: () => import("../pages/project/ProjectOpeningPage.js"),
+  },
+  {
+    routeId: "projects.ingestion-tasks",
+    path: "/projects/ingestion-tasks",
+    title: "接入任务",
+    section: "projects",
+    regions: [{ key: "main", kind: "list" }],
+    contextRequirement: "project",
+    requiredViewCapability: null,
+    load: () => import("../pages/project/IngestionPage.js"),
+  },
 
   // 风险识别
   {

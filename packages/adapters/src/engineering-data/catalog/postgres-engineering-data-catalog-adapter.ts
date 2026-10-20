@@ -38,7 +38,6 @@ import {
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
 import { ApplicabilityMetadataSchema } from "@riskflow/contracts/records";
-import { EvidenceReferenceSchema } from "@riskflow/contracts/common";
 import type { ApplicabilityMetadataDimension } from "@riskflow/contracts/vocabulary";
 import {
   ACCESS_POLICY_REF_V1,
@@ -62,6 +61,7 @@ import type {
   ResolveMonitoringSnapshotQueryV1,
 } from "@riskflow/core/engineering-data/monitoring";
 import type { PostgresDatabase } from "../../postgres/types.js";
+import { monitoringEvidenceSourceVersionRefs } from "../monitoring/postgres-monitoring-store.js";
 
 type TimestampColumn = Date | string;
 
@@ -205,27 +205,6 @@ const asIso = (value: Date | string): string =>
 
 const refKey = (value: { kind: string; reference: { entityId: string; versionId: string } }) =>
   `${value.kind}/${value.reference.entityId}/${value.reference.versionId}`;
-
-/** 从快照证据引用提取去重后的来源版本引用（供客户端声明授权来源）。 */
-const evidenceSourceVersionRefs = (value: unknown): SourceVersionRefV1[] => {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const refs: SourceVersionRefV1[] = [];
-  for (const item of value) {
-    const parsed = EvidenceReferenceSchema.safeParse(item);
-    if (!parsed.success) continue;
-    const ref: SourceVersionRefV1 = {
-      kind: "source-version",
-      reference: parsed.data.sourceVersion,
-    };
-    const key = refKey(ref);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    refs.push(ref);
-    if (refs.length >= 64) break;
-  }
-  return refs;
-};
 
 const catalogError = (
   code: "AUTHORIZATION_DENIED" | "UNSUPPORTED_CONTRACT" | "TRANSIENT_FAILURE",
@@ -1333,7 +1312,7 @@ export class PostgresEngineeringDataCatalogAdapter implements EngineeringDataCat
       cutoff: asIso(row.cutoff),
       availability: row.availability,
       coverageRatio: row.coverage_ratio,
-      evidenceSourceVersionRefs: evidenceSourceVersionRefs(row.evidence_references),
+      evidenceSourceVersionRefs: monitoringEvidenceSourceVersionRefs(row.evidence_references),
     }));
     return succeeded({
       kind: "monitoring-series-detail",

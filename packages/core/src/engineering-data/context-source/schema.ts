@@ -9,6 +9,14 @@ import {
 } from "@riskflow/contracts/common";
 import { ApplicabilityMetadataSchema, ScalarValueSchema } from "@riskflow/contracts/records";
 import {
+  ChainageRangeV1Schema,
+  EngineeringWorkspaceCommandPayloadV1Schema,
+  ProjectBusinessRevisionV1Schema,
+  SourceSegmentIdV1Schema,
+  type SourceSegmentIdV1,
+  SpatialBusinessRevisionV1Schema,
+} from "@riskflow/contracts/engineering-workspace";
+import {
   ApplicabilityMetadataSnapshotRefV1Schema,
   AuthorizationContextV1Schema,
   AuthorizationContextRefV1Schema,
@@ -24,11 +32,9 @@ import {
   type ModuleErrorV1,
 } from "@riskflow/contracts/ports";
 
-const finiteNumber = z.number().finite();
 const boundedText = z.string().trim().min(1).max(200);
 const extendedText = z.string().trim().min(1).max(500);
 const component = z.string().regex(/^[A-Za-z0-9_]+$/u);
-const expectedVersion = z.union([VersionReferenceSchema, z.literal("none")]);
 
 export const CONTEXT_SOURCE_SCHEMA_VERSION_V1 = "1" as const;
 export const CONTEXT_SOURCE_MAX_SPATIAL_SCOPES = 128;
@@ -77,17 +83,6 @@ export type ExternalRiskEventFactsArtifactV1 = z.infer<
   typeof ExternalRiskEventFactsArtifactV1Schema
 >;
 
-export const ProjectBusinessLifecycleV1Schema = z.enum([
-  "preparing",
-  "active",
-  "ended",
-  "archived",
-]);
-export type ProjectBusinessLifecycleV1 = z.infer<typeof ProjectBusinessLifecycleV1Schema>;
-
-export const SpatialBusinessStatusV1Schema = z.enum(["active", "inactive"]);
-export type SpatialBusinessStatusV1 = z.infer<typeof SpatialBusinessStatusV1Schema>;
-
 export const SourceSegmentKindV1Schema = z.enum(["chapter", "table", "monitoring-window"]);
 export type SourceSegmentKindV1 = z.infer<typeof SourceSegmentKindV1Schema>;
 
@@ -100,44 +95,6 @@ export type SourceDeliveryKindV1 = z.infer<typeof SourceDeliveryKindV1Schema>;
 
 export const SourceAccessStatusV1Schema = z.enum(["pending-access", "ready"]);
 export type SourceAccessStatusV1 = z.infer<typeof SourceAccessStatusV1Schema>;
-
-export const ChainageRangeV1Schema = z
-  .strictObject({ start: finiteNumber, end: finiteNumber })
-  .superRefine((value, context) => {
-    if (value.end <= value.start) {
-      context.addIssue({ code: "custom", path: ["end"], message: "end must be later than start" });
-    }
-  });
-export type ChainageRangeV1 = z.infer<typeof ChainageRangeV1Schema>;
-
-export const EffectivePeriodV1Schema = z
-  .strictObject({ validFrom: IsoDateTimeSchema, validTo: IsoDateTimeSchema.optional() })
-  .superRefine((value, context) => {
-    if (value.validTo !== undefined && Date.parse(value.validTo) <= Date.parse(value.validFrom)) {
-      context.addIssue({
-        code: "custom",
-        path: ["validTo"],
-        message: "validTo must be later than validFrom",
-      });
-    }
-  });
-export type EffectivePeriodV1 = z.infer<typeof EffectivePeriodV1Schema>;
-
-export const SystemTimeV1Schema = z
-  .strictObject({ recordedAt: IsoDateTimeSchema, supersededAt: IsoDateTimeSchema.optional() })
-  .superRefine((value, context) => {
-    if (
-      value.supersededAt !== undefined &&
-      Date.parse(value.supersededAt) <= Date.parse(value.recordedAt)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["supersededAt"],
-        message: "supersededAt must be later than recordedAt",
-      });
-    }
-  });
-export type SystemTimeV1 = z.infer<typeof SystemTimeV1Schema>;
 
 export const ContextAuditV1Schema = AuditInfoSchema;
 export type ContextAuditV1 = z.infer<typeof ContextAuditV1Schema>;
@@ -160,41 +117,6 @@ export const SpatialScopeRefSetV1Schema = uniqueReferences(
   1,
 );
 export type SpatialScopeRefSetV1 = z.infer<typeof SpatialScopeRefSetV1Schema>;
-
-export const ProjectBusinessRevisionV1Schema = z.strictObject({
-  projectRevisionRef: ProjectRevisionRefV1Schema,
-  name: boundedText,
-  lifecycle: ProjectBusinessLifecycleV1Schema,
-  applicabilityMetadata: ApplicabilityMetadataSchema,
-  effectivePeriod: EffectivePeriodV1Schema,
-  systemTime: SystemTimeV1Schema,
-  previousRevisionRef: ProjectRevisionRefV1Schema.optional(),
-  audit: ContextAuditV1Schema,
-});
-export type ProjectBusinessRevisionV1 = z.infer<typeof ProjectBusinessRevisionV1Schema>;
-
-export const SpatialApplicabilityOverridesV1Schema = z.strictObject({
-  constructionMethod: IdentifierSchema.optional(),
-  stratumCondition: IdentifierSchema.optional(),
-  engineeringStage: IdentifierSchema.optional(),
-});
-export type SpatialApplicabilityOverridesV1 = z.infer<typeof SpatialApplicabilityOverridesV1Schema>;
-
-export const SpatialBusinessRevisionV1Schema = z.strictObject({
-  spatialScopeRef: SpatialScopeRefV1Schema,
-  projectRevisionRef: ProjectRevisionRefV1Schema,
-  parentScopeRef: SpatialScopeRefV1Schema.optional(),
-  name: boundedText,
-  worksiteLocation: extendedText,
-  chainage: ChainageRangeV1Schema.optional(),
-  applicabilityOverrides: SpatialApplicabilityOverridesV1Schema,
-  status: SpatialBusinessStatusV1Schema,
-  effectivePeriod: EffectivePeriodV1Schema,
-  systemTime: SystemTimeV1Schema,
-  previousRevisionRef: SpatialScopeRefV1Schema.optional(),
-  audit: ContextAuditV1Schema,
-});
-export type SpatialBusinessRevisionV1 = z.infer<typeof SpatialBusinessRevisionV1Schema>;
 
 export const SourceMetadataV1Schema = z
   .strictObject({
@@ -378,12 +300,6 @@ export const SourceSegmentLocatorV1Schema = z.discriminatedUnion("kind", [
 ]);
 export type SourceSegmentLocatorV1 = z.infer<typeof SourceSegmentLocatorV1Schema>;
 
-export const SourceSegmentIdV1Schema = z
-  .string()
-  .regex(/^[A-Za-z0-9_]+-[A-Za-z0-9_]+-[A-Za-z0-9_]+$/u)
-  .brand<"SourceSegmentIdV1">();
-export type SourceSegmentIdV1 = z.infer<typeof SourceSegmentIdV1Schema>;
-
 export const SourceSegmentV1Schema = z
   .strictObject({
     sourceSegmentId: SourceSegmentIdV1Schema,
@@ -483,29 +399,8 @@ const commandBase = {
 };
 
 export const EngineeringContextRevisionCommandV1Schema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    ...commandBase,
-    kind: z.literal("project"),
-    expectedVersion,
-    name: boundedText,
-    lifecycle: ProjectBusinessLifecycleV1Schema,
-    applicabilityMetadata: ApplicabilityMetadataSchema,
-    effectivePeriod: EffectivePeriodV1Schema,
-  }),
-  z.strictObject({
-    ...commandBase,
-    kind: z.literal("spatial"),
-    spatialScopeRef: SpatialScopeRefV1Schema,
-    projectRevisionRef: ProjectRevisionRefV1Schema,
-    expectedVersion,
-    parentScopeRef: SpatialScopeRefV1Schema.optional(),
-    name: boundedText,
-    worksiteLocation: extendedText,
-    chainage: ChainageRangeV1Schema.optional(),
-    applicabilityOverrides: SpatialApplicabilityOverridesV1Schema,
-    status: SpatialBusinessStatusV1Schema,
-    effectivePeriod: EffectivePeriodV1Schema,
-  }),
+  EngineeringWorkspaceCommandPayloadV1Schema.options[0].extend(commandBase),
+  EngineeringWorkspaceCommandPayloadV1Schema.options[1].extend(commandBase),
 ]);
 export type EngineeringContextRevisionCommandV1 = z.infer<
   typeof EngineeringContextRevisionCommandV1Schema

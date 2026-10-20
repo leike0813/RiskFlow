@@ -1,41 +1,51 @@
+import { z } from "zod";
+
 import { sha256CanonicalJson } from "../../persistence/canonical-json.js";
 import { ACCESS_POLICY_REF_V1, branchCapability } from "../../access/policy.js";
 import {
   ModuleErrorV1Schema,
+  createModuleResultSchemaV1,
   type ContractReferenceV1,
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
-import type { VersionReference } from "@riskflow/contracts/common";
+import { IdentifierSchema, type VersionReference } from "@riskflow/contracts/common";
+import {
+  EngineeringWorkspaceCommandPayloadV1Schema,
+  EngineeringWorkspaceReadPayloadV1Schema,
+  EngineeringWorkspaceReadSuccessV1Schema,
+} from "@riskflow/contracts/engineering-workspace";
 
 import {
   CONTEXT_SOURCE_SCHEMA_VERSION_V1,
   ContextSourceResultV1Schema,
   CreateApplicabilitySnapshotCommandV1Schema,
   EngineeringContextRevisionCommandV1Schema,
-  ProjectBusinessRevisionV1Schema,
   RegisterSourceSegmentSetCommandV1Schema,
   ResolveSourceVersionForReadQueryV1Schema,
   ResolveSourceProcessingInputQueryV1Schema,
   SourceSegmentSetV1Schema,
   SourceProcessingInputV1Schema,
   SourceVersionV1Schema,
-  SpatialBusinessRevisionV1Schema,
   type ApplicabilityMetadataSnapshotV1,
   type ContextSourceCommandV1,
   type ContextSourceResultV1,
   type ContextSourceSuccessV1,
   type CreateApplicabilitySnapshotCommandV1,
   type EngineeringContextRevisionCommandV1,
-  type ProjectBusinessRevisionV1,
   type RegisterSourceSegmentSetCommandV1,
   type ResolveSourceProcessingInputQueryV1,
   type ResolveSourceVersionForReadQueryV1,
   type SourceProcessingInputV1,
   type SourceSegmentSetV1,
   type SourceVersionV1,
-  type SpatialBusinessRevisionV1,
-  type SpatialApplicabilityOverridesV1,
 } from "./schema.js";
+import {
+  ProjectBusinessRevisionV1Schema,
+  SpatialBusinessRevisionV1Schema,
+  type ProjectBusinessRevisionV1,
+  type SpatialApplicabilityOverridesV1,
+  type SpatialBusinessRevisionV1,
+} from "@riskflow/contracts/engineering-workspace";
 import {
   ApplicabilityMetadataSnapshotV1Schema,
   ApplicabilityProvenanceV1Schema,
@@ -400,6 +410,53 @@ const applicabilitySnapshotFromParts = (
     audit: auditFor(command, "engineering-data.create-applicability-snapshot"),
   });
 };
+
+/**
+ * 工程工作区内部读取请求：sessionToken 只由 HTTP 从安全 Cookie 注入；
+ * 客户端不得提交 actor、授权或来源集合。
+ */
+export const EngineeringWorkspaceReadRequestV1Schema = z.strictObject({
+  queryId: IdentifierSchema,
+  requestedAt: z.iso.datetime({ offset: true }),
+  sessionToken: z.string().min(1).max(512),
+  projectId: IdentifierSchema,
+  payload: EngineeringWorkspaceReadPayloadV1Schema,
+});
+export type EngineeringWorkspaceReadRequestV1 = z.infer<
+  typeof EngineeringWorkspaceReadRequestV1Schema
+>;
+
+export const EngineeringWorkspaceReadResultV1Schema = createModuleResultSchemaV1(
+  EngineeringWorkspaceReadSuccessV1Schema,
+);
+export type EngineeringWorkspaceReadResultV1 = z.infer<
+  typeof EngineeringWorkspaceReadResultV1Schema
+>;
+
+/**
+ * 工程工作区修订请求（内部）：sessionToken 只由 HTTP 从安全 Cookie 注入，
+ * 业务字段只承载修订载荷，不接受 actor、授权或工程标识。
+ */
+export const EngineeringWorkspaceRevisionRequestV1Schema = z.strictObject({
+  commandId: IdentifierSchema,
+  idempotencyKey: IdentifierSchema,
+  issuedAt: z.iso.datetime({ offset: true }),
+  sessionToken: z.string().min(1).max(512),
+  projectId: IdentifierSchema,
+  payload: EngineeringWorkspaceCommandPayloadV1Schema,
+});
+export type EngineeringWorkspaceRevisionRequestV1 = z.infer<
+  typeof EngineeringWorkspaceRevisionRequestV1Schema
+>;
+
+/**
+ * 工程工作区端口：修订沿 C11 既有命令、事务与审计；读取只暴露所属领域已登记的
+ * 精确修订与接入关系，不接受任意对象覆盖或通用查询。
+ */
+export interface EngineeringWorkspacePortV1 {
+  revise(request: EngineeringWorkspaceRevisionRequestV1): Promise<ContextSourceResultV1>;
+  read(request: EngineeringWorkspaceReadRequestV1): Promise<EngineeringWorkspaceReadResultV1>;
+}
 
 export interface EngineeringContextSourceRegistryV1 {
   reviseContext(command: EngineeringContextRevisionCommandV1): Promise<ContextSourceResultV1>;

@@ -183,3 +183,51 @@ export const WORKFLOW_REASSESSMENT_REASONS_V1 = [
 ] as const;
 export const WorkflowReassessmentReasonV1Schema = z.enum(WORKFLOW_REASSESSMENT_REASONS_V1);
 export type WorkflowReassessmentReasonV1 = z.infer<typeof WorkflowReassessmentReasonV1Schema>;
+
+/* -------------------------------------------------------------------------- */
+/* C06 访问域枚举（design D-04）                                               */
+/*                                                                            */
+/* 预设角色与资料可见范围只在此定义一次；core 访问域与工程工作区载荷直接消费， */
+/* 不在两处维护同一组取值。                                                    */
+/* -------------------------------------------------------------------------- */
+
+export const LOCAL_ACCOUNT_STATUS_V1_VALUES = ["active", "disabled"] as const;
+export const LocalAccountStatusV1Schema = z.enum(LOCAL_ACCOUNT_STATUS_V1_VALUES);
+export type LocalAccountStatusV1 = z.infer<typeof LocalAccountStatusV1Schema>;
+
+export const PROJECT_ACCESS_STATUS_V1_VALUES = ["active", "suspended"] as const;
+export const ProjectAccessStatusV1Schema = z.enum(PROJECT_ACCESS_STATUS_V1_VALUES);
+export type ProjectAccessStatusV1 = z.infer<typeof ProjectAccessStatusV1Schema>;
+
+export const SPATIAL_ACCESS_STATUS_V1_VALUES = ["active", "inactive"] as const;
+export const SpatialAccessStatusV1Schema = z.enum(SPATIAL_ACCESS_STATUS_V1_VALUES);
+export type SpatialAccessStatusV1 = z.infer<typeof SpatialAccessStatusV1Schema>;
+
+export const PRESET_ROLE_V1_VALUES = [
+  "system-administrator",
+  "project-risk-manager",
+  "reviewer",
+  "field-responder",
+  "business-viewer",
+] as const;
+export const PresetRoleV1Schema = z.enum(PRESET_ROLE_V1_VALUES);
+export type PresetRoleV1 = z.infer<typeof PresetRoleV1Schema>;
+
+export const SOURCE_VISIBILITY_V1_VALUES = ["project-shared", "restricted"] as const;
+export const SourceVisibilityV1Schema = z.enum(SOURCE_VISIBILITY_V1_VALUES);
+export type SourceVisibilityV1 = z.infer<typeof SourceVisibilityV1Schema>;
+
+/* -------------------------------------------------------------------------- */
+/* C08 清洗域枚举（design D-06）                                               */
+/*                                                                            */
+/* 处置结论与拒绝分类是正式清洗结果的领域取值，公开投影与 core 清洗 Schema    */
+/* 共用同一组定义。                                                            */
+/* -------------------------------------------------------------------------- */
+
+export const DATA_CLEANING_DISPOSITION_V1_VALUES = ["accepted", "rejected"] as const;
+export const DataCleaningDispositionV1Schema = z.enum(DATA_CLEANING_DISPOSITION_V1_VALUES);
+export type DataCleaningDispositionV1 = z.infer<typeof DataCleaningDispositionV1Schema>;
+
+export const DATA_CLEANING_REJECTION_CLASS_V1_VALUES = ["repairable", "terminal"] as const;
+export const DataCleaningRejectionClassV1Schema = z.enum(DATA_CLEANING_REJECTION_CLASS_V1_VALUES);
+export type DataCleaningRejectionClassV1 = z.infer<typeof DataCleaningRejectionClassV1Schema>;

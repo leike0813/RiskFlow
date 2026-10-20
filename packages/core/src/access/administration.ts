@@ -18,19 +18,23 @@ import {
   CreateAccountCommandV1Schema,
   DisableAccountCommandV1Schema,
   DisplayNameV1Schema,
-  LocalAccountStatusV1Schema,
   OpenProjectCommandV1Schema,
-  PresetRoleV1Schema,
-  ProjectAccessStatusV1Schema,
   ResetPasswordCommandV1Schema,
   ReviseMembershipCommandV1Schema,
-  SpatialAccessStatusV1Schema,
   SuspendProjectCommandV1Schema,
-  AccessCommandResultV1Schema,
   AccessErrorV1Schema,
-  type AccessCommandResultV1,
   type AccessErrorV1,
 } from "./schema.js";
+import {
+  AccessCommandResultV1Schema,
+  AccessReferenceV1Schema,
+} from "@riskflow/contracts/engineering-workspace";
+import {
+  LocalAccountStatusV1Schema,
+  PresetRoleV1Schema,
+  ProjectAccessStatusV1Schema,
+  SpatialAccessStatusV1Schema,
+} from "@riskflow/contracts/vocabulary";
 import { SYSTEM_ACCESS_ACTIONS_V1 } from "./policy.js";
 
 export const SYSTEM_ADMINISTRATION_PAGE_SIZE_MAX_V1 = 50;
@@ -40,10 +44,7 @@ const readPageSize = z.number().int().min(1).max(SYSTEM_ADMINISTRATION_PAGE_SIZE
 const readCursor = z.string().min(1).max(512);
 const sessionToken = z.string().min(1).max(512);
 
-const accessReference = z.strictObject({
-  entityId: IdentifierSchema,
-  versionId: IdentifierSchema,
-});
+const accessReference = AccessReferenceV1Schema;
 
 /** 管理读请求信封：主体身份由服务端从 Cookie 会话取得，客户端只提供请求身份。 */
 const systemReadEnvelope = {
@@ -228,4 +229,4 @@ export interface SystemAdministrationPortV1 {
   execute(command: SystemAdministrationCommandV1): Promise<SystemAdministrationExecuteResultV1>;
 }
 
-export type { AccessCommandResultV1, AccessErrorV1 };
+export type { AccessErrorV1 };

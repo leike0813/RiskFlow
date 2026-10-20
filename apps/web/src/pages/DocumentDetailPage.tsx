@@ -17,6 +17,7 @@ import {
   type SourceCatalogItemView,
   type SourceSegmentSetView,
 } from "../api/operations";
+import { IngestionFacts } from "./project/IngestionFacts";
 import "./DocumentDetailPage.css";
 import "../components/SectionTabs.css";
 
@@ -170,6 +171,9 @@ export default function DocumentDetailPage() {
                 />
               ) : (
                 <div className="pjdd-grid">
+                  <div className="pjdd-span">
+                    <IngestionFacts subject={item.sourceVersionRef} />
+                  </div>
                   <Card title="资料元数据">
                     <dl className="pjdd-meta">
                       <div className="pjdd-meta-row">

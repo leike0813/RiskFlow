@@ -9,8 +9,8 @@ import {
   type StructuredDocumentConversionStatisticsV1,
 } from "@riskflow/contracts/ports";
 
+import { SourceSegmentIdV1Schema } from "@riskflow/contracts/engineering-workspace";
 import {
-  SourceSegmentIdV1Schema,
   SourceSegmentLocatorV1Schema,
   SourceSegmentKindV1Schema,
   SpatialScopeRefSetV1Schema,

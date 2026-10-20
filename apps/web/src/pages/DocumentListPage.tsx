@@ -14,13 +14,8 @@ import {
   type SourceCatalogPageView,
   type SourceParseStatus,
 } from "../api/operations";
+import { PROJECT_NAVIGATION_ITEMS_V1 } from "./project/projectNavigation";
 import "./DocumentListPage.css";
-
-const sectionTabs = [
-  { to: "/project", label: "工程概览" },
-  { to: "/projects/documents", label: "资料目录" },
-  { to: "/projects/monitoring", label: "监测数据" },
-];
 
 const PARSE_STATUS_LABEL: Record<SourceParseStatus, string> = {
   registered: "已登记",
@@ -129,7 +124,7 @@ export default function DocumentListPage() {
           </div>
         </header>
 
-        <SectionTabs items={sectionTabs} />
+        <SectionTabs items={[...PROJECT_NAVIGATION_ITEMS_V1]} />
 
         <PageStateView
           state={state}

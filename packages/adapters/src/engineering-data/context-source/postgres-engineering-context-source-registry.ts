@@ -13,10 +13,16 @@ import {
 import {
   ACCESS_POLICY_REF_V1,
   AccessServiceError,
-  AccessCommandResultV1Schema,
   type AuthorizationDecisionV1,
   type LocalIdentityAccessV1,
 } from "@riskflow/core/access";
+import {
+  AccessCommandResultV1Schema,
+  ProjectBusinessRevisionV1Schema,
+  SpatialBusinessRevisionV1Schema,
+  type ProjectBusinessRevisionV1,
+  type SpatialBusinessRevisionV1,
+} from "@riskflow/contracts/engineering-workspace";
 import { authorizationScopeDigest } from "@riskflow/core/retrieval";
 import {
   AssessmentPreparationProjectionV1Schema,
@@ -58,7 +64,6 @@ import {
   EngineeringDataReadQueryRecordV1Schema,
   EvidenceAccessItemV1Schema,
   EvidenceAccessReadResultV1Schema,
-  ProjectBusinessRevisionV1Schema,
   RegisterSourceSegmentSetCommandV1Schema,
   ResolveEngineeringDataReadQueryV1Schema,
   ResolveSourceVersionForReadQueryV1Schema,
@@ -69,7 +74,6 @@ import {
   SourceSegmentSetV1Schema,
   SourceSegmentV1Schema,
   SourceVersionV1Schema,
-  SpatialBusinessRevisionV1Schema,
   SpatialScopeRefSetV1Schema,
   normalizeSpatialScopeRefs,
   type ApplicabilityMetadataSnapshotV1,
@@ -82,7 +86,6 @@ import {
   type EngineeringDataReadResolutionResultV1,
   type EvidenceAccessItemV1,
   type EvidenceAccessReadResultV1,
-  type ProjectBusinessRevisionV1,
   type RegisterSourceSegmentSetCommandV1,
   type ResolveEngineeringDataReadQueryV1,
   type ResolveSourceProcessingInputQueryV1,
@@ -93,7 +96,6 @@ import {
   type SourceSegmentSetV1,
   type SourceSegmentV1,
   type SourceVersionV1,
-  type SpatialBusinessRevisionV1,
   type EngineeringContextSourceRegistryV1,
 } from "@riskflow/core/engineering-data/context-source";
 import {
@@ -109,6 +111,7 @@ import {
   ASSESSMENT_ENTRY_SOURCE_VERSION_MAX_V1,
   SourceAccessGrantRefV1Schema,
   SourceDeliveryRefV1Schema,
+  SourceSegmentSetRefV1Schema,
   SourceVersionRefV1Schema,
   SpatialScopeRefV1Schema,
   MODULE_BRANCH_CAPABILITY_V1,
@@ -512,6 +515,8 @@ const projectRevisionStorageId = (projectId: string, versionId: string): string 
   `${projectId}:${versionId}`;
 const spatialRevisionStorageId = (scopeId: string, versionId: string): string =>
   `${scopeId}:${versionId}`;
+/** 存储主键是 `<实体>:<版本>`；版本号取末段，与修订行的 previous 引用同一口径。 */
+const versionIdFromStorageId = (storageId: string): string => storageId.split(":").at(-1) ?? "1";
 const lifecycleRank: Record<ProjectBusinessRevisionV1["lifecycle"], number> = {
   preparing: 0,
   active: 1,
@@ -643,7 +648,7 @@ const toProjectRevision = (row: Selectable<ProjectRevisionRow>): ProjectBusiness
           previousRevisionRef: ref(
             "project-revision",
             row.project_id,
-            row.previous_revision_id.split(":").at(-1) ?? "1",
+            versionIdFromStorageId(row.previous_revision_id),
           ),
         }),
     audit: {
@@ -671,7 +676,7 @@ const toSpatialRevision = (row: Selectable<SpatialRevisionRow>): SpatialBusiness
           previousRevisionRef: ref(
             "spatial-scope",
             row.scope_id,
-            row.previous_revision_id.split(":").at(-1) ?? "1",
+            versionIdFromStorageId(row.previous_revision_id),
           ),
         }),
     audit: {
@@ -1111,6 +1116,104 @@ export class PostgresEngineeringContextSourceRegistry
     this.#riskInputFacts = options.riskInputFacts;
     this.#authorizeDownstream = options.authorizeDownstream;
     this.#now = options.now ?? (() => new Date());
+  }
+
+  /**
+   * 工程业务修订窄读（design D-03）。
+   *
+   * 只按精确工程版本读取当前或历史修订；不列历史目录、不改写原 `context-read` 语义，
+   * 也不创建修订、收据或事件。
+   */
+  async readProjectRevision(
+    projectId: string,
+    versionId: string,
+  ): Promise<ProjectBusinessRevisionV1 | undefined> {
+    return this.#readProjectRevision(projectId, versionId);
+  }
+
+  async readSpatialRevision(
+    projectId: string,
+    scopeId: string,
+    versionId: string,
+  ): Promise<SpatialBusinessRevisionV1 | undefined> {
+    return this.#readSpatialRevision(projectId, scopeId, versionId);
+  }
+
+  /** 当前工程业务修订：工程尚无首修订时缺席，不等于工程不存在。 */
+  async readCurrentProjectRevision(
+    projectId: string,
+  ): Promise<ProjectBusinessRevisionV1 | undefined> {
+    const identity = await this.#db
+      .selectFrom("business.engineering_projects")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .executeTakeFirst();
+    if (identity === undefined) return undefined;
+    return this.#readProjectRevision(
+      projectId,
+      versionIdFromStorageId(identity.current_revision_id),
+    );
+  }
+
+  /** 当前空间业务修订：按稳定空间身份读取；该空间尚无业务修订时缺席。 */
+  async readCurrentSpatialRevision(
+    projectId: string,
+    scopeId: string,
+  ): Promise<SpatialBusinessRevisionV1 | undefined> {
+    const identity = await this.#db
+      .selectFrom("business.engineering_spatial_segments")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("scope_id", "=", scopeId)
+      .executeTakeFirst();
+    if (identity === undefined) return undefined;
+    return this.#readSpatialRevision(
+      projectId,
+      scopeId,
+      versionIdFromStorageId(identity.current_revision_id),
+    );
+  }
+
+  /**
+   * 资料版本窄读（design D-06）。
+   *
+   * 只按精确来源版本读取登记事实，供接入关系读取按其来源授权判定可见范围。
+   */
+  async readSourceVersion(
+    projectId: string,
+    sourceVersionRef: SourceVersionRefV1,
+  ): Promise<SourceVersionV1 | undefined> {
+    return this.#readSourceVersion(projectId, sourceVersionRef);
+  }
+
+  /**
+   * 资料段集合摘要（design D-06）。
+   *
+   * 只给段集合引用与段数；不返回段正文，段正文仍按既有原件与证据契约读取。
+   */
+  async readSegmentSetSummary(
+    projectId: string,
+    sourceVersionRef: SourceVersionRefV1,
+  ): Promise<
+    | { readonly sourceSegmentSetRef: SourceSegmentSetRefV1; readonly segmentCount: number }
+    | undefined
+  > {
+    const row = await this.#db
+      .selectFrom("business.source_segment_sets")
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("source_version_id", "=", sourceVersionRef.reference.entityId)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    const count = await this.#db
+      .selectFrom("business.source_segments")
+      .select((segment) => segment.fn.countAll<string>().as("count"))
+      .where("source_segment_set_id", "=", row.source_segment_set_id)
+      .executeTakeFirst();
+    return {
+      sourceSegmentSetRef: SourceSegmentSetRefV1Schema.parse(row.source_segment_set_ref),
+      segmentCount: Number(count?.count ?? 0),
+    };
   }
 
   async reviseContext(

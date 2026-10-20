@@ -1,14 +1,15 @@
 /**
- * CH-3 D-10 原生桌面缩放取证（IP-06 / task 6.3）。
+ * CH-4 原生桌面缩放取证（IP-07 / task 7.2）。
  *
  * 只用真实 Chromium 外窗口 + 原生 Ctrl+0 / Ctrl+plus 缩放：不用模拟 viewport、
  * CSS zoom、deviceScaleFactor 或 pageScaleFactor 代替真实 200%。每个组合实际完成
  * 导航、左右栏折叠、已有确认与取消、焦点恢复，以及总览的分布／时间线／分页可达；
  * 有二维溢出时实际改变 scrollLeft。
  *
- * 结果按 CH-1 `evidence/native-zoom.json` 的形态记录：窗口外尺寸与 CSS 视口分开写，
+ * 结果按既有 `evidence/native-zoom.json` 的形态记录：窗口外尺寸与 CSS 视口分开写，
  * 不把 1920 的无溢出记成发生滚动。工具不可用时明确失败，不靠 viewport 近似。
- * 证据根改到本 change，CH-2 已归档证据不动。
+ * 场景取本 change 的工程工作区承载：导航折叠、停靠区、工程上下文表单、确认、取消、
+ * 传输失败与焦点恢复；证据根指向本 change，已归档证据不动。
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -21,7 +22,7 @@ import { startBusinessBrowserServer } from "./business-server.mjs";
 
 const CHANGE_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../openspec/changes/deliver-risk-overview-dashboard",
+  "../../../../openspec/changes/redesign-engineering-workspace",
 );
 const EVIDENCE_DIR = resolve(CHANGE_ROOT, "evidence");
 const SHOT_DIR = resolve(EVIDENCE_DIR, "native-zoom");
@@ -116,8 +117,13 @@ const login = async (page, server) => {
 };
 
 const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
-  await page.goto(`${server.origin}/review-audit?project=${server.projectId}`);
-  const trigger = page.locator("button:not([disabled])", { hasText: /^通过$/ }).first();
+  // 工程上下文页：真实业务表单 + 唯一确认，缩放下可达、可取消、可报错。
+  await page.goto(`${server.origin}/projects/spatial-scopes?project=${server.projectId}`);
+  await page.getByLabel("工程名称").fill("原生缩放取证工程");
+  await page.getByLabel("施工方法").fill("变径盾构法");
+  await page.getByLabel("地层条件").fill("富水软弱地层");
+  await page.getByLabel("工序阶段").fill("变径空间扩挖");
+  const trigger = page.getByRole("button", { name: "确认追加工程业务修订", exact: true });
   await expect(trigger).toBeEnabled({ timeout: 60_000 });
   const metrics = await page.evaluate(() => ({
     outer: [globalThis.outerWidth, globalThis.outerHeight],
@@ -163,7 +169,7 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
   await expect(openDock).toBeFocused();
   await expect(page.getByRole("tabpanel")).toHaveCount(0);
 
-  const slug = `ch3-${windowSize.width}x${windowSize.height}-${zoom.percent}`;
+  const slug = `ch4-${windowSize.width}x${windowSize.height}-${zoom.percent}`;
   mkdirSync(SHOT_DIR, { recursive: true });
   const capture = async (suffix) => {
     // 原生缩放会改变 DPR；不传 CSS clip，避免自动截图按旧 DPR 裁掉右半屏。
@@ -176,7 +182,7 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
   await capture("layout");
   let failedRequests = 0;
   const countCommand = (request) => {
-    if (request.url().includes("/commands/")) failedRequests += 1;
+    if (request.url().includes("/commands")) failedRequests += 1;
   };
   page.on("request", countCommand);
   await trigger.click();
@@ -202,7 +208,7 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
   expect(overflowResult.pageOverflow).toBe(false);
   if (overflowResult.overflow) expect(overflowResult.scrolled).toBe(true);
   page.off("request", countCommand);
-  const overview = await checkOverviewAtZoom(page, server, capture);
+  const overview = await checkEngineeringWorkspaceAtZoom(page, server, capture);
   return {
     width: windowSize.width,
     height: windowSize.height,
@@ -229,41 +235,36 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
 };
 
 /**
- * 总览在原生缩放下仍可操作（design D-10）：分布图有时间线可读、变化页可键盘触发，
- * 且总览自身不产生二维溢出。断言只落在可观察行为上，不锁具体数值。
+ * 工程工作区在原生缩放下仍可操作：概览的四个来源区域各自呈现，资料目录可键盘聚焦，
+ * 成员目录可读。断言只落在可观察行为上，不锁具体数值。
  */
-const checkOverviewAtZoom = async (page, server, capture) => {
-  await page.goto(`${server.origin}/overview?project=${server.projectId}`);
-  await expect(page.locator("h1.page-title")).toHaveText("风险态势总览");
-  // 分布区与统计真实渲染出内容，不停在加载态或失败骨架。
-  await expect(page.getByRole("heading", { name: "工序风险记录分布" })).toBeVisible({
+const checkEngineeringWorkspaceAtZoom = async (page, server, capture) => {
+  await page.goto(`${server.origin}/projects?project=${server.projectId}`);
+  await expect(page.locator("h1.page-title")).toHaveText("工程概览");
+  await expect(page.getByText("工程身份信息")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("heading", { name: "资料概况", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "监测概况", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "知识版本", exact: true })).toBeVisible();
+
+  await page.goto(`${server.origin}/projects/documents?project=${server.projectId}`);
+  await expect(page.getByText("工程资料版本列表")).toBeVisible({ timeout: 60_000 });
+  const firstSource = page.locator(".data-table-host tbody tr").first();
+  await expect(firstSource).toBeVisible();
+  await firstSource.focus();
+  expect(await focusIsVisible(page)).toBe(true);
+
+  await page.goto(`${server.origin}/projects/members?project=${server.projectId}`);
+  await expect(page.getByRole("heading", { name: "工程成员", exact: true })).toBeVisible({
     timeout: 60_000,
   });
-  await expect(page.getByText(/已入库风险记录版本/).first()).toBeVisible();
-  const chartCount = await page.locator(".chart-surface").count();
-  expect(chartCount).toBeGreaterThan(0);
-  const more = page.getByRole("button", { name: "继续读取更早变化" });
-  await expect(more).toBeVisible();
-  await more.focus();
-  expect(await focusIsVisible(page)).toBe(true);
-  const nextPage = page.waitForResponse((response) =>
-    response.url().endsWith("/queries/projection.dashboard-read"),
-  );
-  await page.keyboard.press("Enter");
-  const next = await (await nextPage).json();
-  expect(next.result.timeline.items).toHaveLength(20);
-  expect(next.result.timeline.nextCursor).toBeDefined();
-  await expect(page.locator(".timeline")).toContainText(
-    next.result.timeline.items[0].subjectRef.reference.entityId,
-  );
-  const overviewOverflow = await measureOverflow(page);
-  expect(overviewOverflow.pageOverflow).toBe(false);
-  if (overviewOverflow.overflow) expect(overviewOverflow.scrolled).toBe(true);
+  const workspaceOverflow = await measureOverflow(page);
+  expect(workspaceOverflow.pageOverflow).toBe(false);
+  if (workspaceOverflow.overflow) expect(workspaceOverflow.scrolled).toBe(true);
   await capture("overview");
   return {
-    overviewChartCount: chartCount,
-    overviewTimelineFocusable: true,
-    overviewOverflow,
+    workspaceRegionsVisible: true,
+    workspaceFocusable: true,
+    overviewOverflow: workspaceOverflow,
   };
 };
 
@@ -281,7 +282,11 @@ export const runNativeZoomEvidence = async () => {
     const page = await context.newPage();
     const cdp = await context.newCDPSession(page);
     // 每组合拦截一次写请求作为传输失败，不向服务端提交业务命令。
-    await page.route("**/api/v1/projects/*/commands/**", (route) => route.abort("failed"));
+    // 每组合拦截一次工程写请求作为传输失败，不向服务端提交业务命令。
+    await page.route(
+      (url) => url.pathname.includes("/commands"),
+      (route) => route.abort("failed"),
+    );
     await login(page, server);
     for (const windowSize of WINDOWS) {
       for (const zoom of ZOOMS) {
@@ -301,7 +306,7 @@ export const runNativeZoomEvidence = async () => {
   }
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   const record = {
-    change: "deliver-risk-overview-dashboard",
+    change: "redesign-engineering-workspace",
     date: new Date().toISOString().slice(0, 10),
     qualification: "合成样本，待甲方复核",
     projectId: server.projectId,
@@ -312,7 +317,8 @@ export const runNativeZoomEvidence = async () => {
       window: "CDP Browser.setWindowBounds 设置真实浏览器外窗口；未设置模拟 viewport",
       zoom: "xdotool 向 Chromium 原生窗口发送 Ctrl+0 与五次 Ctrl+plus；未使用 CSS zoom 或 deviceScaleFactor 模拟",
       screenshot: "CDP Page.captureScreenshot 不传 CSS clip，保存真实原生缩放下的完整可视区域",
-      checks: "实际折叠左栏与右栏、打开已有确认、取消与焦点恢复；有二维溢出时实际改变 scrollLeft",
+      checks:
+        "实际折叠左栏与右栏、填写工程上下文表单、打开已有确认、取消与焦点恢复；有二维溢出时实际改变 scrollLeft",
       requestBoundary: "每组合拦截一次写请求作为传输失败，不向服务端提交业务命令",
     },
     results,

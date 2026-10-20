@@ -12,7 +12,7 @@ import {
 } from "@riskflow/contracts/ports";
 
 import { isBranchAllowed } from "./policy.js";
-import type { PresetRoleV1, SourceVisibilityV1 } from "./schema.js";
+import type { PresetRoleV1, SourceVisibilityV1 } from "@riskflow/contracts/vocabulary";
 
 /** 服务端业务入口的当前权限检查；任务范围来自已登记事实。 */
 export interface BusinessActionAuthorizationInputV1 {

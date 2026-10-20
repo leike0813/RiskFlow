@@ -222,6 +222,22 @@ import {
   SystemOperationsQueryResultEnvelopeV1Schema,
   type SystemOperationsReadPortV1,
 } from "./operations.js";
+import {
+  ProjectWorkspaceAccessCommandRequestV1Schema,
+  ProjectWorkspaceAccessExecuteResultV1Schema,
+  ProjectWorkspaceAccessReadResultV1Schema,
+  type ProjectWorkspaceAccessPortV1,
+} from "@riskflow/core/access";
+import {
+  EngineeringWorkspaceCommandRequestV1Schema,
+  EngineeringWorkspaceReadRequestV1Schema,
+  ProjectWorkspaceAccessReadPayloadV1Schema,
+} from "@riskflow/contracts/engineering-workspace";
+import {
+  ContextSourceResultV1Schema,
+  EngineeringWorkspaceReadResultV1Schema,
+  type EngineeringWorkspacePortV1,
+} from "@riskflow/core/engineering-data/context-source";
 
 export const HTTP_SCHEMA_VERSION_V1 = "1" as const;
 export const HTTP_COOKIE_NAME_V1 = "__Host-riskflow_session" as const;
@@ -532,6 +548,16 @@ export interface ApiPortsV1 {
    * 客户端据此呈现接缝不可用，而不是把假空能力当成"当前没有入口权"。
    */
   readonly projectAccessPresentation?: ProjectAccessPresentationPortV1;
+  /**
+   * 工程工作区注入位：修订与精确读。缺任一项时对应两条专用路由都不激活，
+   * 也不出现在 OpenAPI；装配层缺真实实例时直接失败，不降级为空结果。
+   */
+  readonly engineeringWorkspace?: EngineeringWorkspacePortV1;
+  /**
+   * 工程访问维护注入位：经理作用域的成员、空间与来源授权目录及四类修改动作。
+   * 与系统管理并列但授权来源不同，不因开通工程取得业务读权。
+   */
+  readonly projectWorkspaceAccess?: ProjectWorkspaceAccessPortV1;
   /**
    * C36 窄投影 port：只在未提供完整 `projection` port 时把原 `projection.query` 路由绑定到它，
    * 只接受 `quality-evaluation` 查询类型；SSE 与导出仍只由完整 port 激活。
@@ -1788,7 +1814,11 @@ export type HttpSystemRouteKindV1 =
   | "administration-queries"
   | "administration-commands"
   | "operations-queries"
-  | "project-access";
+  | "project-access"
+  | "engineering-workspace-commands"
+  | "engineering-workspace-queries"
+  | "project-workspace-access-queries"
+  | "project-workspace-access-commands";
 export type HttpSystemRouteEntryV1 = Readonly<{
   method: "POST" | "GET";
   path: string;
@@ -1800,6 +1830,8 @@ export type HttpSystemRouteEntryV1 = Readonly<{
     typeof HTTP_JSON_MEDIA_TYPE_V1 | typeof HTTP_SSE_MEDIA_TYPE_V1 | "application/octet-stream";
   /** C35 系统面激活所需的注入位；缺任一项该路由不注册、也不出现在 OpenAPI。 */
   activationPortKeys?: readonly ApiPortKeyV1[];
+  /** 公开操作标识：缺省按 kind 派生；工程工作区四条按设计固定为领域操作名。 */
+  operationId?: string;
 }>;
 
 export const HTTP_SYSTEM_ROUTE_CATALOG_V1: readonly HttpSystemRouteEntryV1[] = Object.freeze([
@@ -1912,6 +1944,53 @@ export const HTTP_SYSTEM_ROUTE_CATALOG_V1: readonly HttpSystemRouteEntryV1[] = O
     requiresSession: false,
     mediaType: HTTP_JSON_MEDIA_TYPE_V1,
   }),
+  // 工程工作区四条专用路径（design D-05）：请求体只有业务载荷与调用标识，
+  // 会话 token 与工程标识一律由服务端从 Cookie 与路径注入；不占用 ModuleBranch，
+  // 也不进入任何 branch 对应的强制操作注册表。
+  Object.freeze({
+    method: "POST" as const,
+    path: "/api/v1/projects/:projectId/engineering-workspace/commands",
+    kind: "engineering-workspace-commands" as const,
+    operationId: "engineering-workspace.revise",
+    requestSchema: EngineeringWorkspaceCommandRequestV1Schema,
+    resultSchema: ContextSourceResultV1Schema,
+    requiresSession: true,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+    activationPortKeys: ["engineeringWorkspace"] as const,
+  }),
+  Object.freeze({
+    method: "POST" as const,
+    path: "/api/v1/projects/:projectId/engineering-workspace/queries",
+    kind: "engineering-workspace-queries" as const,
+    operationId: "engineering-workspace.read",
+    requestSchema: EngineeringWorkspaceReadRequestV1Schema,
+    resultSchema: EngineeringWorkspaceReadResultV1Schema,
+    requiresSession: true,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+    activationPortKeys: ["engineeringWorkspace"] as const,
+  }),
+  Object.freeze({
+    method: "POST" as const,
+    path: "/api/v1/projects/:projectId/access/queries",
+    kind: "project-workspace-access-queries" as const,
+    operationId: "project-workspace-access.read",
+    requestSchema: ProjectWorkspaceAccessReadPayloadV1Schema,
+    resultSchema: ProjectWorkspaceAccessReadResultV1Schema,
+    requiresSession: true,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+    activationPortKeys: ["projectWorkspaceAccess"] as const,
+  }),
+  Object.freeze({
+    method: "POST" as const,
+    path: "/api/v1/projects/:projectId/access/commands",
+    kind: "project-workspace-access-commands" as const,
+    operationId: "project-workspace-access.execute",
+    requestSchema: ProjectWorkspaceAccessCommandRequestV1Schema,
+    resultSchema: ProjectWorkspaceAccessExecuteResultV1Schema,
+    requiresSession: true,
+    mediaType: HTTP_JSON_MEDIA_TYPE_V1,
+    activationPortKeys: ["projectWorkspaceAccess"] as const,
+  }),
 ]);
 
 /**
@@ -2001,7 +2080,7 @@ const operationFor = (entry: HttpRouteEntryV1 | HttpSystemRouteEntryV1): OpenApi
       ? "riskflow_subscribe"
       : "mode" in entry
         ? `riskflow_${entry.mode}_${entry.branch.replaceAll(".", "_")}`
-        : `riskflow_${entry.kind}`,
+        : (entry.operationId ?? `riskflow_${entry.kind}`),
     parameters,
     responses: {
       ...(systemKind === "logout"

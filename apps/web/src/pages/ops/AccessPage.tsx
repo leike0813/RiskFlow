@@ -35,6 +35,7 @@ import {
   type SystemSpatialScopeView,
 } from "../../api/agentAuditOperations";
 import { clientError } from "../../api/client";
+import { ProjectOpeningForm } from "../project/ProjectOpeningForm";
 import type { CommandConfirmationPlanV1 } from "../../shared/confirmation";
 import {
   ACCOUNT_STATUS_LABEL,
@@ -162,8 +163,6 @@ export default function AccessPage() {
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [resetAccountId, setResetAccountId] = useState<string | null>(null);
-  const [newProjectId, setNewProjectId] = useState("");
-  const [initialRiskManagerAccountId, setInitialRiskManagerAccountId] = useState("");
 
   // --- 成员修订草稿 ---
   const [selectedMembershipKey, setSelectedMembershipKey] = useState<string | null>(null);
@@ -279,8 +278,6 @@ export default function AccessPage() {
     setLoginName("");
     setDisplayName("");
     setResetAccountId(null);
-    setNewProjectId("");
-    setInitialRiskManagerAccountId("");
     reloadAll();
   };
 
@@ -543,56 +540,29 @@ export default function AccessPage() {
                         </Card>
 
                         <Card title="开通工程" style={{ marginBottom: 16 }}>
-                          <div className="op-form">
-                            <div className="op-form-row">
-                              <div className="op-form-field">
-                                <label htmlFor="access-new-project">工程标识</label>
-                                <input
-                                  id="access-new-project"
-                                  value={newProjectId}
-                                  onChange={(event) => setNewProjectId(event.target.value)}
-                                />
-                              </div>
-                              <div className="op-form-field">
-                                <label htmlFor="access-initial-manager">
-                                  初始工程风险负责人账号
-                                </label>
-                                <input
-                                  id="access-initial-manager"
-                                  className="mono"
-                                  value={initialRiskManagerAccountId}
-                                  onChange={(event) =>
-                                    setInitialRiskManagerAccountId(event.target.value)
-                                  }
-                                />
-                              </div>
-                              <button
-                                type="button"
-                                className="op-btn op-btn-primary"
-                                disabled={!can("open-project")}
-                                title={actionHint("open-project")}
-                                onClick={() => {
-                                  ask({
-                                    action: "open-project",
-                                    commandId: newCommandId("open-project"),
-                                    target: newProjectId,
-                                    initialRiskManagerAccountId,
-                                    summary: [
-                                      `对象：新工程 ${newProjectId}`,
-                                      `初始工程风险负责人：${initialRiskManagerAccountId}`,
-                                      "预计结果：工程访问进入开通状态",
-                                      "副作用：只建立访问与成员事实，不代为登记业务修订或评估配置",
-                                    ],
-                                  });
-                                }}
-                              >
-                                开通工程
-                              </button>
-                            </div>
-                            <p className="op-note">
-                              开通只写入访问与成员事实；业务修订、资料授权与评估配置需在工程业务面另行登记。
-                            </p>
-                          </div>
+                          <ProjectOpeningForm
+                            accounts={accountList.map((account) => ({
+                              accountRef: account.accountRef,
+                              displayName: account.displayName,
+                              status: account.status,
+                            }))}
+                            disabled={!can("open-project")}
+                            disabledHint={actionHint("open-project")}
+                            onSubmit={(input) => {
+                              ask({
+                                action: "open-project",
+                                commandId: newCommandId("open-project"),
+                                target: input.projectId,
+                                initialRiskManagerAccountId: input.initialRiskManagerAccountId,
+                                summary: [
+                                  `对象：新工程 ${input.projectId}`,
+                                  `初始工程风险负责人：${input.initialRiskManagerAccountId}`,
+                                  "预计结果：工程访问进入开通状态",
+                                  "副作用：只建立访问与成员事实，不代为登记业务修订或评估配置",
+                                ],
+                              });
+                            }}
+                          />
                         </Card>
 
                         <Card title="工程开通状态" style={{ marginBottom: 16 }}>
@@ -1015,8 +985,10 @@ export default function AccessPage() {
                     pendingIntent.commandId,
                     loginName,
                     displayName,
-                    newProjectId,
-                    initialRiskManagerAccountId,
+                    pendingIntent.action === "open-project" ? pendingIntent.target : "",
+                    pendingIntent.action === "open-project"
+                      ? pendingIntent.initialRiskManagerAccountId
+                      : "",
                     selectedProjectId,
                     selectedMembershipKey,
                     draftRoles,

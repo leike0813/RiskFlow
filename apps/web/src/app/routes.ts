@@ -288,6 +288,32 @@ export const WEB_LEGACY_PATH_ALIASES_V1: Readonly<Record<string, string>> = Obje
 });
 
 /**
+ * 旧工程地址的已知模板：只有这五条永久精确解析。
+ *
+ * CH-4 新增的工程承载（上下文、成员、开通、接入任务）不扩大旧模板集合——
+ * 未知旧后缀与新页面旧地址都仍按未找到处理，不借前缀别名进入新承载。
+ */
+const LEGACY_PROJECT_PATH_TEMPLATES_V1: readonly string[] = Object.freeze([
+  "/project",
+  "/project/documents",
+  "/project/documents/:id",
+  "/project/monitoring",
+  "/project/monitoring/:id",
+]);
+
+const matchesLegacyProjectTemplate = (pathname: string): boolean =>
+  LEGACY_PROJECT_PATH_TEMPLATES_V1.some((template) => {
+    const expected = template.split("/").slice(1);
+    const actual = pathname.split("/").slice(1);
+    if (expected.length !== actual.length) return false;
+    return expected.every((segment, index) => {
+      const value = actual[index];
+      if (value === undefined || value === "") return false;
+      return segment.startsWith(":") || segment === value;
+    });
+  });
+
+/**
  * 旧运行记录地址的永久规范承载：只有这两个完整路径，未知后缀不触发。
  * 原 search 原样保留，再覆盖 `tab=runs`。
  */
@@ -347,7 +373,10 @@ export const applyWebPathAliasV1 = (
           ? `${to}${pathname.slice(from.length)}`
           : undefined;
     // 未命中当前注册表的目标不重定向：未知旧后缀直接未找到，而不是落到另一个合法对象。
-    if (candidate !== undefined && registeredTargetMatches(candidate, registry)) {
+    if (candidate === undefined) continue;
+    // 旧工程前缀只解析已知五条模板：新增承载不扩大旧模板集合。
+    if (from === "/project" && !matchesLegacyProjectTemplate(pathname)) continue;
+    if (registeredTargetMatches(candidate, registry)) {
       return `${candidate}${search}`;
     }
   }

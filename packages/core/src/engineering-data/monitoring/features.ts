@@ -8,9 +8,9 @@ import {
   type MonitoringFeatureResultV1,
   type MonitoringFeatureSetV1,
   type MonitoringFeatureTypeV1,
-  type MonitoringSampleVersionRefV1,
   type MonitoringUnitConversionV1,
 } from "./schema.js";
+import type { MonitoringSampleVersionRefV1 } from "@riskflow/contracts/engineering-workspace";
 
 export interface MonitoringFeatureSampleV1 {
   readonly sampledAt: string | number | Date;

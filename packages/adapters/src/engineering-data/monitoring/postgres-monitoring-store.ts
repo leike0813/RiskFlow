@@ -66,6 +66,11 @@ import {
   EngineeringDataCommandV1Schema,
   EngineeringDataQueryV1Schema,
   EngineeringFreezeCommandV1Schema,
+  MonitoringBatchCatalogItemV1Schema,
+  MonitoringSnapshotCatalogItemV1Schema,
+  type MonitoringBatchCatalogItemV1,
+  type MonitoringSnapshotCatalogItemV1,
+  type MonitoringSeriesCatalogItemV1,
   type AuthorizationContextV1,
   type ContractReferenceV1,
   type EngineeringDataApplyResultV1,
@@ -84,7 +89,11 @@ import {
   SourceVersionRefV1Schema,
   type SpatialScopeRefV1,
 } from "@riskflow/contracts/ports";
-import type { EvidenceReference, VersionReference } from "@riskflow/contracts/common";
+import {
+  EvidenceReferenceSchema,
+  type EvidenceReference,
+  type VersionReference,
+} from "@riskflow/contracts/common";
 
 import { getPostgresTransaction } from "../../postgres/transaction-unit.js";
 import { makePersistenceError, mapPostgresError } from "../../postgres/pool.js";
@@ -614,6 +623,30 @@ export interface PostgresMonitoringStoreOptions {
   readonly now?: () => Date;
 }
 
+/**
+ * 从快照证据引用提取去重后的来源版本引用（供客户端声明授权来源）。
+ * 目录与工程工作区共用同一口径，不在此处另造第二份。
+ */
+export const monitoringEvidenceSourceVersionRefs = (value: unknown): SourceVersionRefV1[] => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const refs: SourceVersionRefV1[] = [];
+  for (const item of value) {
+    const parsed = EvidenceReferenceSchema.safeParse(item);
+    if (!parsed.success) continue;
+    const ref: SourceVersionRefV1 = {
+      kind: "source-version",
+      reference: parsed.data.sourceVersion,
+    };
+    const key = `${ref.kind}/${ref.reference.entityId}/${ref.reference.versionId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push(ref);
+    if (refs.length >= 64) break;
+  }
+  return refs;
+};
+
 export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
   readonly #db: Kysely<MonitoringDatabase>;
   readonly #transactionUnit: TransactionUnitV1;
@@ -1088,6 +1121,137 @@ export class PostgresMonitoringStoreV1 implements MonitoringSeriesReaderV1 {
         ),
       };
     }
+  }
+
+  /**
+   * 精确序列的空间范围引用（design D-06）。
+   *
+   * 供工作区按目标序列复验当前空间权限；序列或版本不存在时缺席。
+   */
+  async readSeriesScopeRef(input: {
+    readonly projectId: string;
+    readonly monitoringSeriesRef: MonitoringSeriesRefV1;
+  }): Promise<SpatialScopeRefV1 | undefined> {
+    const revision = await this.#readSeriesRevisionFromDb(
+      this.#db,
+      input.projectId,
+      input.monitoringSeriesRef,
+    );
+    return revision?.spatialScopeRef;
+  }
+
+  /**
+   * 精确序列的批次目录（design D-06）。
+   *
+   * 只列该序列已登记批次，按登记时间降序；不从目录首页组装，也不补造关系。
+   */
+  async listBatchesBySeries(input: {
+    readonly projectId: string;
+    readonly monitoringSeriesRef: MonitoringSeriesRefV1;
+    readonly limit: number;
+  }): Promise<readonly MonitoringBatchCatalogItemV1[]> {
+    const rows = await this.#db
+      .selectFrom("business.monitoring_batches")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("series_id", "=", input.monitoringSeriesRef.reference.entityId)
+      .orderBy("recorded_at", "desc")
+      .limit(input.limit)
+      .execute();
+    return rows.map((row) =>
+      MonitoringBatchCatalogItemV1Schema.parse({
+        monitoringBatchRef: row.monitoring_batch_ref,
+        relation: row.relation_kind,
+        window: { from: asIso(row.window_from), to: asIso(row.window_to) },
+        sampleCount: row.sample_count,
+        occurredAt: asIso(row.occurred_at),
+      }),
+    );
+  }
+
+  /**
+   * 精确序列的快照目录（design D-06）。
+   *
+   * 只列该序列已登记快照及其冻结统计；当前阈值与历史冻结判定不在此合成。
+   */
+  async listSnapshotsBySeries(input: {
+    readonly projectId: string;
+    readonly monitoringSeriesRef: MonitoringSeriesRefV1;
+    readonly limit: number;
+  }): Promise<readonly MonitoringSnapshotCatalogItemV1[]> {
+    const rows = await this.#db
+      .selectFrom("business.monitoring_snapshots")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("series_id", "=", input.monitoringSeriesRef.reference.entityId)
+      .orderBy("cutoff", "desc")
+      .limit(input.limit)
+      .execute();
+    return rows.map((row) =>
+      MonitoringSnapshotCatalogItemV1Schema.parse({
+        monitoringSnapshotRef: row.monitoring_snapshot_ref,
+        cutoff: asIso(row.cutoff),
+        availability: row.availability,
+        coverageRatio: row.coverage_ratio,
+        evidenceSourceVersionRefs: monitoringEvidenceSourceVersionRefs(row.evidence_references),
+      }),
+    );
+  }
+
+  /**
+   * 稳定序列身份 → 当前目录条目（design D-06）。
+   *
+   * 无版本旧地址据此窄解析该实体的当前可见引用；序列不存在时缺席，不回落目录首页。
+   */
+  async readCurrentSeriesCatalogItem(input: {
+    readonly projectId: string;
+    readonly seriesId: string;
+  }): Promise<MonitoringSeriesCatalogItemV1 | undefined> {
+    const series = await this.#db
+      .selectFrom("business.monitoring_series")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("series_id", "=", input.seriesId)
+      .executeTakeFirst();
+    if (series === undefined || series.current_revision_id === null) return undefined;
+    const revision = await this.#db
+      .selectFrom("business.monitoring_series_revisions")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("revision_id", "=", series.current_revision_id)
+      .executeTakeFirst();
+    if (revision === undefined) return undefined;
+    const counts = await this.#db
+      .selectFrom("business.monitoring_batches")
+      .select((batch) => batch.fn.countAll<string>().as("count"))
+      .where("project_id", "=", input.projectId)
+      .where("series_id", "=", input.seriesId)
+      .executeTakeFirst();
+    const latest = await this.#db
+      .selectFrom("business.monitoring_snapshots")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where("series_id", "=", input.seriesId)
+      .orderBy("cutoff", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    return {
+      monitoringSeriesRef:
+        revision.monitoring_series_ref as MonitoringSeriesCatalogItemV1["monitoringSeriesRef"],
+      monitoringIndicator:
+        revision.monitoring_indicator as MonitoringSeriesCatalogItemV1["monitoringIndicator"],
+      monitoringObject: revision.monitoring_object,
+      canonicalUnit: revision.canonical_unit,
+      spatialScopeRef:
+        revision.spatial_scope_ref as MonitoringSeriesCatalogItemV1["spatialScopeRef"],
+      batchCount: Number(counts?.count ?? 0),
+      ...(latest === undefined
+        ? {}
+        : {
+            latestSnapshotRef:
+              latest.monitoring_snapshot_ref as MonitoringSeriesCatalogItemV1["latestSnapshotRef"],
+          }),
+    };
   }
 
   async #verify(

@@ -634,6 +634,69 @@ describe.sequential("local identity and project authorization", () => {
     ).rejects.toMatchObject({ details: { code: "ACCESS_CONTRACT_INVALID" } });
   });
 
+  it("工程工作区经理作用域目录只向工程风险管理员披露本工程事实", async () => {
+    expect(managerSessionToken).toBeDefined();
+    expect(rootScopeRef).toBeDefined();
+    const workspace = access!.projectWorkspaceAccess;
+    const read = async (payload: Record<string, unknown>) =>
+      workspace.read({
+        sessionToken: managerSessionToken!,
+        payload: {
+          queryId: `workspace-read-${Math.random().toString(36).slice(2)}`,
+          requestedAt: clock.now().toISOString(),
+          projectId: "project-a",
+          ...payload,
+        } as never,
+      });
+    const memberships = await read({ kind: "memberships", pageSize: 50 });
+    expect(memberships.kind).toBe("succeeded");
+    if (memberships.kind !== "succeeded" || memberships.result.kind !== "memberships") return;
+    expect(memberships.result.items.length).toBeGreaterThan(0);
+    const manager = memberships.result.items.find(
+      (item) => item.accountRef.entityId === userAccountId,
+    );
+    expect(manager?.displayName).toBeTruthy();
+    expect(manager?.roles).toContain("project-risk-manager");
+    // 目录不披露登录凭据与全局账号目录。
+    expect(Object.keys(manager ?? {}).sort()).toEqual([
+      "accountRef",
+      "displayName",
+      "membershipRef",
+      "roles",
+      "spatialScopeRefs",
+      "status",
+    ]);
+    const scopes = await read({ kind: "spatial-scopes", pageSize: 50 });
+    expect(scopes.kind).toBe("succeeded");
+    if (scopes.kind !== "succeeded" || scopes.result.kind !== "spatial-scopes") return;
+    expect(
+      scopes.result.items.some(
+        (item) => item.scopeRef.entityId === rootScopeRef!.reference.entityId,
+      ),
+    ).toBe(true);
+    const options = await read({ kind: "member-options", pageSize: 50 });
+    expect(options.kind).toBe("succeeded");
+    if (options.kind !== "succeeded" || options.result.kind !== "member-options") return;
+    expect(options.result.items.every((item) => item.displayName.length > 0)).toBe(true);
+
+    // 非工程风险管理员（复核人）不得读取成员目录。
+    const reviewerToken = roleSessionTokens.reviewer;
+    expect(reviewerToken).toBeDefined();
+    const denied = await workspace.read({
+      sessionToken: reviewerToken!,
+      payload: {
+        kind: "memberships",
+        queryId: "workspace-read-reviewer",
+        requestedAt: clock.now().toISOString(),
+        projectId: "project-a",
+        pageSize: 50,
+      } as never,
+    });
+    expect(denied.kind).toBe("failed");
+    if (denied.kind !== "failed") return;
+    expect(denied.error.code).toBe("AUTHORIZATION_DENIED");
+  });
+
   it("issues and verifies the exact terminal failure evidence read capability", async () => {
     expect(managerSessionToken).toBeDefined();
     const readBranch = "agent-task.read-failure-evidence" as const;

@@ -10,13 +10,10 @@ import {
   DisplayNameV1Schema,
   LoginCommandV1Schema,
   PasswordV1Schema,
-  PresetRoleV1Schema,
   ReadSessionCommandV1Schema,
-  RoleSetV1Schema,
   SessionCommandV1Schema,
   SessionMetadataV1Schema,
   SessionResultV1Schema,
-  SpatialScopeRefSetV1Schema,
   assertSpatialScopeTree,
   allSpatialScopesCovered,
   branchCapability,
@@ -29,6 +26,11 @@ import {
   projectionAccess,
   type SpatialScopeNodeV1,
 } from "../src/access/index.js";
+import {
+  RoleSetV1Schema,
+  SpatialScopeRefSetV1Schema,
+} from "@riskflow/contracts/engineering-workspace";
+import { PresetRoleV1Schema } from "@riskflow/contracts/vocabulary";
 
 const scope = (scopeId: string, revisionId: string, parentScopeId?: string) => ({
   kind: "spatial-scope" as const,

@@ -7,14 +7,15 @@ import { SectionTabs } from "../components/SectionTabs";
 import { StatusTag } from "../components/StatusTag";
 import { VersionTag } from "../components/VersionTag";
 import { useEngineering, usePageQuery } from "../api/engineering";
-import { listMonitoringSeries, listSourceCatalog, readCurrentReleaseSet } from "../api/operations";
+import {
+  listMonitoringSeries,
+  listSourceCatalog,
+  readCurrentReleaseSet,
+  type MonitoringSeriesPageView,
+  type SourceCatalogPageView,
+} from "../api/operations";
+import { PROJECT_NAVIGATION_ITEMS_V1 } from "./project/projectNavigation";
 import "./ProjectOverviewPage.css";
-
-const sectionTabs = [
-  { to: "/project", label: "工程概览" },
-  { to: "/projects/documents", label: "资料目录" },
-  { to: "/projects/monitoring", label: "监测数据" },
-];
 
 const APPLICABILITY_DIMENSIONS = [
   { key: "constructionMethod", label: "施工工法数据" },
@@ -22,14 +23,10 @@ const APPLICABILITY_DIMENSIONS = [
   { key: "engineeringStage", label: "工程阶段数据" },
 ] as const;
 
-interface OverviewFacts {
-  readonly sourceTotal: number;
-  readonly monitoringSeriesTotal: number;
-  readonly releaseSet: {
-    readonly definitionType: string;
-    readonly releaseId: string;
-    readonly releaseVersionId: string;
-  }[];
+interface ReleaseSetFacts {
+  readonly definitionType: string;
+  readonly releaseId: string;
+  readonly releaseVersionId: string;
 }
 
 const DEFINITION_TYPE_LABEL: Record<string, string> = {
@@ -45,22 +42,24 @@ const DEFINITION_TYPE_LABEL: Record<string, string> = {
 
 export default function ProjectOverviewPage() {
   const { selector, state: engineering, reload } = useEngineering();
-  const { state: facts, retry } = usePageQuery<OverviewFacts>(async (projectId, signal) => {
-    const [sources, monitoring, releaseSet] = await Promise.all([
-      listSourceCatalog(projectId, {}, signal),
-      listMonitoringSeries(projectId, {}, signal),
-      readCurrentReleaseSet(projectId, signal),
-    ]);
-    return {
-      sourceTotal: sources.totalCount,
-      monitoringSeriesTotal: monitoring.totalCount,
-      releaseSet: releaseSet.map((member) => ({
+  // 上下文、资料、监测与知识版本分别取数：任一来源拒权或失败都不抹掉其它区域。
+  const sources = usePageQuery<SourceCatalogPageView>(
+    (projectId, signal) => listSourceCatalog(projectId, {}, signal),
+    [],
+  );
+  const monitoring = usePageQuery<MonitoringSeriesPageView>(
+    (projectId, signal) => listMonitoringSeries(projectId, {}, signal),
+    [],
+  );
+  const releases = usePageQuery<readonly ReleaseSetFacts[]>(
+    async (projectId, signal) =>
+      (await readCurrentReleaseSet(projectId, signal)).map((member) => ({
         definitionType: member.definitionType,
         releaseId: member.releaseRef.reference.entityId,
         releaseVersionId: member.releaseRef.reference.versionId,
       })),
-    };
-  }, []);
+    [],
+  );
 
   const context = engineering.kind === "ready" ? engineering.value : null;
   const spatialTree = useMemo(() => {
@@ -108,7 +107,7 @@ export default function ProjectOverviewPage() {
           )}
         </header>
 
-        <SectionTabs items={sectionTabs} />
+        <SectionTabs items={[...PROJECT_NAVIGATION_ITEMS_V1]} />
 
         {engineering.kind === "idle" && (
           <Card title="工程概览">
@@ -140,25 +139,58 @@ export default function ProjectOverviewPage() {
 
         {context !== null && (
           <>
-            <PageStateView
-              state={facts}
-              title="接入概况"
-              emptyMessage="当前工程尚无登记资料与监测序列"
-              onRetry={retry}
-            >
-              {(value) => (
-                <div className="pjov-kpis">
-                  <KpiCard label="登记资料" value={value.sourceTotal} unit="份" />
-                  <KpiCard label="监测序列" value={value.monitoringSeriesTotal} unit="条" />
-                  <KpiCard label="发布集合" value={value.releaseSet.length} unit="项" />
-                  <KpiCard
-                    label="适用性缺失维度"
-                    value={context.missingApplicabilityDimensions.length}
-                    unit="项"
-                  />
-                </div>
-              )}
-            </PageStateView>
+            <div className="pjov-kpis">
+              <KpiCard
+                label="适用性缺失维度"
+                value={context.missingApplicabilityDimensions.length}
+                unit="项"
+              />
+            </div>
+
+            <Card title="资料概况">
+              <PageStateView
+                state={sources.state}
+                title="资料目录"
+                emptyMessage="当前工程尚无登记资料"
+                onRetry={sources.retry}
+              >
+                {(page) => (
+                  <p className="pjov-guide">
+                    登记资料 {page.totalCount} 份；本页列出 {page.items.length} 份。
+                  </p>
+                )}
+              </PageStateView>
+            </Card>
+
+            <Card title="监测概况">
+              <PageStateView
+                state={monitoring.state}
+                title="监测目录"
+                emptyMessage="当前工程尚无登记监测序列"
+                onRetry={monitoring.retry}
+              >
+                {(page) => (
+                  <p className="pjov-guide">
+                    监测序列 {page.totalCount} 条；本页列出 {page.items.length} 条。
+                  </p>
+                )}
+              </PageStateView>
+            </Card>
+
+            <Card title="知识版本">
+              <PageStateView
+                state={releases.state}
+                title="知识版本目录"
+                emptyMessage="当前工程尚无发布的知识版本"
+                onRetry={releases.retry}
+              >
+                {(value) => (
+                  <p className="pjov-guide">
+                    发布集合 {value.length} 项；无知识治理权限时此处单独显示，不影响其它区域。
+                  </p>
+                )}
+              </PageStateView>
+            </Card>
 
             <div className="pjov-grid">
               <Card title="工程身份信息">
@@ -211,18 +243,18 @@ export default function ProjectOverviewPage() {
                 </Card>
 
                 <PageStateView
-                  state={facts}
+                  state={releases.state}
                   title="发布集合版本引用"
                   emptyMessage="当前工程尚无已发布知识版本"
-                  onRetry={retry}
+                  onRetry={releases.retry}
                 >
                   {(value) => (
                     <Card title="发布集合版本引用">
-                      {value.releaseSet.length === 0 ? (
+                      {value.length === 0 ? (
                         <div className="pjov-guide">当前工程尚无已发布知识版本</div>
                       ) : (
                         <ul className="pjov-sets">
-                          {value.releaseSet.map((member) => (
+                          {value.map((member) => (
                             <li key={member.definitionType} className="pjov-set">
                               <div className="pjov-set-main">
                                 <span className="pjov-set-name">

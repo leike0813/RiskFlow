@@ -19,15 +19,21 @@ import {
 } from "@riskflow/contracts/ports";
 import { AgentTaskBudgetPolicyV1Schema } from "../../agent-runtime/schema.js";
 import {
-  SourceSegmentIdV1Schema,
   SourceSegmentKindV1Schema,
   SourceSegmentLocatorV1Schema,
 } from "../context-source/schema.js";
+import {
+  MonitoringSampleVersionRefV1Schema,
+  SourceSegmentIdV1Schema,
+} from "@riskflow/contracts/engineering-workspace";
+import {
+  DataCleaningDispositionV1Schema,
+  DataCleaningRejectionClassV1Schema,
+} from "@riskflow/contracts/vocabulary";
 import { DocumentInputKindV1Schema } from "../document-conversion/schema.js";
 import {
   MonitoringAvailabilityV1Schema,
   MonitoringSamplePointStatusV1Schema,
-  MonitoringSampleVersionRefV1Schema,
 } from "../monitoring/schema.js";
 
 export const DATA_CLEANING_SCHEMA_VERSION_V1 = "1" as const;
@@ -46,12 +52,6 @@ const boundedText = z.string().trim().min(1).max(DATA_CLEANING_MAX_OBSERVATION_T
 
 export const DataCleaningAvailabilityV1Schema = z.enum(["available", "partial", "unavailable"]);
 export type DataCleaningAvailabilityV1 = z.infer<typeof DataCleaningAvailabilityV1Schema>;
-
-export const DataCleaningDispositionV1Schema = z.enum(["accepted", "rejected"]);
-export type DataCleaningDispositionV1 = z.infer<typeof DataCleaningDispositionV1Schema>;
-
-export const DataCleaningRejectionClassV1Schema = z.enum(["repairable", "terminal"]);
-export type DataCleaningRejectionClassV1 = z.infer<typeof DataCleaningRejectionClassV1Schema>;
 
 export const DataCleaningInputKindV1Schema = z.union([
   DocumentInputKindV1Schema,

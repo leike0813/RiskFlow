@@ -20,30 +20,13 @@ import {
   VersionReferenceSchema,
   type VersionReference,
 } from "@riskflow/contracts/common";
+import {
+  AccessReferenceV1Schema,
+  ProjectWorkspaceAccessCommandPayloadV1Schema,
+} from "@riskflow/contracts/engineering-workspace";
 
 /** C02 is the only source of module branch names. */
 export { ModuleBranchV1Schema };
-
-export const LocalAccountStatusV1Schema = z.enum(["active", "disabled"]);
-export type LocalAccountStatusV1 = z.infer<typeof LocalAccountStatusV1Schema>;
-
-export const PresetRoleV1Schema = z.enum([
-  "system-administrator",
-  "project-risk-manager",
-  "reviewer",
-  "field-responder",
-  "business-viewer",
-]);
-export type PresetRoleV1 = z.infer<typeof PresetRoleV1Schema>;
-
-export const ProjectAccessStatusV1Schema = z.enum(["active", "suspended"]);
-export type ProjectAccessStatusV1 = z.infer<typeof ProjectAccessStatusV1Schema>;
-
-export const SpatialAccessStatusV1Schema = z.enum(["active", "inactive"]);
-export type SpatialAccessStatusV1 = z.infer<typeof SpatialAccessStatusV1Schema>;
-
-export const SourceVisibilityV1Schema = z.enum(["project-shared", "restricted"]);
-export type SourceVisibilityV1 = z.infer<typeof SourceVisibilityV1Schema>;
 
 export const LoginNameInputV1Schema = z.string().min(1).max(96);
 export const CanonicalLoginNameV1Schema = z.string().regex(/^[a-z][a-z0-9._-]{2,63}$/);
@@ -96,8 +79,6 @@ const uniqueArray = <T extends z.ZodType>(schema: T, max: number) =>
       (values) => new Set(values.map((value) => JSON.stringify(value))).size === values.length,
     );
 
-export const RoleSetV1Schema = uniqueArray(PresetRoleV1Schema, 4).min(1);
-export const SpatialScopeRefSetV1Schema = uniqueArray(SpatialScopeRefV1Schema, 128).min(1);
 export const SourceVersionRefSetV1Schema = uniqueArray(SourceVersionRefV1Schema, 256);
 export const SourceAccessGrantRefSetV1Schema = uniqueArray(SourceAccessGrantRefV1Schema, 256);
 
@@ -156,35 +137,31 @@ export const SuspendProjectCommandV1Schema = z.strictObject({
   kind: z.literal("suspend-project"),
   ...projectCommandIdentity,
 });
+/**
+ * 四项工程访问维护命令：业务字段由公共工作区载荷唯一定义，此处只补授权信封
+ * （工程标识、幂等身份与授权引用），不另抄一份字段约束。
+ */
+const workspaceCommandEnvelope = {
+  projectId: IdentifierSchema,
+  commandId: IdentifierSchema,
+  idempotencyKey: IdentifierSchema,
+  authorizationContextRef: authorizationRef,
+};
 export const ReviseMembershipCommandV1Schema = z.strictObject({
-  kind: z.literal("revise-membership"),
-  ...projectCommandIdentity,
-  membershipId: IdentifierSchema,
-  accountId: IdentifierSchema,
-  roles: RoleSetV1Schema,
-  spatialScopeRefs: SpatialScopeRefSetV1Schema,
-  status: z.enum(["active", "removed"]),
+  ...workspaceCommandEnvelope,
+  ...ProjectWorkspaceAccessCommandPayloadV1Schema.options[0].shape,
 });
 const CreateSpatialScopeCommandV1Schema = z.strictObject({
-  kind: z.literal("create-spatial-scope"),
-  ...projectCommandIdentity,
-  scopeId: IdentifierSchema,
-  parentScopeRef: SpatialScopeRefV1Schema.optional(),
+  ...workspaceCommandEnvelope,
+  ...ProjectWorkspaceAccessCommandPayloadV1Schema.options[1].shape,
 });
 const ReviseSpatialScopeCommandV1Schema = z.strictObject({
-  kind: z.literal("revise-spatial-scope"),
-  ...projectCommandIdentity,
-  scopeId: IdentifierSchema,
-  status: SpatialAccessStatusV1Schema,
-  parentScopeRef: SpatialScopeRefV1Schema.optional(),
+  ...workspaceCommandEnvelope,
+  ...ProjectWorkspaceAccessCommandPayloadV1Schema.options[2].shape,
 });
 const ReviseSourceAccessCommandV1Schema = z.strictObject({
-  kind: z.literal("revise-source-access"),
-  ...projectCommandIdentity,
-  sourceVersionRef: SourceVersionRefV1Schema,
-  visibility: SourceVisibilityV1Schema,
-  allowedAccountIds: uniqueArray(IdentifierSchema, 512),
-  spatialScopeRefs: uniqueArray(SpatialScopeRefV1Schema, 128),
+  ...workspaceCommandEnvelope,
+  ...ProjectWorkspaceAccessCommandPayloadV1Schema.options[3].shape,
   registeredByAccountId: IdentifierSchema,
 });
 
@@ -324,26 +301,6 @@ export const AuthorizationVerificationRequestV1Schema = z.strictObject({
 export type AuthorizationVerificationRequestV1 = z.infer<
   typeof AuthorizationVerificationRequestV1Schema
 >;
-
-export const AccessCommandResultKindV1Schema = z.enum([
-  "account",
-  "project",
-  "membership",
-  "spatial-scope",
-  "source-access",
-  "session",
-]);
-
-const AccessReferenceV1Schema = z.strictObject({
-  entityId: IdentifierSchema,
-  versionId: IdentifierSchema,
-});
-export const AccessCommandResultV1Schema = z.strictObject({
-  kind: AccessCommandResultKindV1Schema,
-  resultRef: AccessReferenceV1Schema,
-  references: z.array(AccessReferenceV1Schema).max(16),
-});
-export type AccessCommandResultV1 = z.infer<typeof AccessCommandResultV1Schema>;
 
 /**
  * 会话元数据：会话与账号引用、到期时间、首次改密限制与受限标志。

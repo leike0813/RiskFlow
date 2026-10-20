@@ -1623,6 +1623,7 @@ export const createDeploymentFoundationV1 = async ({
       runEvents: createPostgresRunEventReaderV1({ db: runtime.db, access }),
       riskInputFacts,
       artifactStore,
+      dataCleaningStore,
       readArtifactManifest: localArtifactStore.readManifest,
       referenceGuard: localArtifactStore.referenceGuard,
       monitoringStore,
@@ -1658,6 +1659,11 @@ export const createDeploymentGraphsV1 = async (input) => {
         cleaning.useMethod("completeIdentificationPreparation", command, {
           getTask: (...args) => taskAuthority.useMethod("getTask", ...args),
         }),
+      // CH-4：工程工作区只读正式清洗结果与排除项，不经 Agent 任务面。
+      listResultsForSource: (...args) => cleaning.useMethod("listResultsForSource", ...args),
+      listResultsForMonitoringSnapshots: (...args) =>
+        cleaning.useMethod("listResultsForMonitoringSnapshots", ...args),
+      readResultExclusions: (...args) => cleaning.useMethod("readResultExclusions", ...args),
     },
     readPreparationCompletionOrigin: async (request) => {
       const origin = await cleaning.useMethod("readPreparationCompletionOrigin", request, {
@@ -2302,6 +2308,8 @@ export const createDeploymentApiV1 = async (input) => {
       access,
       artifactStore,
       contextSource: foundation.contextSource,
+      documentConverter: foundation.documentConverter,
+      dataCleaningStore: foundation.dataCleaningStore,
       monitoringStore: foundation.monitoringStore,
       ...identification.api,
       applicableRuleSetAssembly: scoring.assembly,

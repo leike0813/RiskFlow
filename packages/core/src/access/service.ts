@@ -1,27 +1,35 @@
-import type {
-  AccessCommandResultV1,
-  AccessErrorV1,
-  AuthorizationDecisionV1,
-  AuthorizationRequestV1,
-  AuthorizationVerificationRequestV1,
-  ChangePasswordCommandV1,
-  IdentityAdministrationCommandV1,
-  LoginCommandV1,
-  LogoutCommandV1,
-  ProjectAccessCommandV1,
-  ProjectAccessPresentationRequestV1,
-  ReadSessionCommandV1,
-  SessionMetadataV1,
-  SessionResultV1,
+import {
+  AccessErrorV1Schema,
+  type AccessErrorV1,
+  type AuthorizationDecisionV1,
+  type AuthorizationRequestV1,
+  type AuthorizationVerificationRequestV1,
+  type ChangePasswordCommandV1,
+  type IdentityAdministrationCommandV1,
+  type LoginCommandV1,
+  type LogoutCommandV1,
+  type ProjectAccessCommandV1,
+  type ProjectAccessPresentationRequestV1,
+  type ReadSessionCommandV1,
+  type SessionMetadataV1,
+  type SessionResultV1,
 } from "./schema.js";
 import type {
   AuthorizationContextV1,
   ProjectAccessPresentationV1,
   SourceVersionRefV1,
 } from "@riskflow/contracts/ports";
+import {
+  ProjectWorkspaceAccessCommandPayloadV1Schema,
+  ProjectWorkspaceAccessReadPayloadV1Schema,
+  ProjectWorkspaceAccessReadSuccessV1Schema,
+  AccessCommandResultV1Schema,
+  type AccessCommandResultV1,
+} from "@riskflow/contracts/engineering-workspace";
+import { IdentifierSchema, IsoDateTimeSchema } from "@riskflow/contracts/common";
+import { z } from "zod";
 
 export type {
-  AccessCommandResultV1,
   AccessErrorV1,
   AuthorizationDecisionV1,
   AuthorizationRequestV1,
@@ -77,4 +85,56 @@ export interface LocalIdentityAccessV1 {
  */
 export interface ProjectAccessPresentationPortV1 {
   read(request: ProjectAccessPresentationRequestV1): Promise<ProjectAccessPresentationV1>;
+}
+
+/**
+ * 工程工作区访问维护端口（design D-04）。
+ *
+ * 与系统管理端口并列但授权来源不同：这里只承认当前工程的工程风险管理员（或原系统管理员
+ * 路径），不因开通工程取得业务读权，也不向普通成员开放全局账号目录。
+ */
+export const ProjectWorkspaceAccessReadRequestV1Schema = z.strictObject({
+  sessionToken: z.string().min(1).max(512),
+  payload: ProjectWorkspaceAccessReadPayloadV1Schema,
+});
+export type ProjectWorkspaceAccessReadRequestV1 = z.infer<
+  typeof ProjectWorkspaceAccessReadRequestV1Schema
+>;
+
+export const ProjectWorkspaceAccessCommandRequestV1Schema = z.strictObject({
+  sessionToken: z.string().min(1).max(512),
+  projectId: IdentifierSchema,
+  commandId: IdentifierSchema,
+  idempotencyKey: IdentifierSchema,
+  issuedAt: IsoDateTimeSchema,
+  payload: ProjectWorkspaceAccessCommandPayloadV1Schema,
+});
+export type ProjectWorkspaceAccessCommandRequestV1 = z.infer<
+  typeof ProjectWorkspaceAccessCommandRequestV1Schema
+>;
+
+export const ProjectWorkspaceAccessReadResultV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("succeeded"),
+    result: ProjectWorkspaceAccessReadSuccessV1Schema,
+  }),
+  z.strictObject({ kind: z.literal("failed"), error: AccessErrorV1Schema }),
+]);
+export type ProjectWorkspaceAccessReadResultV1 = z.infer<
+  typeof ProjectWorkspaceAccessReadResultV1Schema
+>;
+
+export const ProjectWorkspaceAccessExecuteResultV1Schema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("succeeded"), result: AccessCommandResultV1Schema }),
+  z.strictObject({ kind: z.literal("failed"), error: AccessErrorV1Schema }),
+]);
+export type ProjectWorkspaceAccessExecuteResultV1 = z.infer<
+  typeof ProjectWorkspaceAccessExecuteResultV1Schema
+>;
+
+export interface ProjectWorkspaceAccessPortV1 {
+  read(request: ProjectWorkspaceAccessReadRequestV1): Promise<ProjectWorkspaceAccessReadResultV1>;
+  execute(
+    command: ProjectWorkspaceAccessCommandRequestV1,
+  ): Promise<ProjectWorkspaceAccessExecuteResultV1>;
 }

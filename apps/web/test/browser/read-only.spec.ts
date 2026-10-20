@@ -154,6 +154,12 @@ test("监测序列详情呈现冻结快照统计与批次事实", async ({ page 
   await expect(page.getByText("监测序列", { exact: true }).first()).toBeVisible();
   await page.getByText("地表沉降监测点").click();
   await page.waitForURL(new RegExp(`/projects/monitoring/${server.seriesEntityId}`));
+  // CH-4：快照必须由用户选定；未选定时不擅自改成最新。
+  await expect(page.getByRole("heading", { name: "快照目录", exact: true })).toBeVisible();
+  const snapshotChoice = page.locator(".pjmon-snapshots button").first();
+  await expect(snapshotChoice).toBeVisible();
+  await snapshotChoice.click();
+  await expect(page).toHaveURL(/snapshot=/);
   await expect(page.getByText("短期斜率")).toBeVisible();
   await expect(page.getByText("批次与快照登记事实")).toBeVisible();
   await expect(page.getByText("原始批次")).toBeVisible();
@@ -665,6 +671,10 @@ test("减弱动态效果时非必要动画停用且状态仍可读", async ({ pa
     await retry.evaluate((node) => parseFloat(getComputedStyle(node).transitionDuration)),
   ).toBeLessThanOrEqual(0.001);
   await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "快照目录", exact: true })).toBeVisible();
+  const snapshotChoice = page.locator(".pjmon-snapshots button").first();
+  await expect(snapshotChoice).toBeVisible();
+  await snapshotChoice.click();
   await expect(page.getByText("短期斜率")).toBeVisible();
   const canvas = page.locator("canvas").first();
   await expect(canvas).toBeVisible();

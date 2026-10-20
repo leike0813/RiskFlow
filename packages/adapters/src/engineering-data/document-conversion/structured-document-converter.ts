@@ -1,3 +1,5 @@
+import { TextDecoder } from "node:util";
+
 import { sql, type InsertObject, type Kysely, type Transaction } from "kysely";
 
 import {
@@ -29,8 +31,8 @@ import {
   type ResolveSourceVersionForReadQueryV1,
   ResolveSourceProcessingInputQueryV1Schema,
   ResolveSourceVersionForReadQueryV1Schema,
-  SourceSegmentIdV1Schema,
 } from "@riskflow/core/engineering-data/context-source";
+import { SourceSegmentIdV1Schema } from "@riskflow/contracts/engineering-workspace";
 import {
   AtomicCommandV1Schema,
   type AtomicCommitV1,
@@ -49,12 +51,14 @@ import {
   StructuredDocumentConversionRecordV1Schema,
   StructuredDocumentConversionResultV1Schema,
   StructuredDocumentConversionRefV1Schema,
+  type AuthorizationContextV1,
   type DiagnosticArtifactRefV1,
   type ModuleErrorV1,
   type StructuredDocumentConversionCommandV1,
   type StructuredDocumentConversionPortV1,
   type StructuredDocumentConversionQueryV1,
   type StructuredDocumentConversionReadResultV1,
+  type SourceVersionRefV1,
   type StructuredDocumentConversionRecordV1,
   type StructuredDocumentConversionResultV1,
 } from "@riskflow/contracts/ports";
@@ -111,6 +115,8 @@ type ConversionDatabase = PostgresDatabase & {
 type ConversionTransaction = Transaction<ConversionDatabase>;
 
 const COMMAND_KIND = "engineering-data.structured-document-conversion.v1";
+/** 失败诊断摘要的读取上限：与 HTTP 体积上限一致，正文不整体返回。 */
+const DIAGNOSTIC_READ_LIMIT_BYTES = 1_048_576;
 const recordCommandId = (conversionId: string): string => `${conversionId}:record`;
 const recordAuditEntryId = (conversionId: string): string => `audit-record-${conversionId}`;
 const PURPOSE = "engineering-data.structured-document-conversion";
@@ -1451,6 +1457,114 @@ export class StructuredDocumentConversionAdapter implements StructuredDocumentCo
       .where("version_id", "=", "1")
       .executeTakeFirst();
     return row === undefined ? {} : { record: rowToRecord(row) };
+  }
+
+  /**
+   * 按来源精确版本分页列出转换记录（design D-06）。
+   *
+   * 只读已登记记录：同一来源的多次转换按完成时间降序、引用升序稳定返回，
+   * 不新建转换，也不从目录首页推断关系。
+   */
+  async listBySourceVersion(input: {
+    readonly projectId: string;
+    readonly sourceVersionRef: SourceVersionRefV1;
+    readonly limit: number;
+  }): Promise<readonly StructuredDocumentConversionRecordV1[]> {
+    const ordered = (
+      left: StructuredDocumentConversionRecordV1,
+      right: StructuredDocumentConversionRecordV1,
+    ): number => {
+      const byTime = right.completedAt.localeCompare(left.completedAt);
+      if (byTime !== 0) return byTime;
+      return referenceKey(left.conversionRef).localeCompare(referenceKey(right.conversionRef));
+    };
+    if (this.#db === undefined) {
+      return [...this.#memoryRecords.values()]
+        .map((item) => item.record)
+        .filter(
+          (record) =>
+            record.projectId === input.projectId &&
+            referenceKey(record.sourceVersionRef) === referenceKey(input.sourceVersionRef),
+        )
+        .sort(ordered)
+        .slice(0, input.limit);
+    }
+    const rows = await this.#db
+      .selectFrom("business.structured_document_conversions")
+      .selectAll()
+      .where("project_id", "=", input.projectId)
+      .where(sql<boolean>`source_version_ref = ${JSON.stringify(input.sourceVersionRef)}::jsonb`)
+      .orderBy("completed_at", "desc")
+      .limit(input.limit)
+      .execute();
+    return rows.map(rowToRecord).sort(ordered);
+  }
+
+  /**
+   * 按精确转换引用读取已登记记录（design D-06）。
+   *
+   * 只读登记事实；记录不存在时缺席，不补造转换或默认状态。
+   */
+  async readRecordByRef(
+    projectId: string,
+    conversionRef: StructuredDocumentConversionRecordV1["conversionRef"],
+  ): Promise<StructuredDocumentConversionRecordV1 | undefined> {
+    return this.#readByRef(projectId, conversionRef);
+  }
+
+  /**
+   * 失败转换的安全诊断摘要（design D-06）。
+   *
+   * 只在已登记的诊断工件内读取原因码与段定位：定位缺失即缺省，不生成定位，
+   * 也不返回服务诊断、原始响应或任何完整诊断正文。原件读取不受此影响。
+   */
+  async readFailureSummary(input: {
+    readonly projectId: string;
+    readonly conversionRef: StructuredDocumentConversionRecordV1["conversionRef"];
+    readonly actorId: string;
+    readonly requestedAt: string;
+    readonly authorization: AuthorizationContextV1;
+  }): Promise<{ readonly reasonCode: string; readonly sourceSegmentId?: string } | undefined> {
+    const record = await this.#readByRef(input.projectId, input.conversionRef);
+    if (record === undefined || record.status !== "failed" || record.diagnosticRef === undefined) {
+      return undefined;
+    }
+    const handle = await this.#artifactStore.open(
+      ArtifactReadRequestV1Schema.parse({
+        schemaVersion: SCHEMA_VERSION,
+        requestId: `${input.conversionRef.reference.entityId}:conversion-failure-diagnostic`,
+        idempotencyKey: `${input.conversionRef.reference.entityId}:conversion-failure-diagnostic`,
+        artifactRef: record.diagnosticRef,
+        projectId: input.projectId,
+        actorId: input.actorId,
+        requestedAt: input.requestedAt,
+        purposeCode: PURPOSE,
+        requiredCapability: "engineering-data.read",
+        authorization: input.authorization,
+      }),
+    );
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for await (const chunk of handle.content) {
+      if (!(chunk instanceof Uint8Array)) throw new TypeError("diagnostic chunk is invalid");
+      size += chunk.byteLength;
+      if (size > DIAGNOSTIC_READ_LIMIT_BYTES) {
+        throw new RangeError("conversion diagnostic exceeds the bounded read limit");
+      }
+      chunks.push(chunk);
+    }
+    await handle.completed;
+    const detail = JSON.parse(new TextDecoder().decode(Buffer.concat(chunks))) as {
+      readonly reasonCode?: unknown;
+      readonly sourceSegmentId?: unknown;
+    };
+    if (typeof detail.reasonCode !== "string" || detail.reasonCode.length === 0) return undefined;
+    return {
+      reasonCode: detail.reasonCode,
+      ...(typeof detail.sourceSegmentId === "string" && detail.sourceSegmentId.length > 0
+        ? { sourceSegmentId: detail.sourceSegmentId }
+        : {}),
+    };
   }
 
   async #readByRef(

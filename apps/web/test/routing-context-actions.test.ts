@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SpatialScopeRefV1 } from "@riskflow/contracts/ports";
 
+import { BUSINESS_ROUTE_REGISTRY_V1 } from "../src/app/business-routes.js";
 import {
   applyWebPathAliasV1,
   BASE_WEB_ROUTE_CONTRIBUTIONS_V1,
@@ -288,6 +289,27 @@ describe("C37 旧前缀别名与质量子路径", () => {
 
   it("别名只落在段边界上，不误伤既有路径", () => {
     expect(applyWebPathAliasV1("/projects")).toBeUndefined();
+    // 旧工程前缀只解析已知五条模板；新增承载不扩大旧模板集合。
+    for (const legacy of [
+      "/project",
+      "/project/documents",
+      "/project/documents/source-1",
+      "/project/monitoring",
+      "/project/monitoring/series-1",
+    ]) {
+      expect(applyWebPathAliasV1(legacy, "?project=project-1", BUSINESS_ROUTE_REGISTRY_V1)).toBe(
+        `${legacy.replace("/project", "/projects")}?project=project-1`,
+      );
+    }
+    for (const unknown of [
+      "/project/spatial-scopes",
+      "/project/members",
+      "/project/opening",
+      "/project/ingestion-tasks",
+      "/project/unknown",
+    ]) {
+      expect(applyWebPathAliasV1(unknown, "", BUSINESS_ROUTE_REGISTRY_V1)).toBeUndefined();
+    }
     expect(applyWebPathAliasV1("/review-audit")).toBeUndefined();
     expect(applyWebPathAliasV1("/projection")).toBeUndefined();
     expect(resolveWebRoute("/projects").kind).toBe("matched");

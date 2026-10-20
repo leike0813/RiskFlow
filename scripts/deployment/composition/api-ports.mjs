@@ -19,6 +19,7 @@
 import { clearTimeout, setTimeout } from "node:timers";
 import { createRegisteredResourceAuthorizerV1 } from "../../../packages/adapters/dist/auth/index.js";
 import { createPostgresEngineeringDataCatalogAdapter } from "../../../packages/adapters/dist/engineering-data/catalog/index.js";
+import { createPostgresEngineeringWorkspaceAdapter } from "../../../packages/adapters/dist/engineering-data/workspace/index.js";
 import { createPostgresKnowledgeGovernanceReadAdapter } from "../../../packages/adapters/dist/knowledge-governance/index.js";
 import { createPostgresKnowledgeRetrievalReadAdapter } from "../../../packages/adapters/dist/identification/context/index.js";
 import {
@@ -80,6 +81,10 @@ export const REQUIRED_API_PORT_METHODS_V1 = Object.freeze({
   projectAccessPresentation: ["read"],
   // CH-3：仪表盘公共读面由六个来源的所属窄读组合而成，缺一个来源即拒绝装配。
   riskDashboardRead: ["read"],
+  // CH-4 工程工作区：修订与精确读来自真实工作区适配器，缺真实实例即拒绝装配。
+  engineeringWorkspace: ["revise", "read"],
+  // CH-4 工程访问维护：经理作用域目录与四类动作来自 C06 真实实现。
+  projectWorkspaceAccess: ["read", "execute"],
 });
 
 /**
@@ -123,6 +128,13 @@ export const REQUIRED_API_PROVIDERS_V1 = Object.freeze({
     "readQuery",
   ],
   workflowBodies: ["readBody"],
+  // CH-4 工程工作区：真实组合 C11 修订、C12 转换与 C15 清洗的窄读能力。
+  documentConverter: ["listBySourceVersion", "readRecordByRef", "readFailureSummary"],
+  dataCleaningStore: [
+    "listResultsForSource",
+    "listResultsForMonitoringSnapshots",
+    "readResultExclusions",
+  ],
   riskRecordTrace: ["readBatch"],
   runEvents: ["subscribe", "subscribeWithSourceAuthorization"],
   projectPolicies: ["resolveProject"],
@@ -444,11 +456,22 @@ export const createDeploymentApiPortsV1 = (options) => {
     runEventSubscription: options.runEvents,
     ...createDeploymentApiReadProvidersV1(options),
     systemAdministration: options.access.systemAdministration,
+    // CH-4：工程访问维护直接取同一真实 C06 适配器上的独立 port，
+    // 缺实现时由 REQUIRED_API_PORT_METHODS_V1 的装配期检查拒绝，不补空目录。
+    projectWorkspaceAccess: options.access.projectWorkspaceAccess,
     // CH-2 D-07：入口能力读面直接取同一真实 C06 适配器上的独立 port；
     // 缺实现时由 REQUIRED_API_PORT_METHODS_V1 的装配期检查拒绝，不补空能力。
     projectAccessPresentation: options.access.projectAccessPresentation,
     // CH-3：仪表盘公共读面。
     riskDashboardRead,
+    // CH-4：工程工作区只组合所属领域的真实窄读，不在此处另造接入关系。
+    engineeringWorkspace: createPostgresEngineeringWorkspaceAdapter({
+      access: options.access,
+      contextSource: options.contextSource,
+      conversions: options.documentConverter,
+      cleaning: options.dataCleaningStore,
+      monitoring: options.monitoringStore,
+    }),
   };
 
   const incomplete = missingPorts(ports);

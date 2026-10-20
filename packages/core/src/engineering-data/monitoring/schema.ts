@@ -23,6 +23,7 @@ import {
   ModuleErrorV1Schema,
 } from "@riskflow/contracts/ports";
 import { MonitoringIndicatorSchema } from "@riskflow/contracts/vocabulary";
+import { MonitoringSampleVersionRefV1Schema } from "@riskflow/contracts/engineering-workspace";
 import type { ModuleErrorV1 } from "@riskflow/contracts/ports";
 
 const finiteNumber = z.number().finite();
@@ -32,8 +33,6 @@ const nonNegativeInteger = safeInteger.nonnegative();
 const text = z.string().trim().min(1).max(200);
 const unit = z.string().regex(/^[\x21-\x7e]{1,32}$/u);
 const hash = z.string().regex(/^[0-9a-f]{64}$/u);
-const versionedRef = <const T extends string>(kind: T) =>
-  z.strictObject({ kind: z.literal(kind), reference: VersionReferenceSchema });
 
 const uniqueBy = <T extends z.ZodTypeAny>(
   schema: T,
@@ -225,9 +224,6 @@ export const MonitoringBatchV1Schema = z.strictObject({
   audit: AuditInfoSchema,
 });
 export type MonitoringBatchV1 = z.infer<typeof MonitoringBatchV1Schema>;
-
-export const MonitoringSampleVersionRefV1Schema = versionedRef("monitoring-sample-version");
-export type MonitoringSampleVersionRefV1 = z.infer<typeof MonitoringSampleVersionRefV1Schema>;
 
 export const MonitoringSampleVersionV1Schema = z.strictObject({
   sampleVersionRef: MonitoringSampleVersionRefV1Schema,

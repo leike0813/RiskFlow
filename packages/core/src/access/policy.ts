@@ -4,7 +4,8 @@ import {
   type ModuleCapabilityV1,
 } from "@riskflow/contracts/ports";
 
-import { ModuleBranchV1Schema, PresetRoleV1Schema, type PresetRoleV1 } from "./schema.js";
+import { ModuleBranchV1Schema } from "./schema.js";
+import { PresetRoleV1Schema, type PresetRoleV1 } from "@riskflow/contracts/vocabulary";
 
 // CH-2（design D-06）升 v2 只追加入口资格与原件读取分支；旧 v1 行与授权快照不重写，
 // 历史来源解析只用于恢复已登记主体/范围，当前动作一律按当前策略判权。

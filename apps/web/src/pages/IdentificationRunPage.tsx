@@ -1,6 +1,6 @@
 import { clientError } from "../api/client";
 import { useEffect } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
 import { DataTable, type DataTableColumn } from "../components/DataTable";
@@ -8,14 +8,12 @@ import { PageStateView } from "../components/PageStateView";
 import { SectionTabs } from "../components/SectionTabs";
 import { StageBar, type StageItem } from "../components/StageBar";
 import { StatusTag } from "../components/StatusTag";
+import { VersionTag } from "../components/VersionTag";
 import { usePageQuery, useProjectPath } from "../api/engineering";
-import {
-  listIdentificationRuns,
-  readIdentificationRun,
-  type IdentificationRunDetailView,
-} from "../api/operations";
+import { readIdentificationRun, type IdentificationRunDetailView } from "../api/operations";
 import {
   ACCEPTANCE_KIND_LABEL,
+  IDENTIFICATION_ROUTE_TITLES,
   identificationTabs,
   MERGE_GROUP_STATUS_LABEL,
   MERGE_GROUP_STATUS_TONE,
@@ -28,13 +26,6 @@ import "./IdentificationRunPage.css";
 const STAGE_ORDER = ["I0", "I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8", "I9"] as const;
 
 const POLL_INTERVAL_MS = 5000;
-
-interface RunDetailPageData {
-  readonly detail: IdentificationRunDetailView;
-  readonly startedBy: string;
-  readonly startedAt: string;
-  readonly triggerReason?: string;
-}
 
 const workItemColumns: DataTableColumn[] = [
   {
@@ -100,47 +91,62 @@ const mergeGroupColumns: DataTableColumn[] = [
 
 export default function IdentificationRunPage() {
   const { runId } = useParams<{ runId: string }>();
+  const [searchParams] = useSearchParams();
   const projectPath = useProjectPath();
-  const { state, retry } = usePageQuery<RunDetailPageData>(
+  // 有版本即固定的历史状态快照；无版本沿同一运行跟踪最新获权状态，不写回版本。
+  const version = searchParams.get("version");
+  const { state, retry } = usePageQuery<IdentificationRunDetailView>(
     async (projectId, signal) => {
-      // runRef 需要精确版本：先经 run-list 按实体标识解析出完整引用，再精确读取。
-      const list = await listIdentificationRuns(projectId, {}, signal);
-      const item = list.items.find((entry) => entry.runRef.reference.entityId === runId);
-      if (item === undefined) throw clientError("NOT_FOUND");
-      const detail = await readIdentificationRun(projectId, item.runRef, signal);
-      return {
-        detail,
-        startedBy: item.startedBy,
-        startedAt: item.startedAt,
-        ...(item.triggerReason === undefined ? {} : { triggerReason: item.triggerReason }),
-      };
+      if (runId === undefined) throw clientError("NOT_FOUND");
+      return readIdentificationRun(
+        projectId,
+        version === null
+          ? { runId }
+          : {
+              runRef: {
+                kind: "workflow-run",
+                reference: { entityId: runId, versionId: version },
+              },
+            },
+        signal,
+      );
     },
-    [runId],
+    [runId, version],
   );
 
-  // 运行监控骨架：非终态定间隔轮询，进入终态停止。
-  const status = state.kind === "ready" ? state.value.detail.status : null;
+  // 实时跟踪只用于无版本地址：精确快照不轮询，终态与隐藏页停止，前台恢复后继续。
+  const status = state.kind === "ready" ? state.value.status : null;
   useEffect(() => {
+    if (version !== null) return;
     if (status === null || TERMINAL_RUN_STATUSES.includes(status)) return;
-    const timer = setInterval(() => retry(), POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [status, retry]);
+    const refresh = () => {
+      if (document.visibilityState === "visible") retry();
+    };
+    const timer = window.setInterval(refresh, POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [version, status, retry]);
 
   return (
     <AppShell activeNav="identification" agentContext={runId === undefined ? [] : [runId]}>
       <div className="page">
         <header className="page-header">
           <div>
-            <h1 className="page-title">识别运行详情</h1>
+            <h1 className="page-title">
+              {IDENTIFICATION_ROUTE_TITLES["/identification/runs/:runId"]}
+            </h1>
             <p className="page-subtitle">
               运行 <span className="mono">{runId ?? ""}</span>
             </p>
           </div>
           {state.kind === "ready" && (
             <div className="idrun-header-tags">
-              <RunStatusTag status={state.value.detail.status} />
+              <RunStatusTag status={state.value.status} />
               <StatusTag tone="neutral">
-                {state.value.detail.stage} · {STAGE_LABEL[state.value.detail.stage] ?? ""}
+                {state.value.stage} · {STAGE_LABEL[state.value.stage] ?? ""}
               </StatusTag>
             </div>
           )}
@@ -149,12 +155,12 @@ export default function IdentificationRunPage() {
 
         <PageStateView
           state={state}
-          title="识别运行详情"
-          emptyMessage="未找到该识别运行"
-          forbiddenHint="当前角色不具备查看识别运行的权限，或该运行不存在"
+          title={IDENTIFICATION_ROUTE_TITLES["/identification/runs/:runId"]}
+          emptyMessage="未找到该识别任务"
+          forbiddenHint="当前角色不具备查看识别任务的权限，或该运行不存在"
           onRetry={retry}
         >
-          {({ detail, startedBy, startedAt, triggerReason }) => {
+          {(detail) => {
             const stageItems: StageItem[] = STAGE_ORDER.map((stage) => {
               const entry = detail.stageEntries.find((e) => e.stage === stage);
               const label = STAGE_LABEL[stage] ?? "";
@@ -211,21 +217,26 @@ export default function IdentificationRunPage() {
                   <dl className="idrun-fields idrun-meta">
                     <div className="idrun-field">
                       <dt>启动者</dt>
-                      <dd className="mono">{startedBy}</dd>
+                      <dd className="mono">{detail.startedBy}</dd>
                     </div>
                     <div className="idrun-field">
                       <dt>启动时间</dt>
-                      <dd className="mono">{startedAt}</dd>
-                    </div>
-                    <div className="idrun-field">
-                      <dt>触发原因</dt>
-                      <dd>{triggerReason ?? "—"}</dd>
+                      <dd className="mono">{detail.startedAt}</dd>
                     </div>
                     <div className="idrun-field">
                       <dt>运行版本</dt>
                       <dd className="mono">{detail.runRef.reference.versionId}</dd>
                     </div>
                   </dl>
+                  {version !== null && (
+                    <div className="idrun-ref-more">
+                      <Link
+                        to={projectPath(`/identification/runs/${encodeURIComponent(runId ?? "")}`)}
+                      >
+                        查看该运行的最新进展
+                      </Link>
+                    </div>
+                  )}
                 </Card>
 
                 <Card title="工序工作项覆盖">
@@ -273,7 +284,7 @@ export default function IdentificationRunPage() {
                   )}
                   {detail.reviewTaskRefs.length > 0 && (
                     <div className="idrun-ref-more">
-                      <Link to={projectPath("/review")}>前往复核队列</Link>
+                      <Link to={projectPath("/review-audit")}>前往复核队列</Link>
                     </div>
                   )}
                 </Card>
@@ -302,14 +313,40 @@ export default function IdentificationRunPage() {
                     <div className="idrun-refs">
                       {detail.acceptedRiskRecordRefs.map((ref) => (
                         <div key={ref.reference.entityId} className="idrun-ref-row">
+                          <StatusTag tone="success">验收</StatusTag>
                           <Link
                             to={projectPath(
-                              `/identification/records/${encodeURIComponent(ref.reference.entityId)}`,
+                              `/identification/records/${encodeURIComponent(
+                                ref.reference.entityId,
+                              )}?version=${encodeURIComponent(ref.reference.versionId)}`,
                             )}
                             className="mono"
                           >
                             {ref.reference.entityId}
                           </Link>
+                          <VersionTag>{ref.reference.versionId}</VersionTag>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {detail.pendingReviewGroupRefs.length > 0 && (
+                    <div className="idrun-refs">
+                      {detail.pendingReviewGroupRefs.map((ref) => (
+                        <div key={ref.reference.entityId} className="idrun-ref-row">
+                          <StatusTag tone="review">待复核组</StatusTag>
+                          <span className="mono">{ref.reference.entityId}</span>
+                          <VersionTag>{ref.reference.versionId}</VersionTag>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {detail.rejectedGroupRefs.length > 0 && (
+                    <div className="idrun-refs">
+                      {detail.rejectedGroupRefs.map((ref) => (
+                        <div key={ref.reference.entityId} className="idrun-ref-row">
+                          <StatusTag tone="failed">拒收组</StatusTag>
+                          <span className="mono">{ref.reference.entityId}</span>
+                          <VersionTag>{ref.reference.versionId}</VersionTag>
                         </div>
                       ))}
                     </div>

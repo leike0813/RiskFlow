@@ -93,3 +93,24 @@
   border-top: 1px solid var(--border);
   font-size: 13px;
 }
+
+.rdp-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.rdp-tab {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.rdp-tab--active {
+  border-color: var(--blue);
+  color: var(--blue);
+  font-weight: 600;
+}

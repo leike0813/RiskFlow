@@ -6,6 +6,7 @@ import {
   type WebRouteRegistryV1,
 } from "./routes.js";
 import type { ModuleCapabilityV1 } from "@riskflow/contracts/ports";
+import { IDENTIFICATION_ROUTE_TITLES } from "../pages/identificationShared.js";
 
 /**
  * C37 D-17：完整业务界面的生产路由注册表。
@@ -168,7 +169,7 @@ const BUSINESS_ROUTE_SEEDS_V1 = Object.freeze<BusinessRouteSeedV1[]>([
   {
     routeId: "identification.root",
     path: "/identification",
-    title: "识别运行",
+    title: IDENTIFICATION_ROUTE_TITLES["/identification"],
     section: "identification",
     regions: [{ key: "main", kind: "list" }],
     contextRequirement: "project",
@@ -178,7 +179,7 @@ const BUSINESS_ROUTE_SEEDS_V1 = Object.freeze<BusinessRouteSeedV1[]>([
   {
     routeId: "business.identification.runsparam",
     path: "/identification/runs/:runId",
-    title: "识别运行详情",
+    title: IDENTIFICATION_ROUTE_TITLES["/identification/runs/:runId"],
     section: "identification",
     regions: [{ key: "main", kind: "run" }],
     contextRequirement: "project",
@@ -188,7 +189,7 @@ const BUSINESS_ROUTE_SEEDS_V1 = Object.freeze<BusinessRouteSeedV1[]>([
   {
     routeId: "business.identification.records",
     path: "/identification/records",
-    title: "风险记录",
+    title: IDENTIFICATION_ROUTE_TITLES["/identification/records"],
     section: "identification",
     regions: [{ key: "main", kind: "list" }],
     contextRequirement: "project",
@@ -198,7 +199,7 @@ const BUSINESS_ROUTE_SEEDS_V1 = Object.freeze<BusinessRouteSeedV1[]>([
   {
     routeId: "business.identification.recordsparam",
     path: "/identification/records/:recordId",
-    title: "风险记录详情",
+    title: IDENTIFICATION_ROUTE_TITLES["/identification/records/:recordId"],
     section: "identification",
     regions: [{ key: "main", kind: "detail" }],
     contextRequirement: "project",
@@ -491,7 +492,7 @@ const BUSINESS_ROUTE_SEEDS_V1 = Object.freeze<BusinessRouteSeedV1[]>([
     regions: [{ key: "main", kind: "detail" }],
     contextRequirement: "project",
     requiredViewCapability: null,
-    load: () => import("../pages/EvidenceTracePage.js"),
+    load: () => import("../pages/TraceRedirectPage.js"),
   },
   {
     routeId: "business.report.export",

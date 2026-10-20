@@ -23,7 +23,8 @@ import "./ReviewDetailPage.css";
 export const reviewTabs = [
   { to: "/review", label: "复核队列" },
   { to: "/review/audit", label: "审计日志" },
-  { to: "/review/trace", label: "证据追溯" },
+  // 旧「证据追溯」页签无主体，改为直接指向规范风险记录列表，不猜测任何记录。
+  { to: "/identification/records", label: "风险记录" },
   { to: "/overview?tab=runs", label: "运行记录" },
 ];
 

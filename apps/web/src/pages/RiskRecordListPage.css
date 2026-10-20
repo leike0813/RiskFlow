@@ -12,3 +12,37 @@
   color: var(--text-2);
   font-size: 13px;
 }
+
+.records-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.records-paging {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.records-page-btn {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.records-page-btn:disabled {
+  color: var(--text-2);
+  cursor: not-allowed;
+}
+
+.records-page-btn:hover:not(:disabled) {
+  border-color: var(--blue);
+  color: var(--blue);
+}

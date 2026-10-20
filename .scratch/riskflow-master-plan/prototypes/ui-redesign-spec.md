@@ -79,6 +79,7 @@ CH-2 同步清理现有 `web/*` 对固定七项导航和旧壳层的重复要求
 - 历史运行摘要由 CH-3 保留有界读取；CH-6 保留历史矩阵的精确只读入口；CH-7 保住任务与所选子记录的两套版本；CH-9 保住队列外与已决定复核任务的精确读取。具体地址以路由附件为准。
 - **CH-3 已实现**（`deliver-risk-overview-dashboard`）：`/overview` 承载服务端六来源聚合与历史运行，两个旧运行地址永久解析到 `/overview?tab=runs`。验收修复覆盖全部必需来源权限交集、故障隔离、固定上界重试、Unicode 稳定分页及精确历史详情；最终结论与真实运行证据见 [verification](../../../openspec/changes/deliver-risk-overview-dashboard/verification.md)。四来源待办明细、搜索、助手组合与最终六导航仍归 CH-9，本包未提前启用。
 - **CH-4 已实施**：[redesign-engineering-workspace](../../../openspec/changes/redesign-engineering-workspace/proposal.md) 按 IP-01～IP-07 承载工程概览、上下文维护、成员与资料访问、工程开通和接入任务，贯通四条专用 HTTP 接缝。修复覆盖多来源清洗结果的当前权限交集、精确版本与目标空间、原预期版本读改闭环、经理仅维护既有成员、有界续页、历史只读、授权空间与来源访问维护、监测与知识故障隔离，以及接入深链、清洗准备、正式排除范围和安全失败定位。开通与访问维护复用原命令和事务；接入仅组合所属窄读，不新增业务事实或状态机。未扩展浏览器上传/解析启动，未提前启用六导航。实际回归、HTTPS Cookie、原生缩放及验收边界见 [verification](../../../openspec/changes/redesign-engineering-workspace/verification.md)。
+- **CH-5 已实施，待验收收口**：[redesign-identification-workspace](../../../openspec/changes/redesign-identification-workspace/proposal.md) 按 IP-01～IP-06 承载识别工作区：六条规范识别地址、识别任务与风险记录的真实续页与筛选重置、页外精确读取、详情内 `tab=trace` 追溯、两个旧 trace 地址永久解析、图谱去重复记录列表、只读工序模型（显式发布版本与节点定位）。运行详情带版本读固定状态快照，无版本才沿裸身份跟踪最新获权状态；运行与记录详情在原 read 分支上补互斥实体身份选择，HTTP/部署自动消费公共Schema，无新路由/权限/依赖/迁移。启动者与启动时间统一取同一条最早运行状态登记，后续恢复不再冒充发起人；技术故障不再被吞成拒权。本包不新增识别启动、模型工程使用关系或 CH-9 六导航组合；功能与原生缩放验收结论以该 change 的 verification 为准。
 
 **后端变更归属**：
 

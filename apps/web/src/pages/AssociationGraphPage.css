@@ -4,63 +4,37 @@
   margin-bottom: 4px;
 }
 
-.graph-groups {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 16px;
-}
-
-.graph-group {
-  min-width: 0;
+.graph-subject-select {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
   border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-  padding: 10px 12px;
-  background: #fbfdff;
-}
-
-.graph-group-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
-.graph-group-name {
+  background: var(--card);
+  color: var(--text);
   font-size: 13px;
-  font-weight: 600;
 }
 
-.graph-group-count {
+.graph-page-btn {
+  height: 26px;
+  margin-left: 8px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
   font-size: 12px;
+  cursor: pointer;
+}
+
+.graph-page-btn:disabled {
   color: var(--text-2);
+  cursor: not-allowed;
 }
 
-.graph-group-events {
-  list-style: none;
-}
-
-.graph-group-events li {
-  font-size: 12px;
-  line-height: 20px;
-  color: var(--text-2);
-}
-
-.graph-event-id {
-  color: var(--text-2);
-  margin-right: 6px;
-  font-size: 11px;
-}
-
-.graph-focus-btn {
-  font-size: 12px;
-  line-height: 20px;
-  color: var(--text-2);
-  text-align: left;
-}
-
-.graph-focus-btn:hover {
+.graph-page-btn:hover:not(:disabled) {
+  border-color: var(--blue);
   color: var(--blue);
-  text-decoration: underline;
 }
 
 .graph-node-links {

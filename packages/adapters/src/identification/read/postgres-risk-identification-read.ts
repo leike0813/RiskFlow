@@ -362,6 +362,25 @@ const readRequestDenied = (value: unknown): boolean => {
   return Array.isArray(capabilities) && !capabilities.includes(CAPABILITY_V1);
 };
 
+/**
+ * 拒权类别（design D-03）：真正的权限拒绝与 SQL／I/O 故障必须可分辨。
+ * 拒权按原 AUTHORIZATION_DENIED 同形收口；技术故障保留 transient／terminal 语义，
+ * 不被 catch 成拒权或不存在。
+ */
+class ReadDeniedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReadDeniedError";
+  }
+}
+
+/** 只把真正的权限拒绝归入同形拒绝；其余故障按原技术映射传播。 */
+const isDeniedError = (error: unknown): boolean =>
+  error instanceof ReadDeniedError ||
+  (error instanceof AccessServiceError &&
+    error.details.code !== "ACCESS_TRANSIENT_FAILURE" &&
+    error.details.code !== "ACCESS_TERMINAL_FAILURE");
+
 export interface PostgresRiskIdentificationReadAdapterOptionsV1 {
   /** 传 `runtime.db` 即可；类型为 `Kysely<PostgresDatabase & 本模块只读行形状>`。 */
   readonly db: unknown;
@@ -443,8 +462,8 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         case "record-read":
           return await this.#recordRead(valid, verified);
       }
-    } catch {
-      return failed(this.#denied(valid.queryId, branch));
+    } catch (error) {
+      return failed(this.#technicalError(error, valid.queryId, branch));
     }
   }
 
@@ -458,7 +477,7 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       query.actorId !== query.authorization.actorId ||
       !query.authorization.grantedCapabilities.includes(MODULE_BRANCH_CAPABILITY_V1[branch])
     ) {
-      throw new Error("risk-identification read authorization denied");
+      throw new ReadDeniedError("risk-identification read authorization denied");
     }
     const decision = await this.#authorization.verify({
       authorizationContextRef: query.authorization.authorizationContextRef,
@@ -475,7 +494,7 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       decision.context.projectId !== query.projectId ||
       !decision.context.grantedCapabilities.includes(MODULE_BRANCH_CAPABILITY_V1[branch])
     ) {
-      throw new Error("risk-identification read authorization denied");
+      throw new ReadDeniedError("risk-identification read authorization denied");
     }
     return decision.context;
   }
@@ -496,7 +515,7 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
           branch: READ_BRANCH_V1[query.kind],
           invocationId: query.queryId,
         }).then((context) => {
-          if (context === undefined) throw new Error("registered resource unavailable");
+          if (context === undefined) throw new ReadDeniedError("registered resource unavailable");
           return context;
         });
         decisions.set(key, decision);
@@ -534,7 +553,11 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
               result.context.projectId === query.projectId &&
               result.context.grantedCapabilities.includes(CAPABILITY_V1),
           )
-          .catch(() => false);
+          .catch((error: unknown) => {
+            // 只把真正的权限拒绝当作不可见；技术故障按原映射传播，不伪装成"没有这条记录"。
+            if (isDeniedError(error)) return false;
+            throw error;
+          });
         decisions.set(key, decision);
       }
       return decision;
@@ -560,21 +583,17 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
   }
 
   /**
-   * 仪表盘来源的失败收口（design D-07）：授权不符按拒权收口，未知 DB／I/O 异常按
+   * 本读模块的通用失败收口（design D-07/D-03）：授权不符按拒权收口，未知 DB／I/O 异常按
    * transient／terminal 映射，不 catch 成拒权——两者对调用方的含义完全不同。
    */
-  #dashboardError(error: unknown, causalRunId: string, branch: ModuleBranchV1): ModuleErrorV1 {
-    if (
-      error instanceof AccessServiceError &&
-      error.details.code !== "ACCESS_TRANSIENT_FAILURE" &&
-      error.details.code !== "ACCESS_TERMINAL_FAILURE"
-    ) {
+  #technicalError(error: unknown, causalRunId: string, branch: ModuleBranchV1): ModuleErrorV1 {
+    if (isDeniedError(error)) {
       return this.#denied(causalRunId, branch);
     }
     const mapped =
       error instanceof AccessServiceError
         ? { code: error.details.code, retryable: error.details.retryable }
-        : mapPostgresError(error, `${STAGE_CODE_V1}.dashboard`);
+        : mapPostgresError(error, `${STAGE_CODE_V1}.read`);
     return readError({
       code: mapped.retryable ? "TRANSIENT_FAILURE" : "TERMINAL_FAILURE",
       causalRunId,
@@ -705,6 +724,23 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
     return row === undefined ? undefined : this.#graphRow(row);
   }
 
+  /** 指定运行的某个状态版本登记行；不存在即该版本在当前工程不可证明。 */
+  async #runStateRowOfVersion(
+    projectId: string,
+    runId: string,
+    runVersionId: string,
+  ): Promise<IdentificationGraphResultRowV1 | undefined> {
+    const row = await this.#db
+      .selectFrom(GRAPH_TABLE)
+      .selectAll()
+      .where("project_id", "=", projectId)
+      .where("result_kind", "=", "run-state")
+      .where("run_id", "=", runId)
+      .where("run_version_id", "=", runVersionId)
+      .executeTakeFirst();
+    return row === undefined ? undefined : this.#graphRow(row);
+  }
+
   /** 读 run-state 正文并核对运行身份逐字一致；不一致即不是同一状态版本。 */
   async #runStateOf(
     row: IdentificationGraphResultRowV1,
@@ -743,7 +779,11 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       .selectFrom(GRAPH_TABLE)
       .select((eb) => [
         "run_id",
-        eb.fn.min("actor_ref").as("started_by"),
+        // 头部取同一条最早 run-state 登记（design D-03）：启动者不能再用 actor_ref 的字典序
+        // 最小值，否则后续由更小账号恢复时会冒充发起人。started_at 与同一行的 valid_at 一致。
+        sql<string>`(array_agg(actor_ref ORDER BY valid_at ASC, persisted_at ASC, run_version_id ASC))[1]`.as(
+          "started_by",
+        ),
         eb.fn.min("valid_at").as("started_at"),
       ])
       .where("project_id", "=", query.projectId)
@@ -803,8 +843,9 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         if (item === undefined) continue;
         if (query.payload.status !== undefined && item.status !== query.payload.status) continue;
         items.push(item);
-      } catch {
-        /* 不披露本页不可读的运行，游标仍推进。 */
+      } catch (error) {
+        // 权限拒绝只表现为本页不可见；技术故障按原映射传播，不伪装成"没有这条运行"。
+        if (!isDeniedError(error)) throw error;
       }
     }
     const next = groups.length > pageSize ? encodeCursor(cursor + pageSize) : undefined;
@@ -861,20 +902,18 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
     const branch = READ_BRANCH_V1["run-read"];
     const denied = () => failed(this.#denied(query.queryId, branch));
     const resourceAuthorization = this.#resourceAuthorization(query, verified);
-    const runId = query.payload.runRef.reference.entityId;
-    const runVersionId = query.payload.runRef.reference.versionId;
+    const payload = query.payload;
+    // 两种互斥身份（design D-03）：精确引用直接命中该状态版本；裸身份按同一口径定向取
+    // 本工程该运行的最新登记状态，不扫描目录首页，也不回落到更早状态。
+    const runId = "runRef" in payload ? payload.runRef.reference.entityId : payload.runId;
+    const requestedVersionId = "runRef" in payload ? payload.runRef.reference.versionId : undefined;
 
     // 精确版本重放：只命中该 runVersionId 的 run-state 版本，不回落到"最新"。
-    const stateRowRaw = await this.#db
-      .selectFrom(GRAPH_TABLE)
-      .selectAll()
-      .where("project_id", "=", query.projectId)
-      .where("result_kind", "=", "run-state")
-      .where("run_id", "=", runId)
-      .where("run_version_id", "=", runVersionId)
-      .executeTakeFirst();
-    if (stateRowRaw === undefined) return denied();
-    const stateRow = this.#graphRow(stateRowRaw);
+    const stateRow =
+      requestedVersionId === undefined
+        ? await this.#latestRunStateRow(query.projectId, runId)
+        : await this.#runStateRowOfVersion(query.projectId, runId, requestedVersionId);
+    if (stateRow === undefined) return denied();
     const bound = this.#stateBound(stateRow);
     const runState = await this.#runStateOf(
       stateRow,
@@ -882,6 +921,23 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
       await resourceAuthorization(stateRow.authorizationContextRef),
     );
     if (runState === undefined) return denied();
+
+    // 运行头部：取同一条最早 run-state 登记（valid_at ASC, persisted_at ASC, run_version_id ASC）的
+    // 启动者与启动时间，与目录列表同一口径；后续恢复不改启动者，早期精确详情也不混入其时间
+    // 边界之后的登记（design D-03）。
+    const headerRow = await this.#db
+      .selectFrom(GRAPH_TABLE)
+      .select(["actor_ref", "valid_at"])
+      .where("project_id", "=", query.projectId)
+      .where("result_kind", "=", "run-state")
+      .where("run_id", "=", runId)
+      .where("persisted_at", "<=", bound)
+      .orderBy("valid_at", "asc")
+      .orderBy("persisted_at", "asc")
+      .orderBy("run_version_id", "asc")
+      .limit(1)
+      .executeTakeFirst();
+    if (headerRow === undefined) return denied();
 
     // 精确版本快照：只组合不晚于该 run-state 版本落库的登记事实，保证同一 runRef 重放同形。
     const runRows = await this.#db
@@ -1132,7 +1188,10 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
 
     return succeeded({
       kind: "run-read",
-      runRef: query.payload.runRef,
+      runRef: {
+        kind: "workflow-run",
+        reference: { entityId: runId, versionId: stateRow.runVersionId },
+      },
       stage: runState.stage,
       status: runState.status,
       stageEntries,
@@ -1156,6 +1215,8 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         ? {}
         : { revisedCandidateRefs: [...revisedCandidateRefs.values()] }),
       ...(waitingRef === undefined ? {} : { waitingRef }),
+      startedBy: headerRow.actor_ref,
+      startedAt: asIso(headerRow.valid_at),
     });
   }
 
@@ -1291,7 +1352,12 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
   ): Promise<RiskIdentificationReadResultV1> {
     const branch = READ_BRANCH_V1["record-read"];
     const denied = () => failed(this.#denied(query.queryId, branch));
-    const recordRef = query.payload.riskRecordRef;
+    const payload = query.payload;
+    // 两种互斥身份（design D-03）：精确引用按登记版本命中；裸身份按 (project_id,risk_record_id)
+    // 主键取该记录唯一登记版本，不扫目录、不引入"最新风险"概念。
+    const requestedRef = "riskRecordRef" in payload ? payload.riskRecordRef : undefined;
+    const recordId =
+      "riskRecordId" in payload ? payload.riskRecordId : payload.riskRecordRef.reference.entityId;
 
     let row: StandardizedRiskRecordDbRow | undefined;
     try {
@@ -1299,13 +1365,16 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
         .selectFrom(RECORDS_TABLE)
         .selectAll()
         .where("project_id", "=", query.projectId)
-        .where("risk_record_id", "=", recordRef.reference.entityId)
+        .where("risk_record_id", "=", recordId)
         .executeTakeFirst();
     } catch (error) {
       throw mapPostgresError(error, `${STAGE_CODE_V1}.record-read`);
     }
     // 不存在、跨工程（SQL 已按工程过滤）、版本不符与当前授权看不到范围：逐字同形，不提供 oracle。
-    if (row === undefined || row.version_id !== recordRef.reference.versionId) {
+    if (row === undefined) {
+      return denied();
+    }
+    if (requestedRef !== undefined && row.version_id !== requestedRef.reference.versionId) {
       return denied();
     }
     const item = this.#catalogItem(row);
@@ -1517,7 +1586,7 @@ export class PostgresRiskIdentificationReadAdapter implements RiskIdentification
     } catch (error) {
       // D-07：授权不符按拒权，未知 DB／I/O 异常按 transient／terminal 映射，
       // 不把技术故障 catch 成拒权或成功零值。
-      return { kind: "failed", error: this.#dashboardError(error, request.queryId, branch) };
+      return { kind: "failed", error: this.#technicalError(error, request.queryId, branch) };
     }
   }
 

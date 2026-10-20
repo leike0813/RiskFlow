@@ -3,3 +3,47 @@
 .runs-dim {
   color: var(--text-2);
 }
+
+.runs-filter {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.runs-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.runs-paging {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.runs-page-btn {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.runs-page-btn:disabled {
+  color: var(--text-2);
+  cursor: not-allowed;
+}
+
+.runs-page-btn:hover:not(:disabled) {
+  border-color: var(--blue);
+  color: var(--blue);
+}

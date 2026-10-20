@@ -1,15 +1,14 @@
 /**
- * CH-4 原生桌面缩放取证（IP-07 / task 7.2）。
+ * CH-5 识别工作区原生桌面缩放取证（IP-06 / task 6.2）。
  *
  * 只用真实 Chromium 外窗口 + 原生 Ctrl+0 / Ctrl+plus 缩放：不用模拟 viewport、
  * CSS zoom、deviceScaleFactor 或 pageScaleFactor 代替真实 200%。每个组合实际完成
- * 导航、左右栏折叠、已有确认与取消、焦点恢复，以及总览的分布／时间线／分页可达；
- * 有二维溢出时实际改变 scrollLeft。
+ * 识别任务、风险记录、详情追溯页签、关联图与工序模型的导航、页签、分页、错误与
+ * 焦点操作；有二维溢出时实际改变 scrollLeft。
  *
  * 结果按既有 `evidence/native-zoom.json` 的形态记录：窗口外尺寸与 CSS 视口分开写，
  * 不把 1920 的无溢出记成发生滚动。工具不可用时明确失败，不靠 viewport 近似。
- * 场景取本 change 的工程工作区承载：导航折叠、停靠区、工程上下文表单、确认、取消、
- * 传输失败与焦点恢复；证据根指向本 change，已归档证据不动。
+ * 场景取本 change 的识别工作区承载；证据根指向本 change，已归档证据不动。
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -22,7 +21,7 @@ import { startBusinessBrowserServer } from "./business-server.mjs";
 
 const CHANGE_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../openspec/changes/redesign-engineering-workspace",
+  "../../../../openspec/changes/redesign-identification-workspace",
 );
 const EVIDENCE_DIR = resolve(CHANGE_ROOT, "evidence");
 const SHOT_DIR = resolve(EVIDENCE_DIR, "native-zoom");
@@ -117,14 +116,11 @@ const login = async (page, server) => {
 };
 
 const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
-  // 工程上下文页：真实业务表单 + 唯一确认，缩放下可达、可取消、可报错。
-  await page.goto(`${server.origin}/projects/spatial-scopes?project=${server.projectId}`);
-  await page.getByLabel("工程名称").fill("原生缩放取证工程");
-  await page.getByLabel("施工方法", { exact: true }).fill("变径盾构法");
-  await page.getByLabel("地层条件", { exact: true }).fill("富水软弱地层");
-  await page.getByLabel("工序阶段", { exact: true }).fill("变径空间扩挖");
-  const trigger = page.getByRole("button", { name: "确认追加工程业务修订", exact: true });
-  await expect(trigger).toBeEnabled({ timeout: 60_000 });
+  const ids = server.identification;
+  // 识别任务目录：真实业务事实与筛选控件在原生缩放下可达。
+  await page.goto(`${server.origin}/identification?project=${server.projectId}`);
+  await expect(page.locator("h1.page-title")).toHaveText("识别任务");
+  await expect(page.getByText(ids.completedRunId)).toBeVisible({ timeout: 60_000 });
   const metrics = await page.evaluate(() => ({
     outer: [globalThis.outerWidth, globalThis.outerHeight],
     inner: [globalThis.innerWidth, globalThis.innerHeight],
@@ -134,6 +130,7 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
   expect(metrics.dpr).toBeCloseTo(zoom.percent / 100, 2);
   expect(metrics.inner[0]).toBeCloseTo(windowSize.width / (zoom.percent / 100), 0);
 
+  // 左栏折叠与焦点恢复：键盘可达，导航项不因折叠丢失。
   const navigation = page.locator("[data-navigation]");
   const originalLinks = await navigation.evaluateAll((elements) =>
     elements.map((element) => element.getAttribute("data-navigation")),
@@ -152,10 +149,20 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
   ).toEqual(originalLinks);
   await page.keyboard.press("Enter");
   await expect(collapse).toBeFocused();
+  // 识别域控件键盘可达：筛选器之后焦点继续移动到下一个控件，焦点环真实可见。
+  const statusFilter = page.getByLabel("按状态筛选");
+  await statusFilter.focus();
   await page.keyboard.press("Tab");
-  const navigationFocus = await focusIsVisible(page);
-  expect(navigationFocus).toBe(true);
+  const keyboardNavigationContinues = await page.evaluate(
+    () =>
+      globalThis.document.activeElement !== null &&
+      globalThis.document.activeElement !== globalThis.document.body,
+  );
+  expect(keyboardNavigationContinues).toBe(true);
+  const focusRingVisible = await focusIsVisible(page);
+  expect(focusRingVisible).toBe(true);
 
+  // 右栏停靠区可开合，页签键盘可达。
   const openDock = page.getByRole("button", { name: "打开停靠区" });
   await openDock.click();
   await expect(page.locator(".right-dock")).toHaveCSS("width", "352px");
@@ -169,7 +176,7 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
   await expect(openDock).toBeFocused();
   await expect(page.getByRole("tabpanel")).toHaveCount(0);
 
-  const slug = `ch4-${windowSize.width}x${windowSize.height}-${zoom.percent}`;
+  const slug = `ch5-${windowSize.width}x${windowSize.height}-${zoom.percent}`;
   mkdirSync(SHOT_DIR, { recursive: true });
   const capture = async (suffix) => {
     // 原生缩放会改变 DPR；不传 CSS clip，避免自动截图按旧 DPR 裁掉右半屏。
@@ -180,35 +187,57 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
     writeFileSync(resolve(SHOT_DIR, `${slug}-${suffix}.png`), Buffer.from(data, "base64"));
   };
   await capture("layout");
-  let failedRequests = 0;
-  const countCommand = (request) => {
-    if (request.url().includes("/commands")) failedRequests += 1;
-  };
-  page.on("request", countCommand);
-  await trigger.click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByRole("button", { name: "取消", exact: true })).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
-  await expect(trigger).toBeFocused();
-  expect(failedRequests).toBe(0);
-  await trigger.click();
-  await dialog.getByRole("button", { name: "确认提交" }).click();
-  const error = dialog.locator('[data-confirmation-state="error"]');
-  await expect(error).toBeVisible();
-  await error.scrollIntoViewIfNeeded();
-  await expect(error).toBeInViewport();
-  expect(failedRequests).toBe(1);
-  const errorColor = await error.evaluate((element) => globalThis.getComputedStyle(element).color);
+
+  // 风险记录目录：分页控件真实存在，并按当前页状态如实可用/禁用。
+  await page.goto(`${server.origin}/identification/records?project=${server.projectId}`);
+  await expect(page.locator("h1.page-title")).toHaveText("风险记录");
+  await expect(page.getByText(ids.recordAutoId)).toBeVisible({ timeout: 60_000 });
+  const nextPage = page.getByRole("button", { name: "下一页" });
+  await expect(nextPage).toBeVisible();
+  await nextPage.focus();
+  expect(await focusIsVisible(page)).toBe(true);
+  // 续页读到真实的后续页，返回首屏再回到第一页。
+  const backToFirst = page.getByRole("button", { name: "返回首屏" });
+  await expect(backToFirst).toBeDisabled();
+  // 续页读到真实的后续页，返回首屏再回到第一页：以记录标识区分两页内容。
+  const idCell = page.locator(".data-table-host tbody tr").first().locator("td").last();
+  const firstCellText = await idCell.textContent();
+  await nextPage.click();
+  await expect(backToFirst).toBeEnabled();
+  await expect(
+    page.locator(".data-table-host tbody tr").first().locator("td").last(),
+  ).not.toHaveText(firstCellText);
+  await backToFirst.click();
+  await expect(page.locator(".data-table-host tbody tr").first().locator("td").last()).toHaveText(
+    firstCellText,
+  );
+
+  // 风险记录详情：页签键盘可达，追溯区域独立呈现。
+  await page.goto(
+    `${server.origin}/identification/records/${encodeURIComponent(ids.recordAutoId)}?project=${server.projectId}`,
+  );
+  await expect(page.locator("h1.page-title")).toHaveText("风险记录详情");
+  const traceTab = page.getByRole("tab", { name: "追溯链" });
+  await traceTab.focus();
+  expect(await focusIsVisible(page)).toBe(true);
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "端到端追溯链" })).toBeVisible({
+    timeout: 60_000,
+  });
+
+  // 错误态：查询中断后如实呈现结构化错误与重试入口；恢复后重试读回真实数据。
+  await page.route("**/queries/risk-identification.run-list", (route) => route.abort());
+  await page.goto(`${server.origin}/identification?project=${server.projectId}`);
+  await expect(page.getByText(/内容加载失败/)).toBeVisible({ timeout: 60_000 });
   await capture("error");
-  await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
-  await expect(trigger).toBeFocused();
+  await page.unroute("**/queries/risk-identification.run-list");
+  await page.getByRole("button", { name: "重试" }).click();
+  await expect(page.getByText(ids.completedRunId)).toBeVisible({ timeout: 60_000 });
+
   const overflowResult = await measureOverflow(page);
   expect(overflowResult.pageOverflow).toBe(false);
   if (overflowResult.overflow) expect(overflowResult.scrolled).toBe(true);
-  page.off("request", countCommand);
-  const overview = await checkEngineeringWorkspaceAtZoom(page, server, capture);
+  const workspace = await checkIdentificationWorkspaceAtZoom(page, server, capture);
   return {
     width: windowSize.width,
     height: windowSize.height,
@@ -218,14 +247,12 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
     navCollapsible: true,
     navigationSurvivesCollapse: true,
     dockOpened: true,
-    navigationFocus,
-    confirmFocusAtCancel: true,
-    cancelled: true,
+    keyboardNavigationContinues,
+    focusRingVisible,
     focusRestored: true,
     errorVisible: true,
-    errorColor,
-    failedRequests,
-    ...overview,
+    errorRetryable: true,
+    ...workspace,
     screenshots: [
       `native-zoom/${slug}-layout.png`,
       `native-zoom/${slug}-error.png`,
@@ -235,28 +262,30 @@ const runCombination = async ({ page, cdp, server, windowSize, zoom }) => {
 };
 
 /**
- * 工程工作区在原生缩放下仍可操作：概览的四个来源区域各自呈现，资料目录可键盘聚焦，
- * 成员目录可读。断言只落在可观察行为上，不锁具体数值。
+ * 识别工作区在原生缩放下仍可操作：关联图的真实主体选择、工序模型的节点与依赖、
+ * 风险详情的证据抽屉都可达。断言只落在可观察行为上，不锁具体数值。
  */
-const checkEngineeringWorkspaceAtZoom = async (page, server, capture) => {
-  await page.goto(`${server.origin}/projects?project=${server.projectId}`);
-  await expect(page.locator("h1.page-title")).toHaveText("工程概览");
-  await expect(page.getByText("工程身份信息")).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole("heading", { name: "资料概况", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "监测概况", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "知识版本", exact: true })).toBeVisible();
+const checkIdentificationWorkspaceAtZoom = async (page, server, capture) => {
+  const ids = server.identification;
+  await page.goto(`${server.origin}/identification/graph?project=${server.projectId}`);
+  await expect(page.locator("h1.page-title")).toHaveText("关联图谱");
+  await expect(page.getByLabel("选择关联图主体")).toBeVisible({ timeout: 60_000 });
 
-  await page.goto(`${server.origin}/projects/documents?project=${server.projectId}`);
-  await expect(page.getByText("工程资料版本列表")).toBeVisible({ timeout: 60_000 });
-  const firstSource = page.locator(".data-table-host tbody tr").first();
-  await expect(firstSource).toBeVisible();
-  await firstSource.focus();
+  await page.goto(`${server.origin}/identification/process-model?project=${server.projectId}`);
+  await expect(page.locator("h1.page-title")).toHaveText("工序模型");
+  await expect(page.getByText("变径空间扩挖", { exact: true })).toBeVisible({ timeout: 60_000 });
+
+  await page.goto(
+    `${server.origin}/identification/records/${encodeURIComponent(ids.recordAutoId)}?project=${server.projectId}`,
+  );
+  await expect(page.getByText("标准化风险记录", { exact: true })).toBeVisible({ timeout: 60_000 });
+  const evidenceButton = page.getByRole("button", { name: /chapter_1-segment_1/ }).first();
+  await evidenceButton.focus();
   expect(await focusIsVisible(page)).toBe(true);
-
-  await page.goto(`${server.origin}/projects/members?project=${server.projectId}`);
-  await expect(page.getByRole("heading", { name: "工程成员", exact: true })).toBeVisible({
-    timeout: 60_000,
-  });
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".evidence-drawer-title")).toBeVisible();
+  await page.getByRole("button", { name: "关闭证据抽屉" }).click();
+  await expect(page.locator(".evidence-drawer")).toHaveCount(0);
   const workspaceOverflow = await measureOverflow(page);
   expect(workspaceOverflow.pageOverflow).toBe(false);
   if (workspaceOverflow.overflow) expect(workspaceOverflow.scrolled).toBe(true);
@@ -282,12 +311,6 @@ export const runNativeZoomEvidence = async () => {
     const context = await browser.newContext({ viewport: null, ignoreHTTPSErrors: true });
     const page = await context.newPage();
     const cdp = await context.newCDPSession(page);
-    // 每组合拦截一次写请求作为传输失败，不向服务端提交业务命令。
-    // 每组合拦截一次工程写请求作为传输失败，不向服务端提交业务命令。
-    await page.route(
-      (url) => url.pathname.includes("/commands"),
-      (route) => route.abort("failed"),
-    );
     await login(page, server);
     for (const windowSize of WINDOWS) {
       for (const zoom of ZOOMS) {
@@ -307,7 +330,7 @@ export const runNativeZoomEvidence = async () => {
   }
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   const record = {
-    change: "redesign-engineering-workspace",
+    change: "redesign-identification-workspace",
     date: new Date().toISOString().slice(0, 10),
     qualification: "合成样本，待甲方复核",
     projectId: server.projectId,
@@ -319,8 +342,8 @@ export const runNativeZoomEvidence = async () => {
       zoom: "xdotool 向 Chromium 原生窗口发送 Ctrl+0 与五次 Ctrl+plus；未使用 CSS zoom 或 deviceScaleFactor 模拟",
       screenshot: "CDP Page.captureScreenshot 不传 CSS clip，保存真实原生缩放下的完整可视区域",
       checks:
-        "实际折叠左栏与右栏、填写工程上下文表单、打开已有确认、取消与焦点恢复；有二维溢出时实际改变 scrollLeft",
-      requestBoundary: "每组合拦截一次写请求作为传输失败，不向服务端提交业务命令",
+        "实际折叠左栏与右栏、浏览识别任务与风险记录目录、切换详情追溯页签、打开证据抽屉、触发并恢复查询错误；有二维溢出时实际改变 scrollLeft",
+      requestBoundary: "错误场景拦截一次识别读查询；不向服务端提交业务命令",
       transport:
         "浏览器访问真实 HTTPS loopback（自签证书仅忽略信任）；Secure/SameSite Cookie 与业务请求未经伪 scheme 或忽略语义处理",
       display:

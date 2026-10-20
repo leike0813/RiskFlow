@@ -1620,6 +1620,14 @@ const DENIED_SHAPE = {
   authorizationPolicyRef: { entityId: "access-policy", versionId: "v3" },
 } as const;
 
+/** 技术故障形态：工件/数据库读取失败不得被伪装成无权或不存在。 */
+const TECHNICAL_SHAPE = {
+  code: "TERMINAL_FAILURE",
+  category: "technical",
+  retryable: false,
+  stageCode: "risk-identification.read",
+} as const;
+
 describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
   let fixture: ReadTestFixture | undefined;
 
@@ -2109,6 +2117,121 @@ describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
     expect(replay).toEqual(result);
   });
 
+  it("run-read 裸身份按定向定位取最新状态，启动者取同一条最早登记", async () => {
+    const f = requireFixture();
+    const runId = `workflow-run:${PROJECT_ID}:bare-identity`;
+    const firstVersionId = sha("run-version-bare-identity-first");
+    const secondVersionId = sha("run-version-bare-identity-second");
+    const workItemRef = refOf("identification-work-item", `work-item:${runId}:node-1`);
+    const firstArtifactRef = await putGraphBody(f, {
+      artifactId: "c33-body-run-state-bare-identity-first",
+      body: runStateBody({
+        runId,
+        runVersionId: firstVersionId,
+        stage: "I3",
+        status: "running",
+        workItemRef,
+      }),
+    });
+    const secondArtifactRef = await putGraphBody(f, {
+      artifactId: "c33-body-run-state-bare-identity-second",
+      body: runStateBody({
+        runId,
+        runVersionId: secondVersionId,
+        stage: "I9",
+        status: "completed",
+        workItemRef,
+        extra: { completedWorkItemRefs: [workItemRef], pendingWorkItemRefs: [] },
+      }),
+    });
+    await registerGraphRows(
+      f,
+      [
+        {
+          ...graphRowFor({
+            kind: "run-state",
+            suffix: "bare-identity-first",
+            runId,
+            runVersionId: firstVersionId,
+            artifactRef: firstArtifactRef,
+            validAt: "2029-12-30T00:00:00.000Z",
+            resultId: "result-bare-identity-first",
+          }),
+          actorRef: "actor-zzz-first",
+        },
+        {
+          ...graphRowFor({
+            kind: "run-state",
+            suffix: "bare-identity-second",
+            runId,
+            runVersionId: secondVersionId,
+            artifactRef: secondArtifactRef,
+            validAt: "2029-12-31T00:00:00.000Z",
+            resultId: "result-bare-identity-second",
+          }),
+          actorRef: "actor-aaa-second",
+        },
+      ],
+      "c33-fixture-register-bare-identity",
+    );
+
+    // 裸身份：按本工程定向取最新登记状态，不经目录首页定位，也不回落更早状态。
+    const live = await f.reader.read(readQuery(f, "run-read", { runId }));
+    if (live.kind !== "succeeded") throw new TypeError("bare run-read failed");
+    expect(live.result.runRef).toEqual(refOf("workflow-run", runId, secondVersionId));
+    expect(live.result.stage).toBe("I9");
+    // 启动者取同一条最早登记：后续由字典序更小的账号恢复不冒充发起人。
+    expect(live.result.startedBy).toBe("actor-zzz-first");
+    expect(live.result.startedAt).toBe("2029-12-30T00:00:00.000Z");
+
+    // 精确早期版本：状态快照不变，头部仍是同一条最早登记。
+    const early = await f.reader.read(
+      readQuery(f, "run-read", { runRef: refOf("workflow-run", runId, firstVersionId) }),
+    );
+    if (early.kind !== "succeeded") throw new TypeError("early run-read failed");
+    expect(early.result.runRef).toEqual(refOf("workflow-run", runId, firstVersionId));
+    expect(early.result.stage).toBe("I3");
+    expect(early.result.startedBy).toBe("actor-zzz-first");
+
+    // 目录列表与详情同一头部口径。
+    const list = await f.reader.read(readQuery(f, "run-list", { pageSize: 50 }));
+    if (list.kind !== "succeeded") throw new TypeError("run-list failed");
+    const item = list.result.items.find((entry) => entry.runRef.reference.entityId === runId);
+    expect(item).toMatchObject({
+      startedBy: "actor-zzz-first",
+      startedAt: "2029-12-30T00:00:00.000Z",
+    });
+
+    // 不存在的运行与错版同形拒绝，不枚举其它运行。
+    for (const payload of [
+      { runId: `workflow-run:${PROJECT_ID}:missing` },
+      { runRef: refOf("workflow-run", runId, sha("run-version-bare-identity-missing")) },
+    ] as const) {
+      const failed = await f.reader.read(readQuery(f, "run-read", payload));
+      if (failed.kind !== "failed") throw new TypeError("expected a failed result");
+      expect(failed.error).toMatchObject(DENIED_SHAPE);
+    }
+  });
+
+  it("record-read 裸身份取该记录唯一登记版本，错版与不存在同形拒绝", async () => {
+    const f = requireFixture();
+    const recordId = `risk-record:${PROJECT_ID}:catalog-3`;
+    const resolved = await f.reader.read(readQuery(f, "record-read", { riskRecordId: recordId }));
+    if (resolved.kind !== "succeeded") throw new TypeError("bare record-read failed");
+    expect(resolved.result.riskRecordRef).toEqual(
+      refOf("standardized-risk-record", recordId, "v1"),
+    );
+
+    for (const payload of [
+      { riskRecordRef: refOf("standardized-risk-record", recordId, "v9") },
+      { riskRecordId: `risk-record:${PROJECT_ID}:missing` },
+    ] as const) {
+      const failed = await f.reader.read(readQuery(f, "record-read", payload));
+      if (failed.kind !== "failed") throw new TypeError("expected a failed result");
+      expect(failed.error).toMatchObject(DENIED_SHAPE);
+    }
+  });
+
   it("无权、跨工程、范围收窄、不存在与游标篡改同形失败且不可枚举", async () => {
     const f = requireFixture();
     const seeded = await seedCompletedRun(f, {
@@ -2448,7 +2571,8 @@ describe.sequential("PostgreSQL risk identification read adapter (C33)", () => {
     });
     expect(await reader.read(readQuery(f, "run-read", { runRef: seeded.runRef }))).toMatchObject({
       kind: "failed",
-      error: DENIED_SHAPE,
+      // 正文读取故障是技术故障，不得伪装成无权或不存在（design D-03）。
+      error: TECHNICAL_SHAPE,
     });
   });
 

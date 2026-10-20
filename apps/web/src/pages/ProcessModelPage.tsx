@@ -1,3 +1,5 @@
+import { Link, useSearchParams } from "react-router-dom";
+import { PROCESS_NODE_VALUES } from "@riskflow/contracts/vocabulary";
 import AppShell from "../components/AppShell";
 import { Card } from "../components/Card";
 import { SectionTabs } from "../components/SectionTabs";
@@ -6,43 +8,58 @@ import { VersionTag } from "../components/VersionTag";
 import { EvidenceLink } from "../components/EvidenceLink";
 import { Icon } from "../components/icons";
 import { PageStateView } from "../components/PageStateView";
-import { useEngineering, usePageQuery } from "../api/engineering";
+import { clientError } from "../api/client";
+import { useEngineering, usePageQuery, useProjectPath } from "../api/engineering";
 import {
   readCurrentReleaseSet,
   readKnowledgeRelease,
   type GovernanceReleaseView,
 } from "../api/operations";
+import { IDENTIFICATION_ROUTE_TITLES, identificationTabs } from "./identificationShared";
 import "./ProcessModelPage.css";
-
-const tabs = [
-  { to: "/identification", label: "识别任务" },
-  { to: "/identification/records", label: "风险记录" },
-  { to: "/identification/graph", label: "关联图谱" },
-  { to: "/identification/process-model", label: "工序模型" },
-];
-
-/** 五个必含工序节点（最小覆盖集 RI-S31）：按工序种类枚举核对发布模型覆盖。 */
-const REQUIRED_PROCESS_KINDS = [
-  "扩径准备",
-  "变径空间扩挖",
-  "刀盘扩径",
-  "盾体扩径",
-  "缩径转换",
-] as const;
 
 interface ProcessModelFacts {
   readonly release: GovernanceReleaseView | null;
+  /** 显式选择的发布版本：只读该版本，不被当前发布集合替换。 */
+  readonly explicit: boolean;
 }
 
 export default function ProcessModelPage() {
   const { selector } = useEngineering();
-  const { state, retry } = usePageQuery<ProcessModelFacts>(async (projectId, signal) => {
-    const releaseSet = await readCurrentReleaseSet(projectId, signal);
-    const processModel = releaseSet.find((member) => member.definitionType === "process-model");
-    if (processModel === undefined) return { release: null };
-    const release = await readKnowledgeRelease(projectId, processModel.releaseRef, signal);
-    return { release };
-  }, []);
+  const [searchParams] = useSearchParams();
+  const releases = searchParams.getAll("release");
+  const releaseVersions = searchParams.getAll("releaseVersion");
+  const nodeId = searchParams.get("node");
+  const releaseKey = releases.join(",");
+  const versionKey = releaseVersions.join(",");
+
+  const { state, retry } = usePageQuery<ProcessModelFacts>(
+    async (projectId, signal) => {
+      const selected = releases.length > 0 || releaseVersions.length > 0;
+      if (selected) {
+        // 成套选择：缺项、重复、错版与错误类型都拒绝，不回退到当前发布集合。
+        if (releases.length !== 1 || releaseVersions.length !== 1) throw clientError("NOT_FOUND");
+        const release = await readKnowledgeRelease(
+          projectId,
+          {
+            kind: "knowledge-release",
+            reference: { entityId: releases[0] ?? "", versionId: releaseVersions[0] ?? "" },
+          },
+          signal,
+        );
+        if (release.body.definitionType !== "process-model") throw clientError("NOT_FOUND");
+        return { release, explicit: true };
+      }
+      const releaseSet = await readCurrentReleaseSet(projectId, signal);
+      const processModel = releaseSet.find((member) => member.definitionType === "process-model");
+      if (processModel === undefined) return { release: null, explicit: false };
+      const release = await readKnowledgeRelease(projectId, processModel.releaseRef, signal);
+      if (release.body.definitionType !== "process-model")
+        return { release: null, explicit: false };
+      return { release, explicit: false };
+    },
+    [releaseKey, versionKey],
+  );
 
   return (
     <AppShell
@@ -52,27 +69,29 @@ export default function ProcessModelPage() {
       <div className="page">
         <header className="page-header">
           <div>
-            <h1 className="page-title">项目工序模型</h1>
+            <h1 className="page-title">
+              {IDENTIFICATION_ROUTE_TITLES["/identification/process-model"]}
+            </h1>
             <p className="page-subtitle">查看站隧一体化施工工序模型及其依赖关系</p>
           </div>
         </header>
-        <SectionTabs items={tabs} />
+        <SectionTabs items={identificationTabs} />
 
         <PageStateView
           state={state}
-          title="工序模型"
+          title={IDENTIFICATION_ROUTE_TITLES["/identification/process-model"]}
           emptyMessage="当前工程尚无已发布工序模型"
           onRetry={retry}
         >
-          {({ release }) =>
-            release === null || release.body.definitionType !== "process-model" ? (
-              <Card title="工序模型">
+          {({ release, explicit }) =>
+            release === null ? (
+              <Card title={IDENTIFICATION_ROUTE_TITLES["/identification/process-model"]}>
                 <div className="pm-empty">
                   当前工程无已发布工序模型版本（治理空态），模型发布后此处呈现节点与依赖关系。
                 </div>
               </Card>
             ) : (
-              <ProcessModelBody release={release} />
+              <ProcessModelBody release={release} nodeId={nodeId} explicit={explicit} />
             )
           }
         </PageStateView>
@@ -81,10 +100,20 @@ export default function ProcessModelPage() {
   );
 }
 
-function ProcessModelBody({ release }: { release: GovernanceReleaseView }) {
+function ProcessModelBody({
+  release,
+  nodeId,
+  explicit,
+}: {
+  release: GovernanceReleaseView;
+  nodeId: string | null;
+  explicit: boolean;
+}) {
+  const projectPath = useProjectPath();
   if (release.body.definitionType !== "process-model") return null;
   const { nodes, dependencyEdges } = release.body;
   const coveredKinds = new Set(nodes.map((node) => node.processKind));
+  const missingKinds = PROCESS_NODE_VALUES.filter((kind) => !coveredKinds.has(kind));
   const equipment = [...new Set(nodes.flatMap((node) => node.equipmentRefs))];
   const structural = [...new Set(nodes.flatMap((node) => node.structuralComponentRefs))];
   const edgeGroups = new Map<string, typeof dependencyEdges>();
@@ -93,6 +122,9 @@ function ProcessModelBody({ release }: { release: GovernanceReleaseView }) {
     list.push(edge);
     edgeGroups.set(edge.relationType, list);
   }
+  // 节点定位：指定节点不存在即如实说明无法定位，不自动改选首个节点。
+  const located = nodeId === null ? undefined : nodes.find((node) => node.nodeId === nodeId);
+  const nodeMissing = nodeId !== null && located === undefined;
 
   return (
     <>
@@ -101,23 +133,33 @@ function ProcessModelBody({ release }: { release: GovernanceReleaseView }) {
           工序模型发布 {release.releaseRef.reference.entityId}@
           {release.releaseRef.reference.versionId}
         </VersionTag>
+        {explicit && <StatusTag tone="neutral">所选历史发布</StatusTag>}
         {release.deactivatedAt !== undefined && <StatusTag tone="failed">已停用</StatusTag>}
       </div>
+
+      {nodeMissing && (
+        <Card title="节点定位">
+          <div className="pm-empty">
+            所选发布版本中没有节点 <span className="mono">{nodeId}</span>，无法定位。
+          </div>
+        </Card>
+      )}
 
       <Card
         title="工序节点流程"
         extra={
           <span>
-            必含五节点覆盖：
-            {REQUIRED_PROCESS_KINDS.every((kind) => coveredKinds.has(kind))
-              ? "全部覆盖"
-              : `缺 ${REQUIRED_PROCESS_KINDS.filter((kind) => !coveredKinds.has(kind)).join("、")}`}
+            必含工序覆盖：
+            {missingKinds.length === 0 ? "全部覆盖" : `缺 ${missingKinds.join("、")}`}
           </span>
         }
       >
         <div className="pm-flow">
           {nodes.map((node, index) => (
-            <div key={node.nodeId} className="pm-flow-item">
+            <div
+              key={node.nodeId}
+              className={`pm-flow-item${located?.nodeId === node.nodeId ? " pm-flow-item--current" : ""}`}
+            >
               {index > 0 && (
                 <span className="pm-arrow">
                   <Icon name="arrowRight" size={18} />
@@ -131,10 +173,21 @@ function ProcessModelBody({ release }: { release: GovernanceReleaseView }) {
                 <div className="pm-node-io mono">{node.nodeId}</div>
                 <div className="pm-node-io">输入：{node.inputs.join("、")}</div>
                 <div className="pm-node-io">输出：{node.outputs.join("、")}</div>
+                <div className="pm-node-io">装备：{node.equipmentRefs.join("、") || "无登记"}</div>
+                <div className="pm-node-io">
+                  构件：{node.structuralComponentRefs.join("、") || "无登记"}
+                </div>
                 <div className="pm-node-params">
                   {node.stateParameters.map((parameter) => (
                     <span key={parameter} className="pm-chip">
                       {parameter}
+                    </span>
+                  ))}
+                </div>
+                <div className="pm-node-params">
+                  {node.monitoringIndicators.map((indicator) => (
+                    <span key={indicator} className="pm-chip pm-chip--monitor">
+                      {indicator}
                     </span>
                   ))}
                 </div>
@@ -148,6 +201,14 @@ function ProcessModelBody({ release }: { release: GovernanceReleaseView }) {
                     />
                   ))}
                 </div>
+                <Link
+                  className="pm-node-jump"
+                  to={projectPath(
+                    `/identification/process-model?node=${encodeURIComponent(node.nodeId)}`,
+                  )}
+                >
+                  定位该节点
+                </Link>
               </div>
             </div>
           ))}

@@ -54,3 +54,5 @@ Blocked by: 05, 06
 **完成判据分层**：本轮只交付决议与 planning 输入，不宣称九个 change 可直接 apply。后续各 change 必须按项目 workflow 补齐固定基线、文件／符号清单、Requirement／Scenario／IP-ID、依赖和真实验证命令并满足 `applyRequires`；最终发布另须通过新旧入口原子切换与 CH-9 组合验收。原型非空、静态文档齐备或编译成功不等于功能完工。
 
 **CH-4 实施落点**：[redesign-engineering-workspace](../../../openspec/changes/redesign-engineering-workspace/proposal.md)。工程承载与四条专用 HTTP 接缝按 IP-01～IP-07 实施；验收修复闭合权限交集、精确引用、读改版本、完整续页、历史只读、空间和资料访问维护、独立故障及接入深链。工程开通与访问维护复用原命令和事务，接入仅组合所属窄读，不扩展上传/解析启动，不提前启用六导航。实际行为、HTTPS Cookie 与原生缩放证据及未覆盖范围见 [verification](../../../openspec/changes/redesign-engineering-workspace/verification.md)。
+
+**CH-5 实施落点**：[redesign-identification-workspace](../../../openspec/changes/redesign-identification-workspace/proposal.md)。固定基线 `603a192a4ac0aabeeefe5f03a62032a0f5c53819`，使用 `orchestrated-delivery`；IP-01～IP-06 已按六条识别规范地址、真实续页、精确详情、风险详情内追溯、两个旧 trace 永久解析、图谱去重复及只读模型实施。运行精确状态快照与无版本实时监控分开；两条详情分支补互斥实体身份选择，HTTP/部署自动消费公共Schema，未新增 HTTP 路由/端口/权限/依赖/迁移；未新增识别启动或原型缺失读面的工程使用关系，未提前启用 CH-9。行为、浏览器与原生缩放证据及未覆盖范围由该 change 的 verification 承担。

@@ -2045,6 +2045,8 @@ describe("C33 read surface routes", () => {
                 acceptedRiskRecordRefs: [],
                 pendingReviewGroupRefs: [],
                 rejectedGroupRefs: [],
+                startedBy: "actor",
+                startedAt: NOW,
               },
             };
           },
@@ -2104,6 +2106,89 @@ describe("C33 read surface routes", () => {
       payload: { status: "waiting" },
     });
     expect(seen[1]).toMatchObject({ payload: { runRef } });
+    await app.close();
+  });
+
+  it("详情接受精确引用与裸实体身份两种互斥选择，冲突选择在传输层被拒", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const app = buildApi({
+      access: accessStub(),
+      ports: {
+        riskIdentificationRead: {
+          read: async (query) => {
+            seen.push({ kind: query.kind, payload: query.payload });
+            return {
+              kind: "succeeded",
+              result: {
+                kind: "run-read",
+                runRef,
+                stage: "I3",
+                status: "waiting",
+                stageEntries: [{ stage: "I0", status: "completed" }],
+                workItemCoverage: [],
+                mergeGroups: [],
+                agentTaskRefs: [],
+                reviewTaskRefs: [],
+                resultCounts: {
+                  plannedWorkItemCount: 0,
+                  completedWorkItemCount: 0,
+                  failedWorkItemCount: 0,
+                  zeroResultCount: 0,
+                  acceptedCount: 0,
+                  pendingReviewCount: 0,
+                  rejectedCount: 0,
+                },
+                acceptedRiskRecordRefs: [],
+                pendingReviewGroupRefs: [],
+                rejectedGroupRefs: [],
+                startedBy: "actor",
+                startedAt: NOW,
+              },
+            };
+          },
+        },
+      },
+      publicOrigin: ORIGIN,
+      now: () => new Date(NOW),
+      idGenerator: () => "request-id",
+    });
+
+    const recordRef = {
+      kind: "standardized-risk-record" as const,
+      reference: { entityId: "record-1", versionId: "1" },
+    };
+    expect((await postQuery(app, "risk-identification.run-read", { runRef })).statusCode).toBe(200);
+    expect(
+      (await postQuery(app, "risk-identification.run-read", { runId: "run-1" })).statusCode,
+    ).toBe(200);
+    expect(
+      (await postQuery(app, "risk-identification.record-read", { riskRecordRef: recordRef }))
+        .statusCode,
+    ).toBe(200);
+    expect(
+      (await postQuery(app, "risk-identification.record-read", { riskRecordId: "record-1" }))
+        .statusCode,
+    ).toBe(200);
+    expect(seen.map((entry) => entry.payload)).toEqual([
+      { runRef },
+      { runId: "run-1" },
+      { riskRecordRef: recordRef },
+      { riskRecordId: "record-1" },
+    ]);
+
+    // 双选择与越权字段在传输层即被拒绝，不触达端口。
+    const conflicting = await postQuery(app, "risk-identification.run-read", {
+      runRef,
+      runId: "run-1",
+    });
+    expect(conflicting.statusCode).toBe(400);
+    expect(conflicting.json().code).toBe("CONTRACT_INVALID");
+    const leaked = await postQuery(app, "risk-identification.record-read", {
+      riskRecordId: "record-1",
+      actorId: "actor",
+    });
+    expect(leaked.statusCode).toBe(400);
+    expect(seen.length).toBe(4);
     await app.close();
   });
 

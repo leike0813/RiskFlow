@@ -1555,18 +1555,27 @@ export interface IdentificationRunDetailView {
   readonly pendingReviewGroupRefs: KindRef[];
   readonly rejectedGroupRefs: KindRef[];
   readonly waitingRef?: WaitingRefView;
+  /** 运行头部：取同一条最早运行状态登记的启动者与启动时间。 */
+  readonly startedBy: string;
+  readonly startedAt: string;
 }
+
+/**
+ * 运行详情身份：精确运行引用与裸运行标识互斥二选一（契约 `risk-identification.run-read`）。
+ * 页面按 URL 是否携带版本选择其中之一：带版本固定历史快照，不带版本跟踪最新获权状态。
+ */
+export type IdentificationRunIdentity = { readonly runRef: KindRef } | { readonly runId: string };
 
 export const readIdentificationRun = async (
   projectId: string,
-  runRef: KindRef,
+  identity: IdentificationRunIdentity,
   signal?: AbortSignal,
 ): Promise<IdentificationRunDetailView> => {
   const result = asRecord(
     await submitQuery({
       projectId,
       branch: "risk-identification.run-read",
-      payload: { runRef },
+      payload: "runRef" in identity ? { runRef: identity.runRef } : { runId: identity.runId },
       ...(signal === undefined ? {} : { signal }),
     }),
   );
@@ -1618,6 +1627,8 @@ export const readIdentificationRun = async (
     pendingReviewGroupRefs: asArray(result.pendingReviewGroupRefs).map(asKindRef),
     rejectedGroupRefs: asArray(result.rejectedGroupRefs).map(asKindRef),
     ...(result.waitingRef === undefined ? {} : { waitingRef: asWaitingRef(result.waitingRef) }),
+    startedBy: asString(result.startedBy),
+    startedAt: asString(result.startedAt),
   };
 };
 
@@ -1712,16 +1723,26 @@ export interface RiskRecordDetailView {
   readonly auditTrailRef: KindRef;
 }
 
+/**
+ * 风险记录详情身份：精确记录引用与裸记录标识互斥二选一（契约 `risk-identification.record-read`）。
+ * 裸标识由所属读面按当前权限窄解析到唯一登记版本，调用方据此把精确版本写回 URL。
+ */
+export type RiskRecordIdentity =
+  { readonly riskRecordRef: KindRef } | { readonly riskRecordId: string };
+
 export const readRiskRecord = async (
   projectId: string,
-  riskRecordRef: KindRef,
+  identity: RiskRecordIdentity,
   signal?: AbortSignal,
 ): Promise<RiskRecordDetailView> => {
   const result = asRecord(
     await submitQuery({
       projectId,
       branch: "risk-identification.record-read",
-      payload: { riskRecordRef },
+      payload:
+        "riskRecordRef" in identity
+          ? { riskRecordRef: identity.riskRecordRef }
+          : { riskRecordId: identity.riskRecordId },
       ...(signal === undefined ? {} : { signal }),
     }),
   );

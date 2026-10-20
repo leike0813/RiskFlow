@@ -234,15 +234,37 @@ test("知识治理四页呈现真实发布事实且无写入口", async ({ page 
   await expect(page.getByText(/降低推进速率.*同步注浆/)).toBeVisible();
 });
 
-test("工序模型页呈现已发布模型与必含五节点覆盖", async ({ page }) => {
+test("工序模型页呈现已发布模型的节点、监测指标与依赖关系", async ({ page }) => {
   await login(
     page,
     server.operatorLogin,
     `/identification/process-model?project=${server.projectId}`,
   );
+  // 五个必含工序节点按真实发布模型呈现。
+  for (const kind of ["扩径准备", "变径空间扩挖", "刀盘扩径", "盾体扩径", "缩径转换"]) {
+    await expect(page.getByText(kind, { exact: true })).toBeVisible();
+  }
   await expect(page.getByText("PN-EXPAND-02").first()).toBeVisible();
-  await expect(page.getByText("变径空间扩挖").first()).toBeVisible();
-  await expect(page.getByText(/必含五节点覆盖：全部覆盖/)).toBeVisible();
+  // 节点的业务字段来自发布正文：监测指标与装备构件都真实呈现。
+  await expect(page.getByText("地表沉降").first()).toBeVisible();
+  await expect(page.getByText("扩径模块", { exact: true }).first()).toBeVisible();
+  // 依赖关系直接来自登记的依赖边。
+  await expect(page.getByText("PN-EXPAND-01 → PN-EXPAND-02")).toBeVisible();
+});
+
+test("工序模型：显式发布版本与节点定位不被当前集合替换", async ({ page }) => {
+  const release = server.identification.processModelRelease;
+  const base = `/identification/process-model?project=${server.projectId}&release=${encodeURIComponent(release.entityId)}&releaseVersion=${encodeURIComponent(release.versionId)}`;
+  await login(page, server.operatorLogin, `${base}&node=PN-EXPAND-03`);
+  // 所选发布版本的真实节点呈现：定位到第三个工序节点。
+  await expect(page.getByText("PN-EXPAND-03").first()).toBeVisible();
+  await expect(page.getByText("刀盘扩径", { exact: true })).toBeVisible();
+  // 依赖边仍来自该发布版本的登记事实。
+  await expect(page.getByText("PN-EXPAND-01 → PN-EXPAND-02")).toBeVisible();
+
+  // 不存在的节点如实说明无法定位，不自动改选首节点。
+  await page.goto(`${server.origin}${base}&node=PN-NOT-EXIST`);
+  await expect(page.getByText(/没有节点/)).toBeVisible();
 });
 
 test("无资料授权时证据抽屉呈现固定脱敏提示", async ({ page }) => {

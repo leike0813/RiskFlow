@@ -5551,6 +5551,7 @@ export const startBusinessBrowserServer = async ({
       ],
       identification: {
         completedRunId,
+        completedRunVersionId,
         waitingRunId,
         failedRunId,
         chainRunId,
@@ -5561,6 +5562,11 @@ export const startBusinessBrowserServer = async ({
         freshTask: freshTaskRefV2,
         batchTasks: [batchTaskRef1, batchTaskRef2],
         viewerTask: viewerTaskRef,
+        /** 已发布工序模型发布的精确引用：浏览器按显式发布版本定位历史模型。 */
+        processModelRelease: {
+          entityId: processModelReleaseRef.reference.entityId,
+          versionId: processModelReleaseRef.reference.versionId,
+        },
       },
       /**
        * C35 验收句柄：全部是本装配真实写入的事实，供浏览器按精确引用核对渲染与下载。

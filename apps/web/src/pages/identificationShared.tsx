@@ -9,6 +9,22 @@ export const identificationTabs = [
 ];
 
 /**
+ * 识别域六条规范地址的业务标题：route seeds 与页面共用同一份名称，
+ * 主标题不与导航标题漂移（design D-05）。
+ */
+export const IDENTIFICATION_ROUTE_TITLES = {
+  "/identification": "识别任务",
+  "/identification/runs/:runId": "识别任务详情",
+  "/identification/records": "风险记录",
+  "/identification/records/:recordId": "风险记录详情",
+  "/identification/graph": "关联图谱",
+  "/identification/process-model": "工序模型",
+} as const satisfies Record<string, string>;
+
+/** 识别域主标题：列表页与详情页同源，不另造技术名称。 */
+export const IDENTIFICATION_TITLE = IDENTIFICATION_ROUTE_TITLES["/identification"];
+
+/**
  * I0–I9 阶段标签（domain 主规格「识别工作流具有 I0 至 I9 的版本化阶段契约」的闭合语义；
  * 阶段词汇本身由服务端契约给出，这里只做中文呈现，不扩张阶段集合）。
  */

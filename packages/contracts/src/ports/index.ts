@@ -4340,6 +4340,15 @@ export type RiskIdentificationMergeGroupSummaryV1 = z.infer<
   typeof RiskIdentificationMergeGroupSummaryV1Schema
 >;
 
+/**
+ * 运行详情头部：启动者与启动时间与列表条目同一 Schema 来源（design D-02），
+ * 两处都必须取同一条最早运行状态登记，不以恢复者字典序替代启动者。
+ */
+const RiskIdentificationRunReadHeaderV1Schema = RiskIdentificationRunListItemV1Schema.pick({
+  startedBy: true,
+  startedAt: true,
+});
+
 /** 运行详情摘要：引用有界集合 + 结果计数，可由精确运行版本重放。 */
 export const RiskIdentificationRunReadSuccessV1Schema = z.strictObject({
   kind: z.literal("run-read"),
@@ -4370,6 +4379,7 @@ export const RiskIdentificationRunReadSuccessV1Schema = z.strictObject({
    */
   revisedCandidateRefs: z.array(IdentificationCandidateSetRefV1Schema).max(256).optional(),
   waitingRef: WaitingRefV1Schema.optional(),
+  ...RiskIdentificationRunReadHeaderV1Schema.shape,
 });
 export type RiskIdentificationRunReadSuccessV1 = z.infer<
   typeof RiskIdentificationRunReadSuccessV1Schema
@@ -4419,6 +4429,28 @@ export const RiskRecordReadSuccessV1Schema = z.strictObject({
 });
 export type RiskRecordReadSuccessV1 = z.infer<typeof RiskRecordReadSuccessV1Schema>;
 
+/**
+ * 运行详情 payload：精确运行引用与裸运行身份互斥二选一（design D-02）。
+ * 两个成员都是 strictObject，空对象、双选择与契约外字段一律拒绝；
+ * 裸身份只用于同工程内的定向定位，不是目录授权手段。
+ */
+export const RiskIdentificationRunReadPayloadV1Schema = z.union([
+  z.strictObject({ runRef: WorkflowRunRefV1Schema }),
+  z.strictObject({ runId: IdentifierSchema }),
+]);
+export type RiskIdentificationRunReadPayloadV1 = z.infer<
+  typeof RiskIdentificationRunReadPayloadV1Schema
+>;
+
+/** 风险记录详情 payload：精确记录引用与裸记录身份互斥二选一（design D-02）。 */
+export const RiskIdentificationRecordReadPayloadV1Schema = z.union([
+  z.strictObject({ riskRecordRef: StandardizedRiskRecordRefV1Schema }),
+  z.strictObject({ riskRecordId: IdentifierSchema }),
+]);
+export type RiskIdentificationRecordReadPayloadV1 = z.infer<
+  typeof RiskIdentificationRecordReadPayloadV1Schema
+>;
+
 export const RiskIdentificationReadQueryV1Schema = z.discriminatedUnion("kind", [
   querySchema(
     "run-list",
@@ -4431,7 +4463,7 @@ export const RiskIdentificationReadQueryV1Schema = z.discriminatedUnion("kind", 
   ),
   querySchema(
     "run-read",
-    z.strictObject({ runRef: WorkflowRunRefV1Schema }),
+    RiskIdentificationRunReadPayloadV1Schema,
     branchCapability("risk-identification.run-read"),
   ),
   querySchema(
@@ -4447,7 +4479,7 @@ export const RiskIdentificationReadQueryV1Schema = z.discriminatedUnion("kind", 
   ),
   querySchema(
     "record-read",
-    z.strictObject({ riskRecordRef: StandardizedRiskRecordRefV1Schema }),
+    RiskIdentificationRecordReadPayloadV1Schema,
     branchCapability("risk-identification.record-read"),
   ),
 ]);

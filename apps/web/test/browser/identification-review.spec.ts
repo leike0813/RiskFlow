@@ -115,23 +115,28 @@ test("识别域页面未登录跳转登录页，登录后回到原目标页", as
 
 test("识别运行列表呈现真实运行事实，行点击进入详情", async ({ page }) => {
   await login(page, server.operatorLogin, withProject("/identification"));
-  await expect(page.getByText("识别运行列表")).toBeVisible();
+  await expect(page.getByText("识别任务", { exact: true }).first()).toBeVisible();
   // 三条播种运行：完成 / 等待复核 / 可重试失败，触发原因缺省如实呈现「—」。
   await expect(page.getByText(ids().completedRunId)).toBeVisible();
   await expect(page.getByText(ids().waitingRunId)).toBeVisible();
   await expect(page.getByText(ids().failedRunId)).toBeVisible();
-  await expect(page.getByText("已完成", { exact: true })).toBeVisible();
-  await expect(page.getByText("等待复核", { exact: true })).toBeVisible();
-  await expect(page.getByText("可重试失败", { exact: true })).toBeVisible();
+  await expect(page.getByRole("table").getByText("已完成", { exact: true })).toBeVisible();
+  await expect(page.getByRole("table").getByText("等待复核", { exact: true })).toBeVisible();
+  await expect(page.getByRole("table").getByText("可重试失败", { exact: true })).toBeVisible();
   await expect(page.getByText("I9 · 结果汇总")).toBeVisible();
   await expect(page.getByText("I5 · 结构修复与校验")).toBeVisible();
   await expect(page.getByText("I3 · 检索与 Agent 审阅")).toBeVisible();
   await expect(page.getByText("2 / 0 / 1")).toBeVisible();
   await expect(page.getByText("0 / 1 / 0")).toBeVisible();
+  // 当前页之外没有后续运行：分页控件如实禁用，不显示虚构总页数。
+  await expect(page.getByRole("button", { name: "下一页" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "返回首屏" })).toBeDisabled();
 
   await page.getByText(ids().completedRunId).click();
   await page.waitForURL(new RegExp(`/identification/runs/`));
-  await expect(page.getByRole("heading", { name: "识别运行详情", level: 1 })).toBeVisible();
+  // 详情链接携精确运行版本：刷新读回同一状态快照。
+  await expect(page).toHaveURL((url) => url.searchParams.get("version") !== null);
+  await expect(page.getByRole("heading", { name: "识别任务详情", level: 1 })).toBeVisible();
 });
 
 test("完成态运行详情呈现阶段、覆盖、合并组与结果汇总，并深链到风险记录", async ({ page }) => {
@@ -159,6 +164,31 @@ test("完成态运行详情呈现阶段、覆盖、合并组与结果汇总，�
   await expect(page.getByRole("heading", { name: "风险记录详情", level: 1 })).toBeVisible();
 });
 
+test("识别任务详情：精确版本固定快照，无版本地址跟踪最新状态", async ({ page }) => {
+  const version = ids().completedRunVersionId;
+  const runPath = `/identification/runs/${encodeURIComponent(ids().completedRunId)}`;
+  // 精确版本地址：固定同一历史状态快照，不轮询。
+  await login(
+    page,
+    server.operatorLogin,
+    `${runPath}?version=${encodeURIComponent(version)}&project=${server.projectId}`,
+  );
+  await expect(page.getByRole("heading", { name: "识别任务详情", level: 1 })).toBeVisible();
+  await expect(page.getByText("识别运行阶段（I0–I9）")).toBeVisible();
+  // 头部来自读结果：启动者与启动时间真实呈现。
+  await expect(page.getByText("启动者")).toBeVisible();
+  await expect(page.getByText("启动时间")).toBeVisible();
+  await expect(page.getByRole("link", { name: "查看该运行的最新进展" })).toBeVisible();
+
+  // 无版本地址：沿裸身份读最新获权状态，地址不写回版本使监控冻在首帧。
+  await gotoSpa(
+    page,
+    withProject(`/identification/runs/${encodeURIComponent(ids().completedRunId)}`),
+  );
+  await expect(page.getByText("识别运行阶段（I0–I9）")).toBeVisible();
+  await expect(page).toHaveURL((url) => url.searchParams.get("version") === null);
+});
+
 test("等待与失败运行详情如实呈现暂停与可重试失败", async ({ page }) => {
   await login(
     page,
@@ -184,11 +214,14 @@ test("风险记录列表支持工序节点与验收方式筛选，行点击进�
   await expect(page.getByText("0.50")).toHaveCount(0);
   await expect(page.getByText("现行", { exact: true }).first()).toBeVisible();
 
-  await page.getByLabel("按工序节点筛选").fill("PN-EXPAND-03");
+  // 工序节点筛选只提供已读到的目录结果里的节点选项，不要求手输技术标识。
+  const nodeFilter = page.getByLabel("按工序节点筛选");
+  await expect(nodeFilter.locator("option")).toHaveText(["全部工序节点", "PN-EXPAND-02"]);
+  await nodeFilter.selectOption("PN-EXPAND-02");
+  await expect(page.getByText(ids().recordAutoId)).toBeVisible();
   await expect(page.getByText(ids().recordReviewId)).toHaveCount(0);
-  await expect(page.getByText(ids().recordAutoId)).toHaveCount(0);
 
-  await page.getByLabel("按工序节点筛选").fill("");
+  await nodeFilter.selectOption("");
   await page.getByLabel("按验收方式筛选").selectOption("automatic");
   await expect(page.getByText(ids().recordAutoId)).toBeVisible();
   await expect(page.getByText(ids().recordReviewId)).toHaveCount(0);
@@ -197,10 +230,17 @@ test("风险记录列表支持工序节点与验收方式筛选，行点击进�
   await expect(page.getByText(ids().recordAutoId)).toHaveCount(0);
   await expect(page.getByText(ids().recordReviewId)).toHaveCount(0);
   await page.getByLabel("按验收方式筛选").selectOption("");
+  // 当前页之外没有更多可见记录：分页控件如实禁用，不显示虚构总页数。
+  // 真实续页往返由 native-zoom 取证在 56 条记录的服务上完成。
+  await expect(page.getByRole("button", { name: "下一页" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "返回首屏" })).toBeDisabled();
+
   await page.getByText(ids().recordAutoId).click();
   await page.waitForURL(
     new RegExp(`/identification/records/${encodeURIComponent(ids().recordAutoId)}`),
   );
+  // 详情地址写回唯一登记版本：刷新读回同一精确版本。
+  await expect(page).toHaveURL((url) => url.searchParams.get("version") !== null);
   await expect(page.getByText("标准化风险记录", { exact: true })).toBeVisible();
 });
 
@@ -236,20 +276,26 @@ test("风险记录详情呈现契约字段与真实定位，受限来源记录�
   await expect(page.getByRole("link", { name: "打开资料详情并定位该段" })).toBeVisible();
   await page.getByRole("button", { name: "关闭证据抽屉" }).click();
 
-  // B 资料没有当前授权，派生记录正文与证据按钮也不得披露。
-  const catalogRead = page.waitForResponse((response) =>
-    response.url().endsWith("/queries/risk-identification.record-catalog"),
+  // 详情页签：追溯链切到该记录精确引用发起的共享追溯区域，正文状态独立。
+  await page.getByRole("tab", { name: "追溯链" }).click();
+  await expect(page).toHaveURL((url) => url.searchParams.get("tab") === "trace");
+  await expect(page.getByRole("heading", { name: "端到端追溯链" })).toBeVisible();
+  await expect(page.locator(".et-node", { hasText: "资料段标识" })).toBeVisible();
+  await page.getByRole("tab", { name: "记录正文" }).click();
+  await expect(page.getByRole("heading", { name: "风险记录详情", level: 1 })).toBeVisible();
+
+  // B 资料没有当前授权：详情直接读取失败闭合，派生记录正文与证据按钮都不得披露。
+  const deniedRead = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/queries/risk-identification.record-read") &&
+      response.status() === 404,
   );
   await gotoSpa(
     page,
     withProject(`/identification/records/${encodeURIComponent(ids().recordReviewId)}`),
   );
-  const catalog = await (await catalogRead).json();
-  expect(
-    catalog.result.items.some(
-      (item) => item.riskRecordRef.reference.entityId === ids().recordReviewId,
-    ),
-  ).toBe(false);
+  const deniedResponse = await deniedRead;
+  expect((await deniedResponse.json()).code).toBe("NOT_FOUND");
   const denied = await page.evaluate(
     async ({ projectId, recordId }) => {
       const response = await fetch(
@@ -288,16 +334,19 @@ test("风险记录详情呈现契约字段与真实定位，受限来源记录�
   ).toHaveCount(0);
 });
 
-test("关联图无主体时呈现引导与按工序分组降级视图；带主体时呈现可证明关联边", async ({ page }) => {
+test("关联图无主体时呈现引导与真实主体选择；带主体时呈现可证明关联边", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await login(page, server.operatorLogin, withProject("/identification/graph"));
-  await expect(page.getByText(/在下方「按工序分组的风险记录」中选择一条记录/)).toBeVisible();
-  // 降级视图只呈现当前可见记录，受限 B 不进入分组。
-  await expect(page.getByText("按工序分组的风险记录").first()).toBeVisible();
-  await expect(page.getByText("过挖导致地表沉降超限")).toBeVisible();
+  await expect(page.getByText(/请在上方选择一条风险记录作为关联图主体/)).toBeVisible();
+  // 主体选择来自有界目录的真实选项：受限 B 不进入选项，图谱不再内嵌第二份记录列表。
+  const subjectSelect = page.getByLabel("选择关联图主体");
+  await expect(subjectSelect.locator("option")).toHaveText([
+    "未选择主体",
+    `过挖导致地表沉降超限（${ids().recordAutoId}）`,
+  ]);
   await expect(page.getByText("刀盘扩径卡顿导致围岩扰动")).toHaveCount(0);
 
-  await page.getByRole("button", { name: "过挖导致地表沉降超限" }).click();
+  await subjectSelect.selectOption(ids().recordAutoId);
   await page.waitForURL(new RegExp(`/identification/graph\\?.*subject=`));
   // 投影复验正向闭合：主体提示与可证明关联边的节点列表真实呈现。
   const graphHint = page.locator(".graph-hint", { hasText: "的可证明关联边" });
@@ -353,8 +402,8 @@ test("关联图无主体时呈现引导与按工序分组降级视图；带主�
   await expect.poll(() => animatedCanvas.evaluate((element) => element.isConnected)).toBe(false);
   await expect(canvas).toBeVisible();
   await expectStableGraph();
-  // 降级视图不受投影结果影响，仍基于目录事实呈现。
-  await expect(page.getByText("按工序分组的风险记录").first()).toBeVisible();
+  // 图谱不再内嵌第二份风险记录列表：只有正式关联图与节点/边浏览。
+  await expect(page.getByText("按工序分组的风险记录")).toHaveCount(0);
   await nodeLinks.getByRole("link", { name: ids().recordAutoId, exact: true }).click();
   await expect(page).toHaveURL(
     (url) => decodeURIComponent(url.pathname) === `/identification/records/${ids().recordAutoId}`,
@@ -544,14 +593,21 @@ test("responder 无复核队列读取权限，但识别运行列表可读（降�
   await expect(page.getByText(ids().completedRunId)).toBeVisible();
 });
 
-test("证据追溯页：无主体引导；带主体时呈现端到端固定追溯链", async ({ page }) => {
-  await login(page, server.operatorLogin, withProject("/review/trace"));
-  await expect(page.getByText(/未指定追溯主体/)).toBeVisible();
+test("旧证据追溯地址：无主体到风险列表；带主体解析到精确风险详情追溯", async ({ page }) => {
+  await login(page, server.operatorLogin, withProject("/identification/records"));
+  // 无主体：只到同工程风险列表，不猜测任何记录。
+  await gotoSpa(page, withProject("/review/trace"));
+  await page.waitForURL(/\/identification\/records/);
+  await expect(page.getByRole("heading", { name: "风险记录", level: 1 })).toBeVisible();
 
   await gotoSpa(
     page,
     `${withProject("/review/trace")}&subject=${encodeURIComponent(ids().recordAutoId)}`,
   );
+  // 窄解析到唯一登记版本并 replace 到规范详情的追溯页签。
+  await page.waitForURL(/\/identification\/records\//);
+  await expect(page).toHaveURL((url) => url.searchParams.get("tab") === "trace");
+  await expect(page).toHaveURL((url) => url.searchParams.get("version") !== null);
   // trace-chain 投影正向闭合（D7）：1–5 号节点（资料段→工序→机理→记录→评估记录）呈现
   // 真实引用；trace-chain 归档语义只返回主体相邻边，6–8 号节点按投影缺席事实如实呈现。
   const intro = page.locator(".et-intro", { hasText: "为主体串联固定追溯链" });

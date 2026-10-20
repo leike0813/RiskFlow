@@ -94,6 +94,32 @@ describe("RiskIdentificationReadQueryV1Schema", () => {
     }
   });
 
+  it("详情接受精确引用与裸实体身份两种互斥选择", () => {
+    for (const [kind, payload] of [
+      ["run-read", { runRef }],
+      ["run-read", { runId: "run-1" }],
+      ["record-read", { riskRecordRef }],
+      ["record-read", { riskRecordId: "record-1" }],
+    ] as const) {
+      const parsed = RiskIdentificationReadQueryV1Schema.safeParse({ ...queryBase, kind, payload });
+      expect(parsed.success).toBe(true);
+    }
+  });
+
+  it("详情拒绝空选择、双选择与契约外字段", () => {
+    for (const [kind, payload] of [
+      ["run-read", {}],
+      ["run-read", { runRef, runId: "run-1" }],
+      ["run-read", { runId: "run-1", surprise: true }],
+      ["record-read", {}],
+      ["record-read", { riskRecordRef, riskRecordId: "record-1" }],
+      ["record-read", { riskRecordId: "record-1", surprise: true }],
+    ] as const) {
+      const parsed = RiskIdentificationReadQueryV1Schema.safeParse({ ...queryBase, kind, payload });
+      expect(parsed.success).toBe(false);
+    }
+  });
+
   it("拒绝契约外字段与超限页大小", () => {
     expect(
       RiskIdentificationReadQueryV1Schema.safeParse({
@@ -211,6 +237,8 @@ describe("C33 识别只读成功结果判别联合", () => {
       pendingReviewGroupRefs: [versionRef("identification-group", "group-1")],
       rejectedGroupRefs: [],
       waitingRef: { kind: "review", reviewTaskRef },
+      startedBy: "actor-1",
+      startedAt: "2026-09-25T00:00:00.000Z",
     };
     expect(RiskIdentificationReadSuccessV1Schema.safeParse(detail).success).toBe(true);
     expect(
@@ -219,6 +247,13 @@ describe("C33 识别只读成功结果判别联合", () => {
     expect(RiskIdentificationReadSuccessV1Schema.safeParse({ ...detail, extra: 1 }).success).toBe(
       false,
     );
+    // 运行详情必须携带启动者与启动时间：它们取同一条最早运行状态登记。
+    expect(
+      RiskIdentificationReadSuccessV1Schema.safeParse({ ...detail, startedBy: undefined }).success,
+    ).toBe(false);
+    expect(
+      RiskIdentificationReadSuccessV1Schema.safeParse({ ...detail, startedAt: undefined }).success,
+    ).toBe(false);
   });
 
   it("记录目录页与记录详情信封形状", () => {

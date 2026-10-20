@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { ModuleCapabilityV1 } from "@riskflow/contracts/ports";
 
 import type { PageRegionDescriptorV1 } from "../shared/page-shells/index.js";
+import { IDENTIFICATION_ROUTE_TITLES } from "../pages/identificationShared.js";
 
 export type WebNavigationIdV1 =
   "overview" | "projects" | "identification" | "assessment" | "warnings" | "knowledge" | "reviews";
@@ -110,9 +111,9 @@ export const BASE_WEB_ROUTE_CONTRIBUTIONS_V1: readonly WebRouteContributionV1[] 
   route({
     routeId: "identification.root",
     path: "/identification",
-    title: "风险识别",
+    title: IDENTIFICATION_ROUTE_TITLES["/identification"],
     section: "identification",
-    regions: [{ key: "main", kind: "run" }],
+    regions: [{ key: "main", kind: "list" }],
     contextRequirement: "project",
     requiredViewCapability: "risk-identification.read",
     render: null,
